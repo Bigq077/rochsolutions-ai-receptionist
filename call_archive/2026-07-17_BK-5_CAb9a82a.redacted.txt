@@ -1,0 +1,70 @@
+# NOTE: filtered capture — pure noise (httpx / barge-in partials / watchdog internals /
+# silence / tts_finished) dropped, but synthesise_chunk (Susie's TTS wording) RETAINED.
+# This is the go-forward archive format. Routing/transcripts/LAT/tool/wording all intact.
+INFO:     connection open
+2026-07-17 16:42:41,315 - app.media_streams.connection - INFO - [ms_conn] start call_sid=CAb9a82abef0e8aa21476e68483a26a243 stream_sid=MZ8d874c2bb313913400f4298bc75870f9 from=[CALLER_MSISDN_REDACTED] to=+447366263180
+2026-07-17 16:42:41,316 - app.media_streams.connection - INFO - [ms_conn] clinic_id resolved: jv_v1 (to=+447366263180)
+2026-07-17 16:42:41,317 - app.media_streams.connection - INFO - [ms_conn] caller number from Twilio: [CALLER_MSISDN_REDACTED]
+2026-07-17 16:42:41,318 - app.media_streams.stt_stream - INFO - [ms_stt] init — keyterms_prompt=%5B%22Alcester%22%2C%20%22Redditch%22%5D
+2026-07-17 16:42:41,352 - app.media_streams.connection - INFO - [ms_conn tpl] single-site 'bolton' auto-confirmed at call start — two-clinic location gate suppressed on all paths
+2026-07-17 16:42:41,353 - app.media_streams.connection - INFO - [ms_conn tpl] greeting: "Hi there, I'm Susie, Joint Venture Physiotherapy's AI receptionist — how can I h"
+2026-07-17 16:42:41,354 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: text="Hi there, I'm Susie, Joint Venture Physiotherapy's AI recept"
+2026-07-17 16:42:41,590 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: text='how can I help you today?'
+2026-07-17 16:42:53,656 - app.media_streams.stt_stream - INFO - [ms_stt] FINAL → queue: 'hi can i book a sports massage like the one that takes an hour'
+2026-07-17 16:42:53,659 - app.media_streams.connection - INFO - [ms_conn v3] transcript: 'hi can i book a sports massage like the one that takes an hour'
+2026-07-17 16:42:53,659 - app.media_streams.connection - INFO - [ms_conn v3] treatment mention + booking intent — booking_flow_active=True: 'hi can i book a sports massage like the one that takes an hour'
+2026-07-17 16:42:55,473 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: text='One moment…'
+2026-07-17 16:42:55,963 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: text="Right — Do you have a preference for when you'd like to come"
+2026-07-17 16:42:56,092 - susie.latency - INFO - [LAT] turn_seq=21 path=llm outcome=completed ttfa_ms=1917 content_ttfa_ms=2435 ep_dispatch_ms=0 llm_ttft_ms=1892 chunk_gate_ms=413 tts_first_byte_ms=129 audio_wire_ms=0 flags=A model=claude-sonnet-4-6 stt_model=universal-streaming-english eot_confident=None capture_phase=conversation endpoint_wait_ms=899
+2026-07-17 16:43:02,561 - app.media_streams.stt_stream - INFO - [ms_stt] FINAL → queue: 'available please'
+2026-07-17 16:43:02,563 - app.media_streams.connection - INFO - [ms_conn v3] transcript: 'available please'
+2026-07-17 16:43:05,134 - app.media_streams.llm_stream - INFO - [ms_llm] tool: name=check_availability id=toolu_015JsnkqsX4HaKi6QfBAQwi8 args={"service": "sports_massage", "location": "bolton", "date_hint": "any"}
+2026-07-17 16:43:05,136 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: text='One moment while I check that for you…'
+2026-07-17 16:43:05,245 - susie.latency - INFO - [LAT] turn_seq=22 path=llm outcome=completed ttfa_ms=2684 content_ttfa_ms=2684 ep_dispatch_ms=0 llm_ttft_ms=1184 chunk_gate_ms=-1 tts_first_byte_ms=-1 audio_wire_ms=0 flags=A model=claude-sonnet-4-6 stt_model=universal-streaming-english eot_confident=None capture_phase=conversation endpoint_wait_ms=117
+2026-07-17 16:43:05,347 - app.media_streams.llm_stream - INFO - [ms_llm] slots_presented=True slots_count=3
+2026-07-17 16:43:05,348 - app.media_streams.llm_stream - INFO - [ms_llm] tool result: name=check_availability result={"available_days": [{"date": "2026-07-17", "day_label": "Friday 17th July", "slot_times": ["18:45", "19:30"], "slot_times_spoken": ["quarter to seven in the evening", "half past seven in the evening"]
+2026-07-17 16:43:07,196 - app.media_streams.llm_stream - INFO - [ms_gate5] slot map extracted on complete response (3 option(s)) — DTMF standby: {'1': 'Friday 17th July', '2': 'Saturday 18th July', '3': 'Monday 20th July'}
+2026-07-17 16:43:07,222 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: text="Here's what we've got coming up — Number 1, Friday 17th July"
+2026-07-17 16:43:07,491 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: text='quarter to seven in the evening or half past seven in the ev'
+2026-07-17 16:43:07,690 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: text='Number 2, Saturday 18th July — quarter to twelve in the morn'
+2026-07-17 16:43:07,883 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: text='half past twelve in the afternoon or quarter past one in the'
+2026-07-17 16:43:08,075 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: text='Number 3, Monday 20th July — half past four in the afternoon'
+2026-07-17 16:43:08,320 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: text='Any of those suit you?'
+2026-07-17 16:43:07,224 - app.media_streams.connection - INFO - [ms_conn v3] slot map active — day_selection: {'1': 'Friday 17th July', '2': 'Saturday 18th July', '3': 'Monday 20th July'}
+2026-07-17 16:43:33,680 - app.media_streams.stt_stream - INFO - [ms_stt] FINAL → queue: 'slot you said'
+2026-07-17 16:43:33,681 - app.media_streams.connection - INFO - [ms_conn] slot fragment ignored — re-arming: 'slot you said'
+2026-07-17 16:43:43,682 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_FIRE prompt='Still with you — which of those would you like?' attempt=#1
+2026-07-17 16:43:43,682 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: text='Still with you — which of those would you like?'
+2026-07-17 16:43:44,199 - app.media_streams.stt_stream - INFO - [ms_stt] FINAL → queue: 'hello'
+2026-07-17 16:43:44,200 - susie.latency - INFO - [LAT] turn_seq=23 path=llm outcome=abandoned ttfa_ms=10146 content_ttfa_ms=-1 ep_dispatch_ms=0 llm_ttft_ms=-1 chunk_gate_ms=-1 tts_first_byte_ms=-1 audio_wire_ms=-1 flags=A model=- stt_model=universal-streaming-english eot_confident=None capture_phase=conversation endpoint_wait_ms=182
+2026-07-17 16:43:44,200 - app.media_streams.connection - INFO - [ms_conn] slot fragment ignored — re-arming: 'hello'
+2026-07-17 16:43:50,072 - app.media_streams.stt_stream - INFO - [ms_stt] FINAL → queue: 'the first slot you offered'
+2026-07-17 16:43:50,072 - app.media_streams.connection - INFO - [ms_conn] barge-in #1 confirmed (2440ms) — real transcript 'the first slot you offered', processing directly instead of ack+drop (state=GREETING)
+2026-07-17 16:43:50,073 - susie.latency - INFO - [LAT] turn_seq=24 path=llm outcome=abandoned ttfa_ms=-1 content_ttfa_ms=-1 ep_dispatch_ms=0 llm_ttft_ms=-1 chunk_gate_ms=-1 tts_first_byte_ms=-1 audio_wire_ms=-1 flags=A model=- stt_model=universal-streaming-english eot_confident=None capture_phase=conversation endpoint_wait_ms=-1
+2026-07-17 16:43:50,075 - app.media_streams.connection - INFO - [ms_conn v3] transcript: 'the first slot you offered'
+2026-07-17 16:43:51,718 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: text="So that's Friday the 17th of July at quarter to seven in the"
+2026-07-17 16:43:51,743 - app.media_streams.connection - INFO - [ms_conn] v3_confirmed_slot_phrase captured: 'Friday the 17th of July at quarter to seven in the evening'
+2026-07-17 16:43:51,838 - susie.latency - INFO - [LAT] turn_seq=25 path=llm outcome=completed ttfa_ms=1765 content_ttfa_ms=1765 ep_dispatch_ms=0 llm_ttft_ms=956 chunk_gate_ms=688 tts_first_byte_ms=120 audio_wire_ms=0 flags=A model=claude-sonnet-4-6 stt_model=universal-streaming-english eot_confident=None capture_phase=conversation endpoint_wait_ms=77
+2026-07-17 16:43:51,926 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: text='could I take your first name and surname?'
+2026-07-17 16:44:01,854 - app.media_streams.stt_stream - INFO - [ms_stt] FINAL → queue: '[FIRST] [SURNAME]'
+2026-07-17 16:44:01,857 - app.media_streams.connection - INFO - [ms_conn v3] transcript: '[FIRST] [SURNAME]'
+2026-07-17 16:44:03,669 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: text='Give me a moment…'
+2026-07-17 16:44:06,114 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: text='Thanks [FIRST] — just to confirm the number we have for you, is'
+2026-07-17 16:44:06,162 - app.media_streams.connection - INFO - [ms_conn v3] name persisted (normal path): '[FIRST] [SURNAME]'
+2026-07-17 16:44:06,251 - susie.latency - INFO - [LAT] turn_seq=26 path=llm outcome=completed ttfa_ms=1925 content_ttfa_ms=4396 ep_dispatch_ms=0 llm_ttft_ms=3050 chunk_gate_ms=1207 tts_first_byte_ms=137 audio_wire_ms=0 flags=A model=claude-sonnet-4-6 stt_model=universal-streaming-english eot_confident=None capture_phase=name endpoint_wait_ms=484
+2026-07-17 16:44:06,366 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: text='If so, just say use this number.'
+2026-07-17 16:44:14,131 - app.media_streams.stt_stream - INFO - [ms_stt] FINAL → queue: 'yes'
+2026-07-17 16:44:14,133 - app.media_streams.connection - INFO - [ms_conn v3] transcript: 'yes'
+2026-07-17 16:44:15,703 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: text='Just to confirm — [FIRST], Friday the 17th of July at quarter t'
+2026-07-17 16:44:16,635 - app.media_streams.stt_stream - INFO - [ms_stt] FINAL → queue: 'use this number'
+2026-07-17 16:44:16,635 - app.media_streams.connection - INFO - [ms_conn] barge-in #2 confirmed (897ms) — real transcript 'use this number', processing directly instead of ack+drop (state=GREETING)
+2026-07-17 16:44:16,635 - susie.latency - INFO - [LAT] turn_seq=27 path=llm outcome=abandoned ttfa_ms=-1 content_ttfa_ms=-1 ep_dispatch_ms=0 llm_ttft_ms=1124 chunk_gate_ms=446 tts_first_byte_ms=-1 audio_wire_ms=-1 flags=A model=claude-sonnet-4-6 stt_model=universal-streaming-english eot_confident=None capture_phase=phone endpoint_wait_ms=-1
+2026-07-17 16:44:16,636 - app.media_streams.connection - INFO - [ms_conn v3] transcript: 'use this number'
+2026-07-17 16:44:17,999 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: text="That's already noted — shall I go ahead and book that in for"
+2026-07-17 16:44:18,159 - susie.latency - INFO - [LAT] turn_seq=28 path=llm outcome=completed ttfa_ms=1523 content_ttfa_ms=1523 ep_dispatch_ms=0 llm_ttft_ms=1063 chunk_gate_ms=299 tts_first_byte_ms=159 audio_wire_ms=0 flags=A model=claude-sonnet-4-6 stt_model=universal-streaming-english eot_confident=None capture_phase=conversation endpoint_wait_ms=896
+2026-07-17 16:44:22,121 - app.media_streams.connection - INFO - [ms_conn] stop event stream_sid=MZ8d874c2bb313913400f4298bc75870f9
+2026-07-17 16:44:22,147 - app.call_logger - INFO - [call_logger] flushed call_sid=CAb9a82abef0e8aa21476e68483a26a243 to logs/calls_2026-07-17.jsonl
+2026-07-17 16:44:22,147 - app.notifications.smart_sms_router - INFO - [smart_sms] pre-SMS reason: collected=None session=None summary.appointment=None outcome='reached_confirmation'
+2026-07-17 16:44:22,148 - app.notifications.sms - INFO - [sms] SMS_ENABLED is off — outbound SMS suppressed (not sent)
+2026-07-17 16:44:22,148 - app.notifications.smart_sms_router - INFO - ✅ Smart SMS sent [reached_confirmation] → ***[REDACTED]
+INFO:     connection closed

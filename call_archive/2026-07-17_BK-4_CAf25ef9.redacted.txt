@@ -1,0 +1,83 @@
+# NOTE: user labeled this "BK-7" but content = acupuncture booking = BK-4 scenario. Filed as BK-4.
+# cleanlog-filtered capture (v1 filter — synthesise_chunk stripped, so conversational TTS wording
+# is NOT in this log; routing/transcripts/slot text/DTMF intact).
+INFO:     connection open
+2026-07-17 16:38:12,921 - app.media_streams.connection - INFO - [ms_conn] connected protocol=Call version=1.0.0
+2026-07-17 16:38:12,922 - app.media_streams.connection - INFO - [ms_conn] start call_sid=CAf25ef9afa3615603f76b572b9f5e57fb stream_sid=MZb36c1a486a483fd28a9041508f59207f from=[CALLER_MSISDN_REDACTED] to=+447366263180
+2026-07-17 16:38:12,922 - app.media_streams.connection - INFO - [ms_conn] clinic_id resolved: jv_v1 (to=+447366263180)
+2026-07-17 16:38:12,923 - app.media_streams.connection - INFO - [ms_conn] caller number from Twilio: [CALLER_MSISDN_REDACTED]
+2026-07-17 16:38:12,924 - app.media_streams.stt_stream - INFO - [ms_stt] init — url=wss://streaming.assemblyai.com/v3/ws?...&min_turn_silence=600&keyterms_prompt=%5B%22Alcester%22%2C%20%22Redditch%22%5D
+2026-07-17 16:38:12,951 - app.media_streams.connection - INFO - [ms_conn tpl] single-site 'bolton' auto-confirmed at call start — two-clinic location gate suppressed on all paths
+2026-07-17 16:38:12,951 - app.media_streams.connection - INFO - [ms_conn tpl] greeting: "Hi there, I'm Susie, Joint Venture Physiotherapy's AI receptionist — how can I h"
+2026-07-17 16:38:13,685 - app.media_streams.stt_stream - INFO - [ms_stt] Begin received — session_id=e9ffd425-075a-43b9-87cb-5080c6fdeedc
+2026-07-17 16:38:21,771 - app.media_streams.stt_stream - INFO - [ms_stt] FINAL → queue: 'hi can you book acupuncture'
+2026-07-17 16:38:21,772 - app.media_streams.connection - INFO - [ms_conn v3] transcript: 'hi can you book acupuncture'
+2026-07-17 16:38:21,773 - app.media_streams.connection - INFO - [ms_conn v3] treatment mention + booking intent — booking_flow_active=True: 'hi can you book acupuncture'
+2026-07-17 16:38:21,774 - app.media_streams.llm_stream - INFO - [ms_llm] iteration=1 model=claude-sonnet-4-6
+2026-07-17 16:38:23,725 - app.media_streams.llm_stream - INFO - [ms_gate5] turn complete: 0 chunk(s) dropped as reasoning
+2026-07-17 16:38:23,732 - app.media_streams.connection - INFO - [ms_conn v3] call reached stable state
+2026-07-17 16:38:23,828 - susie.latency - INFO - [LAT] turn_seq=15 path=llm outcome=completed ttfa_ms=2056 content_ttfa_ms=2056 ep_dispatch_ms=0 llm_ttft_ms=1561 chunk_gate_ms=378 tts_first_byte_ms=117 audio_wire_ms=0 flags=A model=claude-sonnet-4-6 stt_model=universal-streaming-english eot_confident=None capture_phase=conversation endpoint_wait_ms=444
+2026-07-17 16:38:32,402 - app.media_streams.stt_stream - INFO - [ms_stt] FINAL → queue: 'possible like your first slot available'
+2026-07-17 16:38:32,404 - app.media_streams.connection - INFO - [ms_conn v3] transcript: 'possible like your first slot available'
+2026-07-17 16:38:32,405 - app.media_streams.llm_stream - INFO - [ms_llm] iteration=1 model=claude-sonnet-4-6
+2026-07-17 16:38:34,380 - app.media_streams.turn_handler - INFO - [ms_gate5] removed banned phrase (just_a_moment)
+2026-07-17 16:38:34,885 - app.media_streams.llm_stream - INFO - [ms_gate5] pre-tool TTS output cancelled — slot buffer taking over (check_availability detected)
+2026-07-17 16:38:35,189 - app.media_streams.llm_stream - INFO - [ms_gate5] turn complete: 0 chunk(s) dropped as reasoning
+2026-07-17 16:38:35,189 - app.media_streams.llm_stream - INFO - [ms_llm] tool: name=check_availability id=toolu_01Q1HzAPFWU7GZdDsNowwj2r args={"service": "acupuncture", "location": "bolton", "date_hint": "as soon as possible"}
+2026-07-17 16:38:35,308 - susie.latency - INFO - [LAT] turn_seq=16 path=llm outcome=completed ttfa_ms=2905 content_ttfa_ms=2905 ep_dispatch_ms=0 llm_ttft_ms=1465 chunk_gate_ms=-1 tts_first_byte_ms=-1 audio_wire_ms=0 flags=A model=claude-sonnet-4-6 stt_model=universal-streaming-english eot_confident=None capture_phase=conversation endpoint_wait_ms=393
+2026-07-17 16:38:35,347 - app.media_streams.llm_stream - INFO - [ms_llm] slots_presented=True slots_count=3
+2026-07-17 16:38:35,347 - app.media_streams.llm_stream - INFO - [ms_llm] tool result: name=check_availability result={"available_days": [{"date": "2026-07-17", "day_label": "Friday 17th July", "slot_times": ["18:15", "18:50", "19:25"], "slot_times_spoken": ["quarter past six in the evening", "six fifty in the evenin
+2026-07-17 16:38:35,348 - app.media_streams.llm_stream - INFO - [ms_llm] iteration=2 model=claude-sonnet-4-6
+2026-07-17 16:38:35,348 - app.media_streams.llm_stream - INFO - [ms_llm] slot buffer active (post-check_availability) iter=2 — switched to HAIKU + focused slot prompt
+2026-07-17 16:38:36,897 - app.media_streams.llm_stream - INFO - [ms_gate5] turn complete: 0 chunk(s) dropped as reasoning
+2026-07-17 16:38:36,897 - app.media_streams.llm_stream - INFO - [ms_gate5] slot buf chunk 0: 'The earliest I have is Friday 17th July, and the available s' — len=212 — sending=True
+2026-07-17 16:38:36,897 - app.media_streams.llm_stream - INFO - [ms_gate5] slot map extracted on complete response (3 option(s)) — DTMF standby: {'1': 'quarter past six in the evening', '2': 'six fifty in the evening', '3': 'seven twenty-five in the evening'}
+2026-07-17 16:38:36,897 - app.media_streams.llm_stream - INFO - [ms_gate5] slot buf TTS chunk 1/3: 'The earliest I have is Friday 17th July, and the available s' — len=113
+2026-07-17 16:38:36,897 - app.media_streams.llm_stream - INFO - [ms_gate5] slot buf TTS chunk 2/3: 'Number 2, six fifty in the evening.' — len=35
+2026-07-17 16:38:36,897 - app.media_streams.llm_stream - INFO - [ms_gate5] slot buf TTS chunk 3/3: 'Number 3, seven twenty-five in the evening. Any of those wor' — len=62
+2026-07-17 16:38:36,905 - app.media_streams.connection - INFO - [ms_conn v3] slot map active — time_selection: {'1': 'quarter past six in the evening', '2': 'six fifty in the evening', '3': 'seven twenty-five in the evening'}
+2026-07-17 16:38:58,616 - app.media_streams.connection - INFO - [ms_conn] TTS watchdog re-ask: dedup bypassed for 'Still with you — which of those would you like?'
+2026-07-17 16:39:03,994 - app.media_streams.stt_stream - INFO - [ms_stt] FINAL → queue: 'the last slot you offered'
+2026-07-17 16:39:03,996 - app.media_streams.connection - INFO - [ms_conn v3] transcript: 'the last slot you offered'
+2026-07-17 16:39:03,996 - app.media_streams.connection - INFO - [ms_llm] slot cache cleared on new turn (was date_hint='as soon as possible')
+2026-07-17 16:39:03,997 - app.media_streams.llm_stream - INFO - [ms_llm] iteration=1 model=claude-sonnet-4-6
+2026-07-17 16:39:06,408 - app.media_streams.llm_stream - INFO - [ms_gate5] turn complete: 0 chunk(s) dropped as reasoning
+2026-07-17 16:39:06,416 - app.media_streams.connection - INFO - [ms_conn v3] slot map active — time_selection: {'1': 'quarter past six in the evening', '2': 'six fifty in the evening', '3': 'seven twenty-five in the evening'}
+2026-07-17 16:39:06,416 - app.media_streams.connection - INFO - [ms_conn] post_slot_confirmation_pending = True (name request detected in response)
+2026-07-17 16:39:06,416 - app.media_streams.connection - INFO - [ms_conn] v3_confirmed_slot_phrase captured: 'Friday the 17th of July at seven twenty-five in the evening'
+2026-07-17 16:39:06,416 - app.media_streams.connection - INFO - [ms_conn] slot map stage → NONE (name request — advancing beyond slot selection)
+2026-07-17 16:39:06,527 - susie.latency - INFO - [LAT] turn_seq=17 path=llm outcome=completed ttfa_ms=2532 content_ttfa_ms=2532 ep_dispatch_ms=0 llm_ttft_ms=1691 chunk_gate_ms=715 tts_first_byte_ms=125 audio_wire_ms=0 flags=A model=claude-sonnet-4-6 stt_model=universal-streaming-english eot_confident=None capture_phase=conversation endpoint_wait_ms=438
+2026-07-17 16:39:20,290 - app.media_streams.stt_stream - INFO - [ms_stt] FINAL → queue: '[FIRST] [SURNAME]'
+2026-07-17 16:39:20,292 - app.media_streams.connection - INFO - [ms_conn v3] transcript: '[FIRST] [SURNAME]'
+2026-07-17 16:39:20,294 - app.media_streams.llm_stream - INFO - [ms_llm] iteration=1 model=claude-sonnet-4-6
+2026-07-17 16:39:22,448 - app.media_streams.llm_stream - INFO - [ms_gate5] turn complete: 0 chunk(s) dropped as reasoning
+2026-07-17 16:39:22,556 - app.media_streams.connection - INFO - [ms_conn v3] name persisted (normal path): '[FIRST] [SURNAME]'
+2026-07-17 16:39:22,557 - app.media_streams.connection - INFO - [ms_conn] v3_phone_dtmf_active = True (name confirmed — phone collection phase)
+2026-07-17 16:39:22,557 - app.media_streams.connection - INFO - [ms_conn] post_slot_confirmation_pending cleared (no name request this turn)
+2026-07-17 16:39:22,568 - susie.latency - INFO - [LAT] turn_seq=18 path=llm outcome=completed ttfa_ms=2277 content_ttfa_ms=2277 ep_dispatch_ms=0 llm_ttft_ms=1214 chunk_gate_ms=869 tts_first_byte_ms=192 audio_wire_ms=0 flags=A model=claude-sonnet-4-6 stt_model=universal-streaming-english eot_confident=None capture_phase=name endpoint_wait_ms=504
+2026-07-17 16:39:31,302 - app.media_streams.stt_stream - INFO - [ms_stt] FINAL → queue: 'is this number please'
+2026-07-17 16:39:31,302 - app.media_streams.connection - INFO - [ms_conn] verbal reset skipped — buffer empty: 'is this number please'
+2026-07-17 16:39:31,302 - app.media_streams.connection - INFO - [ms_conn] v3_phone_dtmf_active = False (exited — conversational speech / name correction)
+2026-07-17 16:39:31,304 - app.media_streams.connection - INFO - [ms_conn v3] transcript: 'is this number please'
+2026-07-17 16:39:31,305 - app.media_streams.llm_stream - INFO - [ms_llm] iteration=1 model=claude-sonnet-4-6
+2026-07-17 16:39:33,288 - susie.latency - INFO - [LAT] turn_seq=19 path=llm outcome=completed ttfa_ms=1985 content_ttfa_ms=1985 ep_dispatch_ms=0 llm_ttft_ms=1495 chunk_gate_ms=366 tts_first_byte_ms=123 audio_wire_ms=0 flags=A model=claude-sonnet-4-6 stt_model=universal-streaming-english eot_confident=None capture_phase=phone endpoint_wait_ms=93
+2026-07-17 16:39:33,549 - app.media_streams.llm_stream - INFO - [ms_gate5] turn complete: 0 chunk(s) dropped as reasoning
+2026-07-17 16:39:33,555 - app.media_streams.connection - INFO - [ms_conn] v3_phone_dtmf_active = True (phone-number keypad prompt detected)
+2026-07-17 16:39:44,179 - app.media_streams.connection - INFO - [ms_conn] DTMF raw digit='X' v3_phone_dtmf_active=True
+2026-07-17 16:39:44,180 - app.media_streams.connection - INFO - [ms_conn] DTMF digit='X' buf='[REDACTED]'
+2026-07-17 16:39:48,151 - app.media_streams.connection - INFO - [ms_conn] DTMF digit='X' buf='[PHONE_REDACTED]'
+2026-07-17 16:39:48,151 - app.media_streams.connection - INFO - [ms_conn] DTMF 11-digit complete → immediate finalize '[PHONE_REDACTED]'
+2026-07-17 16:39:48,153 - app.media_streams.connection - INFO - [ms_conn v3] DTMF phone collection complete
+2026-07-17 16:39:48,155 - app.media_streams.connection - INFO - [ms_conn v3] transcript: '[PHONE_REDACTED]'
+2026-07-17 16:39:48,155 - app.media_streams.connection - INFO - [ms_stt] phone number/fragment '[PHONE_REDACTED]' — passing to LLM (phone exemption)
+2026-07-17 16:39:48,156 - app.media_streams.llm_stream - INFO - [ms_llm] iteration=1 model=claude-sonnet-4-6
+2026-07-17 16:39:49,911 - app.media_streams.turn_handler - INFO - [ms_gate5] booking offer KEPT — stripping would leave no question (avoid dead-end)
+2026-07-17 16:39:49,928 - app.media_streams.llm_stream - INFO - [ms_gate5] turn complete: 0 chunk(s) dropped as reasoning
+2026-07-17 16:39:50,034 - susie.latency - INFO - [LAT] turn_seq=20 path=llm outcome=completed ttfa_ms=1882 content_ttfa_ms=1882 ep_dispatch_ms=0 llm_ttft_ms=1130 chunk_gate_ms=629 tts_first_byte_ms=122 audio_wire_ms=0 flags=A model=claude-sonnet-4-6 stt_model=universal-streaming-english eot_confident=None capture_phase=conversation endpoint_wait_ms=-1
+2026-07-17 16:39:57,959 - app.media_streams.connection - INFO - [ms_conn] stop event stream_sid=MZb36c1a486a483fd28a9041508f59207f
+2026-07-17 16:39:57,985 - app.media_streams.connection - INFO - [ms_conn] cleanup call_sid=CAf25ef9afa3615603f76b572b9f5e57fb stable=True
+2026-07-17 16:39:57,986 - app.call_logger - INFO - [call_logger] flushed call_sid=CAf25ef9afa3615603f76b572b9f5e57fb to logs/calls_2026-07-17.jsonl
+2026-07-17 16:39:57,986 - app.notifications.smart_sms_router - INFO - [smart_sms] pre-SMS reason: collected=None session=None summary.appointment=None outcome='reached_confirmation'
+2026-07-17 16:39:57,987 - app.notifications.sms - INFO - [sms] SMS_ENABLED is off — outbound SMS suppressed (not sent)
+2026-07-17 16:39:57,987 - app.notifications.smart_sms_router - INFO - ✅ Smart SMS sent [reached_confirmation] → ***[REDACTED]
+INFO:     connection closed
