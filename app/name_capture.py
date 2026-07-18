@@ -192,11 +192,23 @@ def _walk_particles_forward(tokens, start, ok) -> str:
 def _walk_particles_back(tail, ok) -> str:
     """Given the tokens AFTER the first name, take the trailing surname group.
 
-    ["james", "rock"]       -> "rock"            (middle name dropped)
-    ["de", "silva"]         -> "de silva"
-    ["van", "der", "berg"]  -> "van der berg"
+    ["james", "rock"]         -> "rock"            (middle name dropped)
+    ["de", "silva"]           -> "de silva"
+    ["van", "der", "berg"]    -> "van der berg"
+    ["smith", "please"]       -> "smith"           (trailing filler stripped)
+    ["jenkins", "thanks"]     -> "jenkins"
+    ["please"]                -> ""
     """
-    if not tail or not ok(tail[-1]) or tail[-1] in SURNAME_PARTICLES:
+    # Strip trailing filler/stopwords and dangling particles ("smith please",
+    # "jenkins thanks", "de") so the surname is read from the last REAL name
+    # token, rather than rejected because a politeness word trails it.  Only
+    # tokens ok() already refuses (stopwords, contractions, false-positives) or
+    # bare particles are dropped, so a genuine trailing surname is never lost.
+    end = len(tail)
+    while end > 0 and (not ok(tail[end - 1]) or tail[end - 1] in SURNAME_PARTICLES):
+        end -= 1
+    tail = tail[:end]
+    if not tail:
         return ""
     j = len(tail) - 1
     while (
