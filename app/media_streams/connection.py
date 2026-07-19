@@ -5727,7 +5727,7 @@ class WebSocketCallHandler:
                             _cs_result = _cs.update_screening_state(
                                 self.session, _cs_clinic, utterance
                             )
-                            if _cs_result["action"] in ("emergency", "escalate"):
+                            if _cs_result["action"] in ("emergency", "escalate", "ask_screen"):
                                 _cs_line = _cs_result["speak"] or ""
                                 if _cs_result["action"] == "emergency":
                                     _cs_line = (

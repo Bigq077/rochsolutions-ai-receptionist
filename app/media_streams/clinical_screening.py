@@ -40,6 +40,15 @@ PENDING_SCREEN_KEY = "pending_screen"        # screen id awaiting question/answe
 SCREEN_RED_FLAG_KEY = "screen_red_flag"      # screen id that answered positive
 SCREENS_COMPLETED_KEY = "screens_completed"  # list of screen ids already run
 
+# Brief empathetic acknowledgement spoken immediately before a freshly-armed
+# screen question — this replaces the warm "acknowledge first" the model used to
+# add in the prompt-driven flow. Kept to a short empathy line ONLY, because the
+# configured screen_question already carries its own conversational lead-in
+# (e.g. "Before we look at the next step, can I ask — …"); a longer lead here
+# would collide with it. Overridable per screen via clinic.json
+# screen["screen_lead_in"] (set "" to omit entirely).
+_DEFAULT_SCREEN_LEAD_IN = "I'm sorry to hear that."
+
 
 def _norm(text: str) -> str:
     """Lowercase, collapse whitespace, strip punctuation apart from apostrophes."""
@@ -196,6 +205,9 @@ def update_screening_state(
       action="emergency" — speak the emergency response now, skip the LLM.
       action="escalate"  — screen answered positive; speak the escalation
                            now, skip the LLM. Booking stays blocked.
+      action="ask_screen"— a screen just armed; speak its question now
+                           (lead-in + screen_question), skip the LLM, so the
+                           safety screen is asked on its own before booking.
       action="none"      — nothing deterministic to say; dispatch to the LLM
                            as normal (the prompt layer handles the screen
                            question itself via SCREEN REQUIRED).
@@ -269,6 +281,27 @@ def update_screening_state(
             logger.info(
                 "[clinical_screening] screen %s ARMED by: %r", sid, text[:80]
             )
+            # Speak the screen question deterministically THIS turn — a warm
+            # lead-in + the configured question, on its own, BEFORE any
+            # booking/modality step. Previously this turn dispatched to the LLM
+            # and relied on the SCREEN REQUIRED prompt steer, which the model
+            # could skip in favour of a booking offer (Call-1, 2026-07-19). This
+            # mirrors the emergency/escalate deterministic paths and removes the
+            # adherence risk. The caller's answer is classified on the next turn
+            # (_question_was_asked matches the spoken question's distinctive
+            # words); a red-flag then escalates deterministically as before.
+            screen = get_screen(clinic, sid) or {}
+            q = (screen.get("screen_question") or "").strip()
+            if q:
+                lead = screen.get("screen_lead_in")
+                if lead is None:
+                    lead = _DEFAULT_SCREEN_LEAD_IN
+                lead = (lead or "").strip()
+                spoken = (f"{lead} {q}".strip()) if lead else q
+                logger.info(
+                    "[clinical_screening] screen %s asked deterministically", sid
+                )
+                return {"action": "ask_screen", "speak": spoken}
         return {"action": "none", "speak": None}
     except Exception:
         logger.exception("[clinical_screening] update failed — failing open")
