@@ -2278,6 +2278,35 @@ def _b7_call_state(session: Dict[str, Any], clinic: Dict[str, Any], tk: Dict[str
                 "or ask 'shall I book that in' until this screen is answered."
             )
 
+    # SCREEN ALREADY DONE — suppress redundant re-asks (Call-1 bug, 2026-07-19).
+    #
+    # clinical_screening records each answered screen id in
+    # session['screens_completed']. The static red-flag protocol elsewhere in
+    # this prompt tells the model to screen before booking; without this steer,
+    # at the pre-booking gate the model re-asked a cauda-equina screen it had
+    # already run and cleared earlier in the SAME call (asking the caller about
+    # bladder/bowel control twice). This inverse steer names the
+    # completed-and-negative screens by their short label so the model does not
+    # repeat them. The screen that answered positive (session['screen_red_flag'])
+    # is excluded — it blocks booking and is handled by the escalation path.
+    _done_ids = session.get("screens_completed") or []
+    _active_rf = session.get("screen_red_flag")
+    _done_neg = [d for d in _done_ids if d and d != _active_rf]
+    if _done_neg:
+        _cs_done = clinic.get("clinical_screening") or {}
+        _by_id = {s.get("id"): s for s in (_cs_done.get("screens") or [])}
+        _done_labels = [
+            (_by_id.get(_sid) or {}).get("label") or _sid for _sid in _done_neg
+        ]
+        state.append(
+            "SCREEN ALREADY DONE — the caller has ALREADY been asked, and "
+            "answered no to, this call's red-flag safety screen(s): "
+            + ", ".join(_done_labels)
+            + ". Do NOT ask them again — not now, and not as a pre-booking "
+            "check. Re-asking repeats an intrusive question the caller has "
+            "already answered; proceed straight to the booking."
+        )
+
     # PHONE STEP OUTSTANDING steer (2026-07-07 JV regression).
     #
     # Step 8 (phone) is prompt-only; the sole code enforcement is the
