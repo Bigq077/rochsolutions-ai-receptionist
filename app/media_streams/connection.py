@@ -64,6 +64,8 @@ from .config import (
     HAIKU,
     ACK_FILLER_MARKER,
     FILLER_PHRASES,
+    WS_C_SEMANTIC_ENDPOINT,
+    ws_c_profile_for_phase,
 )
 from .filler_guard import FillerGuard
 
@@ -2376,6 +2378,18 @@ class SilenceHandler:
                     self._q_gen, self.last_question[:60],
                 )
 
+            # WS-C: let the handler push a phase-aware endpoint profile now that
+            # the new question (and its phase-determining flags) is stored. Guarded
+            # getattr so the SilenceHandler needs no new constructor param; the
+            # callback is a no-op when the lever is OFF. Never raises into the
+            # question-asked path.
+            _wsc_cb = getattr(self, "_on_question_asked_cb", None)
+            if _wsc_cb is not None:
+                try:
+                    _wsc_cb()
+                except Exception:
+                    logger.debug("[ms_silence] WS-C on_question_asked cb failed", exc_info=True)
+
     def on_tts_started(self) -> None:
         """Track TTS activity and cancel silence/recovery timers before Susie speaks.
 
@@ -3983,6 +3997,10 @@ class WebSocketCallHandler:
         # opener on the next turn can flag it as a probable capture cutoff.
         self._ep_prev_seq: Optional[int] = None
         self._ep_prev_phase: str = "conversation"
+        # WS-C phase-aware endpointing: the last capture_phase whose endpoint
+        # profile we pushed to AssemblyAI, so we only send UpdateConfiguration on
+        # an actual phase change (not every question). None until the first push.
+        self._ws_c_last_phase: Optional[str] = None
 
         # ── Control events ─────────────────────────────────────────────────
         self._stop_event    = asyncio.Event()  # set when "stop" received or WS closes
@@ -4203,6 +4221,13 @@ class WebSocketCallHandler:
             # current session even after self.session is reassigned on "start".
             get_session=lambda: self.session,
             on_dead_air_ts_reset=_silence_dead_air_ts_reset_fn,
+        )
+        # WS-C: fire the phase-aware endpoint profile whenever a new question is
+        # stored (i.e. the moment Susie ASKS for the name/number, before the
+        # caller answers) so the capture profile governs THAT turn's end, not the
+        # next one. No-op when WS_C_SEMANTIC_ENDPOINT is OFF.
+        self._silence_handler._on_question_asked_cb = (
+            self._ws_c_apply_endpoint_profile
         )
 
         # ── Call stability ─────────────────────────────────────────────────
@@ -11316,6 +11341,40 @@ class WebSocketCallHandler:
         # slot question is NOT re-asked here — the NEXT utterance goes through
         # flow.handle_transcript() normally; re-ask only fires if that fails.
         return True  # skip current utterance (ack plays, next turn processes)
+
+    def _ws_c_apply_endpoint_profile(self) -> None:
+        """WS-C: push AssemblyAI's turn-detection silence thresholds for the
+        CURRENT capture_phase — but only when the phase actually changed since the
+        last push, so an unchanged conversation flow sends nothing. Fire-and-forget
+        so it never blocks the question path; a no-op when the lever is OFF.
+
+        This is the enforcement point of the capture-phase HARD GATE: entering
+        name/phone raises the silence floor (via ws_c_profile_for_phase, which
+        floors capture ≥ conversation) so the endpointer can no longer fire
+        aggressively — the endpoint_wait_ms=41 that clipped the RC-1 name turn.
+        Leaving capture restores the conversation profile. Never raises.
+        """
+        if not WS_C_SEMANTIC_ENDPOINT:
+            return
+        try:
+            phase = _lat_capture_phase(self.session)
+            if phase == self._ws_c_last_phase:
+                return
+            profile = ws_c_profile_for_phase(phase)
+            if profile is None:
+                return
+            self._ws_c_last_phase = phase
+            _min, _max = profile
+            logger.info(
+                "[ms_conn] WS-C endpoint profile → phase=%s "
+                "min_turn_silence=%d max_turn_silence=%d",
+                phase, _min, _max,
+            )
+            asyncio.create_task(
+                self._stt_stream.request_config_update(_min, _max)
+            )
+        except Exception:
+            logger.debug("[ms_conn] WS-C apply profile failed", exc_info=True)
 
     async def _on_final_transcript_clear(self, text: str = "") -> None:
         """

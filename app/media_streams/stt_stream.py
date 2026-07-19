@@ -271,6 +271,38 @@ class STTStream:
         self._t_last_partial:        float      = 0.0
         self._last_endpoint_wait_ms: int        = -1
 
+    async def request_config_update(
+        self, min_turn_silence: int, max_turn_silence: int
+    ) -> bool:
+        """WS-C: change AssemblyAI's turn-detection silence thresholds mid-session
+        via an ``UpdateConfiguration`` message (v3 applies it without a reconnect).
+
+        Called from the transcript-processing task while ``_send_audio_loop`` is
+        running; websockets>=13 serialises concurrent ``send()``, so this is safe.
+        A safe no-op (returns False) if the socket isn't open yet or has closed —
+        never raises, so a config push can never take down the call.
+        """
+        ws = self._ws
+        if ws is None:
+            return False
+        try:
+            await ws.send(json.dumps({
+                "type": "UpdateConfiguration",
+                "min_turn_silence": int(min_turn_silence),
+                "max_turn_silence": int(max_turn_silence),
+            }))
+            logger.info(
+                "[ms_stt] WS-C UpdateConfiguration sent: "
+                "min_turn_silence=%d max_turn_silence=%d",
+                min_turn_silence, max_turn_silence,
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "[ms_stt] WS-C config update failed (non-fatal): %r", exc
+            )
+            return False
+
     async def start(
         self,
         stt_input_queue: asyncio.Queue,

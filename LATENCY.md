@@ -87,7 +87,7 @@ beside it.** (Baseline is n=28, 2 short of the ≥30 target, but the numbers con
 | WS-A (chunk gate) | ✅ tried → **null → shelved**, flag OFF. Don't reopen. |
 | WS-B (streaming TTS) | ✅ decided **skip** (ceiling too low) |
 | WS-C **Phase 1** — endpoint + cutoff instrumentation | ✅ **shipped** (`e7f64ff`) — but **not yet measured on calls** (deployed ≠ baselined). |
-| WS-C **Phase 2** — the actual semantic endpointing | ⬜ **NOT started** ← the frontier; the main build. |
+| WS-C **Phase 2** — the actual semantic endpointing | ✅ **SHIPPED, gated OFF** (`WS_C_SEMANTIC_ENDPOINT`). Silence-based phase profiles via mid-session `UpdateConfiguration` (confidence threshold is deprecated on our model — see `LATENCY_WS-C.md`). Capture-phase **hard gate enforced in code** (`ws_c_profile_for_phase` floors capture ≥ conversation). **Not yet measured on calls** — needs the Phase-1 baseline + A/B before promotion. |
 | Response length (biggest real lever) | ⬜ deferred — prompt change, needs Quentin's sign-off. |
 
 **Next three moves:** (1) capture the Phase-1 endpoint baseline (nobody has — ~30 turns,

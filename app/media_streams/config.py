@@ -172,6 +172,59 @@ WS_A_FAST_FIRST_CHUNK = os.getenv(
 ).strip().lower() in ("true", "1", "yes", "on")
 WS_A_MIN_WORDS_FIRST = int(os.getenv("WS_A_MIN_WORDS_FIRST", "6"))
 
+# ---------------------------------------------------------------------------
+# WS-C (latency-eval) — phase-aware endpointing + capture-phase HARD GATE
+# ---------------------------------------------------------------------------
+# RC-1 (2026-07-19): AssemblyAI ended a name turn ~41ms after the last partial
+# (endpoint_wait_ms=41) and a hesitant name split into a garbage 'n'. The 600ms
+# min_turn_silence is one global guess — too tight for someone spelling a name
+# or reading a number, too slack for a crisp "yes". WS-C makes it PHASE-AWARE:
+# it raises AssemblyAI's silence thresholds during name/phone capture (via a
+# mid-session UpdateConfiguration message — v3 supports this without a
+# reconnect) and restores them afterwards.
+#
+# API note (verified 2026-07-19, universal-streaming-english): the original
+# LATENCY_WS-C.md §3 plan keyed on `end_of_turn_confidence_threshold`, but that
+# param is now DEPRECATED on Universal Streaming — AssemblyAI directs you to
+# `min_turn_silence` / `max_turn_silence` instead. So this lever is
+# silence-based, not confidence-based. Both are mid-session updatable.
+#
+# Default OFF => nothing is ever sent mid-session and the URL keeps
+# min_turn_silence=600, so the branch is byte-behaviour-identical to live.
+WS_C_SEMANTIC_ENDPOINT = os.getenv(
+    "WS_C_SEMANTIC_ENDPOINT", "false"
+).strip().lower() in ("true", "1", "yes", "on")
+
+# Per-phase silence profiles in ms, env-sweepable so the knee is found without a
+# redeploy. Conversation defaults match today's effective config (600ms floor,
+# AssemblyAI's 1280ms max) so turning the lever ON changes ONLY the capture
+# phases — it never makes a conversation turn more aggressive than live.
+WS_C_CONV_MIN_SILENCE = int(os.getenv("WS_C_CONV_MIN_SILENCE", "600"))
+WS_C_CONV_MAX_SILENCE = int(os.getenv("WS_C_CONV_MAX_SILENCE", "1280"))
+WS_C_CAP_MIN_SILENCE  = int(os.getenv("WS_C_CAP_MIN_SILENCE",  "800"))
+WS_C_CAP_MAX_SILENCE  = int(os.getenv("WS_C_CAP_MAX_SILENCE",  "1600"))
+
+
+def ws_c_profile_for_phase(phase: str):
+    """Return (min_turn_silence, max_turn_silence) in ms for a capture_phase, or
+    ``None`` when the lever is OFF. Pure — safe to call regardless of the flag.
+
+    HARD GATE (LATENCY_WS-C §3.3): a name/phone capture turn must NEVER be more
+    aggressive than a conversation turn. The capture min/max are therefore
+    floored at the conversation values, so even a misconfigured env (CAP < CONV)
+    cannot let the endpointer clip a spelled name or read-out number to save
+    latency. Latency is always secondary to not-clipping in capture.
+    """
+    if not WS_C_SEMANTIC_ENDPOINT:
+        return None
+    conv_min = WS_C_CONV_MIN_SILENCE
+    conv_max = max(WS_C_CONV_MAX_SILENCE, conv_min)
+    if phase in ("name", "phone"):
+        cap_min = max(WS_C_CAP_MIN_SILENCE, conv_min)   # hard-gate floor
+        cap_max = max(WS_C_CAP_MAX_SILENCE, cap_min)
+        return (cap_min, cap_max)
+    return (conv_min, conv_max)
+
 # Maximum words per TTS chunk
 # (ensures forward progress even on run-on sentences)
 MAX_CHUNK_WORDS = 50

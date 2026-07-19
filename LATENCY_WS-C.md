@@ -1,7 +1,20 @@
 # WS-C — Endpointing: Measurement Spec + Phase-Aware Plan
 
 **Date:** 2026-07-13. **Branch:** `latency-eval` (isolated). **Live untouched.**
-**Status:** spec only — measurement built FIRST, no endpointing code until the dead-time numbers are in.
+**Status:** Phase 1 (measurement) shipped. **Phase 2 (phase-aware endpointing) now
+SHIPPED behind `WS_C_SEMANTIC_ENDPOINT` (default OFF)** — see §3, revised below. It is
+built but **not yet measured on calls**: the Phase-1 endpoint baseline and the Phase-2
+A/B (with the capture-cutoff hard gate) are still required before any promotion.
+
+> **API revision (verified 2026-07-19, `universal-streaming-english`):** the plan below
+> originally keyed capture-vs-conversation on `end_of_turn_confidence_threshold`. That
+> param is now **DEPRECATED on Universal Streaming** — AssemblyAI directs you to
+> `min_turn_silence` / `max_turn_silence` instead. The shipped lever is therefore
+> **silence-based** (raise both in capture phases), not confidence-based. The other
+> open question — *does v3 support mid-session config update?* — is **resolved YES**:
+> the `UpdateConfiguration` message applies new `min/max_turn_silence` without a
+> reconnect, which is what makes per-phase profiles (old "Approach B") feasible and how
+> the shipped lever works.
 Companion to `LATENCY.md` (strategy/status/baseline/WS-A verdict) and `LATENCY_HARNESS.md`
 (the `[LAT]`/`[LAT-EP]` measurement system this builds on).
 
@@ -104,7 +117,11 @@ Add `end_of_turn_confidence_threshold` and `max_turn_silence` to the v3 URL. Two
 | conversation / confirm | lower (e.g. 400) | aggressive (fire readily) | modest | reclaim dead-time on crisp answers |
 | name / phone capture | higher (e.g. 700–800) | conservative (rarely fire early) | high (e.g. 1500) | never clip a spelled name / read-out number |
 
-**OPEN QUESTION (gates B):** does v3 streaming support **mid-session config update** (an `UpdateConfiguration`-style message)? If yes, switch profiles per phase in-stream. If **no**, per-turn reconnect is far too slow — fall back to Approach A (single semantic profile) which needs no switching. **Verify against current AssemblyAI v3 docs before building B.** Do not assume.
+**OPEN QUESTION (gates B): RESOLVED — yes.** v3 streaming supports mid-session config
+update via `{"type":"UpdateConfiguration","min_turn_silence":<ms>,"max_turn_silence":<ms>}`
+(applied without a reconnect). The shipped lever uses this to switch per-phase profiles
+in-stream, so we build the phase-profile approach directly rather than the single-profile
+fallback. Confidence-threshold separation is moot — that param is deprecated on our model.
 
 ### 3.2 Flag gating
 
@@ -122,7 +139,10 @@ If capture cutoffs rise, that arm reverts — it's config. An elderly caller rea
 
 ## 4. Risks / knowns
 
-- **Model deprecation:** Universal-3 Pro reportedly uses a punctuation-based endpointer and **deprecates** `end_of_turn_confidence_threshold`. **Pin the model** (`universal-streaming-english`) for the eval so the threshold stays meaningful; re-plan if forced to Pro.
+- **Model deprecation (CONFIRMED):** `end_of_turn_confidence_threshold` is **deprecated
+  on `universal-streaming-english`** (and absent on Universal-3 Pro) — AssemblyAI directs
+  you to `min_turn_silence` / `max_turn_silence`. The shipped lever is silence-based, so
+  this no longer blocks anything. Model stays pinned to `universal-streaming-english`.
 - **We already have a clipping problem at 600ms** (WS-A findings, bucket 2). Any aggressive-fire arm risks making it worse — hence the hard gate and the conservative capture profile. This is the main reason to measure cutoffs first.
 - **The 600ms floor is a deliberate elderly-friendly choice.** WS-C makes it *conditional* (tight only when confident), it does not blanket-lower it.
 - **Heuristic cutoff detector** will mis-count; use it for relative comparison + listen-back, not as an absolute.
