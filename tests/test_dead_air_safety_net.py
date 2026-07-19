@@ -284,3 +284,58 @@ async def test_reask_does_not_double_filler():
     assert "no problem" not in low, f"double filler in re-ask: {text!r}"
     # The actual question content must survive.
     assert "mornings or afternoons" in low, f"lost question content: {text!r}"
+
+
+# ---------------------------------------------------------------------------
+# RC-3 — the capture-phase re-ask keeps context; never the greeting reset
+# (2026-07-19 jv_v1 name-capture dead-air)
+# ---------------------------------------------------------------------------
+
+async def test_name_capture_reask_asks_for_name_not_greeting():
+    clock = VClock()
+    # Session is mid name-capture: the last prompt asked for the caller's name,
+    # so capture_phase(session) == "name".
+    stub = _make_stub_self(
+        clock,
+        session={"last_bot_prompt": "could I take your first name and surname?"},
+    )
+    fires = await _run(stub, clock, timeline=[], horizon=_T0 + _INTERVAL + 1)
+
+    assert len(fires) == 1, f"expected exactly one re-ask, got {fires}"
+    _, text = fires[0]
+    low = text.lower()
+    # Must re-ask for the NAME, not reset the flow with the greeting.
+    assert ("name" in low or "surname" in low), f"name re-ask lost its subject: {text!r}"
+    assert "how can i help" not in low, (
+        f"name-capture dead-air fell back to the greeting reset (RC-3): {text!r}"
+    )
+
+
+async def test_phone_confirm_reask_keeps_number_context_not_greeting():
+    clock = VClock()
+    # Verbal phone-confirm step (NOT keypad DTMF, which is handled separately).
+    stub = _make_stub_self(clock, session={"v3_awaiting_phone_confirm": True})
+    fires = await _run(stub, clock, timeline=[], horizon=_T0 + _INTERVAL + 1)
+
+    assert len(fires) == 1, f"expected exactly one re-ask, got {fires}"
+    _, text = fires[0]
+    low = text.lower()
+    assert "number" in low, f"phone re-ask lost the number context: {text!r}"
+    assert "how can i help" not in low, (
+        f"phone-confirm dead-air fell back to the greeting reset (RC-3): {text!r}"
+    )
+
+
+async def test_conversation_dead_air_still_uses_generic_fallback():
+    """Control: outside capture phases, behaviour is unchanged — a stored
+    non-name question is replayed (RC-3 must not hijack normal turns)."""
+    clock = VClock()
+    stub = _make_stub_self(clock)  # default session {}, capture_phase == conversation
+    fires = await _run(stub, clock, timeline=[], horizon=_T0 + _INTERVAL + 1)
+
+    assert len(fires) == 1, f"expected exactly one re-ask, got {fires}"
+    _, text = fires[0]
+    low = text.lower()
+    # The stub's last_question is the slot-timing question — it should be replayed,
+    # not overridden by a name/phone capture phrase.
+    assert "works best for you" in low, f"conversation re-ask changed: {text!r}"

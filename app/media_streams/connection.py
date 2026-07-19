@@ -11333,7 +11333,22 @@ class WebSocketCallHandler:
         # Per-prompt speech guard: a final transcript is the strongest signal
         # that the caller has spoken for this prompt. Mark BEFORE any downstream
         # logic so a watchdog re-ask cannot slip through.
-        if (text or "").strip():
+        #
+        # RC-2: a garbage / noise-only final (a single letter like 'n', 'mm',
+        # 'uh') is NOT a real answer — the caller's speech was dropped by STT.
+        # Marking it here would cancel the no-input watchdog (via
+        # _mark_prompt_speech_detected → _no_input_watchdog_task.cancel()),
+        # killing the fast per-question re-ask and stranding the caller in dead
+        # air until the slow 10s global safety net fires. on_transcript_received()
+        # below already refuses to reset for garbage ("watchdog preserved"), but
+        # by then this mark has already cancelled the watchdog — so gate the mark
+        # with the SAME predicate (imported locally exactly as it is there) to
+        # keep both guards aligned. A garbage final falls through to the tail-
+        # fragment / echo handling below with the watchdog left running.
+        from app.media_streams.stt_stream import (
+            _is_garbage_transcript as _is_garbage_fc,
+        )
+        if (text or "").strip() and not _is_garbage_fc(text):
             self._silence_handler._mark_prompt_speech_detected("final", text)
 
         # Fix: if a watchdog repair phrase was queued/in-flight, kill it before
@@ -11783,6 +11798,10 @@ class WebSocketCallHandler:
                     # the last stored question (if any) or a neutral "still there?"
                     # prompt so we never ask about "days" before any slots have been
                     # shown to the caller.
+                    # Phase (conversation|phone|name) from existing session flags —
+                    # pure lookup, independent of LATENCY_TIMING.  Used for the
+                    # capture-phase re-ask below.
+                    _cap_phase = _lat_capture_phase(self.session)
                     if self.session.get("v3_location_q_active"):
                         # Location still unresolved (STT can't catch the clinic
                         # name — "ousto"/"ouston"/"the clinic").  Do NOT fall
@@ -11806,6 +11825,26 @@ class WebSocketCallHandler:
                         # and consistent — never "I can't quite hear you", which
                         # contradicts the patience grant and implies an audio fault.
                         _phrase_1 = "No rush — are you still there?"
+                    elif _cap_phase == "name":
+                        # RC-3 (2026-07-19 jv_v1 name-capture dead-air): the caller
+                        # was asked for their name and the answer was lost (STT drop
+                        # / garbage final).  Re-ask for the NAME specifically — the
+                        # generic "how can I help today?" reset below throws away the
+                        # in-progress booking and forces the caller to start over,
+                        # exactly the jarring behaviour we mapped.  Mirrors the
+                        # v3_location_q_active branch's "keep the context" intent.
+                        _phrase_1 = (
+                            "Sorry — could I take your first name and surname again?"
+                        )
+                    elif _cap_phase == "phone":
+                        # Verbal phone-confirm step only (DTMF keypad entry is
+                        # handled by the v3_phone_dtmf_active nudge earlier in this
+                        # loop and never reaches here).  Keep the caller on the
+                        # number question rather than resetting to the greeting.
+                        _phrase_1 = (
+                            "Sorry — is the number you're calling on the best one "
+                            "to reach you? Just say use this number."
+                        )
                     else:
                         _last_q = getattr(self._silence_handler, "last_question", "")
                         # Never replay the opening greeting as a "re-ask".
