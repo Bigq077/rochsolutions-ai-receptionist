@@ -705,6 +705,23 @@ def _service_supports_location(svc_def: Dict[str, Any], location: str) -> bool:
     return False
 
 
+def _location_to_modality(clinic: Dict[str, Any], location: str) -> str:
+    """Map a booking location to an `available_as` modality token.
+
+    The model's location enum is the physical site id ('bolton') for in-clinic,
+    plus 'remote'/'home_visit'; clinic.json declares availability as
+    'in_clinic'/'remote'/'home_visit'. A physical site id (or the primary
+    location) maps to 'in_clinic'; 'remote'/'home_visit' pass through. Shared by
+    check_availability and book_appointment so both guard the same way."""
+    loc = (location or "").lower().strip()
+    if not loc:
+        return loc
+    _loc_ids = {(l.get("location_id") or "").lower() for l in (clinic.get("locations") or [])}
+    if loc in _loc_ids or loc == (clinic.get("primary_location") or "").lower():
+        return "in_clinic"
+    return loc
+
+
 def _resolve_slot_iso(slot_iso: str, session: dict) -> "datetime":
     """
     Parse slot_iso as an ISO 8601 datetime.
@@ -3725,6 +3742,33 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
 
     clinic = get_clinic(session.get("clinic_id"))
     working_hours = clinic.get("working_hours", {})
+
+    # ── Service×modality guard (mirrors the book-path guard, but up front) ──
+    # Reject before offering slots if the service can't be delivered in the
+    # chosen modality (e.g. a neuro assessment requested "home_visit" when
+    # clinic.json doesn't offer it), so Susie redirects to a modality it IS
+    # available as instead of offering slots that only dead-end at book time.
+    # Skips single-service Theorem (returned above) and services that declare
+    # no available_as (the helper returns True → no block).
+    _av_svc_def = _find_service_def(clinic, _raw_service)
+    _av_modality = _location_to_modality(clinic, location)
+    if _av_svc_def and _av_modality and not _service_supports_location(_av_svc_def, _av_modality):
+        _avail = ", ".join(str(t) for t in (_av_svc_def.get("available_as") or [])) or "none"
+        logger.warning(
+            "[ms_tools] check_availability rejected: service %r not available as %r (only: %s)",
+            _raw_service, _av_modality, _avail,
+        )
+        return {
+            "error": "service_modality_unavailable",
+            "message": (
+                f"'{_raw_service}' is not offered as '{_av_modality}'. It is available "
+                f"as: {_avail}. Do NOT search availability for this combination. Tell "
+                f"the caller warmly that this service isn't available that way, offer "
+                f"the modality(ies) it IS available as, and only call check_availability "
+                f"again once they pick one. Do NOT invent a price for the unavailable combination."
+            ),
+        }
+
     _slot_minutes = int(clinic.get("slot_minutes") or 50)
     _break_min = int(clinic.get("slot_break_minutes") or 0)
     # Slot length: caller-passed override, else the length configured for THIS
@@ -4390,11 +4434,7 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
     # as 'in_clinic'/'remote'/'home_visit'. Map any physical site id (or the
     # primary location) to 'in_clinic' so the guard doesn't reject the normal
     # in-clinic path.
-    _loc_ids = {(l.get("location_id") or "").lower() for l in (clinic.get("locations") or [])}
-    _primary_loc = (clinic.get("primary_location") or "").lower()
-    _loc_for_check = location
-    if location and (location in _loc_ids or location == _primary_loc):
-        _loc_for_check = "in_clinic"
+    _loc_for_check = _location_to_modality(clinic, location)
 
     # ── Service reconciliation (Call 3, 2026-07-08) ────────────────────────
     # Symmetric with the modality reconciliation above. The slot the caller
