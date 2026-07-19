@@ -47,7 +47,11 @@ CLINICS: Dict[str, Dict[str, Any]] = {
     "demo": {
         "display_name": "Roch Solutions",
         "timezone": "Europe/London",
-        "calendar_id": "primary",
+        # Demo bookings land in Quentin's dedicated "Susie Demo" Google calendar.
+        # Requires google_tokens OAuthed as an account with WRITE access to this
+        # calendar (isolated demo service + its own Redis — never live JV's Redis,
+        # since google_tokens is a single global key).
+        "calendar_id": "63bc844e0df1b6ef56b5d450a3a338d11d5286d186020d5b6ea43379ab550e57@group.calendar.google.com",
         "booking_system": "google_calendar",
 
         # Branding / contact — used in SMS messages and greeting
