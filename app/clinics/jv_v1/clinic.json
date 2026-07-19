@@ -457,7 +457,9 @@
       "pre_booking_notes": "Wear comfortable clothing. Bring any relevant letters from consultants or neurologists if you have them.",
       "pricing": {
         "in_clinic_gbp": 80,
-        "remote_gbp": 70
+        "remote_gbp": 70,
+        "home_visit_gbp": null,
+        "home_visit_gbp_note": "TBC — Marcus offers neuro as a home visit; confirm the home-visit price with Marcus before go-live. Kept null so Susie defers rather than quoting a wrong/placeholder price."
       },
       "available_as": ["in_clinic", "remote", "home_visit"]
     },
@@ -469,7 +471,9 @@
       "description": "Follow-up neurological physiotherapy session to continue your rehabilitation programme, reassess progress, and adjust interventions as needed.",
       "pricing": {
         "in_clinic_gbp": 65,
-        "remote_gbp": 60
+        "remote_gbp": 60,
+        "home_visit_gbp": null,
+        "home_visit_gbp_note": "TBC — Marcus offers neuro as a home visit; confirm the home-visit price with Marcus before go-live. Kept null so Susie defers rather than quoting a wrong/placeholder price."
       },
       "available_as": ["in_clinic", "remote", "home_visit"]
     },
