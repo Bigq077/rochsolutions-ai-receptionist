@@ -21,7 +21,7 @@ def _hours_tuple(start_hour: float, end_hour: float):
 # Format: "+447XXXXXXXXX": "clinic_id"
 # Any unrecognised number falls back to "demo" automatically.
 TWILIO_TO_CLINIC: Dict[str, str] = {
-    "+447366263180": "demo",          # Susie DEMO line — books into Quentin's "Susie Demo" Google calendar (demo clinic). latency-eval branch ONLY; NOT a patient line. (Was jv_v1 for latency runs.) jv_v1 patients use +447367002651; theorem_v3 uses +447380841468 — both unaffected.
+    "+447366263180": "jv_v1",         # LATENCY-EVAL test line (repurposed Theorem v3 STAGING/dev number — NOT a patient line). latency-eval branch ONLY. theorem_v3 patients use +447380841468; jv_v1 patients use +447367002651 — both unaffected.
     "+447367002651": "jv_v1",         # Joint Venture Physiotherapy (Bolton) — reassigned from Theorem's retired legacy-pipeline line (confirmed retired 2026-06-23)
     # +447426779875 belongs to VITAL EDGE (operator confirmed 2026-07-10). Theorem
     # has no claim on it — Theorem's live lines are +447380841468 (v3) and
@@ -48,11 +48,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
     "demo": {
         "display_name": "Roch Solutions",
         "timezone": "Europe/London",
-        # Demo bookings land in Quentin's dedicated "Susie Demo" Google calendar.
-        # Requires google_tokens OAuthed as an account with WRITE access to this
-        # calendar (isolated demo service + its own Redis — never live JV's Redis,
-        # since google_tokens is a single global key).
-        "calendar_id": "63bc844e0df1b6ef56b5d450a3a338d11d5286d186020d5b6ea43379ab550e57@group.calendar.google.com",
+        "calendar_id": "primary",
         "booking_system": "google_calendar",
 
         # Branding / contact — used in SMS messages and greeting

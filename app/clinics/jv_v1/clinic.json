@@ -64,8 +64,8 @@
     "owner_notification_sms": "+447586605462",
     "_owner_notify_note": "Marcus's mobile — receives an SMS ping when an insurance booking is made so he can follow up to collect pre-auth/cover details.",
     "booking_system": "google_calendar",
-    "_calendar_id_note": "Dedicated JV business account jointventurephysiotherapy@gmail.com — Marcus's Carepatron is two-way synced to it (his appointments appear as busy; Susie's bookings sync back). Susie's google_tokens MUST be OAuthed as this same account (re-run /auth/google/start signed in as jointventurephysiotherapy@gmail.com). No personal-calendar pollution.",
-    "calendar_id": "jointventurephysiotherapy@gmail.com",
+    "_calendar_id_note": "latency-eval / DEMO ONLY: repointed to Quentin's 'Susie Demo' Google calendar so demo calls on this branch book into Quentin's calendar, not JV's. google_tokens on the demo service are OAuthed as quentinroch10@gmail.com (owner of this calendar). LIVE JV (on main) still uses jointventurephysiotherapy@gmail.com — DO NOT merge this branch to main. Original: jointventurephysiotherapy@gmail.com.",
+    "calendar_id": "63bc844e0df1b6ef56b5d450a3a338d11d5286d186020d5b6ea43379ab550e57@group.calendar.google.com",
     "_digest_note": "End-of-day email of the day's calendar bookings so the agency enters them into Carepatron. Set email_to (or env DIGEST_EMAIL_TO) before go-live; sends once daily at hour:minute London. Requires SMTP_* env + google_tokens connected.",
     "digest": {
       "enabled": true,
