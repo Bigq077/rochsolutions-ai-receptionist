@@ -11765,6 +11765,35 @@ class WebSocketCallHandler:
                         "[ms_conn] drop-off callback ping queued to ***%s (lead=%r)",
                         _dc_tp[-4:] if _dc_tp else "????", _dc_name,
                     )
+
+                # OBS operator alert (§5.2 abandoned_booking) — ping Quentin, the
+                # operator, on the same warm-lead-dropped event. Separate channel
+                # and audience from the practitioner ping above: this routes through
+                # the OBS layer to OBS_ALERT_SMS_TO and is gated on
+                # OBS_ALERTS_ENABLED (a no-op when the flag is off), so it never
+                # touches the clinic. Fires even when the clinic has no
+                # transfer_phone (the operator SMS destination is independent), so
+                # it uses its own dedup latch rather than piggy-backing on the
+                # practitioner ping's. Fire-and-forget, non-fatal.
+                if not self.session.get("_obs_abandoned_alert_sent"):
+                    try:
+                        self.session["_obs_abandoned_alert_sent"] = True
+                        from app.obs import alerts as _obs_alerts
+                        asyncio.create_task(_obs_alerts.notify_abandoned_booking(
+                            clinic=_dc_clinic.get("clinic_name") or self.session.get("clinic_id"),
+                            caller_name=_dc_name,
+                            caller_phone=_dc_phone,
+                            call_sid=self.call_sid,
+                        ))
+                        logger.info(
+                            "[ms_conn] OBS abandoned_booking operator alert queued (lead=%r)",
+                            _dc_name,
+                        )
+                    except Exception as _obs_alert_exc:
+                        logger.warning(
+                            "[ms_conn] OBS abandoned_booking alert failed (non-fatal): %r",
+                            _obs_alert_exc,
+                        )
         except Exception as _dc_exc:
             logger.warning("[ms_conn] drop-off callback safety net failed (non-fatal): %r", _dc_exc)
 

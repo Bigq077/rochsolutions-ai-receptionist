@@ -43,6 +43,7 @@ _CONDITION_SPECS: Dict[str, Dict[str, Any]] = {
     "stt_tts_failure":          {"severity": "high",     "cadence": IMMEDIATE, "channels": ("sentry", "sms", "slack")},
     "booking_api_error":        {"severity": "high",     "cadence": IMMEDIATE, "channels": ("sms", "slack")},
     "escalation_not_delivered": {"severity": "critical", "cadence": IMMEDIATE, "channels": ("sms", "slack")},
+    "abandoned_booking":        {"severity": "high",     "cadence": IMMEDIATE, "channels": ("sms", "slack")},
     "short_call":               {"severity": "medium",   "cadence": DAILY,     "channels": ("rollup",)},
     "retry_storm":              {"severity": "medium",   "cadence": DAILY,     "channels": ("rollup",)},
 }
@@ -199,6 +200,41 @@ async def review_alert(message: str) -> bool:
     sms = await _send_operator_sms(message)
     slack = await _post_slack(message)
     return bool(sms or slack)
+
+
+async def notify_abandoned_booking(
+    *,
+    clinic: Optional[str],
+    caller_name: Optional[str],
+    caller_phone: Optional[str],
+    call_sid: Optional[str],
+) -> Dict[str, List[str]]:
+    """Immediate operator alert: a warm lead engaged a booking but hung up before
+    it completed (§5.2 `abandoned_booking`).
+
+    Event-triggered rather than record-derived: the authoritative detector is the
+    media-stream drop-off safety net (app/media_streams/connection.py), which is
+    the only place that knows the call ended with a named lead and no owner
+    notification. It hands us the already-captured name/phone here, so this alert
+    can never invent a wrong number. Builds the alert from the shared §5.2 spec and
+    routes it through `dispatch`, so it obeys OBS_ALERTS_ENABLED and only ever
+    reaches the operator SMS/Slack channels — never a clinic.
+    """
+    spec = _CONDITION_SPECS["abandoned_booking"]
+    message = (
+        f"[Susie] Warm lead dropped on {clinic or 'a clinic'} "
+        f"(call {call_sid or '?'}) — {caller_name or 'a caller'} engaged a booking "
+        f"but hung up before it was finished. Please call them back on "
+        f"{caller_phone or 'their number'}."
+    )
+    alert = Alert(
+        condition="abandoned_booking",
+        severity=spec["severity"],
+        cadence=spec["cadence"],
+        channels=spec["channels"],
+        message=message,
+    )
+    return await dispatch([alert])
 
 
 # ---------------------------------------------------------------------------
