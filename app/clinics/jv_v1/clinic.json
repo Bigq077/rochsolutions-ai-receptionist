@@ -97,15 +97,11 @@
     }
   },
   "prompt_engine": "template_v1",
-  "prompt_mode": "modality_gate",
+  "_modality_note": "Deliberately NO modality gate/question (bd68460, 2026-07-07): every appointment defaults to in-clinic; remote is strictly opt-in when the caller explicitly asks. The multi-entry 'modalities' list below is what selects the default-in-clinic MODALITY RULE in clinic_template_prompt._render_modality_rule — do not shrink it to one entry, and do not re-add prompt_mode/modality_session_keys/modality_question (removed 2026-07-19 as dead keys that misled a call review into reporting the missing question as a defect).",
   "modalities": ["in_clinic", "remote"],
   "modality_labels": {
     "in_clinic": "in-clinic at Bolton",
     "remote": "remote (video/phone)"
-  },
-  "modality_session_keys": {
-    "confirmed_flag": "jv_modality_confirmed",
-    "value_key": "jv_modality"
   },
   "prompt_facts": {
     "identity_descriptor": "a private physiotherapy clinic based in Bolton",
@@ -127,7 +123,6 @@
     "clinical_deflection_response": "That's one for Marcus to assess properly at your appointment.",
     "emergency_response": "If you are experiencing a medical emergency, please hang up and call 999 immediately, or go to your nearest A&E.",
     "booking_offer": "Would you like to book an assessment so Marcus can take a proper look?",
-    "modality_question": "Would you like to come into our Bolton clinic, or have a remote video or phone appointment?",
     "hours_summary_spoken": "We offer evening appointments Monday to Friday and Saturday morning slots — let me check what's available for you.",
     "closing_practitioner_line": "You're in good hands with Marcus."
   },

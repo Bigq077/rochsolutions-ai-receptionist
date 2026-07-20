@@ -58,7 +58,7 @@ new-patient pricing · slot by ordinal · clean name · use-this-number · readb
    ✅ Warm acknowledgement, then — **before any booking/modality step** — the cauda screen, alone, one question: ≈ *"any numbness around the saddle area between your legs, or any changes in your bladder or bowel control?"* ❌ FAIL: jumps to modality/slots first.
 3. **You:** "No, nothing like that. It just started after lifting something at the weekend."
    ✅ Brief reassurance (*"that's reassuring"*) + **specific** understanding mirroring YOUR detail (flared after lifting; eases as you get moving) — never "that's very common". Then the assessment offer.
-4. **You:** "Yes go on then." ✅ Modality question (Bolton / remote) — no "which clinic?".
+4. **You:** "Yes go on then." ✅ **NO modality question** — defaults straight to in-clinic and moves to the next booking step (timing / new-vs-returning). Remote is strictly **opt-in**: it's only confirmed if YOU explicitly ask for a video/phone appointment (design decision `bd68460`, 2026-07-07 — asking "in-clinic or remote?" caused a mislabelled-remote booking; the readback must never say "remote" unless you asked for it). ❌ FAIL: Susie asks "in-clinic or remote?" unprompted, or the readback calls an in-clinic booking remote. Also still no "which clinic?".
 5. **You:** "I'll come in — first time. How much and how long?"
    ✅ New → **Initial Assessment (MSK), £52, 40 minutes**.
 6. **You:** "Any evening works."
