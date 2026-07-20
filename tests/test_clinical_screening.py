@@ -49,11 +49,14 @@ class TestScreeningClassifier:
         assert not cs.screening_enabled(ve)
 
     def test_lower_back_arms_cauda_screen(self, jv):
+        """Arming now SPEAKS the screen question deterministically (baec415)
+        rather than deferring to the SCREEN REQUIRED prompt steer."""
         sess = {}
         r = cs.update_screening_state(
             sess, jv, "Hi, I'm looking for an appointment for lower back pain"
         )
-        assert r["action"] == "none"
+        assert r["action"] == "ask_screen"
+        assert "bladder or bowel" in r["speak"]
         assert sess.get("pending_screen") == "cauda_equina"
 
     def test_sciatica_arms_cauda_screen(self, jv):
@@ -123,6 +126,50 @@ class TestScreeningClassifier:
         assert cs.update_screening_state({}, jv, "")["action"] == "none"
         assert cs.update_screening_state({}, {}, "back pain")["action"] == "none"
         assert cs.update_screening_state({}, None or {}, None or "")["action"] == "none"
+
+    def test_model_asked_screen_is_not_re_asked(self, jv):
+        """Call-2 (2026-07-20) P2: the PROMPT layer asked the DVT screen, so
+        pending_screen was never armed here; the caller's answer still contained
+        the trigger word 'calf', which re-armed and re-asked the same question.
+        The answer must be classified instead."""
+        sess = {
+            "last_bot_prompt": (
+                "Before we go further, can I quickly check - is the calf "
+                "swollen, warm or red compared with the other side, and have "
+                "you had any recent surgery, illness, or a long journey "
+                "sitting still?"
+            )
+        }
+        r = cs.update_screening_state(
+            sess, jv,
+            "yeah i just said i was on a flight for a long time and the calf "
+            "like my red calf just a bit red",
+        )
+        assert r["action"] == "escalate"      # not "ask_screen"
+        assert sess.get("screen_red_flag") == "dvt"
+
+    def test_arming_utterance_with_two_red_flags_escalates(self, jv):
+        """'heard a crack' + 'swelled straight away' both arms the trauma
+        screen AND answers it — don't ask a question already answered."""
+        sess = {}
+        r = cs.update_screening_state(
+            sess, jv,
+            "my lad came off his bike, heard a crack and his wrist is swelled "
+            "straight away",
+        )
+        assert r["action"] == "escalate"
+        assert sess.get("screen_red_flag") == "trauma_fracture"
+
+    def test_single_weak_keyword_still_asks_the_screen(self, jv):
+        """Guard against over-escalation: one keyword in an unprompted
+        description is an ordinary strain, not a DVT — ask the screen."""
+        sess = {}
+        r = cs.update_screening_state(
+            sess, jv, "my calf has been painful and swollen"
+        )
+        assert r["action"] == "ask_screen"
+        assert sess.get("pending_screen") == "dvt"
+        assert sess.get("screen_red_flag") is None
 
     def test_trauma_screen_arms_and_blocks(self, jv):
         sess = {}

@@ -172,6 +172,22 @@ _NEGATIVE_PATTERNS = (
 )
 
 
+def _red_flag_hits(text: str, screen: Dict[str, Any]) -> int:
+    """Number of DISTINCT red-flag keywords present in the text.
+
+    Used only by the already-answered guard, which needs stronger evidence than
+    answer-classification does. When the caller is REPLYING to the screen
+    question, one keyword is decisive ("swollen" = yes to "is it swollen?").
+    When they are merely DESCRIBING the problem, one keyword is weak — "my calf
+    is painful and swollen" is an ordinary strain, whereas "swollen and warm,
+    just the one leg" is the DVT picture. Requiring two independent signals
+    keeps the unprompted escalation specific.
+    """
+    t = _norm(text)
+    return sum(1 for k in (screen.get("red_flag_answer_keywords") or [])
+               if _norm(k) in t)
+
+
 def classify_screen_answer(text: str, screen: Dict[str, Any]) -> str:
     """Classify the caller's reply to a screen question:
     'red_flag' | 'clear' | 'unclear'.
@@ -190,6 +206,61 @@ def classify_screen_answer(text: str, screen: Dict[str, Any]) -> str:
     if any(p in t for p in _NEGATIVE_PATTERNS):
         return "clear"
     return "unclear"
+
+
+def _resolve_screen_answer(
+    session: Dict[str, Any],
+    clinic: Dict[str, Any],
+    screen_id: str,
+    screen: Dict[str, Any],
+    text: str,
+) -> Dict[str, Any]:
+    """Classify the caller's reply to an ASKED screen and update state.
+
+    Shared by both entry points: a screen this module armed and asked, and a
+    screen the PROMPT layer asked (where pending_screen was never set).
+    Returns the same {"action", "speak"} contract as update_screening_state.
+    """
+    verdict = classify_screen_answer(text, screen)
+
+    if verdict == "red_flag":
+        session[PENDING_SCREEN_KEY] = None
+        # block_booking (default True): a positive answer freezes booking until
+        # urgent care. Advisory screens (e.g. the inflammatory-pattern flag) set
+        # block_booking=false — the escalation is spoken but booking may
+        # continue, because physio alongside a GP review is appropriate.
+        if screen.get("block_booking", True):
+            session[SCREEN_RED_FLAG_KEY] = screen_id
+        done = list(session.get(SCREENS_COMPLETED_KEY) or [])
+        if screen_id not in done:
+            done.append(screen_id)
+        session[SCREENS_COMPLETED_KEY] = done
+        logger.info(
+            "[clinical_screening] screen %s POSITIVE (block=%s): %r",
+            screen_id, screen.get("block_booking", True), text[:80],
+        )
+        return {
+            "action": "escalate",
+            "speak": screen.get("escalation") or emergency_response_text(clinic),
+        }
+
+    if verdict == "clear":
+        session[PENDING_SCREEN_KEY] = None
+        done = list(session.get(SCREENS_COMPLETED_KEY) or [])
+        if screen_id not in done:
+            done.append(screen_id)
+        session[SCREENS_COMPLETED_KEY] = done
+        logger.info(
+            "[clinical_screening] screen %s clear: %r", screen_id, text[:80]
+        )
+        # The LLM turn acknowledges ("that's reassuring") and moves on.
+        return {"action": "none", "speak": None}
+
+    # unclear — leave pending; the SCREEN REQUIRED steer re-drives the question.
+    logger.info(
+        "[clinical_screening] screen %s answer unclear: %r", screen_id, text[:80]
+    )
+    return {"action": "none", "speak": None}
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -228,47 +299,9 @@ def update_screening_state(
         if pending_id:
             screen = get_screen(clinic, pending_id)
             if screen and _question_was_asked(session, screen):
-                verdict = classify_screen_answer(text, screen)
-                if verdict == "red_flag":
-                    session[PENDING_SCREEN_KEY] = None
-                    # block_booking (default True): a positive answer freezes
-                    # booking until urgent care. Advisory screens (e.g. the
-                    # inflammatory-pattern flag) set block_booking=false — the
-                    # escalation is spoken but booking may continue, because
-                    # physio alongside a GP review is clinically appropriate.
-                    if screen.get("block_booking", True):
-                        session[SCREEN_RED_FLAG_KEY] = pending_id
-                    done = list(session.get(SCREENS_COMPLETED_KEY) or [])
-                    if pending_id not in done:
-                        done.append(pending_id)
-                    session[SCREENS_COMPLETED_KEY] = done
-                    logger.info(
-                        "[clinical_screening] screen %s POSITIVE (block=%s): %r",
-                        pending_id, screen.get("block_booking", True), text[:80],
-                    )
-                    return {
-                        "action": "escalate",
-                        "speak": screen.get("escalation")
-                        or emergency_response_text(clinic),
-                    }
-                if verdict == "clear":
-                    session[PENDING_SCREEN_KEY] = None
-                    done = list(session.get(SCREENS_COMPLETED_KEY) or [])
-                    if pending_id not in done:
-                        done.append(pending_id)
-                    session[SCREENS_COMPLETED_KEY] = done
-                    logger.info(
-                        "[clinical_screening] screen %s clear: %r",
-                        pending_id, text[:80],
-                    )
-                    # The LLM turn acknowledges ("that's reassuring") and moves on.
-                    return {"action": "none", "speak": None}
-                # unclear — leave pending; prompt re-drives the question.
-                logger.info(
-                    "[clinical_screening] screen %s answer unclear: %r",
-                    pending_id, text[:80],
+                return _resolve_screen_answer(
+                    session, clinic, pending_id, screen, text
                 )
-                return {"action": "none", "speak": None}
             # Question not asked yet — keep the flag; the SCREEN REQUIRED
             # steer forces it on the next model turn. Still allow a new,
             # different trigger to upgrade below? No — one screen at a time.
@@ -277,6 +310,45 @@ def update_screening_state(
         # No pending screen — does this utterance trigger one?
         sid = match_screen_trigger(text, clinic, session)
         if sid:
+            screen = get_screen(clinic, sid) or {}
+
+            # ── DOUBLE-ASK GUARD ─────────────────────────────────────────────
+            # The prompt layer (CLINICAL SAFETY SCREENING) can ask a screen
+            # question itself — in that case pending_screen was never armed
+            # here. The caller's ANSWER frequently still contains the trigger
+            # keyword ("yeah I just said… the calf is red"), which would arm the
+            # screen now and re-ask a question they have just answered
+            # (Call-2, 2026-07-20: the model asked the DVT screen, then this
+            # layer asked it again one turn later — caller audibly annoyed).
+            # If the question is already in the last bot turn, treat THIS
+            # utterance as the answer instead of re-asking it.
+            if _question_was_asked(session, screen):
+                session[PENDING_SCREEN_KEY] = sid
+                logger.info(
+                    "[clinical_screening] screen %s already asked by the model "
+                    "— classifying this turn as the answer: %r", sid, text[:80],
+                )
+                return _resolve_screen_answer(session, clinic, sid, screen, text)
+
+            # ── ALREADY-ANSWERED GUARD ───────────────────────────────────────
+            # The arming utterance itself can already contain the red-flag
+            # answer — "heard a crack and it swelled straight away" both arms
+            # the trauma screen AND answers it. Asking the question back is
+            # slow and tone-deaf, so escalate straight away.
+            #
+            # Requires TWO independent red-flag signals: unprompted description
+            # is far weaker evidence than a direct answer, and a single keyword
+            # over-escalates ("my calf is painful and swollen" is an ordinary
+            # strain — that one gets the screen asked properly).
+            if _red_flag_hits(text, screen) >= 2:
+                session[PENDING_SCREEN_KEY] = sid
+                logger.info(
+                    "[clinical_screening] screen %s red flag present in the "
+                    "arming utterance — escalating without asking: %r",
+                    sid, text[:80],
+                )
+                return _resolve_screen_answer(session, clinic, sid, screen, text)
+
             session[PENDING_SCREEN_KEY] = sid
             logger.info(
                 "[clinical_screening] screen %s ARMED by: %r", sid, text[:80]

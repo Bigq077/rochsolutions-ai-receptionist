@@ -8110,6 +8110,16 @@ class WebSocketCallHandler:
                                 if (
                                     not self.booking_flow_active
                                     and _transcript_has_booking_intent(utterance)
+                                    # Clinical red-flag guard: never open the
+                                    # booking flow while a screen is positive or
+                                    # still awaiting its answer, even when the
+                                    # caller asks to book outright ("can I book a
+                                    # massage for it"). book_appointment is
+                                    # blocked at the tool boundary regardless;
+                                    # this keeps the CONVERSATION off the booking
+                                    # track too (Call-2, 2026-07-20).
+                                    and not self.session.get("screen_red_flag")
+                                    and not self.session.get("pending_screen")
                                 ):
                                     self.booking_flow_active = True
                                     self.session["booking_flow_active"] = True
@@ -9134,8 +9144,35 @@ class WebSocketCallHandler:
                             # non-booking turns from hijacking the location flow.
                             # The CTA-affirm arm (b) keeps its own independent
                             # signal so "yes please" → CTA still works.
+                            # ── Clinical red-flag guard ───────────────────
+                            # A positive red-flag screen (or a screen still
+                            # awaiting its answer) means booking must not
+                            # start. The escalation text itself contains
+                            # booking vocabulary — "I won't BOOK YOU IN just
+                            # yet" matches _CTA_BOOKING_PHRASES — so a bare
+                            # "yes" flipped booking_flow_active and queued
+                            # "Is there a particular day or time that works
+                            # best for you?" seconds after the caller was told
+                            # to go to A&E (Call-2, 2026-07-20). That reply was
+                            # only silenced by an incidental barge-in.
+                            # book_appointment is already blocked at the tool
+                            # boundary; this stops the CONVERSATION pivoting
+                            # back to booking while a red flag is live.
+                            _clinical_block = bool(
+                                self.session.get("screen_red_flag")
+                                or self.session.get("pending_screen")
+                            )
+                            if _clinical_block and _cta_affirm:
+                                logger.info(
+                                    "[ms_conn v3] CTA affirm SUPPRESSED — "
+                                    "clinical red flag active (screen_red_flag=%r"
+                                    " pending_screen=%r)",
+                                    self.session.get("screen_red_flag"),
+                                    self.session.get("pending_screen"),
+                                )
                             _is_booking_ack = (
                                 not _patience
+                                and not _clinical_block
                                 and (
                                     (
                                         # Normal sentinel arm: only when flow
