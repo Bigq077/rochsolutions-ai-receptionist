@@ -313,6 +313,20 @@ async def _prewarm_singletons() -> None:
     except Exception as e:
         logger.warning("⚠️  Acuity pre-warm skipped: %r", e)
 
+    # 4. ElevenLabs TLS pool — the greeting is synthesised ~40ms after the call
+    # connects, so a cold pool puts full DNS+TLS setup directly in front of the
+    # caller (1,989ms on call CA717c7cc1 vs ~120ms once warm). Warm it here and
+    # again per-call from the Twilio webhook (app/media_streams/router.py).
+    try:
+        from app.media_streams.tts_stream import prewarm as _tts_prewarm
+        _elapsed = await _tts_prewarm()
+        if _elapsed:
+            logger.info("✅ ElevenLabs TLS pool pre-warmed (%.0fms)", _elapsed * 1000)
+        else:
+            logger.info("ℹ️  ElevenLabs not pre-warmed (no API key or request failed)")
+    except Exception as e:
+        logger.warning("⚠️  ElevenLabs pre-warm skipped: %r", e)
+
 
 @app.on_event("startup")
 async def startup():
