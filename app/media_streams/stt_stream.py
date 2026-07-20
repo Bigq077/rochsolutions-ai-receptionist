@@ -40,6 +40,7 @@ Diagnostics:
 """
 from __future__ import annotations
 
+import array
 import asyncio
 import json
 import logging
@@ -141,6 +142,16 @@ _STT_FAILURE_PHRASE = (
 _IMMEDIATE_THRESHOLD_SEC = 0.5
 _MAX_IMMEDIATE_STREAK    = 3
 
+# ── No-transcript stall detection ────────────────────────────────────────────
+# A "zombie" AssemblyAI session accepts audio but never emits Turn events and
+# never errors (observed 2026-07-20, call CA717c7cc1: 50s of audio in, zero
+# messages back, no close frame). Detect it by counting VOICED audio sent with
+# no Turn event of any kind in return; silence doesn't count, so a genuinely
+# quiet caller can never trip this. On stall: report via on_stall (sets
+# session["stt_error"] → obs alert) and force a reconnect to recover the call.
+_STALL_VOICED_MS      = 6_000  # voiced audio with zero Turn events → stalled
+_STALL_VOICED_MEANABS = 300    # mean |sample| (int16) above this = voiced
+
 
 # ---------------------------------------------------------------------------
 # Audio chunk buffer
@@ -227,6 +238,23 @@ def _is_garbage_transcript(text: str) -> bool:
     return len(real_words) == 0
 
 
+def _chunk_is_voiced(chunk: bytes) -> bool:
+    """Cheap energy gate: True if the PCM16 chunk sounds like speech, not line noise.
+
+    Subsamples ~80 int16 values and compares mean |amplitude| against
+    _STALL_VOICED_MEANABS. Only used to decide whether a chunk counts toward
+    the no-transcript stall threshold — precision doesn't matter, only that
+    silence/hiss stays below it and speech sits comfortably above.
+    """
+    if len(chunk) < 2:
+        return False
+    samples = array.array("h", chunk[: len(chunk) - (len(chunk) % 2)])
+    step = max(1, len(samples) // 80)
+    sel = samples[::step]
+    mean_abs = sum(abs(s) for s in sel) / len(sel)
+    return mean_abs > _STALL_VOICED_MEANABS
+
+
 def _mask_key(url_or_str: str, key: str) -> str:
     """Mask API key to first-8-chars + '...' for safe logging."""
     if not key:
@@ -261,6 +289,17 @@ class STTStream:
         # Instance-level buffer: persists across reconnects so no audio is
         # lost during the reconnect window.
         self._chunk_buffer:  AudioChunkBuffer   = AudioChunkBuffer()
+        # No-transcript stall detection (see _STALL_VOICED_MS): voiced ms sent
+        # since the last Turn event of any kind. Reset on every Turn message and
+        # on each fresh connection attempt. _stall_reported dedupes the operator
+        # signal to once per call; reconnects still happen on every stall.
+        self._voiced_ms_since_turn: int  = 0
+        self._stall_reported:       bool = False
+
+    def _mark_turn_event(self) -> None:
+        """Any Turn message (partial, final, empty, garbage) proves the session
+        is alive — reset the stall counter."""
+        self._voiced_ms_since_turn = 0
 
     async def start(
         self,
@@ -270,6 +309,7 @@ class STTStream:
         on_partial: Optional[AsyncCallback] = None,
         on_final_clear: Optional[AsyncCallback] = None,
         tts_text_queue: Optional[asyncio.Queue] = None,
+        on_stall: Optional[AsyncCallback] = None,
     ) -> None:
         """
         Open AssemblyAI WebSocket and run send + receive concurrently.
@@ -282,6 +322,9 @@ class STTStream:
         on_partial       : async(text: str) called on partial Turn (barge-in)
         on_final_clear   : async(text: str) called on each end-of-turn to reset _clearing
         tts_text_queue   : If set, failure phrase is played here on fatal STT error
+        on_stall         : async(detail: str) called once per call when STT is
+                           effectively dead — no-transcript stall or fatal
+                           give-up — so the connection can flag session["stt_error"]
         """
         # ── Auth: raw API key in Authorization header (server-to-server) ──────
         # ?token= in the URL is for *temporary* browser tokens — NOT the raw key.
@@ -312,6 +355,8 @@ class STTStream:
             attempt          += 1
             connection_ready  = asyncio.Event()   # fresh per attempt
             connect_time      = 0.0
+            # Fresh session gets a fresh stall budget (reconnect may recover it)
+            self._voiced_ms_since_turn = 0
 
             logger.info("[ms_stt] connecting attempt=%d", attempt)
 
@@ -331,6 +376,7 @@ class STTStream:
                         self._send_audio_loop(
                             ws, stt_input_queue, stop_event,
                             connection_ready, self._chunk_buffer,
+                            on_stall=on_stall,
                         ),
                         name="stt_send",
                     )
@@ -382,6 +428,9 @@ class STTStream:
                                 immediate_streak, masked_url,
                             )
                             _notify_stt_failure(tts_text_queue)
+                            await self._report_stall(
+                                on_stall, "fatal: repeated immediate disconnects",
+                            )
                             return
                     else:
                         immediate_streak = 0
@@ -400,6 +449,9 @@ class STTStream:
                             immediate_streak,
                         )
                         _notify_stt_failure(tts_text_queue)
+                        await self._report_stall(
+                            on_stall, "fatal: repeated immediate disconnects",
+                        )
                         return
             except websockets.exceptions.WebSocketException as exc:
                 logger.error("[ms_stt] WebSocketException: %r", exc)
@@ -418,6 +470,7 @@ class STTStream:
                     ASSEMBLYAI_MAX_RECONNECTS,
                 )
                 _notify_stt_failure(tts_text_queue)
+                await self._report_stall(on_stall, "fatal: max reconnects reached")
                 return
 
             delay = 2.0 if immediate_streak > 0 else (
@@ -428,6 +481,18 @@ class STTStream:
                 delay, attempt + 1,
             )
             await asyncio.sleep(delay)
+
+    async def _report_stall(
+        self, on_stall: Optional[AsyncCallback], detail: str,
+    ) -> None:
+        """Fire the on_stall callback at most once per call. Never raises."""
+        if self._stall_reported or on_stall is None:
+            return
+        self._stall_reported = True
+        try:
+            await on_stall(detail)
+        except Exception as exc:
+            logger.warning("[ms_stt] on_stall callback error: %r", exc)
 
     # -------------------------------------------------------------------------
     # Send loop
@@ -440,6 +505,7 @@ class STTStream:
         stop_event: asyncio.Event,
         connection_ready: asyncio.Event,
         chunk_buffer: AudioChunkBuffer,
+        on_stall: Optional[AsyncCallback] = None,
     ) -> None:
         """
         Wait for the "Begin" message, then stream buffered PCM16 to AssemblyAI.
@@ -530,6 +596,38 @@ class STTStream:
                     except Exception as exc:
                         logger.error("[ms_stt] send error: %r", exc)
                         return
+
+                    # ── No-transcript stall detection ──────────────────────
+                    # Count voiced audio only; the receive loop resets the
+                    # counter on every Turn message. If the caller has audibly
+                    # spoken for _STALL_VOICED_MS total and AssemblyAI has said
+                    # nothing at all, the session is a zombie: flag the operator
+                    # signal and close the socket so the outer loop reconnects.
+                    if _chunk_is_voiced(buffered):
+                        self._voiced_ms_since_turn += (
+                            len(buffered) * 1000
+                            // (AudioChunkBuffer.SAMPLE_RATE
+                                * AudioChunkBuffer.BYTES_PER_SAMPLE)
+                        )
+                        if self._voiced_ms_since_turn >= _STALL_VOICED_MS:
+                            logger.error(
+                                "[ms_stt] STALL: %.1fs of voiced audio with zero "
+                                "Turn events — flagging stt_error and forcing "
+                                "reconnect",
+                                self._voiced_ms_since_turn / 1000,
+                            )
+                            await self._report_stall(
+                                on_stall,
+                                f"no-transcript stall "
+                                f"({self._voiced_ms_since_turn / 1000:.1f}s voiced "
+                                f"audio, zero Turn events)",
+                            )
+                            self._voiced_ms_since_turn = 0
+                            try:
+                                await ws.close(code=1000, reason="stt stall")
+                            except Exception:
+                                pass
+                            return
 
         except asyncio.CancelledError:
             pass
@@ -634,6 +732,7 @@ class STTStream:
 
                 # ── v3: Turn (partial or final) ────────────────────────────────
                 elif msg_type == "Turn":
+                    self._mark_turn_event()
                     end_of_turn = msg.get("end_of_turn", False)
 
                     if not end_of_turn:
@@ -662,6 +761,7 @@ class STTStream:
 
                 # ── v2 compat: PartialTranscript ───────────────────────────────
                 elif msg_type == "PartialTranscript":
+                    self._mark_turn_event()
                     if text and on_partial:
                         try:
                             await on_partial(text)
@@ -670,6 +770,7 @@ class STTStream:
 
                 # ── v2 compat: FinalTranscript ─────────────────────────────────
                 elif msg_type == "FinalTranscript":
+                    self._mark_turn_event()
                     if on_final_clear:
                         try:
                             await on_final_clear(text)

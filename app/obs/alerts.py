@@ -42,6 +42,7 @@ _CONDITION_SPECS: Dict[str, Dict[str, Any]] = {
     "pipeline_error":           {"severity": "high",     "cadence": IMMEDIATE, "channels": ("sentry", "sms", "slack")},
     "stt_tts_failure":          {"severity": "high",     "cadence": IMMEDIATE, "channels": ("sentry", "sms", "slack")},
     "booking_api_error":        {"severity": "high",     "cadence": IMMEDIATE, "channels": ("sms", "slack")},
+    "no_audio_call":            {"severity": "high",     "cadence": IMMEDIATE, "channels": ("sms", "slack")},
     "escalation_not_delivered": {"severity": "critical", "cadence": IMMEDIATE, "channels": ("sms", "slack")},
     "short_call":               {"severity": "medium",   "cadence": DAILY,     "channels": ("rollup",)},
     "retry_storm":              {"severity": "medium",   "cadence": DAILY,     "channels": ("rollup",)},
@@ -105,8 +106,8 @@ def evaluate_call(record: Dict[str, Any], signals: Optional[Dict[str, Any]] = No
 
     :param record: a CallLogger.build_record() dict.
     :param signals: optional extra flags observed on the live session, e.g.
-        {"pipeline_error", "stt_error", "tts_error", "calendar_error",
-         "transfer_sms_failed"}. Absent keys are treated as falsey.
+        {"pipeline_error", "stt_error", "tts_error", "no_audio_close",
+         "calendar_error", "transfer_sms_failed"}. Absent keys are treated as falsey.
     """
     s = signals or {}
     fired: List[str] = []
@@ -115,6 +116,12 @@ def evaluate_call(record: Dict[str, Any], signals: Optional[Dict[str, Any]] = No
         fired.append("pipeline_error")
     if s.get("stt_error") or s.get("tts_error"):
         fired.append("stt_tts_failure")
+    elif s.get("no_audio_close"):
+        # Dead-air graceful close with no confirmed STT/TTS error — could be a
+        # silently-dead STT session or a muted caller; the operator should see
+        # it either way. elif: when stt_error is already flagged the
+        # stt_tts_failure alert covers it, so don't double-SMS.
+        fired.append("no_audio_call")
     if s.get("calendar_error") or record.get("calendar_error"):
         fired.append("booking_api_error")
     if record.get("transfer_attempted") and s.get("transfer_sms_failed"):
@@ -140,6 +147,10 @@ def _build_alert(condition: str, record: Dict[str, Any]) -> Alert:
             f"[Susie] Speech pipeline (STT/TTS) failure on {clinic} call {sid}.",
         "booking_api_error":
             f"[Susie] Booking API error on {clinic} call {sid} — the booking may not have gone through.",
+        "no_audio_call":
+            f"[Susie] Dead-air call on {clinic} call {sid} — caller ({caller}) "
+            f"heard Susie but nothing was ever transcribed "
+            f"({record.get('duration_s')}s). Possible STT failure or muted caller.",
         "escalation_not_delivered":
             f"[Susie] ESCALATION NOT DELIVERED on {clinic} call {sid}. A caller "
             f"({caller}) asked for a human but the alert SMS failed. Please call them back.",
@@ -252,6 +263,7 @@ def _signals_from_session(session: Dict[str, Any]) -> Dict[str, Any]:
         "pipeline_error": session.get("pipeline_error"),
         "stt_error": session.get("stt_error") or session.get("stt_failed"),
         "tts_error": session.get("tts_error") or session.get("tts_failed"),
+        "no_audio_close": session.get("no_audio_close"),
         "calendar_error": session.get("calendar_error"),
         "transfer_sms_failed": session.get("transfer_sms_failed"),
     }

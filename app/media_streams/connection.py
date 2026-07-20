@@ -5066,11 +5066,22 @@ class WebSocketCallHandler:
                 on_partial=self._on_partial_transcript,
                 on_final_clear=self._on_final_transcript_clear,
                 tts_text_queue=self.tts_text_queue,
+                on_stall=self._on_stt_stall,
             )
         except asyncio.CancelledError:
             pass
         except Exception as exc:
             logger.error("[ms_conn] _stt_loop error: %r", exc)
+
+    async def _on_stt_stall(self, detail: str) -> None:
+        """STTStream reports the speech pipeline is effectively dead (zombie
+        session with no Turn events, or fatal give-up). Flag the session so
+        the obs layer fires stt_tts_failure → immediate operator SMS at
+        teardown (app/obs/alerts.py)."""
+        self.session["stt_error"] = True
+        logger.error(
+            "[ms_conn] STT stall reported: %s — session flagged stt_error", detail,
+        )
 
     # ========================================================================
     # LLM loop  (FlowEngine-driven — single point of decision)
