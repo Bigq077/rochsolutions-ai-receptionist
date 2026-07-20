@@ -39,6 +39,7 @@ import json
 import logging
 import os
 import re as _re
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -229,10 +230,49 @@ def _get_http_client() -> httpx.AsyncClient:
             limits=httpx.Limits(
                 max_keepalive_connections=5,
                 max_connections=10,
-                keepalive_expiry=30.0,
+                # 300s (was 30s): on a low-traffic line every call fell outside
+                # a 30s window, so the pool was cold at each greeting and the
+                # first synthesise_chunk paid full DNS+TLS setup — 1,989ms on
+                # call CA717c7cc1 vs ~120ms for every later chunk on that call.
+                # A 5-minute expiry keeps back-to-back calls on a warm socket.
+                keepalive_expiry=300.0,
             ),
         )
     return _elevenlabs_client
+
+
+async def prewarm() -> float:
+    """Open a TLS connection to ElevenLabs so the first TTS of a call is fast.
+
+    Fire-and-forget from the Twilio webhook: the greeting is synthesised ~40ms
+    after the WebSocket start event, which is far too late to warm anything, but
+    the webhook lands ~450ms earlier — enough for DNS + TLS to complete off the
+    critical path and land a live socket in the pool.
+
+    Returns elapsed seconds (0.0 if skipped/failed). Never raises — a cold pool
+    is a latency problem, never a call-failure one.
+    """
+    if not ELEVENLABS_API_KEY:
+        return 0.0
+    started = time.monotonic()
+    try:
+        resp = await _get_http_client().get(
+            "https://api.elevenlabs.io/v1/models",
+            headers={"xi-api-key": ELEVENLABS_API_KEY},
+            timeout=httpx.Timeout(4.0),
+        )
+        elapsed = time.monotonic() - started
+        logger.info(
+            "[ms_tts] prewarm: connection ready in %.0fms (status=%d)",
+            elapsed * 1000, resp.status_code,
+        )
+        return elapsed
+    except Exception as exc:
+        logger.warning(
+            "[ms_tts] prewarm failed after %.0fms: %r — greeting will pay "
+            "cold-start latency", (time.monotonic() - started) * 1000, exc,
+        )
+        return 0.0
 
 
 # ---------------------------------------------------------------------------
