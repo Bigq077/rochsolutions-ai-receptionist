@@ -219,6 +219,17 @@ async def ms_incoming(request: Request) -> Response:
         )
         return Response(content=twiml, media_type="application/xml")
 
+    # Warm the ElevenLabs TLS pool now, off the critical path. This webhook
+    # fires ~450ms before the greeting is synthesised on the WebSocket leg —
+    # the only point early enough to absorb DNS+TLS setup. Fire-and-forget:
+    # the TwiML response below must not wait on it.
+    try:
+        import asyncio as _asyncio
+        from .tts_stream import prewarm as _tts_prewarm
+        _asyncio.create_task(_tts_prewarm(), name="ms_tts_prewarm")
+    except Exception as _pw_exc:
+        logger.warning("[ms_router] TTS prewarm not scheduled: %r", _pw_exc)
+
     try:
         # From/To cached to Redis so the WS handler can resolve them on the
         # "start" event (Twilio doesn't forward them reliably through the socket).
