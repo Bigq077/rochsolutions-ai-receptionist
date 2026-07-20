@@ -156,14 +156,37 @@ def build_sms(session: dict) -> str:
         appointment_time = "—"
 
     # First-visit / returning-plan note selection.
-    # Priority: returning_plan flag (set by RETURNING_PLAN_LOOKUP) → patient_type
-    # field → safe default of FIRST_VISIT_NOTE for unknown callers.
+    # Priority: returning_plan flag (set by RETURNING_PLAN_LOOKUP) → explicit
+    # patient_type / new_or_returning → booked-service inference → safe default
+    # of FIRST_VISIT_NOTE for unknown callers.
     if session.get("returning_plan"):
         note = RETURNING_PLAN_NOTE
+        first_visit = False
     else:
-        _pt         = (collected.get("patient_type") or "").upper()
-        first_visit = (_pt == "NEW") if _pt else True   # default True if unknown
-        note        = FIRST_VISIT_NOTE if first_visit else RETURNING_VISIT_NOTE
+        _pt = (
+            collected.get("patient_type")
+            or session.get("new_or_returning")
+            or ""
+        ).upper()
+        if _pt:
+            first_visit = (_pt == "NEW")
+        else:
+            # Call-3 P3 (2026-07-19): the media-streams template flow never
+            # writes patient_type, so every caller defaulted to the new-patient
+            # flavour — a returning follow-up got "what to bring on your first
+            # visit". The booked service id (persisted post-reconciliation by
+            # book_appointment) is the truthful signal: treatment/follow-up
+            # services are returning-only by definition. Anything else keeps
+            # the safe new-patient default.
+            _svc = (
+                session.get("_booked_service")
+                or session.get("_checked_service")
+                or ""
+            ).lower()
+            first_visit = not any(
+                k in _svc for k in ("treatment", "followup", "follow_up")
+            )
+        note = FIRST_VISIT_NOTE if first_visit else RETURNING_VISIT_NOTE
 
     # Clinic-level values — address resolved from selected_location for
     # two-clinic setups (theorem_v2); falls back to CLINIC_ADDRESS env var
@@ -214,12 +237,16 @@ def build_sms(session: dict) -> str:
     pending_full_name    = not _full_name_confirmed
     if pending_full_name:
         full_name_request = FULL_NAME_REQUEST_NOTE
-    elif _is_template_clinic and first_visit:
-        # P5: new patient whose full name WAS captured — the surname is never
-        # read back on the call, so a silent STT misspelling has no recovery
-        # path. Offer a low-friction correction in the SMS. Scoped to template
-        # clinics + new patients so theorem/demo and returning callers are
-        # unchanged.
+    elif _is_template_clinic:
+        # P5: full name captured on the call — the surname is never read back
+        # aloud, so a silent STT misspelling ("Quinton Rock" for "Quentin
+        # Roch") has no recovery path except this SMS line. Fires for ANY
+        # caller whose full name was captured this call, new or returning:
+        # a returning caller's name is just as vulnerable to the homophone
+        # (Call-3 P3, 2026-07-19 — previously scoped to first_visit only,
+        # which would have silently dropped the safety net once returning
+        # callers were classified correctly). Template clinics only, so
+        # theorem/demo are unchanged.
         full_name_request = SPELLING_CONFIRM_NOTE.format(full_name=name_raw)
     else:
         full_name_request = ""
@@ -229,7 +256,7 @@ def build_sms(session: dict) -> str:
         "BOOKING_CONFIRM pending_full_name=%s template=%s new=%s → full-name line: %s",
         pending_full_name, _is_template_clinic, first_visit,
         "request" if pending_full_name else
-        ("spelling-confirm" if (_is_template_clinic and first_visit) else "omitted"),
+        ("spelling-confirm" if _is_template_clinic else "omitted"),
     )
 
     # Modality is recorded by the booking executor as collected["location"]

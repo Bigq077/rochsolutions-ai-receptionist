@@ -109,7 +109,7 @@ Plus an advisory **cutoff** line when a turn opens with a correction lead ("I sa
 |---|---|
 | Normal | `completed`, emit at first send frame |
 | Barge-in before t4 | `barged_in`, emit with partial stamps (rest `-1`); excluded from TTFA, counted separately |
-| Split utterance (double `end_of_turn`) | next dispatch supersedes → prior record `abandoned`, emit, replace. **Also counts split events** — directly relevant to WS-C's capture-turn gate |
+| Split utterance (double `end_of_turn`) | next dispatch supersedes → prior record `superseded` (was `abandoned` before 2026-07-19 — Call-3 P3: these are plumbing, not caller behaviour, and were inflating the abandoned rate), emit, replace. **Also counts split events** — directly relevant to WS-C's capture-turn gate |
 | Tool round-trips | t1 = first token of any kind, t2 = first speakable chunk after tools; the gap shows honestly in chunk_gate |
 | TTS/LLM error, dead air | `error`, stamps `-1` |
 

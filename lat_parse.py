@@ -153,8 +153,17 @@ def main():
         sys.exit(1)
 
     completed = [r for r in llm if r.get("outcome") == "completed"]
-    abandoned = [r for r in llm if r.get("outcome") == "abandoned"]
-    other = [r for r in llm if r.get("outcome") not in ("completed", "abandoned")]
+    # "abandoned" = the caller genuinely walked away mid-turn. "superseded" =
+    # the record was replaced by a newer dispatch (split utterance / discarded
+    # fragment / deterministic branch) — plumbing, not caller behaviour. Kept
+    # as separate buckets so the abandoned RATE stays meaningful (Call-3 P3:
+    # superseded records used to log as abandoned and inflate it). Old logs
+    # (incl. the locked baseline) predate the split and still say "abandoned"
+    # for both — read those rates as an upper bound.
+    abandoned  = [r for r in llm if r.get("outcome") == "abandoned"]
+    superseded = [r for r in llm if r.get("outcome") == "superseded"]
+    other = [r for r in llm if r.get("outcome") not in
+             ("completed", "abandoned", "superseded")]
 
     # Filler-masked turns: content TTFA meaningfully exceeds perceived TTFA.
     masked = [r for r in completed
@@ -194,6 +203,8 @@ def main():
               f"(deterministic clinical layer — excluded from llm stats{_s_note})")
     print(f"  completed      : {n_comp}   ({reliable})")
     print(f"  abandoned      : {len(abandoned)}   (rate {len(abandoned)/total*100:.1f}% — excluded from TTFA)")
+    if superseded:
+        print(f"  superseded     : {len(superseded)}   (replaced by a newer dispatch — plumbing, not caller behaviour; excluded from TTFA)")
     if other:
         print(f"  other outcomes : {len(other)}  -> {sorted({r.get('outcome') for r in other})}")
     print(f"  filler-masked  : {len(masked)}  (content_ttfa >> perceived — WS-B filler working)")
@@ -264,7 +275,8 @@ def main():
     if json_out:
         blob = {
             "counts": {"llm": total, "completed": n_comp,
-                       "abandoned": len(abandoned), "masked": len(masked),
+                       "abandoned": len(abandoned),
+                       "superseded": len(superseded), "masked": len(masked),
                        "tool": len(tool)},
             "stats": stats,
         }

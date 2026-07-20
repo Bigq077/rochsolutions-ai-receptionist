@@ -70,10 +70,11 @@ def _spoken_slot_time(hhmm: str) -> str:
     "midday", "one in the afternoon", "five in the evening") so the Haiku slot
     formatter copies labels verbatim instead of converting times itself — which
     let it drop/invent slots (e.g. rendering [09,10,11,12,13] as 09,10,12,13,14
-    and booking a non-existent 2pm).  Only :00/:15/:30/:45 use clock-face
-    phrasing ("half past six", "quarter to seven"); every other five-minute
-    value is read digitally ("six twenty-five", "six thirty-five"), never as
-    "twenty-five to seven".
+    and booking a non-existent 2pm).  Every on-grid minute uses natural UK
+    clock-face phrasing ("half past six", "five past five", "twenty to six") —
+    the same forms the model produces on its own — so first read, repeat read
+    and readback all name a slot identically (Call-3 P3).  Off-grid minutes
+    fall back to unambiguous digits.
     """
     try:
         h, m = map(int, hhmm.split(":"))
@@ -99,19 +100,23 @@ def _spoken_slot_time(hhmm: str) -> str:
     if m == 45:
         # "quarter to" the NEXT hour, keeping the reading's time-of-day label.
         return f"quarter to {next_word} {part}"
-    # Every other minute: read it the way a British caller reads a time off a
-    # screen — digital "[hour] [minutes]" (e.g. "six twenty-five", "six thirty-
-    # five") — NOT the clock-face "twenty-five to seven", which sounds odd for
-    # an appointment slot. Only :00/:15/:30/:45 (handled above) keep the
-    # clock-face phrasing. Minutes under ten keep the spoken "oh" ("six oh
-    # five"); the time-of-day suffix stays for AM/PM clarity.
-    _DIGITAL_MIN = {
-        5: "oh five", 10: "ten", 20: "twenty", 25: "twenty-five",
-        35: "thirty-five", 40: "forty", 50: "fifty", 55: "fifty-five",
-    }
-    _mm = _DIGITAL_MIN.get(m)
-    if _mm is not None:
-        return f"{hour_word} {_mm} {part}"
+    # Every other on-grid minute: natural clock-face phrasing ("five past
+    # five", "twenty to six"), matching :00/:15/:30/:45 above. This replaces
+    # the digital "[hour] [minutes]" forms ("five oh five", "five forty") —
+    # Call-3 P3, 2026-07-19: the model kept drifting to clock-face on repeat
+    # reads and in its own confirmation ("twenty to six"), so one slot got
+    # three different names across the call. Converging the label on the
+    # phrasing the model produces naturally makes every read consistent by
+    # construction. The anti-slot-drop property is unchanged — Haiku still
+    # copies these labels verbatim; only the label text differs.
+    _PAST_MIN = {5: "five", 10: "ten", 20: "twenty", 25: "twenty-five"}
+    _TO_MIN   = {35: "twenty-five", 40: "twenty", 50: "ten", 55: "five"}
+    if m in _PAST_MIN:
+        return f"{_PAST_MIN[m]} past {hour_word} {part}"
+    if m in _TO_MIN:
+        # "to" the NEXT hour, keeping the reading's time-of-day label
+        # (same convention as the :45 "quarter to" case above).
+        return f"{_TO_MIN[m]} to {next_word} {part}"
     # Off-grid minute (never on a 5-minute grid) — unambiguous digit fallback.
     return f"{hour_word} {m:02d} {part}"
 
@@ -4710,6 +4715,14 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         is_new_patient=is_new,
         note=followup_note,
     )
+
+    # Persist the FINAL booked service (post-reconciliation) so downstream
+    # consumers see what was actually booked. build_sms() uses it to infer
+    # new-vs-returning when the model never stored patient_type (Call-3 P3:
+    # a returning msk_treatment_session booking got the new-patient SMS
+    # flavour because the is_new tool arg is ignored on the session path and
+    # collected.patient_type is never written in the media-streams flow).
+    session["_booked_service"] = service
 
     # Confirmation SMS — failure must never fail the booking
     try:

@@ -5426,7 +5426,12 @@ class WebSocketCallHandler:
                     # _lat_new_turn() returns None when LATENCY_TIMING is OFF, so
                     # this whole block is one falsy check + None assign when live.
                     if self._turn_timing is not None and not self._turn_timing._emitted:
-                        self._turn_timing.outcome = "abandoned"
+                        # "superseded", not "abandoned": this record was replaced
+                        # by a newer dispatch (split utterance, discarded fragment,
+                        # deterministic branch) — the caller didn't abandon
+                        # anything. Call-3 P3: logging these as abandoned polluted
+                        # the abandoned-rate line Jules reads in lat_parse.
+                        self._turn_timing.outcome = "superseded"
                         self._turn_timing.emit()
                     self._turn_timing = _lat_new_turn(t0=_enqueue_ts)
                     if self._turn_timing is not None:

@@ -115,3 +115,86 @@ def test_build_maps_link_empty_returns_empty():
     from app.sms_templates import build_maps_link
     assert build_maps_link("") == ""
     assert build_maps_link(None) == ""  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Call-3 P3 (2026-07-19): new-vs-returning derivation + spelling-confirm scope
+# ---------------------------------------------------------------------------
+# The media-streams template flow never writes collected.patient_type, so every
+# caller used to default to the new-patient flavour. build_sms now falls back
+# to session["new_or_returning"], then infers from the booked service id
+# (treatment/follow-up => returning), and only then defaults new. The
+# spelling-confirm safety line is decoupled from first_visit: any template-
+# clinic caller whose full name was captured gets it (a returning caller's
+# surname is just as vulnerable to a silent STT homophone).
+
+def test_booked_treatment_session_infers_returning():
+    from app.sms_templates import build_sms
+    session = {
+        "collected": {"name": "Quinton Rock"},          # no patient_type
+        "_booked_service": "msk_treatment_session",
+        "selected_slot_label": "Thursday 23 July at 5:40pm",
+    }
+    body = build_sms(session)
+    assert "5 mins early" not in body, "returning follow-up got the first-visit note"
+
+
+def test_booked_initial_assessment_stays_new():
+    from app.sms_templates import build_sms
+    session = {
+        "collected": {"name": "Jane Smith"},
+        "_booked_service": "msk_initial_assessment",
+        "selected_slot_label": "Monday 20 July at 4:30pm",
+    }
+    assert "5 mins early" in build_sms(session)
+
+
+def test_new_or_returning_session_key_respected():
+    from app.sms_templates import build_sms
+    session = {
+        "collected": {"name": "Jane Smith"},
+        "new_or_returning": "returning",
+        "selected_slot_label": "Monday 20 July at 4:30pm",
+    }
+    assert "5 mins early" not in build_sms(session)
+
+
+def test_no_signal_defaults_to_new():
+    from app.sms_templates import build_sms
+    body = build_sms({"collected": {"name": "Jane Smith"}})
+    assert "5 mins early" in body
+
+
+def test_returning_plan_with_full_name_does_not_raise():
+    # Latent NameError: the returning_plan branch never defined first_visit,
+    # which the spelling-confirm elif then read. Fixed alongside the P3.
+    from app.sms_templates import build_sms
+    body = build_sms({
+        "returning_plan": True,
+        "collected": {"name": "Jane Smith"},
+        "clinic_id": "jv_v1",
+    })
+    assert isinstance(body, str) and len(body) > 0
+
+
+def test_spelling_confirm_fires_for_returning_template_caller():
+    from app.sms_templates import build_sms
+    session = {
+        "clinic_id": "jv_v1",                            # template clinic
+        "collected": {"name": "Quinton Rock"},           # full name captured
+        "_booked_service": "msk_treatment_session",      # returning
+        "selected_slot_label": "Thursday 23 July at 5:40pm",
+    }
+    body = build_sms(session)
+    assert "spelled differently" in body, (
+        "returning template-clinic caller lost the spelling-confirm safety line"
+    )
+    assert "5 mins early" not in body                    # note still returning
+
+
+def test_spelling_confirm_absent_for_non_template_clinic():
+    from app.sms_templates import build_sms
+    body = build_sms({
+        "collected": {"name": "Jane Smith", "patient_type": "RETURNING"},
+    })
+    assert "spelled differently" not in body
