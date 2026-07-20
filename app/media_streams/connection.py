@@ -3368,6 +3368,32 @@ class SilenceHandler:
                     q_gen, _state, _attempt,
                 )
                 continue
+
+            # General silent-line ladder: attempt #1 has played but the caller
+            # still hasn't been heard.  Retiring here hands recovery to the 10s-
+            # cadence safety net, whose poll period doubles as its threshold — so
+            # attempt #2 arrived 16.3s after attempt #1 finished on call
+            # CA717c7cc1 (2026-07-20), which reads as a dropped line.  Stay alive
+            # for one more rung instead: re-anchor armed_at and let Phase 1 wait
+            # a normal grace period, so attempt #2 lands ~_wait after the re-ask
+            # audio ends.  Bounded — attempt #3 is intercepted above (graceful
+            # exit / transfer), and the safety net stands down entirely while
+            # this task is alive (guard 5), so there is no double-prompt.
+            #
+            # CONFIRM_BOOKING is excluded: its silence-hold branch above rolls
+            # the counter back to 1 and loops, so continuing here would keep this
+            # task alive forever without ever speaking again — and a live
+            # watchdog suppresses the safety net, leaving the caller with no
+            # recovery at all. It keeps its one-re-ask-then-retire behaviour.
+            if _attempt < 2 and _state != "CONFIRM_BOOKING":
+                armed_at = time.time()
+                logger.info(
+                    "[ms_watchdog] WATCHDOG_LADDER_CONTINUE q_gen=%d state=%s "
+                    "attempt=#%d — holding for rung 2 rather than handing to "
+                    "the safety net",
+                    q_gen, _state, _attempt,
+                )
+                continue
             logger.info(
                 "[ms_watchdog] WATCHDOG_RETIRE q_gen=%d reason=audible_reask_done",
                 q_gen,
