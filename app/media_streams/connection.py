@@ -11723,7 +11723,22 @@ class WebSocketCallHandler:
             except Exception as _cl_exc:
                 logger.error("[ms_conn] call_logger flush error: %r", _cl_exc)
 
-        # Operator failure alerting (obs, spec §5.2). Post-call, flag-gated
+        # Phase 1 — durable capture (spec §5.1). Additive, post-call,
+        # flag-gated (OBS_CAPTURE_ENABLED, default OFF) and no-op when
+        # unconfigured. capture_call_async never raises and runs the DB
+        # write off the event loop, so it adds no latency or failure mode
+        # to the live path. Guarded again here belt-and-braces.
+        try:
+            if call_logger is not None:
+                from app.obs.store import capture_call_async
+                await capture_call_async(
+                    call_logger.build_record(),
+                    self.session.get("turns") or [],
+                )
+        except Exception as _obs_exc:
+            logger.error("[ms_conn] obs capture error: %r", _obs_exc)
+
+        # Phase 2 — failure alerting (spec §5.2). Post-call, flag-gated
         # (OBS_ALERTS_ENABLED, default OFF), never raises, and only messages the
         # configured operator channels — never a clinic. A no-op until enabled,
         # so it adds no latency or failure mode to the live teardown path.
@@ -11733,6 +11748,18 @@ class WebSocketCallHandler:
                 await route_call(call_logger.build_record(), self.session)
         except Exception as _al_exc:
             logger.error("[ms_conn] obs alert error: %r", _al_exc)
+
+        # Phase 3 — LLM-as-judge (spec §5.3). Fire-and-forget so the
+        # (network-bound) Claude call never delays teardown; gated on
+        # OBS_JUDGE_ENABLED (default OFF) and never raises. Reads the row
+        # capture just wrote, scores it, stores the result, and raises a
+        # review alert on a bad call — all off the teardown critical path.
+        try:
+            from app.obs import judge as _obs_judge
+            if _obs_judge.is_enabled() and self.call_sid:
+                asyncio.create_task(_obs_judge.run_and_store(self.call_sid))
+        except Exception as _jd_exc:
+            logger.error("[ms_conn] obs judge error: %r", _jd_exc)
 
         # Persist final call outcome to session for post-call reporting.
         # Additive — used by theorem_v3 free-form loop and any downstream

@@ -2091,7 +2091,15 @@ def _append_history(
     history.append({"role": "assistant", "content": assistant_text})
     if len(history) > MAX_HISTORY_TURNS:
         session["conversation_history"] = history[-MAX_HISTORY_TURNS:]
-    session.setdefault("turns", []).append({"role": "assistant", "text": assistant_text})
+    # Record BOTH sides of the exchange in session["turns"] — the transcript read
+    # by the SMS router and by the observability capture/judge. Previously only the
+    # assistant side was stored, so captured transcripts were one-sided (the judge
+    # could not see what the caller said). Append the caller's turn first, then the
+    # reply, preserving order. Skip empty/whitespace caller text (e.g. silence turns).
+    turns = session.setdefault("turns", [])
+    if user_text and user_text.strip():
+        turns.append({"role": "user", "text": user_text})
+    turns.append({"role": "assistant", "text": assistant_text})
 
 
 # ---------------------------------------------------------------------------
