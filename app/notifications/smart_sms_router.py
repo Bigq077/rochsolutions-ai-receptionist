@@ -275,6 +275,18 @@ async def send_smart_followup_sms(
             outcome = "faq_only"
 
     # Booked — handled separately (booking confirmation SMS is already sent)
+    # Clinical safety escalation — the caller was told to seek urgent care
+    # (999/A&E/111/GP). No marketing/recovery SMS is appropriate here, and the
+    # abandoned template ("sorry we couldn't get you booked in…") would be
+    # actively harmful. Send nothing; Marcus sees the outcome in the summary
+    # row and daily digest.
+    if outcome == "safety_escalation":
+        logger.info(
+            "🚨 safety_escalation — no follow-up SMS (caller directed to "
+            "urgent care during the call)"
+        )
+        return False
+
     if outcome == "booked":
         logger.info("✅ Booked — booking confirmation SMS already sent")
         return False

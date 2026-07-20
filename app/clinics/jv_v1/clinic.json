@@ -237,9 +237,10 @@
         "id": "trauma_fracture",
         "label": "Significant injury (fracture)",
         "presentation": "an injury following a fall, impact or accident",
-        "trigger_keywords": ["fell", "had a fall", "fallen", "i fell off", "came off my bike", "car accident", "car crash", "crashed", "collision", "landed badly", "landed on", "bad tackle", "heard a crack", "heard a snap", "can't put weight", "cannot put weight", "can't put any weight", "can't walk on it"],
-        "screen_question": "That sounds like a proper knock — can I quickly check, are you able to put weight through it, and is there any marked swelling or does it look out of shape at all?",
-        "red_flag_answer_keywords": ["can't put weight", "cannot put weight", "can't walk", "cannot walk", "won't take my weight", "out of shape", "deformed", "misshapen", "wrong angle", "swelled straight away", "swollen straight away", "massive swelling", "huge swelling", "heard a crack", "heard a snap", "numb below"],
+        "trigger_keywords": ["fell", "had a fall", "fallen", "i fell off", "came off my bike", "came off his bike", "came off her bike", "car accident", "car crash", "crashed", "collision", "landed badly", "landed on", "bad tackle", "heard a crack", "heard a snap", "can't put weight", "cannot put weight", "can't put any weight", "can't walk on it"],
+        "screen_question": "That sounds like a proper knock — can I quickly check, are you able to use it or put weight through it, and is there any marked swelling or does it look out of shape at all?",
+        "_screen_question_note": "MARK_REVIEW: 'use it OR put weight through it' keeps the question right for BOTH upper and lower limb injuries — a wrist caller was asked the weight-bearing-only version on Call-2 (2026-07-20), which sounded wrong.",
+        "red_flag_answer_keywords": ["can't put weight", "cannot put weight", "can't walk", "cannot walk", "won't take my weight", "can't use it", "cannot use it", "can't move it", "cannot move it", "can't grip", "cannot grip", "can't really grip", "can't hold anything", "grip anything", "grip has gone", "grip's gone", "out of shape", "deformed", "misshapen", "wrong angle", "swelled straight away", "swollen straight away", "swelled up straight away", "massive swelling", "huge swelling", "heard a crack", "heard a snap", "numb below"],
         "escalation": "With an injury like that it's important to rule out a fracture before we do anything hands-on — please get it looked at today, at A&E or an urgent treatment centre for an X-ray. Once you've been checked and cleared, call us back and Marcus will look after the rehab side."
       },
       {

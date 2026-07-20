@@ -171,6 +171,65 @@ class TestScreeningClassifier:
         assert sess.get("pending_screen") == "dvt"
         assert sess.get("screen_red_flag") is None
 
+    def test_junk_fragment_never_advances_screening(self, jv):
+        """Call-2 (2026-07-20): a stray 'and' final reached the classifier
+        before connection.py's noise filter — a garbled fragment must never
+        arm, clear, or resolve a screen."""
+        sess = {
+            "pending_screen": "dvt",
+            "last_bot_prompt": (
+                "is the calf swollen, warm or red compared with the other "
+                "side, and have you had any recent surgery, illness, or a "
+                "long journey sitting still?"
+            ),
+        }
+        for junk in ("and", "er", "um", "s", "ng"):
+            r = cs.update_screening_state(sess, jv, junk)
+            assert r["action"] == "none", junk
+            assert sess["pending_screen"] == "dvt", junk
+
+    def test_decisive_single_words_still_resolve(self, jv):
+        """'hot' answers 'is it swollen, warm or red?'; bare 'no' clears —
+        the junk gate must not swallow real one-word answers."""
+        sess = {
+            "pending_screen": "dvt",
+            "last_bot_prompt": (
+                "is the calf swollen, warm or red compared with the other "
+                "side, and have you had any recent surgery, illness, or a "
+                "long journey sitting still?"
+            ),
+        }
+        r = cs.update_screening_state(sess, jv, "hot")
+        assert r["action"] == "escalate"
+        assert sess.get("screen_red_flag") == "dvt"
+        sess2 = {
+            "pending_screen": "cauda_equina",
+            "last_bot_prompt": (
+                "do you have any numbness around the saddle area between "
+                "your legs, or any changes in your bladder or bowel control?"
+            ),
+        }
+        r2 = cs.update_screening_state(sess2, jv, "no")
+        assert r2["action"] == "none"
+        assert sess2["pending_screen"] is None
+        assert "cauda_equina" in sess2["screens_completed"]
+
+    def test_trauma_question_is_limb_aware_and_grip_is_a_red_flag(self, jv):
+        """Call-2: a WRIST caller was asked the weight-bearing-only question,
+        and 'can't really grip' wasn't recognised as a red flag."""
+        sess = {}
+        r = cs.update_screening_state(
+            sess, jv, "my lad came off his bike and hurt his wrist"
+        )
+        assert r["action"] == "ask_screen"
+        assert "use it or put weight through it" in r["speak"]
+        sess["last_bot_prompt"] = r["speak"]
+        r2 = cs.update_screening_state(
+            sess, jv, "well yeah swelling and he can't really grip the bike"
+        )
+        assert r2["action"] == "escalate"
+        assert sess.get("screen_red_flag") == "trauma_fracture"
+
     def test_trauma_screen_arms_and_blocks(self, jv):
         sess = {}
         cs.update_screening_state(
@@ -323,6 +382,38 @@ class TestPromptRender:
             "Inflammatory joint pattern",
         ):
             assert label in static, label
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Outcome classification — safety escalations must never read as "abandoned"
+# ─────────────────────────────────────────────────────────────────────────
+class TestSafetyEscalationOutcome:
+    def test_red_flag_overrides_llm_abandoned_label(self):
+        from app.tools.call_summary import infer_call_outcome
+        out = infer_call_outcome(
+            {"screen_red_flag": "cauda_equina", "call_outcome_logged": "abandoned"},
+            {},
+        )
+        assert out == "safety_escalation"
+
+    def test_emergency_flag_alone_is_safety_escalation(self):
+        from app.tools.call_summary import infer_call_outcome
+        assert infer_call_outcome({"safety_escalation": True}, {}) == "safety_escalation"
+
+    def test_yields_to_genuine_transactional_outcome(self):
+        """Emergency false-alarm caller who then reschedules keeps the
+        transactional outcome (CALL 13 in the playbook)."""
+        from app.tools.call_summary import infer_call_outcome
+        out = infer_call_outcome(
+            {"safety_escalation": True},
+            {"appointment": {"calendar": {"status": "patched"}}},
+        )
+        assert out == "rescheduled"
+
+    def test_summary_text_exists(self):
+        from app.tools.actionable_summary import _build_summary_text
+        t = _build_summary_text("safety_escalation", "", "", 226)
+        assert "SAFETY ESCALATION" in t and "urgent care" in t
 
 
 # ─────────────────────────────────────────────────────────────────────────

@@ -117,7 +117,7 @@ class TurnTiming:
     t4: Optional[float] = None           # first audio frame sent to Twilio
     content_t3: Optional[float] = None   # first NON-filler audio enqueued
     content_t4: Optional[float] = None   # first NON-filler audio sent
-    path: str = "llm"                    # llm | fast_path | filler | fallback
+    path: str = "llm"                    # llm | fast_path | filler | fallback | scripted (deterministic clinical layer — no LLM call)
     outcome: str = "completed"           # completed | barged_in | abandoned | error
     model: str = ""                      # claude model id (set by the llm path)
     eot_confident: Optional[bool] = None  # WS-C: confidence-driven vs silence fallback

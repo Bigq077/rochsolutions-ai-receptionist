@@ -144,6 +144,10 @@ def main():
     recs = [r for r in (parse_line(l) for l in lines) if r]
     cutoffs = [c for c in (parse_cutoff(l) for l in lines) if c]
     llm = [r for r in recs if r.get("path") == "llm"]
+    # Deterministic clinical-layer turns (screens/escalations/emergency) — no
+    # LLM call, ~120ms TTFA. Counted separately so they never flatter the llm
+    # distribution (they used to log path=llm model=- and drag p50 down).
+    scripted = [r for r in recs if r.get("path") == "scripted"]
     if not llm:
         print("No [LAT] path=llm records found.", file=sys.stderr)
         sys.exit(1)
@@ -181,6 +185,13 @@ def main():
     print("  SUSIE LATENCY-EVAL — BASELINE  (susie.latency [LAT])")
     print("=" * 74)
     print(f"  path=llm turns : {total}")
+    if scripted:
+        _s_ttfa = [r.get("ttfa_ms") for r in scripted
+                   if r.get("ttfa_ms", -1) >= 0]
+        _s_note = (f" (ttfa p50≈{sorted(_s_ttfa)[len(_s_ttfa)//2]}ms)"
+                   if _s_ttfa else "")
+        print(f"  scripted turns : {len(scripted)}   "
+              f"(deterministic clinical layer — excluded from llm stats{_s_note})")
     print(f"  completed      : {n_comp}   ({reliable})")
     print(f"  abandoned      : {len(abandoned)}   (rate {len(abandoned)/total*100:.1f}% — excluded from TTFA)")
     if other:

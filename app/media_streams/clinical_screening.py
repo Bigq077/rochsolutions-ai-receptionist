@@ -263,6 +263,61 @@ def _resolve_screen_answer(
     return {"action": "none", "speak": None}
 
 
+# Meaningful short words that are legitimate screen answers and must never be
+# treated as STT debris (mirrors the intent of connection.py's _V3_PRESERVE).
+_MEANINGFUL_SHORT = frozenset({
+    "yes", "no", "yeah", "nope", "yep", "yup", "nah",
+    "ok", "okay", "sure", "fine", "none",
+})
+
+# Known mouth-noise / stutter artefacts (subset of connection.py's
+# _V3_NOISE_FRAGMENTS — kept local so this module stays dependency-free).
+_NOISE_WORDS = frozenset({
+    "ing", "ic", "er", "um", "uh", "hmm", "hm", "mm", "ah", "eh",
+    "mhm", "mmm", "uhh", "umm", "huh", "s",
+})
+
+_VOWELS = frozenset("aeiou")
+
+
+def _is_junk_fragment(text: str, session: Dict[str, Any], clinic: Dict[str, Any]) -> bool:
+    """True for single-word STT debris that must not advance screening state.
+
+    Call-2 (2026-07-20): the stray final 'and' reached the classifier before
+    connection.py's noise-fragment filter discarded it. Harmless there
+    (verdict=unclear), but this layer runs BEFORE that filter, so a garbled
+    fragment could in principle resolve a screen the caller never answered.
+
+    Deliberately narrower than the connection.py filter: a single word that is
+    a DECISIVE token for the pending screen — a red-flag keyword ('hot',
+    'swollen') or a plain yes/no — is a legitimate answer and passes through.
+    Only genuine debris (too-short connectives, vowel-less stutters, known
+    mouth-noise) is skipped.
+    """
+    t = _norm(text)
+    words = t.split()
+    if len(words) != 1:
+        return False
+    w = words[0]
+    if w in _MEANINGFUL_SHORT:
+        return False
+    # A single word matching a red-flag keyword of the PENDING screen is a
+    # decisive answer ("hot" to "is it swollen, warm or red?"), never junk.
+    pending_id = session.get(PENDING_SCREEN_KEY)
+    if pending_id:
+        screen = get_screen(clinic, pending_id) or {}
+        for k in screen.get("red_flag_answer_keywords") or []:
+            if w == _norm(k) or w in _norm(k).split():
+                return False
+    if w in _NOISE_WORDS:
+        return True
+    if len(w) <= 3:
+        return True
+    if not any(c in _VOWELS for c in w):
+        return True
+    return False
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # Per-utterance state machine
 # ─────────────────────────────────────────────────────────────────────────
@@ -287,6 +342,13 @@ def update_screening_state(
     """
     try:
         if not screening_enabled(clinic):
+            return {"action": "none", "speak": None}
+
+        # STT debris must not advance screening state (see _is_junk_fragment).
+        if _is_junk_fragment(text, session, clinic):
+            logger.info(
+                "[clinical_screening] junk fragment skipped: %r", text[:40]
+            )
             return {"action": "none", "speak": None}
 
         # Emergencies pre-empt everything, including an in-progress screen.

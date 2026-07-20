@@ -551,6 +551,11 @@ def _build_summary_text(outcome: str, name: str, service: str, duration: Any) ->
         return f"⚠️ {n} – abandoned{' during ' + service + ' booking' if service else ''} ({dur}s)"
     if outcome == "cancelled":
         return f"❎ {n} – appointment CANCELLED"
+    if outcome == "safety_escalation":
+        return (
+            f"🚨 {n} – RED-FLAG SAFETY ESCALATION — advised urgent care "
+            f"(999/A&E/111/GP), no booking made"
+        )
     if outcome == "failed":
         return f"🔧 {n} – call failed (technical issue)"
     return f"{n} – {outcome}"

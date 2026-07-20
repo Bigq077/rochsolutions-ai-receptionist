@@ -253,12 +253,31 @@ def infer_call_outcome(session: dict[str, Any], summary: dict[str, Any]) -> str:
       failed                — technical failure
       cancelled             — successful cancellation
       reschedule_failed     — reschedule reached transaction stage but backend failed
+      safety_escalation     — red-flag screen positive / emergency: caller was
+                              directed to urgent care (999/A&E/111/GP); no SMS
     """
     # Deterministic guard: reschedule reached transaction stage but backend explicitly failed.
     # Must precede LLM-logged check — prevents LLM "abandoned" from overriding a genuine
     # system-side failure that the caller was already informed of verbally.
     if session.get("reschedule_confirmed") and session.get("reschedule_execution_succeeded") == False:  # noqa: E712
         return "reschedule_failed"
+
+    # Deterministic guard: clinical safety escalation. A red-flag screen
+    # answered positive (screen_red_flag) or a scripted emergency/escalation
+    # was spoken (safety_escalation, set in connection.py). The LLM label must
+    # never soften this to "abandoned" — that outcome drives the abandoned-
+    # recovery SMS, which is wrong for a caller who was just told to go to
+    # A&E (Call-2, 2026-07-20: three escalations → outcome=abandoned →
+    # "Smart SMS sent [abandoned]"). Yields to genuine transactional outcomes:
+    # an emergency false-alarm caller who then reschedules keeps "rescheduled".
+    _cal_status_early = (summary.get("appointment", {}) or {}).get("calendar", {}).get("status")
+    _logged_early = str(session.get("call_outcome_logged") or "").lower().strip()
+    if (
+        (session.get("screen_red_flag") or session.get("safety_escalation"))
+        and _cal_status_early not in ("created", "patched", "rescheduled")
+        and _logged_early not in ("booked", "rescheduled", "cancelled")
+    ):
+        return "safety_escalation"
 
     # Phase 3: the LLM explicitly logs the outcome via log_call_outcome tool.
     # Trust that first — it's more accurate than our heuristics.

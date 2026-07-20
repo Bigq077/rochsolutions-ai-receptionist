@@ -5760,6 +5760,23 @@ class WebSocketCallHandler:
                                         + " Would you like me to put you "
                                         "through to someone now?"
                                     )
+                                # Mark the call as a safety escalation so the
+                                # outcome classifier can never label it
+                                # "abandoned" (which triggers the abandoned-
+                                # recovery SMS — wrong for a caller who was
+                                # just sent to A&E; Call-2, 2026-07-20).
+                                # Not set for ask_screen: asking the question
+                                # is routine; only a positive answer or a
+                                # volunteered emergency is an escalation.
+                                if _cs_result["action"] in ("emergency", "escalate"):
+                                    self.session["safety_escalation"] = True
+                                # Latency: this turn never touched the LLM —
+                                # tag it path=scripted so five ~120ms scripted
+                                # turns don't sit in the llm distribution and
+                                # drag its p50 down (Call-2: turns 11/12/16/
+                                # 18/20 logged path=llm model=-).
+                                if self._turn_timing is not None:
+                                    self._turn_timing.path = "scripted"
                                 await self.tts_text_queue.put(_cs_line)
                                 self.session["last_bot_prompt"] = _cs_line
                                 self.session["last_question"] = _cs_line
