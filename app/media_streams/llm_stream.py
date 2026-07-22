@@ -1286,7 +1286,13 @@ class LLMStream:
                     # instead of the generic "Give me a moment…", which confuses
                     # a caller who just confirmed and can re-open the readback.
                     from app.filler_phrases import confirm_write_filler
-                    _ack_filler_text = confirm_write_filler(session) or random.choice(FILLER_PHRASES)
+                    # FM-25: only speak a write-ack ("Just locking that in now…")
+                    # when the caller actually confirmed — a "no"/ambiguous reply
+                    # must fall back to a neutral filler, never a booking claim.
+                    _ack_filler_text = (
+                        confirm_write_filler(session, _book_reply_is_affirmative(messages))
+                        or random.choice(FILLER_PHRASES)
+                    )
                     logger.info(
                         "[ms_llm] filler phrase triggered (background task): %r",
                         _ack_filler_text[:40],
