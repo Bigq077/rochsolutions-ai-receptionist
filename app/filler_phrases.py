@@ -59,7 +59,7 @@ BOOKING_WRITE_FILLERS: List[str] = [
 ]
 
 
-def confirm_write_filler(session: dict) -> Optional[str]:
+def confirm_write_filler(session: dict, caller_confirmed: bool) -> Optional[str]:
     """Return an action-acknowledging filler for the turn RIGHT AFTER the caller
     says "yes" to a booking or reschedule readback — or None.
 
@@ -74,7 +74,15 @@ def confirm_write_filler(session: dict) -> Optional[str]:
     CANCEL is intentionally excluded — its go-ahead is the ambiguous
     reschedule-or-cancel retention question, and the cancel branch is designed
     to run with no readback/filler (a cancel readback loops; see prompt).
+
+    FM-25 (2026-07-22 JV live call): the confirm CTA being the prior turn is
+    necessary but NOT sufficient — ``caller_confirmed`` must be True (the caller
+    actually said a clear yes). Otherwise a "no"/ambiguous reply hears "Just
+    locking that in now…" and believes they were booked against their wishes.
+    Mirrors the FM-01 book-gate: verify consent, not just that the CTA was asked.
     """
+    if not caller_confirmed:
+        return None
     last = ""
     for _m in reversed(session.get("conversation_history") or []):
         if _m.get("role") == "assistant":
