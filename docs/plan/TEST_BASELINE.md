@@ -75,20 +75,34 @@ readback — that would be an FM-01 sibling. One-hour check in Phase 1.
 
 ---
 
-## Candidate FMs (flagged, NOT fixed — per instruction)
+## FM-21 / FM-22 — diagnosed 2026-07-21: both DRIFT, not defects
 
-- **FM-21 · Booking phone-confirmation gate may be regressed.**
-  `test_critical_flows.py::TestReschedulePhoneGate::test_booking_flow_phone_gate_not_regressed`
-  expects `session["phone_confirmed"] is True` after a booking-flow drive; it is
-  `False`. On the `flow.py` FlowEngine (live path). Drift-vs-defect unresolved.
-  *Verify:* does the phone-confirm gate still block a book on an unconfirmed number?
-  (Sibling of the FM-01/phone backstop.)
-- **FM-22 · Dead-air net can fire while TTS is (thought to be) playing.**
-  `test_dead_air_safety_net.py::test_no_fire_while_tts_playing` — a "Bug A
-  backstop" force-clears a `_tts_playing` flag it deems stale (`playout ended
-  -1.0s ago`) and then fires a re-ask. If the staleness detection is wrong in
-  prod, the assistant talks over its own audio (FM-03). *Verify:* is the stale-flag
-  detection sound under real playout timing, or only a test-clock artifact?
+- **FM-21 · Phone-confirmation gate — DRIFT (gate intact, stricter than the test).**
+  Repro: a bare "yes" at CONFIRM_PHONE logs `HARD GATE CONFIRM_PHONE: ambiguous
+  'yes' — tight re-ask` (`flow.py:10926`). The gate requires the explicit **"use
+  this number"** contract (`flow.py:10917-10924`); a bare "yes" is deliberately
+  ambiguous → re-ask → `phone_confirmed` stays `False` → the flow does **not**
+  advance to CONFIRM_BOOKING. **A book cannot fire on an unconfirmed number here** —
+  the guard is more conservative, not weaker. The test encodes the superseded
+  "yes-confirms-phone" semantics (same rework that failed `TestUseThisNumberContract`).
+  *Action:* re-point/quarantine the test to the "use this number" contract. Minor
+  UX note: the "Sorry, I didn't catch that" re-ask fires even though a yes was
+  detected (`_last_yes_detected` is set) — safe, but slightly misleading wording.
+- **FM-22 · Dead-air net firing while `_tts_playing` — DRIFT (staleness judgment sound).**
+  `_tts_playout_end_mono` is set to a future time whenever audio is genuinely
+  scheduled (`connection.py:10661`) and reset to `0.0` **only when audio is
+  cancelled/cleared** (DTMF cancel `:11105`, barge-in `:11232` — both send Twilio
+  `clear`). So `_tts_playing=True` with `playout_end==0` means the flag is stranded
+  **after audio already stopped** (nothing to talk over) — exactly the Bug-A state
+  the backstop recovers. Genuine playback keeps `now < playout_end + 2.0` (net
+  suppressed); the backstop only evaluates ≥10s after chunk START. The stub sets
+  `_tts_playing=True` **without** a playout clock — a state prod only reaches
+  post-cancellation. **No talk-over risk.** *Action:* update the test to set a valid
+  playout clock. Residual (accepted): extreme Twilio jitter (>2s past a cumulative
+  playout end) could clip an audio tail — a deliberate tradeoff vs the worse
+  dead-air-until-hangup bug this backstop fixes.
+
+**Both candidate FMs resolve to test drift — no new FM entries, no code change.**
 
 ---
 
@@ -102,7 +116,7 @@ readback — that would be an FM-01 sibling. One-hour check in Phase 1.
 
 **Gate 0 item 1: NOT yet passed** — the verdicts exist but the ~92 benign-drift
 failures are not yet quarantined in code, so the suite cannot serve as a green
-regression tripwire, and FM-21/FM-22 are unresolved.
+regression tripwire. (FM-21/FM-22 are now diagnosed as **drift** — see above.)
 
 **Recommendation (safety of building Phase 1 on this baseline):** **Yes, with two
 conditions.** From a *safety* standpoint the baseline is sound — zero failures on
@@ -111,7 +125,7 @@ the clinical-screening and human-transfer paths, and the booking-write hole
 Theorem-only policy, greeting/FAQ wording, fillers, SMS templates and unmocked-LLM
 / live-integration env issues — none of which touches a cohort clinic's safety. So
 Phase 1 ("stop the silent failures") can start. But before leaning on the suite:
-(1) resolve **FM-21** and **FM-22** (they are exactly Phase-1-shaped), and
-(2) apply the quarantines above so a real regression is visible against green —
-otherwise a new break hides in a field of 96 reds. Do **not** bulk-fix the 96;
-quarantine the benign, verify the two candidates.
+(1) **FM-21/FM-22 are now diagnosed as test drift** (above) — no code fix needed,
+just re-point or quarantine their two tests; and (2) apply the quarantines above so
+a real regression is visible against green — otherwise a new break hides in a field
+of 96 reds. Do **not** bulk-fix the 96; quarantine the benign.
