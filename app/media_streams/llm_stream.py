@@ -219,6 +219,35 @@ def _book_reply_is_affirmative(messages) -> bool:
     return is_yes and not is_no
 
 
+def _cancel_reply_consents(messages) -> bool:
+    """FM-23: cancel_appointment is DESTRUCTIVE — it may fire only on an EXPLICIT
+    cancel instruction, in the template cancel-retention context. The confirm is
+    the retention question ("...reschedule this appointment, or cancel it
+    altogether?"); the caller consents by SAYING "cancel", so this can NOT reuse
+    _book_reply_is_affirmative ("cancel" is a NO pattern). Bias hard toward NOT
+    cancelling: a bare "yes"/"ok"/"go ahead" is ambiguous against the OR-question
+    and must not cancel; a reschedule word, "keep/leave it", "don't cancel", or a
+    bare "no" all block. Only an explicit "cancel" token allows.
+    """
+    text = _last_user_text(messages or []).lower()
+    if not text:
+        return False
+    # Any negation defeats consent — a destructive cancel must never fire while the
+    # caller is negating ("I don't want to cancel", "no cancellation", "not cancel",
+    # "leave/keep it"). Bias hard: block on ANY negation token, even "no, cancel it"
+    # — a re-ask is safe; a wrong delete is not.
+    if any(n in text for n in (
+        "don't", "do not", "dont", "not ", "n't", "never", "no ", "leave", "keep",
+    )):
+        return False
+    # Caller chose the retention alternative (reschedule) rather than cancel.
+    if any(w in text for w in ("reschedul", "move", "change", "different", "another time")):
+        return False
+    # Consent requires an explicit cancel token — a bare yes/ok is ambiguous
+    # against the "reschedule, or cancel?" OR-question and must not delete.
+    return "cancel" in text
+
+
 # Phrases the assistant SPEAKS during the phone step (Step 8) — offering the
 # calling number for confirmation or asking the caller to type a new one.  Used
 # by the phone backstop to tell whether the phone question was ever actually put
@@ -1897,6 +1926,59 @@ class LLMStream:
                             "given a clear yes. Wait for an explicit affirmative "
                             "(\"yes\", \"go ahead\") before calling book_appointment. "
                             "Do not book on an ambiguous, negative, or absent reply."
+                        ),
+                    }
+                elif tool_name == "reschedule_appointment" and not (
+                    "move it for you" in (session.get("last_bot_prompt") or "").lower()
+                    and _book_reply_is_affirmative(messages)
+                ):
+                    # FM-23: reschedule gate — mirrors FM-01. The template reschedule
+                    # CTA is the enforced "Shall I go ahead and move it for you?".
+                    # Require that CTA in last_bot_prompt AND a clear caller yes.
+                    _lut_preview = _last_user_text(messages or [])[:80]
+                    logger.warning(
+                        "[ms_llm] reschedule_appointment BLOCKED — no clear caller "
+                        "yes after the move confirmation (last_user_text=%r)",
+                        _lut_preview,
+                    )
+                    result = {
+                        "status": "reschedule_confirmation_required",
+                        "message": (
+                            "reschedule_appointment cannot fire yet. Ask 'Shall I go "
+                            "ahead and move it for you?' and wait for a clear yes "
+                            "before calling reschedule_appointment. Do not reschedule "
+                            "on an ambiguous, negative, or absent reply."
+                        ),
+                    }
+                elif tool_name == "cancel_appointment" and not (
+                    (
+                        "cancel it altogether" in (session.get("last_bot_prompt") or "").lower()
+                        or "altogether" in (session.get("last_bot_prompt") or "").lower()
+                    )
+                    and _cancel_reply_consents(messages)
+                ):
+                    # FM-23: cancel is DESTRUCTIVE. The template cancel flow's confirm
+                    # is the retention question ("...or cancel it altogether?") and the
+                    # caller consents by SAYING "cancel" — so _book_reply_is_affirmative
+                    # can't be reused ("cancel" is a NO pattern). Require BOTH the
+                    # retention question in last_bot_prompt AND an explicit cancel
+                    # token; a bare "yes", a reschedule word, "keep it", "don't cancel"
+                    # or "no" all block. A missed cancel re-asks; a wrong one deletes a
+                    # real patient's appointment.
+                    _lut_preview = _last_user_text(messages or [])[:80]
+                    logger.warning(
+                        "[ms_llm] cancel_appointment BLOCKED — no explicit caller "
+                        "cancel-consent (last_user_text=%r)", _lut_preview,
+                    )
+                    result = {
+                        "status": "cancellation_confirmation_required",
+                        "message": (
+                            "cancel_appointment cannot fire yet. Ask the retention "
+                            "question — 'Would you like to reschedule this "
+                            "appointment, or cancel it altogether?' — and only "
+                            "cancel when the caller explicitly says cancel. Do not "
+                            "cancel on a bare 'yes', a reschedule request, or an "
+                            "ambiguous, negative, or absent reply."
                         ),
                     }
                 elif tool_name == "escalate_to_claude":
