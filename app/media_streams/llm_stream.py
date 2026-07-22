@@ -203,6 +203,22 @@ def _caller_wants_new_slot(messages) -> bool:
     return bool(words & _NEW_SLOT_INTENT_WORDS)
 
 
+def _book_reply_is_affirmative(messages) -> bool:
+    """FM-01: book_appointment may fire only on a clear caller YES to the
+    "Shall I go ahead and book that in?" confirmation. The question-asked guard
+    is necessary but not sufficient — a negative, ambiguous or absent reply, or
+    an affirmative paired with a correction ("yes, actually no"), must not book.
+    Reuses fast_path's yes/no patterns (the same affirmative detection the rest
+    of the engine uses). Bias: a false block just re-asks; a false allow books
+    the wrong thing.
+    """
+    from app.media_streams.fast_path import _YES_PATTERNS, _NO_PATTERNS
+    text = _last_user_text(messages or []).lower()
+    is_yes = any(p in text for p in _YES_PATTERNS)
+    is_no = any(p in text for p in _NO_PATTERNS)
+    return is_yes and not is_no
+
+
 # Phrases the assistant SPEAKS during the phone step (Step 8) — offering the
 # calling number for confirmation or asking the caller to type a new one.  Used
 # by the phone backstop to tell whether the phone question was ever actually put
@@ -1854,6 +1870,27 @@ class LLMStream:
                             "and wait for the caller to say yes before calling "
                             "book_appointment. Do not book without this explicit "
                             "confirmation."
+                        ),
+                    }
+                elif tool_name == "book_appointment" and not _book_reply_is_affirmative(messages):
+                    # FM-01: the confirmation question was asked (the guard above
+                    # passed) but the caller has not given a clear yes. Block on a
+                    # negative, ambiguous or absent reply, or an affirmative paired
+                    # with a correction. A missed booking is recoverable; a wrong
+                    # one is not.
+                    _lut_preview = _last_user_text(messages or [])[:80]
+                    logger.warning(
+                        "[ms_llm] book_appointment BLOCKED — no clear caller yes to "
+                        "the booking confirmation (last_user_text=%r)", _lut_preview,
+                    )
+                    result = {
+                        "status": "affirmation_required",
+                        "message": (
+                            "book_appointment cannot fire yet. The booking "
+                            "confirmation question was asked but the caller has not "
+                            "given a clear yes. Wait for an explicit affirmative "
+                            "(\"yes\", \"go ahead\") before calling book_appointment. "
+                            "Do not book on an ambiguous, negative, or absent reply."
                         ),
                     }
                 elif tool_name == "escalate_to_claude":
