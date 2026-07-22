@@ -9,6 +9,26 @@ sequencing, not the engine decision. Every later plan document assumes this answ
 
 ---
 
+> ## ✅ RESOLVED — 2026-07-22
+>
+> This ADR is kept as the record of *how* the branch question was settled. The
+> outcome, and two ways this document is now superseded:
+>
+> * **`latency-eval` is THE engine branch.** One engine branch, two deployment
+>   branches (`jv-v1-onboarding`, `vitaledge-onboarding`) that inherit engine
+>   fixes by cherry-pick **from** it. `main` is a separate lineage — leave alone.
+> * **Recommendation 1 below is SUPERSEDED.** It proposed cutting
+>   `release/cohort-1` and hardening *there, not on `latency-eval`*. That fork
+>   was cut, carried FM-01/FM-23/FM-25 plus the plan docs, and was then **merged
+>   back into `latency-eval` and deleted** — the two-branch split was the thing
+>   causing the confusion. Do not cut another scratch fork.
+> * **Recommendation 3 below is DONE.** `LATENCY.md` §0 has been re-chartered:
+>   the "lab, not a release candidate" framing now scopes to the WS levers, not
+>   the branch.
+>
+> Everything else here — the divergence analysis, the levers-are-off finding,
+> the deployment reality — still stands.
+
 ## Context
 
 The 10-day plan (`PRODUCTION_READINESS_PLAN.md`) was written on the premise that
@@ -49,14 +69,21 @@ unpushed clone.
 **Adopt the `latency-eval` *engine* as the production trunk for cohort 1** — but
 not under that name and not by shipping the branch wholesale:
 
-1. **Cut a clean, honestly-named release branch** (e.g. `release/cohort-1`) from
-   `origin/latency-eval` at a pinned commit. Harden *there*, not on `latency-eval`.
+1. ~~**Cut a clean, honestly-named release branch** (e.g. `release/cohort-1`) from
+   `origin/latency-eval` at a pinned commit. Harden *there*, not on `latency-eval`.~~
+   → **SUPERSEDED 2026-07-22.** The fork was cut and then merged back into
+   `latency-eval` and deleted. Two engine branches was the problem, not the
+   solution: `latency-eval` moved on under Jules while the fork carried the
+   safety fixes, and the two nearly diverged with FM-23 stranded off the engine.
+   **One engine branch. Do not cut another scratch fork.**
 2. **Keep the latency levers OFF** (`WS_A_FAST_FIRST_CHUNK`,
    `WS_C_SEMANTIC_ENDPOINT`, `WS_B` unwired) — verified default-`false`, so the
    release boots byte-identical to today's live engine.
 3. **Re-charter `LATENCY.md`**: scope its "lab, not a release candidate" language
    to the WS-A/B/C levers, not the branch, so the next reader is not misled exactly
-   as this plan was.
+   as this plan was. → **DONE 2026-07-22** (`LATENCY.md` §0, plus the same stale
+   quotation corrected in `CLAUDE.md`, `KICKOFF_PROMPT.md` and
+   `PRODUCTION_READINESS_PLAN.md`, which had each copied it).
 4. **Deploy per-clinic from the release branch** (tenant by env/config), replacing
    the current per-clinic branches under change control (verify green + shadow-test
    before moving a live Twilio number).

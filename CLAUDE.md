@@ -22,12 +22,24 @@ call and the first onboarding cohort are flawless.
 
 ## 2. Canonical branch
 
-**`latency-eval`** was the stated baseline — **but this is contested and must be
-settled before any work starts. See `docs/plan/BRANCH_DECISION.md`.**
+**`latency-eval` is THE engine branch.** Settled 2026-07-22 — no longer contested.
+`release/cohort-1` was merged into it and retired; there is now exactly one engine
+branch plus two deployment branches (`jv-v1-onboarding`, `vitaledge-onboarding`)
+that inherit engine fixes by cherry-pick **from** `latency-eval`. `main` is a
+separate historical lineage — leave it alone. See `docs/plan/BRANCH_DECISION.md`.
 
-`latency-eval`'s own `LATENCY.md` opens: *"total isolation from live… this branch
-is a lab, not a release candidate… never promoted by merging as-is."* That is in
-direct tension with using it as the production base. Resolve it first.
+**Canonical-first rule:** every engine fix commits to `latency-eval` first; the
+live clinics inherit it. Never fix on a clinic branch and port up — that strands
+safety fixes at convergence.
+
+`LATENCY.md` used to call this branch *"a lab, not a release candidate… never
+promoted by merging as-is."* That line has been re-chartered: it now applies to
+the **WS latency levers** (still experimental, still default OFF), not to the
+branch. Do not cite it as a reason to avoid basing work here.
+
+> ⚠️ **A push to `latency-eval` is a live deploy** — it auto-deploys the demo
+> Render service. Push outside call hours, with the revert commit in hand, and
+> coordinate first so two people are not pushing over one another.
 
 > ⚠️ **Check which branch and which worktree you are actually in before
 > measuring anything.** There are ~15 registered worktrees under

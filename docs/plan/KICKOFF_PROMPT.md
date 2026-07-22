@@ -52,6 +52,13 @@ Constraints you must respect:
 - Ignore the client deliverable documents in the repo root (Vital Edge, Theorem,
   SEO audits). The system is app/, config/, scripts/, tests/, workflows/.
 
+[RESOLVED 2026-07-22 — PHASE -1 IS DONE. SKIP IT AND START AT PHASE 0.
+ latency-eval is THE engine branch: one engine branch, two deployment branches
+ (jv-v1-onboarding, vitaledge-onboarding) inheriting engine fixes by cherry-pick
+ from it. release/cohort-1 was merged in and retired. LATENCY.md's "lab, not a
+ release candidate" line has been re-chartered to scope to the WS levers, not
+ the branch. The text below is kept only as the record of the original task.]
+
 YOUR FIRST TASK IS PHASE -1, NOT PHASE 0.
 
 docs/plan/BRANCH_DECISION.md documents an unresolved contradiction: the plan

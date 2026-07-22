@@ -9,21 +9,36 @@ WS-A spec/pseudocode.)*
 
 ---
 
-## 0. Prime directive — total isolation from live
+## 0. Prime directive — the LEVERS are the lab, not the branch
 
-- **The production number, `main`, and every live clinic branch stay exactly as they are.**
-  No exceptions, ever, in this eval.
-- All work is on the throwaway branch **`latency-eval`**, deployed to its **own Render
-  service** behind its **own Twilio number** (setup + isolation invariants in
-  `LATENCY_HARNESS.md`). This branch is a **lab, not a release candidate.**
-- Even a winning lever is promoted to live only as a **separate, later PR under normal
-  review** — never by merging `latency-eval` as-is.
-- Every lever is behind its **own env flag, default OFF**, so the branch boots
-  byte-identical to live and each lever toggles independently. No PII in commits/logs;
-  Frankfurt/EU only.
+> **Re-chartered 2026-07-22.** This section used to call `latency-eval` itself
+> "a lab, not a release candidate… never promoted by merging as-is". That is no
+> longer true and following it now would be actively wrong: `release/cohort-1`
+> was merged into `latency-eval` and retired, and **`latency-eval` is now THE
+> engine branch** — the single source of truth that the demo runs on and that
+> the live clinic branches inherit engine fixes from by cherry-pick. The
+> "lab" framing now attaches to the **WS latency levers**, which are still
+> experimental and still default OFF. See `docs/plan/BRANCH_DECISION.md`.
 
-*(Campaign note: for the battle-hardening pass, fixes now land on `latency-eval` itself —
-see `SUSIE_HANDOFF_JULES.md`. The "nothing touches the live JV number" rule still holds.)*
+- **The production number, `main`, and every live clinic branch stay exactly as they
+  are** unless a fix is deliberately cherry-picked to them, one clinic at a time,
+  verified on a real call, outside call hours. Nothing about this eval touches a
+  live clinic number by accident.
+- `latency-eval` deploys to its **own Render service** behind its **own Twilio
+  number** (setup + isolation invariants in `LATENCY_HARNESS.md`). That isolation
+  is unchanged — but note the consequence of it now being the engine: **a push to
+  `latency-eval` is a live deploy of the demo service.** Deploy outside call hours
+  with the revert commit in hand, and coordinate so two people are not pushing over
+  one another.
+- **No WS lever is promoted to live by merging.** Each is behind its **own env
+  flag, default OFF**, so the branch boots byte-identical to live and each lever
+  toggles independently. Turning one on for a real clinic is a separate, deliberate
+  decision under normal review — that is the part that is still a lab.
+- No PII in commits/logs; Frankfurt/EU only.
+
+*(Engine fixes land on `latency-eval` first — canonical-first. Never fix on a clinic
+branch and port up; that strands safety fixes at convergence. See
+`SUSIE_HANDOFF_JULES.md`.)*
 
 ---
 

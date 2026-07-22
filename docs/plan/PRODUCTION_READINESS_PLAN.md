@@ -69,14 +69,23 @@ are the designated sacrifices.
 
 ---
 
-## Phase −1 — Settle the branch (before anything else, ~2h)
+## Phase −1 — Settle the branch — ✅ DONE 2026-07-22
 
-**See `BRANCH_DECISION.md`. This blocks Phase 0.**
+**Outcome: `latency-eval` IS the engine branch.** One engine branch; the two
+deployment branches (`jv-v1-onboarding`, `vitaledge-onboarding`) inherit engine
+fixes by cherry-pick **from** it, canonical-first. `release/cohort-1` was merged
+into it and retired. `main` is a separate lineage — leave alone. This no longer
+blocks Phase 0. Full reasoning in `BRANCH_DECISION.md`.
 
-`latency-eval`'s own `LATENCY.md` declares it "a lab, not a release candidate…
-never promoted by merging as-is." This plan was written assuming it is the
-production base. One of those is wrong, and ten days of hardening on a branch
-that was designed never to ship is the most expensive error available here.
+The original framing is kept below for the record:
+
+> `latency-eval`'s own `LATENCY.md` declares it "a lab, not a release candidate…
+> never promoted by merging as-is." This plan was written assuming it is the
+> production base. One of those is wrong, and ten days of hardening on a branch
+> that was designed never to ship is the most expensive error available here.
+
+That contradiction is resolved: the "lab" framing has been re-chartered onto the
+WS latency levers (still experimental, still default OFF), not the branch.
 
 Also: prune the ~15 stale worktrees under `AppData/Local/Temp/claude/` first.
 A session has already measured the wrong tree once on this project.

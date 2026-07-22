@@ -7,6 +7,27 @@ patient, and do they find out from the patient rather than from us?*
 Scoring: Likelihood L1 (rare) → L5 (expect it weekly at 10 clinics).
 Impact I1 (caller mildly annoyed) → I5 (clinic loses a patient and trust).
 
+> **⚠️ ID COLLISION — read before citing an FM number.** Two different defects
+> are both called **FM-01** in this repo:
+>
+> * **FM-01 in THIS register** — *silent booking failure*: the assistant claims
+>   success when the provider call actually failed. The invariant is "only claim
+>   success on a returned booking ID". This is the same defect Jules's sweep
+>   calls **P1 #5 (false 'all booked')**. **Still OPEN.**
+> * **FM-01 in the commit log and `DELETED_TEST_TRIAGE.md`** — the *book
+>   affirmative gate*: `book_appointment` fired without the caller saying yes.
+>   Guard is `_book_reply_is_affirmative`. **CLOSED** (commit `c01fddb`).
+>
+> They are different control points: the gate checks the tool's **input** (did
+> the caller consent?); the booking-ID invariant checks its **output** (did it
+> actually succeed?). Closing one does not close the other. The engineering
+> handoff's instruction to "merge P1 #5 with FM-01 into ONE confirmation guard"
+> appears to stem from this collision — do **not** merge them, or the phantom
+> appointment survives behind a guard that looks like it covers it.
+>
+> Numbers are left as-is rather than renumbered: every existing reference would
+> otherwise break. Cite as "register FM-01" or "gate FM-01" when it matters.
+
 ---
 
 ## Tier 1 — Must be closed before any clinic goes live
@@ -91,6 +112,47 @@ non-engineer, tested live.
 
 ---
 
+### FM-23 · Ungated cancel / reschedule — CLOSED
+**L3 · I5 · closed 2026-07-22**
+`cancel_appointment` and `reschedule_appointment` were both exposed to the model
+with **no consent gate** on either clinic. A model misfire could move or delete a
+real patient's appointment with no caller instruction — destructive, silent, and
+discovered by the patient rather than by us.
+
+*Fix:* `reschedule_appointment` blocks unless `last_bot_prompt` contains the
+enforced CTA ("move it for you") **and** `_book_reply_is_affirmative(messages)`.
+`cancel_appointment` blocks unless the retention question ("cancel it
+altogether") was asked **and** `_cancel_reply_consents(messages)`. The cancel
+helper deliberately does **not** reuse `_book_reply_is_affirmative`: "cancel" is
+in `_NO_PATTERNS`, which would block every genuine cancel. It allows only an
+explicit "cancel" token and blocks a bare "yes" — the retention question is an
+OR, so a bare yes is ambiguous and must never destroy an appointment.
+
+*Verification:* `tests/regression/test_cancel_reschedule_gate.py` (163 lines).
+Live on `latency-eval`, `jv-v1-onboarding`, `vitaledge-onboarding` — guard
+functions verified byte-identical across all three.
+
+*Bias:* hard against cancelling. A missed cancel re-asks; a wrong one deletes a
+real appointment.
+
+---
+
+### FM-25 · Write-acknowledgement filler on a refusal — CLOSED
+**L3 · I4 · closed 2026-07-22**
+`confirm_write_filler` keyed only off the prior assistant CTA, never off whether
+the caller agreed. A caller who answered "no" to "shall I book that in?" still
+heard "Just locking that in now…" and hung up believing they had been booked
+against their wishes. Observed on a live JV call.
+
+*Fix:* `confirm_write_filler(session, caller_confirmed)` returns `None` unless
+consent is real. Mirrors the FM-01 book gate — verify consent, not merely that
+the CTA was asked.
+
+*Verification:* `tests/regression/test_write_ack_filler_gate.py` (73 lines).
+Live on all three branches; `app/filler_phrases.py` is byte-identical across them.
+
+---
+
 ## Tier 2 — Close before the meeting if possible, before cohort one certainly
 
 ### FM-06 · Wrong-tenant data leakage
@@ -171,6 +233,13 @@ baseline; 50 ms regression budget, enforced.
 | FM-18 | Timezone / BST boundary errors in slot offering | L2·I4 | Verify explicitly — UK clocks change 25 Oct |
 | FM-19 | Caller data handling / GDPR posture | L3·I4 | Transcripts are health-adjacent personal data. `app/obs/redact.py` exists — read it before enabling `OBS_DIGEST_INCLUDE_TRANSCRIPTS`. Needs a written position before 100 clinics; a partner-scale client will ask |
 | FM-20 | Wrong branch deployed | L3·I5 | Four Render services, `autoDeploy: true`, no branch pin in `render.yaml`. A push to the wrong branch changes what answers a real clinic's phone. Phase 5 deploy checklist |
+| FM-21 | Screening double-ask (model + deterministic layer) | — | **Not a defect.** Diagnosed as test drift — see `TEST_BASELINE.md` |
+| FM-22 | Screening state not cleared across turns | — | **Not a defect.** Diagnosed as test drift — see `TEST_BASELINE.md` |
+
+**Numbering:** FM-24 is unused. FM-23 and FM-25 are Tier 1 (both CLOSED) — see
+above. Before reusing a number, grep the whole repo: FM ids appear in commit
+subjects and in `DELETED_TEST_TRIAGE.md` as well as here, and they have already
+collided once (see the warning at the top of this file).
 
 ---
 
