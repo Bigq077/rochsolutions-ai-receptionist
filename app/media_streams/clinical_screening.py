@@ -74,6 +74,47 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+# Inflectional endings a keyword may pick up and still be the same word.
+# Whitelisted, not "any letters": 'numb'+'ness' is the same concept, 'numb'+'er'
+# is a different word entirely and was the source of a false escalation.
+_KW_INFLECTION = r"(?:s|es|ed|ing|ness)?"
+
+
+def _kw_in(keyword: str, text_norm: str) -> bool:
+    """Word-boundary containment of `keyword` in ALREADY-normalised text.
+
+    Plain `keyword in text` matched inside unrelated words, and several jv_v1
+    keywords are short common fragments. The dangerous direction was red-flag
+    ANSWER classification, where a match escalates and blocks booking for the
+    rest of the call:
+
+        'red'  matched tired / recovered / referred / worried
+        'numb' matched number
+        'hot'  matched photo / shot
+        'fell' matched fellow          (trigger side: armed the trauma screen)
+
+    The keyword must START at a word boundary, which is what kills all of the
+    above. It may be followed by a common INFLECTIONAL suffix, because a strict
+    boundary on both ends silently loses the clinical vocabulary itself:
+
+        'numb'  must still match 'numbness'   <- the cauda equina positive
+        'fever' must still match 'fevers'
+        'crack' must still match 'cracked'
+
+    but must NOT match 'number'. Hence a whitelist of suffixes rather than "any
+    trailing letters": 'ness' is inflection, 'er' is a different word. Missing a
+    cauda positive is the unbounded-harm case, so this half matters as much as
+    the over-escalation half.
+
+    Irregular plurals are NOT handled ('calf' will not match 'calves'); those
+    belong in the clinic config as their own keywords.
+    """
+    k = _norm(keyword)
+    if not k:
+        return False
+    return re.search(rf"(?<!\w){re.escape(k)}{_KW_INFLECTION}(?!\w)", text_norm) is not None
+
+
 def screening_config(clinic: Dict[str, Any]) -> Dict[str, Any]:
     cs = clinic.get("clinical_screening") or {}
     return cs if cs.get("enabled") else {}
@@ -104,7 +145,7 @@ def detect_emergency(text: str, clinic: Dict[str, Any]) -> bool:
     if not kws:
         return False
     t = _norm(text)
-    return any(_norm(k) in t for k in kws)
+    return any(_kw_in(k, t) for k in kws)
 
 
 def emergency_response_text(clinic: Dict[str, Any]) -> str:
@@ -133,10 +174,10 @@ def _screen_triggered(text_norm: str, screen: Dict[str, Any]) -> bool:
     groups = screen.get("trigger_all_groups")
     if groups:
         return all(
-            any(_norm(k) in text_norm for k in group) for group in groups if group
+            any(_kw_in(k, text_norm) for k in group) for group in groups if group
         )
     return any(
-        _norm(k) in text_norm for k in (screen.get("trigger_keywords") or [])
+        _kw_in(k, text_norm) for k in (screen.get("trigger_keywords") or [])
     )
 
 
@@ -212,7 +253,7 @@ def _red_flag_hits(text: str, screen: Dict[str, Any]) -> int:
     """
     t = _norm(text)
     return sum(1 for k in (screen.get("red_flag_answer_keywords") or [])
-               if _norm(k) in t)
+               if _kw_in(k, t))
 
 
 def classify_screen_answer(text: str, screen: Dict[str, Any]) -> str:
@@ -225,7 +266,7 @@ def classify_screen_answer(text: str, screen: Dict[str, Any]) -> str:
     if not t:
         return "unclear"
     for k in screen.get("red_flag_answer_keywords") or []:
-        if _norm(k) in t:
+        if _kw_in(k, t):
             return "red_flag"
     first_word = t.split()[0] if t.split() else ""
     if first_word in ("no", "nope", "nah", "none", "neither"):
