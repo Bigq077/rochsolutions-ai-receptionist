@@ -51,9 +51,26 @@ _DEFAULT_SCREEN_LEAD_IN = "I'm sorry to hear that."
 
 
 def _norm(text: str) -> str:
-    """Lowercase, collapse whitespace, strip punctuation apart from apostrophes."""
+    """Lowercase, DELETE apostrophes, blank out other punctuation, collapse space.
+
+    Apostrophes are DELETED (not preserved, not replaced with a space) so that
+    "can't" -> "cant" rather than "can t". Speech-to-text drops apostrophes
+    unpredictably, and 17 of the jv_v1 screening keywords are contractions
+    ("can't breathe", "can't feel", "can't put weight", "grip's gone"). While
+    this function preserved them, a transcript of "I cant breathe" did not match
+    the "can't breathe" emergency keyword and the deterministic 999 intercept
+    did not fire (P1 #4, Jules's 14-call sweep). Deleting on BOTH sides of every
+    comparison — every caller here normalises the keyword through _norm too —
+    makes matching independent of how the transcriber punctuated the word.
+
+    Both the straight (U+0027) and curly (U+2019) forms are removed. The curly
+    form was previously replaced with a space, splitting the word in two, so it
+    was broken in a second, quieter way — worth knowing if a transcript ever
+    arrives with smart quotes applied.
+    """
     t = (text or "").lower()
-    t = re.sub(r"[^a-z0-9' ]+", " ", t)
+    t = t.replace("'", "").replace("’", "")
+    t = re.sub(r"[^a-z0-9 ]+", " ", t)
     return re.sub(r"\s+", " ", t).strip()
 
 
@@ -163,12 +180,22 @@ def _question_was_asked(session: Dict[str, Any], screen: Dict[str, Any]) -> bool
     return hits >= 2
 
 
-_NEGATIVE_PATTERNS = (
-    "no", "nope", "nah", "none", "neither", "nothing like that",
-    "nothing of the sort", "no nothing", "not that i", "no changes",
-    "no change", "all fine", "everything's fine", "everything is fine",
-    "i haven't", "i have not", "i don't", "i do not", "definitely not",
-    "not at all", "thankfully not", "luckily not",
+# NB: normalised through _norm at import. This is the one literal set compared
+# RAW against already-normalised text (see classify_screen_answer), so the
+# contractions below — "everything's fine", "i haven't", "i don't" — would stop
+# matching the moment _norm started deleting apostrophes. Left readable in
+# source; normalised once here. A missed negative is not harmless: it downgrades
+# a clear "no" to `unclear`, which leaves the screen pending and blocks a
+# legitimate booking.
+_NEGATIVE_PATTERNS = tuple(
+    _norm(p)
+    for p in (
+        "no", "nope", "nah", "none", "neither", "nothing like that",
+        "nothing of the sort", "no nothing", "not that i", "no changes",
+        "no change", "all fine", "everything's fine", "everything is fine",
+        "i haven't", "i have not", "i don't", "i do not", "definitely not",
+        "not at all", "thankfully not", "luckily not",
+    )
 )
 
 
