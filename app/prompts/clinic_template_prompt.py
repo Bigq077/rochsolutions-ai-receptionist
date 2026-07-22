@@ -138,6 +138,49 @@ def _home_visits_enabled(clinic: Dict[str, Any]) -> bool:
     return False
 
 
+# P1 #2 (2026-07-22): a service price that is deliberately "to be confirmed" is
+# stored as an explicit null — key PRESENT, value None — with the intent recorded
+# in a sibling `<field>_note`. Both price renderers used to gate on
+# `is not None`, so a null rendered as SILENCE. Silence is not neutral here: the
+# knowledge block advertises the service as available at home, every other
+# home-capable service lists its home price, and the model filled the one blank
+# from the nearest number (observed: "£80, same as in-clinic").
+#
+# A service NOT offered in that modality must stay silent, as before — only an
+# offered-but-unpriced modality is flagged. `available_as` is what separates the
+# two; see _home_visit_price_unconfirmed below and
+# tests/regression/test_tbc_price_defer.py.
+_TBC_PRICE_MARKER = "PRICE NOT CONFIRMED"
+
+
+def _home_visit_price_unconfirmed(svc: Dict[str, Any]) -> bool:
+    """True when the service IS offered as a home visit but its rate is null.
+
+    `available_as` is authoritative, NOT the presence of the pricing key. A null
+    price means two opposite things depending on whether the modality is offered:
+
+        Initial Assessment  available_as=[in_clinic, home_visit]
+                            remote_gbp=None      -> NOT offered remotely. Silent.
+        Neuro Assessment    available_as=[in_clinic, remote, home_visit]
+                            home_visit_gbp=None  -> offered, unpriced. FLAG IT.
+
+    Both are "key present, value None", so key-presence alone cannot tell them
+    apart — it only appears to work here because this helper is scoped to
+    home visits. Anyone generalising this to `remote_gbp` on a key-presence rule
+    would wrongly stamp PRICE NOT CONFIRMED on the Initial Assessment.
+
+    Falls back to key-presence only when `available_as` is absent entirely, so
+    minimal/synthetic clinic dicts still behave sensibly.
+    """
+    p = svc.get("pricing") or {}
+    if p.get("home_visit_gbp") is not None:
+        return False
+    available_as = svc.get("available_as")
+    if available_as is not None:
+        return "home_visit" in available_as
+    return "home_visit_gbp" in p
+
+
 def _service_price_summary(
     svc: Dict[str, Any], modalities: List[str] = None, home_enabled: bool = False,
 ) -> str:
@@ -161,6 +204,12 @@ def _service_price_summary(
         parts.append(_gbp(p["price_gbp"]))
     if p.get("home_visit_gbp") is not None and (home_enabled or "home_visit" in modalities):
         parts.append(f"home visit {_gbp(p['home_visit_gbp'])}")
+    elif _home_visit_price_unconfirmed(svc) and (home_enabled or "home_visit" in modalities):
+        # P1 #2: an explicitly-null rate must not render as silence. This
+        # summary sits inline in the service map, where every priced sibling
+        # shows "home visit £70" — a blank slot there reads as "same as the
+        # other number on this line".
+        parts.append(f"home visit {_TBC_PRICE_MARKER} — do not quote")
     if p.get("package"):
         parts.append(str(p["package"]))
     return " | ".join(parts)
@@ -631,6 +680,7 @@ def _render_prices(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     pol = clinic.get("pricing_and_policies", {}) or {}
     _home_enabled = _home_visits_enabled(clinic)
     in_clinic, remote, home = [], [], []
+    home_tbc: List[str] = []
     for svc in clinic.get("services", []) or []:
         if svc.get("available") is False:
             continue
@@ -652,8 +702,11 @@ def _render_prices(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
             in_clinic.append(f"{nm}{dur_s}: {_gbp(p['price_gbp'])}")
         if p.get("remote_gbp") is not None:
             remote.append(f"{nm}{dur_s}: {_gbp(p['remote_gbp'])}")
-        if p.get("home_visit_gbp") is not None and (_home_enabled or "home_visit" in (clinic.get("modalities") or [])):
+        _home_on = _home_enabled or "home_visit" in (clinic.get("modalities") or [])
+        if p.get("home_visit_gbp") is not None and _home_on:
             home.append(f"{nm}: {_gbp(p['home_visit_gbp'])}")
+        elif _home_visit_price_unconfirmed(svc) and _home_on:
+            home_tbc.append(nm)
         if p.get("package"):
             in_clinic.append(f"{nm} package: {p['package']}")
     out = ["PRICES"]
@@ -664,10 +717,26 @@ def _render_prices(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
         out.append("")
         out.append("Remote (video/phone):")
         out.extend(remote)
-    if home:
+    if home or home_tbc:
         out.append("")
         out.append("Home visit:")
         out.extend(home)
+        if home_tbc:
+            # One line, deliberately: it must read as a single instruction
+            # attached to the named services, not as a heading with a list
+            # underneath that a later edit could separate them from.
+            # Names are quoted because several contain an em dash themselves
+            # ("Neurological Physiotherapy — Initial Assessment"); unquoted, the
+            # list reads as twice as many items as it has.
+            _names = ", ".join(f'"{n}"' for n in home_tbc)
+            out.append(
+                f"{_TBC_PRICE_MARKER} for these home visits: {_names}. "
+                "Each IS offered as a home visit, but the rate is NOT yet "
+                "agreed. Do NOT quote or estimate one, and do NOT reuse the "
+                "in-clinic or remote price for it. Say you'll check with "
+                f"{tk.get('practitioner') or 'the clinic'} and make a note for "
+                "follow-up. Inventing a price here is a serious error."
+            )
     out.append("")
     if pol.get("u18_student_discount"):
         out.append(f"Discounts: {pol['u18_student_discount']}")
