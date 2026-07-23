@@ -59,3 +59,30 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 # Direct WebSocket mode — bypasses Twilio calls entirely (no cost).
 # Default: True (free). Set USE_DIRECT_WS=false or pass --real-calls to use real Twilio calls.
 USE_DIRECT_WS = os.getenv("USE_DIRECT_WS", "true").lower() != "false"
+
+
+# ── HARD SAFETY GATE: never drive a non-demo target ──────────────────────────
+# This harness drives a full conversation against a REAL deployed service, which
+# books into THAT service's Acuity calendar — in BOTH direct-WS and --real-calls
+# modes. Left ungated it will create real appointments in a real practitioner's
+# calendar (it does not cancel them). To make that impossible except against an
+# explicitly-declared demo target, the runner refuses to contact any target
+# unless BOTH of the following are set:
+#   1. RUN_LIVE_CALL_TESTS=1                      (explicit opt-in), and
+#   2. CALL_TEST_TARGET_ALLOWLIST=<demo target>  (the exact demo number and/or
+#      demo base URL, comma-separated).
+# Both are empty by default, so by default the runner cannot drive ANY target.
+# List ONLY the demo deployment's number/URL — never a real clinic's. The target
+# checked is the phone number (real-call mode) or RENDER_SERVER_URL (direct-WS).
+def call_target_is_allowed(target: str) -> bool:
+    opt_in = os.getenv("RUN_LIVE_CALL_TESTS", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    if not opt_in:
+        return False
+    allow = {
+        t.strip()
+        for t in os.getenv("CALL_TEST_TARGET_ALLOWLIST", "").split(",")
+        if t.strip()
+    }
+    return bool(target) and target.strip() in allow

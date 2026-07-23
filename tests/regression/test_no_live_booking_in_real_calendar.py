@@ -71,3 +71,51 @@ def test_booking_optin_flag_defaults_off(monkeypatch):
         mod._LIVE_BOOKING_OPT_IN and mod.ACUITY_USER_ID and mod.ACUITY_API_KEY
     )
     assert would_skip is True
+
+
+# ── Call-runner target gate ──────────────────────────────────────────────────
+# The automated call harness (tests/auto/run_tests.py + call_runner.py) drives a
+# full conversation against a REAL deployed service, which books into that
+# service's Acuity calendar — in both direct-WS and --real-calls modes. These
+# tests prove it refuses to contact any target that isn't an explicit demo one.
+_CONFIG = Path(__file__).resolve().parents[1] / "auto" / "config.py"
+
+# Real Theorem targets that must never be drivable by default.
+REAL_CALL_NUMBER = "+447426779875"  # SUSIE_NUMBER — the live Theorem line
+REAL_SERVICE_URL = "https://rochsolutions-ai-receptionist.onrender.com"
+
+
+def _load_call_config():
+    spec = importlib.util.spec_from_file_location("_call_config_under_test", _CONFIG)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_call_runner_refuses_all_targets_by_default(monkeypatch):
+    monkeypatch.delenv("RUN_LIVE_CALL_TESTS", raising=False)
+    monkeypatch.delenv("CALL_TEST_TARGET_ALLOWLIST", raising=False)
+    cfg = _load_call_config()
+    assert cfg.call_target_is_allowed(REAL_CALL_NUMBER) is False
+    assert cfg.call_target_is_allowed(REAL_SERVICE_URL) is False
+    assert cfg.call_target_is_allowed("") is False
+
+
+def test_call_runner_optin_without_allowlist_still_refuses(monkeypatch):
+    monkeypatch.setenv("RUN_LIVE_CALL_TESTS", "1")
+    monkeypatch.delenv("CALL_TEST_TARGET_ALLOWLIST", raising=False)
+    cfg = _load_call_config()
+    assert cfg.call_target_is_allowed(REAL_CALL_NUMBER) is False
+
+
+def test_call_runner_allows_only_explicit_demo_target(monkeypatch):
+    monkeypatch.setenv("RUN_LIVE_CALL_TESTS", "1")
+    monkeypatch.setenv(
+        "CALL_TEST_TARGET_ALLOWLIST", "+441111000000, https://demo.example.com"
+    )
+    cfg = _load_call_config()
+    assert cfg.call_target_is_allowed("+441111000000") is True
+    assert cfg.call_target_is_allowed("https://demo.example.com") is True
+    # Real targets stay refused even with a demo allowlist set.
+    assert cfg.call_target_is_allowed(REAL_CALL_NUMBER) is False
+    assert cfg.call_target_is_allowed(REAL_SERVICE_URL) is False

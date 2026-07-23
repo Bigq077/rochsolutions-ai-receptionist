@@ -46,6 +46,7 @@ from tests.auto.config import (
     TWILIO_TEST_NUMBER,
     ELEVENLABS_API_KEY,
     USE_DIRECT_WS,
+    call_target_is_allowed,
 )
 from tests.auto.call_runner import CallRunner
 from tests.auto.evaluator import Evaluator
@@ -596,6 +597,32 @@ async def main():
     if not scenarios_to_run:
         print("No matching scenarios found.")
         return
+
+    # ── HARD SAFETY GATE — never drive a non-demo target ─────────────────────
+    # This harness books REAL appointments in whatever service it drives (both
+    # direct-WS and --real-calls modes). Refuse the whole run unless live call
+    # tests are opted in AND every target it would contact is an allow-listed
+    # demo target — so a test can never book into a real practitioner's calendar.
+    if args.real_calls:
+        _targets = sorted({s.get("twilio_to", SUSIE_NUMBER) for s in scenarios_to_run})
+    else:
+        _targets = [RENDER_SERVER_URL]
+    _blocked = [t for t in _targets if not call_target_is_allowed(t)]
+    if _blocked:
+        print("\n" + "=" * 60)
+        print("REFUSED — these call-test target(s) are not allow-listed demo targets:")
+        for t in _blocked:
+            print(f"    • {t}")
+        print(
+            "\nThis harness books REAL appointments in whatever service it drives.\n"
+            "To run it, point it at the DEMO deployment and declare that target:\n"
+            "    RUN_LIVE_CALL_TESTS=1\n"
+            "    CALL_TEST_TARGET_ALLOWLIST='<demo number and/or demo base URL>'\n"
+            "Never list a real clinic number/URL. Refusing so a test cannot book\n"
+            "into a real practitioner's calendar."
+        )
+        print("=" * 60)
+        sys.exit(2)
 
     # Validate required environment variables before making any calls
     # Twilio credentials are only needed for real-call mode
