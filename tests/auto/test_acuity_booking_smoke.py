@@ -49,9 +49,29 @@ LOCATIONS = [
     },
 ]
 
+# ── Opt-in gate ──────────────────────────────────────────────────────────────
+# Credentials alone are NOT enough to arm this test. The root conftest.py runs
+# load_dotenv(override=True) for EVERY pytest invocation, so the live Acuity
+# credentials are ALWAYS present in the environment — a credential-only skip
+# guard therefore never skips, and a plain `pytest` silently creates (and, if
+# the run is interrupted before the cancel, strands) real appointments in the
+# clinic's live Acuity calendar. That is exactly how a batch of stray
+# "Test Booking" appointments reached production.
+#
+# A live *write* test must be armed deliberately, never by merely running the
+# suite. Set RUN_LIVE_ACUITY_BOOKING_TESTS=1 to opt in.
+_LIVE_BOOKING_OPT_IN = os.getenv(
+    "RUN_LIVE_ACUITY_BOOKING_TESTS", ""
+).strip().lower() in ("1", "true", "yes", "on")
+
 _skip = pytest.mark.skipif(
-    not (ACUITY_USER_ID and ACUITY_API_KEY),
-    reason="ACUITY_USER_ID / ACUITY_API_KEY not set — skipping live booking test",
+    not (_LIVE_BOOKING_OPT_IN and ACUITY_USER_ID and ACUITY_API_KEY),
+    reason=(
+        "Live Acuity booking test is opt-in. It creates a REAL appointment in the "
+        "clinic calendar, so it is skipped unless RUN_LIVE_ACUITY_BOOKING_TESTS=1 "
+        "is set explicitly (in addition to ACUITY_USER_ID / ACUITY_API_KEY). "
+        "This guard exists so a plain `pytest` run can never book against production."
+    ),
 )
 
 
@@ -106,14 +126,26 @@ async def _book_and_cancel(adapter, location: dict) -> None:
     )
 
     booking = await adapter.create_booking(request)
-    print(f"[{name}] Booking created: id={booking.provider_booking_id}")
+    bid = booking.provider_booking_id
+    print(f"[{name}] Booking created: id={bid}")
 
-    assert booking.provider_booking_id, f"[{name}] Booking returned no ID"
+    # ── 3. Cancel immediately — guaranteed attempt ───────────────────────────
+    # The cancel MUST run even if the assertion below fails or cancel_booking
+    # raises, otherwise a failed test leaves a live appointment behind. Any
+    # orphan is announced loudly with its ID so it can be removed by hand.
+    cancelled = False
+    try:
+        assert bid, f"[{name}] Booking returned no ID"
+        cancelled = await adapter.cancel_booking(bid)
+    finally:
+        print(f"[{name}] Booking cancelled: {cancelled}")
+        if bid and not cancelled:
+            print(
+                f"[{name}] ⚠️  ORPHANED LIVE BOOKING {bid} — automatic cancel "
+                f"FAILED. Cancel it manually in Acuity immediately."
+            )
 
-    # ── 3. Cancel immediately ────────────────────────────────────────────────
-    cancelled = await adapter.cancel_booking(booking.provider_booking_id)
-    print(f"[{name}] Booking cancelled: {cancelled}")
-    assert cancelled, f"[{name}] Failed to cancel test booking {booking.provider_booking_id}"
+    assert cancelled, f"[{name}] Failed to cancel test booking {bid}"
 
 
 @_skip
