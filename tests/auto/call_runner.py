@@ -42,6 +42,7 @@ from .config import (
     TWILIO_AUTH_TOKEN,
     TWILIO_TEST_NUMBER,
     USE_DIRECT_WS,
+    call_target_is_allowed,
 )
 
 logger = logging.getLogger(__name__)
@@ -134,6 +135,26 @@ class CallRunner:
         """Make the call, run the scenario, return full result dict."""
         self.call_start_time = time.time()
         self.call_complete.clear()
+
+        # ── HARD SAFETY GATE — refuse to drive a non-demo target ─────────────
+        # Every scenario reaches a real service through here (direct-WS below, or
+        # the Twilio call further down), and that service books into ITS Acuity
+        # calendar. Refuse unless the target has been explicitly declared a demo
+        # target, so a test can never create a booking in a real practitioner's
+        # calendar via the call runner. The target is the service URL in
+        # direct-WS mode, or the dialled number in real-call mode.
+        _target = RENDER_SERVER_URL if USE_DIRECT_WS else self._target_number
+        if not call_target_is_allowed(_target):
+            self.end_reason = "refused_non_demo_target"
+            self.call_end_time = time.time()
+            logger.error(
+                "[%s] REFUSED — call-test target %r is not an allow-listed demo "
+                "target. Set RUN_LIVE_CALL_TESTS=1 and add the DEMO number/URL to "
+                "CALL_TEST_TARGET_ALLOWLIST. Refusing so a test cannot book into a "
+                "real practitioner's calendar.",
+                self.scenario["id"], _target,
+            )
+            return self._build_result()
 
         if USE_DIRECT_WS:
             return await self._run_direct_ws()
