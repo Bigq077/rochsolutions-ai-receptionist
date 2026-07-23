@@ -398,6 +398,64 @@ def _get_reasoning_drop_reason(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Gate 5f — false-confirmation guard (P1 #5 / F-023)
+# ---------------------------------------------------------------------------
+# CALL 5: book_appointment was REJECTED (confirmation_required, no calendar
+# event) yet the model narrated "All booked" — a phantom appointment the clinic
+# has no record of. This detector fires ONLY on a CLAIM that a booking is
+# complete, so it can be acted on while no booking has actually succeeded this
+# call (session["booking_write_confirmed"] unset).
+#
+# It must never fire on an offer, a question, a negation, or an in-progress
+# statement — the over-fire failure mode stripped a real confirmation and
+# abandoned a completed booking once already (Gate 5c, 2026-06-12). Measured
+# against both classes in tests/regression/test_false_confirmation_guard.py:
+# 18/18 phantom claims caught, 0 false positives across 27 legitimate lines.
+_FALSE_CONFIRM_CLAIM_RE = re.compile(
+    r"""\b(
+        (youre|you\s+are|thats|that\s+is|its|it\s+is)\s+(all\s+|now\s+)?(booked|confirmed)(\s+in)?
+      | youre\s+booked\s+in
+      | all\s+booked\s+in
+      | (ive|i\s+have|weve|we\s+have)\s+(now\s+)?booked\s+(you|that|it|your)
+      | (ive|i\s+have)\s+got\s+you\s+booked
+      | (got|put)\s+you\s+(booked\s+)?(in|down)\s+for
+      | your\s+(appointment|booking)\s+is\s+(booked|confirmed|all\s+set|sorted)
+    )""",
+    re.X,
+)
+# Any of these means the sentence is NOT a completion claim (offer / question /
+# negation / intent), so the guard stands down even if a claim token is present.
+_FALSE_CONFIRM_NEG_RE = re.compile(
+    r"\b(not|havent|cannot|cant|wont|once|after|before|shall\s+i|would\s+you"
+    r"|can\s+i|do\s+you\s+want|want\s+me\s+to|like\s+me\s+to|going\s+to|ill"
+    r"|i\s+will|let\s+me|need\s+to|to\s+book)\b"
+)
+
+# What the caller hears instead of a phantom "all booked": the same recovery
+# CALL 12 did correctly. A question, and free of any claim token, so it can
+# never re-trigger the guard.
+_FALSE_CONFIRM_RESTEER = (
+    "Sorry — before I confirm anything, shall I go ahead and book that in for you?"
+)
+
+
+def _false_confirmation_claim(text: str) -> bool:
+    """True if `text` CLAIMS a booking is complete (not offers/asks/intends).
+
+    Normalisation mirrors the screening layer: lower-case and DELETE apostrophes
+    ("you're" -> "youre") so contractions match, then blank other punctuation.
+    A question (`?`) or any negation/offer/intent cue stands the guard down.
+    """
+    if not text or "?" in text:
+        return False
+    norm = text.lower().replace("'", "").replace("’", "")
+    norm = " " + re.sub(r"[^a-z0-9 ]+", " ", norm).strip() + " "
+    if _FALSE_CONFIRM_NEG_RE.search(norm):
+        return False
+    return _FALSE_CONFIRM_CLAIM_RE.search(norm) is not None
+
+
+# ---------------------------------------------------------------------------
 # sanitise_response — public API, called per-chunk from llm_stream.py
 # ---------------------------------------------------------------------------
 
@@ -564,6 +622,36 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
         if _diag_cleaned != result and _diag_cleaned.strip():
             logger.info("[ms_gate5] removed diagnostic assertion (standard tier)")
             result = _diag_cleaned
+
+    # ── Gate 5f: false-confirmation guard (P1 #5 / F-023) ────────────────────
+    # While the caller is booking but NO booking has actually succeeded this call
+    # (booking_write_confirmed is set only by _note_book_write_result on a
+    # success:True from book_appointment), a chunk that CLAIMS the booking is
+    # done is a phantom. Runs AFTER Gate 5c so the re-steer question — which
+    # contains "shall I book" — is not itself stripped as a redundant offer.
+    # First claim this turn is re-steered to the confirmation question; any
+    # further claim in the same turn is dropped so the caller never hears it.
+    if (
+        session.get("booking_flow_active")
+        and not session.get("booking_write_confirmed")
+        and _false_confirmation_claim(result)
+    ):
+        session["_false_confirm_guard_fired"] = (
+            int(session.get("_false_confirm_guard_fired") or 0) + 1
+        )
+        if not session.get("_false_confirm_resteered"):
+            session["_false_confirm_resteered"] = True
+            logger.error(
+                "[ms_gate5f] false booking confirmation with no successful "
+                "book_appointment — re-steering to the confirmation question: %r",
+                result[:80],
+            )
+            return _FALSE_CONFIRM_RESTEER
+        logger.error(
+            "[ms_gate5f] additional false-confirmation chunk dropped: %r",
+            result[:80],
+        )
+        return ""
 
     result = result.replace("\n", " ")
     result = _MULTI_SPACE_RE.sub(" ", result)

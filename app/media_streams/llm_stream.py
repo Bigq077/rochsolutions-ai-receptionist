@@ -203,6 +203,37 @@ def _caller_wants_new_slot(messages) -> bool:
     return bool(words & _NEW_SLOT_INTENT_WORDS)
 
 
+def _note_book_write_result(session: dict, tool_name: str, result):
+    """P1 #5 / F-023 — Layers 1 & 2 of the false-confirmation guard.
+
+    Layer 1: when book_appointment actually SUCCEEDS, record it deterministically
+    on the session. This is the "a real booking exists" signal the output guard
+    (turn_handler Gate 5f) checks — it did not exist before, so success language
+    could not previously be gated on a real result.
+
+    Layer 2: when book_appointment is blocked or fails, attach an explicit rule
+    to the tool_result the model reads, forbidding a success claim. Steering only
+    — it fires on the already-failed path, so it can never suppress a real
+    booking.
+
+    Reschedule is intentionally out of scope: its confirmation is a different
+    phrase family ("moved"), and Gate 5f targets booking phantoms.
+    """
+    if tool_name != "book_appointment" or not isinstance(result, dict):
+        return result
+    if result.get("success") is True:
+        session["booking_write_confirmed"] = True
+        return result
+    result = dict(result)
+    result.setdefault(
+        "caller_message_rule",
+        "The booking was NOT made. Do not tell the caller they are booked, "
+        "confirmed, or all set. Ask the outstanding question, and only state a "
+        "booking once book_appointment returns success.",
+    )
+    return result
+
+
 def _book_reply_is_affirmative(messages) -> bool:
     """FM-01: book_appointment may fire only on a clear caller YES to the
     "Shall I go ahead and book that in?" confirmation. The question-asked guard
@@ -927,6 +958,12 @@ class LLMStream:
         #   _v3_post_turn_speech guard, so the deferral is always safe there.)
         session["_turn_real_tts"]    = False
         session["_check_av_ran_turn"] = False
+        # P1 #5: the false-confirmation re-steer fires at most once per turn (the
+        # first phantom chunk becomes the confirmation question; later ones are
+        # dropped). booking_write_confirmed is NOT reset here — a real booking is
+        # call-scoped, so once one succeeds the guard stays off for the rest of
+        # the call.
+        session["_false_confirm_resteered"] = False
         _flow_suppressed: bool = False
 
         for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
@@ -2032,6 +2069,11 @@ class LLMStream:
                 # guarantee can choose the no-availability fallback over the
                 # generic re-ask when the turn ends with no audible speech.
                 session["_check_av_ran_turn"] = True
+
+            # P1 #5 / F-023: record a successful booking write (Layer 1) and
+            # attach a do-not-claim-success rule to a blocked/failed one
+            # (Layer 2) before the model sees the result.
+            result = _note_book_write_result(session, tool_name, result)
 
             logger.info(
                 "[ms_llm] tool result: name=%s result=%s",
