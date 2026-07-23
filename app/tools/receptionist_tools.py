@@ -4383,7 +4383,30 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
             )
             return {"success": False, "error": _scr_reason}
     except Exception:
-        logger.exception("[book] clinical screening backstop failed — failing open")
+        # Fail CLOSED on the safety-relevant signal, not blindly. The block
+        # condition — a pending or positive red-flag screen — lives in the
+        # SESSION (keys mirror clinical_screening.PENDING_SCREEN_KEY /
+        # SCREEN_RED_FLAG_KEY), so we can honour it even when the clinic lookup
+        # or the import is exactly what threw. Referencing the literals rather
+        # than re-importing keeps this handler working when that import is the
+        # failure. If no screen was ever armed there is nothing to guard, so we
+        # proceed — blocking every booking on any transient error, including for
+        # clinics that have no screening at all, would be a worse bug.
+        logger.exception("[book] clinical screening backstop errored")
+        if session.get("pending_screen") or session.get("screen_red_flag"):
+            logger.error(
+                "[book] backstop errored while a screen was pending/positive "
+                "(%s) — failing CLOSED",
+                (session.get("pending_screen") or session.get("screen_red_flag")),
+            )
+            return {
+                "success": False,
+                "error": (
+                    "Booking is paused for a safety check that has not been "
+                    "completed. Please ask the outstanding screening question and "
+                    "only book once the caller has answered it."
+                ),
+            }
 
     # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
     if _resolve_clinic_id(session) in ("theorem", "theorem_v2", "theorem_v3"):
