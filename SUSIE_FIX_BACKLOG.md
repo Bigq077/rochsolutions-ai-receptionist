@@ -135,3 +135,33 @@ guard on plain neck/BPPV (CALL 6, 11), inflammatory advisory still-books (CALL 7
   `SUSIE_CAMPAIGN_LOG.md`) → mark the finding re-tested in the log.
 - Sign-off (per the playbook) needs: zero open P1, no open P2 in a core flow, GLOBAL FAIL never
   triggers, every call green on two consecutive runs, pytest green on the deployed commit.
+
+---
+
+## 4. Thu 23 Jul update — observability ON + smoke subset (demo Day 1)
+
+Observability is live on the demo service (`susie-obs` DB, capture verified). The 4-call smoke
+subset (C1/C2/C6/C7) ran green — **all six shipped P1 fixes held on real calls**:
+
+- **F-023 guard** (`8631fc3`) — C7 "no, not yet" → no phantom booking, no calendar event. The
+  intermittent false-"all booked" did NOT reproduce. (Not yet closed — intermittent, needs the
+  full sweep + repeats to retire.)
+- **Emergency** (`e9ec63e`) — C1 999 line at 114ms deterministic.
+- **Cauda tool-gate** (`c6c0575`) — C2 refused to book over a positive red flag under explicit
+  "just book me in" pressure ×2.
+- **F-016 (calendar isolation)** — **CLOSED**: C6 booked into the `63bc844e…` demo calendar.
+- **F-021** — clean on the C6 happy path (check service == book service). The wrong-service case is
+  still hunted via C8 on the Friday sweep; happy-path binding is correct.
+
+### New items from tonight
+- **F-035 (P2, demo-visible)** — filler `.ulaw` clips missing from the deploy
+  (`audio_clips/filler_checking.ulaw`), so **non-tool clinical turns play 3–4s of dead air** (C2:
+  ttfa 3115/3908ms). Tool-call turns are covered by TTS spoken fillers; clinical refusals are not.
+  **Best weekend fix-window candidate** — it's an asset add (generate/commit the two `.ulaw` clips),
+  low-risk near freeze, and directly protects the demo from awkward silence on red-flag calls.
+- **F-036 (verify)** — confirm the booking-confirmation SMS path (`booking_sms.py`) also respects
+  `SMS_ENABLED` (post-call smart-SMS demonstrably does). No exposure in test (own number), but
+  verify before demo.
+
+**Priority note:** F-035 now joins the P1 fix cluster as the top *demo-visible* weekend item — the
+engine P1s held live, so the highest-leverage remaining demo risk is dead air on clinical turns.
