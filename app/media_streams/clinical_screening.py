@@ -115,6 +115,52 @@ def _kw_in(keyword: str, text_norm: str) -> bool:
     return re.search(rf"(?<!\w){re.escape(k)}{_KW_INFLECTION}(?!\w)", text_norm) is not None
 
 
+# Filler words tolerated between the words of a multi-word TRIGGER keyword.
+# Callers rarely use the config's exact phrasing — "losing weight" is said as
+# "losing a bit of weight", "both wrists" as "both my wrists". 3 covers natural
+# insertions ("a bit of") while staying tight enough that words scattered across
+# an unrelated sentence do not connect into a spurious trigger (measured: 0 new
+# false-fires on the benign corpus; a larger window starts joining unrelated
+# clauses). TRIGGERS ONLY — see _phrase_in.
+_TRIGGER_MAX_GAP = 3
+
+
+def _phrase_in(keyword: str, text_norm: str, max_gap: int) -> bool:
+    """The words of `keyword` appear IN ORDER in text_norm, each within
+    `max_gap` filler words of the previous. Single-word keywords defer to
+    `_kw_in` (boundary + inflection) unchanged.
+
+    Used for TRIGGER matching only. Trigger failure just fails to ask a screen
+    question — recoverable, and exactly the P1 #3 recall gap. Answer
+    classification and the emergency intercept keep strict `_kw_in`: loosening
+    those would add escalation / 999 surface, the wrong direction.
+
+    Order matters and is deliberate: "night pain" does NOT match "pain … night".
+    Reverse-order phrasings are a config-vocabulary question (add the variant as
+    its own keyword), not something to solve by making the matcher order-blind —
+    that multiplies spurious combinations across every screen.
+    """
+    words = _norm(keyword).split()
+    if len(words) <= 1:
+        return _kw_in(keyword, text_norm)
+    tokens = text_norm.split()
+    pos = 0
+    last = -1
+    for w in words:
+        found = -1
+        for i in range(pos, len(tokens)):
+            if _kw_in(w, tokens[i]):
+                found = i
+                break
+        if found < 0:
+            return False
+        if last >= 0 and found - last - 1 > max_gap:
+            return False
+        last = found
+        pos = found + 1
+    return True
+
+
 def screening_config(clinic: Dict[str, Any]) -> Dict[str, Any]:
     cs = clinic.get("clinical_screening") or {}
     return cs if cs.get("enabled") else {}
@@ -174,10 +220,12 @@ def _screen_triggered(text_norm: str, screen: Dict[str, Any]) -> bool:
     groups = screen.get("trigger_all_groups")
     if groups:
         return all(
-            any(_kw_in(k, text_norm) for k in group) for group in groups if group
+            any(_phrase_in(k, text_norm, _TRIGGER_MAX_GAP) for k in group)
+            for group in groups if group
         )
     return any(
-        _kw_in(k, text_norm) for k in (screen.get("trigger_keywords") or [])
+        _phrase_in(k, text_norm, _TRIGGER_MAX_GAP)
+        for k in (screen.get("trigger_keywords") or [])
     )
 
 
