@@ -79,6 +79,32 @@ _skip = pytest.mark.skipif(
 )
 
 
+# ── HARD SAFETY: demo-calendar allowlist ─────────────────────────────────────
+# The opt-in flag above decides *whether the test runs at all*. This second gate
+# decides *which calendar it is allowed to write to* — and it is the guarantee
+# that a test can NEVER create a booking in Mark's, or any real practitioner's,
+# calendar.
+#
+# The credentials/calendar a booking lands in are determined by the ENVIRONMENT
+# (which .env is loaded), NOT by the git branch. The stray "Test Booking"
+# appointments were created by running pytest locally against the root .env,
+# which holds the REAL Theorem Acuity credentials — the branch was irrelevant.
+#
+# Therefore a live booking may be created ONLY in a calendar whose ID is listed
+# explicitly in ACUITY_TEST_BOOKING_CALENDAR_ALLOWLIST (comma-separated). The
+# allowlist is EMPTY by default, so by default no calendar is bookable at all.
+# Only the demo deployment (e.g. the latency-eval / demo calendar) should ever
+# set it, to the demo calendar ID(s). A real practitioner's calendar ID must
+# never be added, which is what makes booking a real calendar impossible.
+def _calendar_is_test_safe(cal_id: str) -> bool:
+    allowed = {
+        c.strip()
+        for c in os.getenv("ACUITY_TEST_BOOKING_CALENDAR_ALLOWLIST", "").split(",")
+        if c.strip()
+    }
+    return bool(cal_id) and cal_id.strip() in allowed
+
+
 @pytest.fixture
 def adapter():
     from app.booking.booking.providers.acuity import AcuityAdapter
@@ -97,6 +123,20 @@ async def _book_and_cancel(adapter, location: dict) -> None:
     type_id = location["appointment_type_id"]
     cal_id = os.getenv(location["calendar_env"], location["calendar_fallback"]).strip()
     practitioner_id = f"acuity_cal_{cal_id}" if cal_id else None
+
+    # ── 0. HARD SAFETY GATE — refuse to book a non-allow-listed calendar ─────
+    # This runs before ANY live call. If the target calendar has not been
+    # explicitly declared a safe/demo calendar, we skip rather than risk
+    # creating an appointment in a real practitioner's calendar. Booking with no
+    # calendar id is also refused, because Acuity would then assign a default
+    # (possibly real) calendar.
+    if not _calendar_is_test_safe(cal_id):
+        pytest.skip(
+            f"[{name}] calendar {cal_id!r} is NOT in "
+            "ACUITY_TEST_BOOKING_CALENDAR_ALLOWLIST — refusing to create a live "
+            "booking in a non-allow-listed (possibly real) calendar. Set the "
+            "allowlist to the demo calendar id only on the demo deployment."
+        )
 
     # ── 1. Get first available slot ──────────────────────────────────────────
     start = date.today() + timedelta(days=1)
