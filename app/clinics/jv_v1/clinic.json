@@ -205,7 +205,7 @@
         "id": "cauda_equina",
         "label": "Lower back / leg (cauda equina)",
         "presentation": "lower back, lumbar or leg / sciatica pain",
-        "trigger_keywords": ["lower back", "low back", "lumbar", "back pain", "back ache", "backache", "my back", "sciatica", "sciatic", "leg pain", "pain down my leg", "down my leg", "slipped disc", "herniated disc", "bulging disc", "trapped nerve"],
+        "trigger_keywords": ["lower back", "low back", "lumbar", "back pain", "back ache", "backache", "my back", "sore back", "bad back", "back is sore", "backs sore", "stiff back", "aching back", "hurt my back", "done my back", "dodgy back", "sore lower back", "put my back out", "back went", "sciatica", "sciatic", "leg pain", "pain down my leg", "down my leg", "slipped disc", "herniated disc", "bulging disc", "trapped nerve"],
         "screen_question": "Before we look at the next step, can I ask — do you have any numbness around the saddle area between your legs, or any changes in your bladder or bowel control?",
         "red_flag_answer_keywords": ["numb", "can't feel", "cannot feel", "no feeling", "bladder", "bowel", "wet myself", "incontinent", "incontinence", "had an accident", "both legs", "saddle", "groin", "genital", "tingling in both", "pins and needles in both"],
         "escalation": "Those particular symptoms need checking urgently rather than waiting for a physio appointment — please contact NHS 111 now, or go straight to A&E if it's severe. I won't book you in just yet, but do call us back once you've been seen and we'll get you sorted."
