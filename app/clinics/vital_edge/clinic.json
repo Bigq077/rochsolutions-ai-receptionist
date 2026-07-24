@@ -110,6 +110,7 @@
     "payment_timing_note": "Payment is arranged before the appointment — Jonathan will confirm the details when he gets in touch to confirm the booking.",
     "pricing_default_line": "Default to the 60-minute Deep Tissue Massage fee (£125) when a caller asks 'how much is an appointment'.",
     "default_price_summary": "A 60-minute Deep Tissue Massage is £125, and a 90-minute session is £175.",
+    "duration_choice_note": "Deep Tissue Massage is the ONLY service with a length choice: 60 minutes at £125, or 90 minutes at £175. Whenever a caller wants a Deep Tissue Massage, ask which length they'd like — the 60-minute or the 90-minute — and state both prices when you ask, BEFORE offering any appointment times. Once they choose, pass duration_minutes (60 or 90) to book_appointment. Every other massage has a single fixed length, so never ask about length for those.",
     "tagline": "Relax, Rejuvenate, and Restore Your Body",
     "greeting": "Hi there, I'm Susie, Vital Edge Therapy's AI receptionist — how can I help you today?",
     "ai_self_response": "Yes, I'm an AI receptionist for Vital Edge Therapy — I can answer questions and arrange appointments for you.",
