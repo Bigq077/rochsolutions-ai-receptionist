@@ -68,6 +68,7 @@ from .config import (
     ws_c_profile_for_phase,
 )
 from .filler_guard import FillerGuard
+from .reask_variants import classify_question, normalize_phrase, variant_for
 
 # Pre-slot TTS cancellation marker — mirrors PRE_SLOT_MARKER in llm_stream.py.
 # Defined here independently so connection.py does not import from llm_stream
@@ -1862,6 +1863,19 @@ class SilenceHandler:
         # Reset to False on WATCHDOG_START (new q_gen arm) and when a new FINAL
         # transcript is accepted and processed (caller spoke → fresh turn).
         self._reask_completed: bool = False
+        # Every no-input re-ask phrase spoken so far THIS CALL, normalized.
+        #
+        # Deliberately call-scoped, not per-q_gen: the watchdog fires at most
+        # once per question generation (_no_input_reask_count resets in
+        # on_question_asked and on every accepted transcript), so a per-q_gen
+        # set would never hold more than one entry and could never detect a
+        # repeat.  The repetition callers actually hear is ACROSS turns — the
+        # same question comes round again, and its re-ask replays the same
+        # sentence.  Only a call-scoped set sees that.
+        #
+        # Never cleared during the call: hearing the identical sentence a
+        # second time is the defect regardless of how many turns separate them.
+        self._spoken_reask_phrases: set[str] = set()
         # Timestamp when the last question's TTS audio finished playing (set in
         # on_tts_finished just before _restart_timer).  Used by _speech_recovery to
         # enforce a minimum response window so energy VAD noise before the caller
@@ -3221,7 +3235,15 @@ class SilenceHandler:
                 await self._transfer()
                 return
 
-            # Build contextual re-ask phrase
+            # Build contextual re-ask phrase.
+            #
+            # _phrase_is_replay marks the branches that echo `last_question`
+            # back rather than emitting a purpose-written script.  Only those
+            # are eligible for the no-repeat guard below: the location retry
+            # ladders and the DTMF/keypad prompts must ALWAYS be spoken as
+            # written even if repeated, because swapping a keypad instruction
+            # for a softer phrase would strand the caller mid-escalation.
+            _phrase_is_replay = False
             if _attempt == 1:
                 _prefix = "Sorry, I didn't catch that"
             else:  # attempt 2
@@ -3301,6 +3323,7 @@ class SilenceHandler:
                         # Spec O: strip leading affirmation before re-ask
                         _lq_body = _strip_leading_affirmation(_lq_g.strip())
                         phrase = _prefix + ". " + (_lq_body[0].upper() + _lq_body[1:])
+                        _phrase_is_replay = True
                     else:
                         phrase = _prefix + " — how can I help today?"
             elif _state == "ASK_LOCATION":
@@ -3362,6 +3385,7 @@ class SilenceHandler:
             ):
                 _lq = (_sess or {}).get("last_question", "")
                 phrase = _lq if _lq else _prefix + " — which option works best?"
+                _phrase_is_replay = bool(_lq)
             elif _state == "CONFIRM_BOOKING":
                 phrase = _prefix + " — please say yes to confirm, or no to change it."
             elif _state in (
@@ -3381,6 +3405,7 @@ class SilenceHandler:
                 _lq = (_sess or {}).get("last_question") or self.last_question
                 if _lq and _lq.strip():
                     phrase = _prefix + ". " + _lq.strip()
+                    _phrase_is_replay = True
                 else:
                     phrase = _prefix + " — could you say that again?"
 
@@ -3391,6 +3416,49 @@ class SilenceHandler:
             # patience just granted.
             if _is_patience_response((_sess or {}).get("last_bot_prompt") or ""):
                 phrase = "No rush — are you still there?"
+                # Purpose-written, not an echo of last_question — so it is not
+                # eligible for the replay guard below even if a replay branch
+                # above had already built a phrase.
+                _phrase_is_replay = False
+
+            # ── No-repeat guard (call-scoped) ─────────────────────────────────
+            # Saying the identical sentence back to a caller twice is the single
+            # thing that reads as broken software rather than as a receptionist
+            # asking again.  The watchdog fires at most once per q_gen, so a
+            # repeat can only arise ACROSS turns: the same question comes round
+            # again and its re-ask replays the same words.
+            #
+            # Scope is deliberately narrow.  Only the branches that echo
+            # `last_question` are eligible (_phrase_is_replay); every scripted
+            # branch — both location ladders, the DTMF keypad prompts, the
+            # name/phone/confirm scripts — is spoken as written, always.
+            #
+            # Best-effort by design: if no unused variant exists we keep the
+            # original phrase.  The guard may improve a re-ask; it must never
+            # block one, because silence is worse than repetition.
+            if _phrase_is_replay and normalize_phrase(phrase) in self._spoken_reask_phrases:
+                _lq_for_class = (_sess or {}).get("last_question") or self.last_question or ""
+                _archetype = classify_question(_lq_for_class)
+                _variant = variant_for(
+                    _archetype, 2, already_said=self._spoken_reask_phrases
+                )
+                if _variant:
+                    logger.info(
+                        "[ms_watchdog] WATCHDOG_NO_REPEAT q_gen=%d archetype=%s "
+                        "suppressed=%r → %r",
+                        q_gen, _archetype, phrase[:60], _variant[:60],
+                    )
+                    phrase = _variant
+                else:
+                    logger.info(
+                        "[ms_watchdog] WATCHDOG_NO_REPEAT q_gen=%d archetype=%s "
+                        "repeat detected but no unused variant — keeping %r",
+                        q_gen, _archetype, phrase[:60],
+                    )
+
+            # Record every re-ask actually spoken, scripted or not, so the guard
+            # above sees the full history of what this caller has been told.
+            self._spoken_reask_phrases.add(normalize_phrase(phrase))
 
             logger.info("[ms_watchdog] WATCHDOG_FIRE prompt=%r attempt=#%d", phrase[:80], _attempt)
             self.currently_reasking = True
