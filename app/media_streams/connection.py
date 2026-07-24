@@ -758,6 +758,99 @@ def _transcript_has_booking_intent(text: str) -> bool:
     return any(s in t for s in _BOOKING_INTENT_SIGNALS)
 
 
+# ── CTA acceptance detection (S-09, 2026-07-24) ─────────────────────────────
+# When the previous bot reply carried a booking CTA ("would you like to book an
+# appointment?"), the caller's reply is checked against this vocabulary to
+# decide whether they said yes.  The vocabulary used to be nine tokens
+# (yes/yeah/yep/sure/okay/ok/yup/absolutely/definitely + "go ahead"), which
+# misses most natural British acceptances — "go on then", "please do", "sounds
+# good", "that'd be great".  A miss reads to the caller as Susie ignoring their
+# yes.
+#
+# Affirm detection stays SPLIT strong vs weak.  Weak tokens ("i do", "course",
+# "go on", "fine") also occur inside wh-questions — "what do I do?", "how long
+# does it go on?" — so a weak-only match inside a wh-question is discarded.
+# Strong tokens bypass that guard, so nothing ambiguous belongs in the strong
+# set.  (Call 6, 2026-06-18: an emergency "…might have broken my hip, what do I
+# do, what do I do" matched "i do" and falsely fired a booking ack.)
+#
+# The bias is deliberately asymmetric.  A MISS costs one LLM turn — the model
+# usually handles the yes anyway.  A FALSE POSITIVE sets booking_flow_active,
+# which makes the LLM tack a booking push onto every later FAQ answer (BUG-7).
+# Hence the decline guard below runs FIRST and wins outright.
+_CTA_DECLINE_RE = re.compile(
+    r"""(?ix)
+    # Leading refusal — but "no worries" / "no problem" are ACCEPTANCES.
+    ^\s*(?:no|nope|nah)\b(?!\s+(?:worries|problem|bother|rush))
+    |
+    \b(?:
+        no\s+thanks | no\s+thank\s+you
+      | not\s+right\s+now | not\s+at\s+the\s+moment | not\s+just\s+yet
+      | not\s+yet | not\s+today | maybe\s+later | another\s+time
+      | (?:definitely|absolutely)\s+not | (?:i'?d\s+)?rather\s+not
+      # "I'm not sure" matched the strong token \bsure\b and scored as a yes
+      # (pre-existing — the old inline regex had the same hole).
+      | not\s+(?:sure|really) | don'?t\s+think\s+so
+      # "I'm fine / I'm good / I'm okay" is a British DECLINE, not an affirm.
+      | i'?m\s+(?:fine|okay|ok|alright|good|all\s+right)
+    )\b
+    """
+)
+
+_CTA_STRONG_AFFIRM_RE = re.compile(
+    r"""(?ix)
+    \b(?:
+        yes | yeah | yep | yup | sure | okay | ok
+      | absolutely | definitely
+      | perfect | brilliant | lovely | wonderful
+    )\b
+    | \bgo\s+ahead\b
+    | \bgo\s+on\s+then\b            # the S-09 report: caller said exactly this
+    | \bcarry\s+on\b
+    | \bplease\s+(?:do|book)\b
+    | \bsounds\s+(?:good|great|perfect|lovely)\b
+    | \bthat\s+(?:works|would\s+work)\b
+    | \bthat'?d\s+work\b
+    | \bthat(?:'?s|\s+is)\s+(?:great|perfect|fine)\b
+    # "that would be great" / "that'd be great" — the apostrophe form has no
+    # space after "that", so it needs its own alternative.
+    | \bthat(?:\s+would|\s*'?d)\s+be\s+(?:great|good|perfect|lovely|brilliant)\b
+    # British acceptances that OPEN with "no".  The decline guard above lets
+    # these through by lookahead; they must then match something here.
+    | \bno\s+(?:worries|problem|bother)\b
+    | \blet'?s\s+(?:do\s+(?:it|that)|get\s+(?:it|that)\s+(?:done|booked))\b
+    | \b(?:i'?d|i\s+would)\s+like\s+that\b
+    | \bbook\s+(?:me\s+in|me|it|that)\b
+    | \bif\s+you\s+(?:could|would|can)\b
+    """
+)
+
+_CTA_WEAK_AFFIRM_RE = re.compile(
+    r"(?i)\b(?:i would|i do|course|go on|alright|all right|fine)\b"
+)
+
+_CTA_WH_QUESTION_RE = re.compile(
+    r"(?i)\b(?:what|how|why|where|when|which)\b"
+)
+
+
+def _utterance_affirms_cta(utterance: str) -> bool:
+    """True when *utterance* accepts a booking CTA the bot just offered.
+
+    Caller-side half of the CTA-affirm check only — the caller having been
+    OFFERED a CTA is checked separately at the call site.
+    """
+    text = utterance or ""
+    if _CTA_DECLINE_RE.search(text):
+        return False
+    if _CTA_STRONG_AFFIRM_RE.search(text):
+        return True
+    return bool(
+        _CTA_WEAK_AFFIRM_RE.search(text)
+        and not _CTA_WH_QUESTION_RE.search(text)
+    )
+
+
 # Phrases that signal the caller wants the practitioner to travel to them
 # (a home / outcall visit) rather than come into the clinic. Specific enough to
 # avoid false positives on "come to the clinic" / "I work from home".
@@ -9201,36 +9294,14 @@ class WebSocketCallHandler:
                                 p in _prev_bot_lower
                                 for p in _CTA_BOOKING_PHRASES
                             )
-                            # Affirm detection is split strong vs weak.  Strong
-                            # tokens (yes/yeah/sure/…) are unambiguous.  Weak
-                            # tokens ("i do", "i would", "course") also occur
-                            # INSIDE wh-questions and distress phrases — e.g.
-                            # "what do I do?" contains "\bi do\b".  A weak-only
-                            # match inside a wh-question is NOT a booking
-                            # affirmation, so it is discarded; strong tokens are
-                            # left fully intact (so "yes, when can I come in?"
-                            # still affirms).  (Call 6, 2026-06-18: an emergency
-                            # "…might have broken my hip, what do I do, what do I
-                            # do" matched "i do" and, with the prior "would you
-                            # like to book one?" CTA, falsely fired a booking ack
-                            # → location pivot right after the 999/A&E message.)
-                            _utt_strong_affirm = bool(re.search(
-                                r"\b(?:yes|yeah|yep|sure|okay|ok|yup"
-                                r"|absolutely|definitely|go ahead)\b",
-                                utterance, re.IGNORECASE,
-                            ))
-                            _utt_weak_affirm = bool(re.search(
-                                r"\b(?:i would|i do|course)\b",
-                                utterance, re.IGNORECASE,
-                            ))
-                            _utt_is_wh_question = bool(re.search(
-                                r"\b(?:what|how|why|where|when|which)\b",
-                                utterance, re.IGNORECASE,
-                            ))
-                            _utt_is_affirm = (
-                                _utt_strong_affirm
-                                or (_utt_weak_affirm and not _utt_is_wh_question)
-                            )
+                            # Affirm detection lives in _utterance_affirms_cta()
+                            # at module scope (strong/weak split + wh-question
+                            # guard + decline guard, all documented there) so it
+                            # is reachable from tests.  S-09, 2026-07-24: the
+                            # previous inline vocabulary missed "go on then",
+                            # "please do", "sounds good" and every other natural
+                            # acceptance that is not one of nine tokens.
+                            _utt_is_affirm = _utterance_affirms_cta(utterance)
                             _cta_affirm = _bot_had_cta and _utt_is_affirm
                             if _cta_affirm and not _prev_q_booking:
                                 _prev_q_booking = True
