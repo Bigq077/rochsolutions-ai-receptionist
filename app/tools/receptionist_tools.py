@@ -3960,6 +3960,19 @@ async def _check_availability_published(
 
     presented = _select_presented_tuples(candidates, preference=_pref)
     days_data = _build_days_data(candidates, preference=_pref)
+    # Provisional model: each published slot is a START-TIME marker only. The
+    # caller chooses 60 or 90 minutes and the practitioner confirms, so a slot's
+    # own published window length is NOT the session length (same reason as the
+    # duplicate-start collapse above). Exposing each slot's `end` to the model
+    # made it read a published 60-minute window as a fixed session length and
+    # refuse 90-minute requests ("that's only a 60-minute session") — the
+    # 2026-07-24 Vital Edge abandoned booking. Nothing downstream reads this
+    # `end` (_resolve_slot_iso keys on `start`, _filter_same_day_slots on
+    # `date`), so drop it from the model-facing payload. last_offered_slots
+    # below keeps start+end for internal slot resolution.
+    for _ved_day in days_data:
+        for _ved_slot in _ved_day.get("slots", []):
+            _ved_slot.pop("end", None)
     session["last_offered_slots"] = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented]
     session["slot_labels"] = [format_slot(s) for s in presented]
     session["available_days"] = days_data
@@ -4000,7 +4013,7 @@ async def _book_appointment_provisional(
     and never sends a caller confirmation SMS — the practitioner confirms
     directly. Returns success so Susie speaks the pending message.
     """
-    from app.tools.calendar_google import create_event, update_event
+    from app.tools.calendar_google import create_event, update_event, patch_event_time
     from app.notifications.owner_notify import notify_owner, build_booking_request_message
 
     patient_name = (args.get("patient_name") or "").strip()
@@ -4112,6 +4125,22 @@ async def _book_appointment_provisional(
                     update_event, tokens, src_event_id, summary, description, calendar_id
                 )
                 event_id = (ev or {}).get("id") or src_event_id
+                # update_event only patches summary/description, so the flipped
+                # event keeps the published window's length (often 60 min). Set
+                # the block to the actually-booked duration (start_dt..end_dt) so
+                # a 90-minute booking reads as 90 on the calendar, not 60. The
+                # published slot is a start-time marker; its own length carries
+                # no booking meaning. Non-fatal — the booking already stands via
+                # the flip above, Sheets and the owner/caller notifications.
+                try:
+                    await asyncio.to_thread(
+                        patch_event_time, tokens, event_id, start_dt, end_dt, calendar_id
+                    )
+                except Exception as _pe:
+                    logger.warning(
+                        "provisional flip: block-length patch failed (non-fatal): %r",
+                        _pe,
+                    )
             else:
                 ev = await asyncio.to_thread(
                     create_event, tokens, start_dt, end_dt, summary, description, calendar_id, "default"
