@@ -794,6 +794,66 @@ _V3_VOWELS: frozenset = frozenset("aeiou")
 # as a rapid-continuation fragment and merged rather than discarded.
 _V3_RAPID_ARRIVAL_SEC: float = 0.30
 
+
+def _single_word_filter_reason(word: str) -> str:
+    """Return the noise-filter reason for a single-word transcript, or "".
+
+    Conditions 1 / 2a / 2b / 3 of the noise-fragment filter, verbatim.  These
+    key on the SHAPE of the token (length, vowels, exact noise match) rather
+    than on a vocabulary, so they cannot fail one word at a time.
+
+    Stateless by construction: Condition 4 (rapid-continuation merge) needs the
+    previous transcript's timestamp and therefore stays inline at the call site.
+    Callers are expected to have applied the ``_V3_PRESERVE`` bypass already.
+    """
+    stripped = word.strip().lower()
+    alpha_only = "".join(c for c in stripped if c.isalpha())
+
+    # Condition 1 — TOO SHORT.
+    if len(stripped) <= 3:
+        return "too-short"
+    # Condition 2a — NO VOWELS.
+    if alpha_only and not any(c in _V3_VOWELS for c in alpha_only):
+        return "no-vowels"
+    # Condition 2b — ALL VOWELS (≤ 4 chars).
+    if alpha_only and len(stripped) <= 4 and all(
+        c in _V3_VOWELS for c in alpha_only
+    ):
+        return "all-vowels"
+    # Condition 3 — NOISE LIST.
+    if stripped in _V3_NOISE_FRAGMENTS:
+        return "noise-list"
+    return ""
+
+
+def should_dispatch_single_word(word: str) -> bool:
+    """True when a single-word FINAL transcript should reach the LLM.
+
+    CODE SPEC G, inverted (2026-07-24).  SPEC G used to re-arm the silence
+    timer for any single word absent from the hand-maintained
+    ``_SCHEDULING_SINGLES`` allowlist — deny-by-default over a ~35-word
+    vocabulary.  Every gap in that list was a silently discarded caller answer
+    that presented to the operator as caller silence rather than as an error;
+    it cost a live Vital Edge booking on 2026-07-24 ("today").
+
+    The default is now dispatch.  A word that survives the mechanical noise
+    conditions is a plausible caller answer, and the LLM — unlike the
+    allowlist — holds the conversation context needed to judge relevance.
+
+    ``_SCHEDULING_SINGLES`` is intentionally still in this module and is no
+    longer consulted here, so this change reverts as a single commit.
+    """
+    stripped = (word or "").strip().lower()
+    if not stripped:
+        return False
+    # Multi-word transcripts are never filtered by this predicate.
+    if len(stripped.split()) != 1:
+        return True
+    if stripped in _V3_PRESERVE:
+        return True
+    return not _single_word_filter_reason(stripped)
+
+
 # ---------------------------------------------------------------------------
 # Sentinel object placed on audio_out_queue AFTER the last audio chunk for a
 # TTS utterance.  send_loop detects it and fires on_tts_finished() only once
@@ -6260,9 +6320,6 @@ class WebSocketCallHandler:
                         # single-char-word extension above).
                         if _is_single_word and _stripped not in _V3_PRESERVE:
                             _filter_reason: str = ""
-                            _alpha_only = "".join(
-                                c for c in _stripped if c.isalpha()
-                            )
                             _gap_sec = (
                                 _enqueue_ts - self._v3_last_processed_ts
                             )
@@ -6288,19 +6345,12 @@ class WebSocketCallHandler:
                                 # remaining noise conditions and continue
                                 # normal processing below.
                             else:
-                                # Conditions 1-3: drop path.
-                                if len(_stripped) <= 3:
-                                    _filter_reason = "too-short"
-                                elif _alpha_only and not any(
-                                    c in _V3_VOWELS for c in _alpha_only
-                                ):
-                                    _filter_reason = "no-vowels"
-                                elif _alpha_only and len(_stripped) <= 4 and all(
-                                    c in _V3_VOWELS for c in _alpha_only
-                                ):
-                                    _filter_reason = "all-vowels"
-                                elif _stripped in _V3_NOISE_FRAGMENTS:
-                                    _filter_reason = "noise-list"
+                                # Conditions 1-3: drop path.  Extracted to
+                                # _single_word_filter_reason() so the same
+                                # predicate is reachable from tests.
+                                _filter_reason = _single_word_filter_reason(
+                                    _stripped
+                                )
 
                                 if _filter_reason:
                                     logger.info(
@@ -6325,85 +6375,24 @@ class WebSocketCallHandler:
                                         )
                                     continue
 
-                        # ── CODE SPEC G: non-scheduling single-word re-arm ───
-                        # A single word that survived all noise conditions above
-                        # but carries no scheduling intent (not a yes/no, day,
-                        # time of day, number, or presence signal) should extend
-                        # the silence window rather than dispatching a wasted
-                        # LLM call.  The caller may be mid-sentence.
-                        # Guard: len(_stripped.split()) == 1 excludes merged
-                        # utterances produced by rapid-continuation (Cond 4).
-                        # Phone-number exemption: any single token of 5+ digits
-                        # (full number or spoken fragment) must always pass
-                        # through — never re-arm.
-                        # ── BUG-1 fix: answer-expected context exemption ─────
-                        # A single word that is the EXPECTED ANSWER must not be
-                        # dropped as noise.  Two contexts: (a) the name step
-                        # (caller answers "James"/"Quentin"); (b) a yes/no confirm
-                        # (caller answers "please"/"yeah").  Real STT garbage was
-                        # already removed by the too-short / no-vowel / all-vowel
-                        # / noise-list filters above, so a single word surviving
-                        # to here is a plausible answer.  Keyed on the pending
-                        # question text + post_slot flag, so the noise re-arm is
-                        # unchanged in every OTHER context (zero regression to the
-                        # mid-sentence-noise suppression this guard exists for).
-                        # See [[susie-8call-sweep]] BUG-1 (dropped on Calls 1,2,4,6).
-                        _lq_ctx = (
-                            (self.session.get("last_question") or "")
-                            + " "
-                            + (self.session.get("last_bot_prompt") or "")
-                        ).lower()
-                        _name_step = (
-                            bool(self.session.get("post_slot_confirmation_pending"))
-                            or "your name" in _lq_ctx
-                            or "first name" in _lq_ctx
-                            # P29: a one-word surname must pass through during
-                            # surname collection, not be dropped as noise.
-                            or "surname" in _lq_ctx
-                            or "last name" in _lq_ctx
-                        )
-                        _yesno_step = any(
-                            _m in _lq_ctx
-                            for _m in (
-                                "shall i", "would you", "did you say",
-                                "is that right", "is that correct",
-                                "use this", "could i get", "can i take",
-                            )
-                        )
-                        _answer_expected = _name_step or _yesno_step
-
-                        if (
-                            _is_single_word
-                            and len(_stripped.split()) == 1
-                            and _stripped not in _SCHEDULING_SINGLES
-                        ):
-                            if _PHONE_NUMBER_RE.match(_stripped):
-                                logger.info(
-                                    "[ms_stt] phone number/fragment %r — "
-                                    "passing to LLM (phone exemption)",
-                                    _stripped,
-                                )
-                                # Fall through to LLM dispatch below.
-                            elif _answer_expected:
-                                logger.info(
-                                    "[ms_stt] single word %r accepted — "
-                                    "answer-expected context (name=%s yesno=%s)",
-                                    _stripped, _name_step, _yesno_step,
-                                )
-                                # Fall through to LLM dispatch below.
-                            else:
-                                logger.info(
-                                    "[ms_stt] non-scheduling single word %r — "
-                                    "silence timer re-armed",
-                                    _stripped,
-                                )
-                                _last_q = self.session.get("last_question", "")
-                                if _last_q:
-                                    self._silence_handler.set_state(
-                                        self.session.get("state", "default")
-                                    )
-                                    self._silence_handler.on_question_asked(_last_q)
-                                continue
+                        # ── CODE SPEC G, INVERTED (2026-07-24) ───────────────
+                        # A single word that survives the mechanical noise
+                        # conditions above now DISPATCHES.  SPEC G previously
+                        # re-armed the silence timer unless the word appeared in
+                        # the hand-maintained _SCHEDULING_SINGLES allowlist —
+                        # deny-by-default over a ~35-word vocabulary that could
+                        # only ever be as complete as the last incident.  Every
+                        # gap was a discarded caller answer that presented as
+                        # caller silence, not as an error; "today" cost a live
+                        # Vital Edge booking on 2026-07-24.
+                        #
+                        # The phone-number and answer-expected exemptions that
+                        # used to sit here were both "dispatch anyway" branches,
+                        # so the inverted default subsumes them exactly.
+                        # _SCHEDULING_SINGLES stays in the module, no longer
+                        # load-bearing, so this reverts as one commit.
+                        # Predicate: should_dispatch_single_word() (tested in
+                        # tests/regression/test_single_word_dispatch_default.py).
 
                         # ── Reschedule/cancel phone confirm ──────────────────
                         # Fires when the caller responds to the phone-first
