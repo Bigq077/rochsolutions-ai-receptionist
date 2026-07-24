@@ -3097,14 +3097,39 @@ class SilenceHandler:
                 )
 
         # FIRST TURN (opening greeting, before the caller has spoken) — hard
-        # override to 4.5s.  The greeting and its no-input re-asks are the only
-        # prompts containing "how can I help"; nothing after the caller speaks
-        # matches, so the rest of the call keeps its normal timing.  Placed
-        # AFTER the floor blocks so it wins over the 10s phone_confirm_grace that
-        # the initial flow_step=0 otherwise pins on the greeting turn — a silent
-        # line now gets re-prompted promptly instead of after ~10s dead air.
+        # override.  The greeting and its no-input re-asks are the only prompts
+        # containing "how can I help"; nothing after the caller speaks matches,
+        # so the rest of the call keeps its normal timing.  Placed AFTER the
+        # floor blocks so it wins over the 10s phone_confirm_grace that the
+        # initial flow_step=0 otherwise pins on the greeting turn (that
+        # flow_step=0 match is itself spurious on template_v1 clinics — see the
+        # phone_confirm_grace block above — but narrowing it would shorten
+        # windows across the whole call, so it is deliberately left alone here).
+        #
+        # This is an explicit set, not a max(), because beating that 10s is the
+        # whole point of the block.
+        #
+        # 6.0s, NOT 4.5s (JV Bolton 2026-07-24, call CA3e342642f5727…): 4.5s was
+        # the shortest window in the entire config — shorter than greeting_grace
+        # (6.0), reason_grace (7.5), choice_grace (8.0) and slot_selection_grace
+        # (10.0) — and it was applied at the one moment the caller has the most
+        # to process: the longest prompt of the call, from an unfamiliar voice,
+        # before they have spoken at all.  On that call Susie cut in with
+        # "Sorry, I didn't catch that" 4.5s after the greeting and the caller
+        # came back with "I SAID I'd like to book an appointment…".  Measured
+        # caller response gaps on that same call were 1.6 / 2.5 / 2.7 / 3.5 /
+        # 11.8s, so 4.5s sits inside the normal distribution and clips real
+        # callers routinely.  Note the window is measured from ESTIMATED playout
+        # end (bytes_sent / 8000 Hz — Twilio mark events are not used), so any
+        # Twilio-side buffering comes off the caller's share of it.
+        #
+        # 6.0s is not a new number: it is what the greeting_grace block above
+        # already declares correct for greeting states ("6 s post-TTS is
+        # generous without feeling abandoned on no-answer calls").  This aligns
+        # the override with that policy instead of contradicting it, and still
+        # re-prompts a genuinely silent line well inside the 10s dead-air net.
         if "how can i help" in _last_bot_w:
-            _wait = 4.5
+            _wait = 6.0
             logger.info(
                 "[ms_watchdog] greeting first-turn — wait set to %.1fs", _wait
             )
