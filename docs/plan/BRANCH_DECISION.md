@@ -292,3 +292,29 @@ model this ADR only starts.
   (lever-scoped isolation); (2) migrate the live JV and Vital Edge numbers onto this engine
   under change control (dashboard-sequenced); (3) FM-01 closed here before any live cutover
   (done this session — see the FM-01 commit + `tests/regression/`).
+
+---
+
+## Addendum 2026-07-24 — Vital Edge provisional-booking fixes live on `vitaledge-onboarding` ONLY (deliberate; do not clobber)
+
+Three live Vital Edge booking fixes were committed to **`vitaledge-onboarding`** and
+deployed there, and were **deliberately NOT backported** to `latency-eval`:
+
+- `adb8a10` — single-word timing answers (e.g. "today") no longer dropped (`_SCHEDULING_SINGLES`).
+- `a1c2d70` — 90-minute sessions no longer refused: drop the misleading model-facing slot
+  `end` in `_check_availability_published`, and `patch_event_time` the flipped event to the
+  booked duration in `_book_appointment_provisional`.
+- `475401e` — ask 60 vs 90 min for Deep Tissue before booking: `duration_choice_note` in
+  `vital_edge` `prompt_facts` + a generic render hook in `_render_provisional_booking`.
+
+**Why not on `latency-eval`:** `a1c2d70`/`475401e` only touch the `google_calendar_provisional`
+model, which the ONLY provisional clinic (`vital_edge`) uses. `latency-eval`'s deployed demo
+serves a physio/Acuity clinic, so these fixes are **dormant there** — zero behavioural effect —
+and the `duration_choice_note` is massage-specific data irrelevant to the demo clinic. Porting
+would add only unused code. (`adb8a10` is already on `latency-eval` from earlier.)
+
+**Consequence / warning:** `latency-eval` still carries the *pre-fix* `app/clinics/vital_edge/`
+copy and pre-fix `receptionist_tools.py`. If anyone ever reconciles `latency-eval` **down onto**
+`vitaledge-onboarding` (treating it as the canonical superset), it would silently revert
+`a1c2d70` + `475401e`. **Do not** do that without first cherry-picking these two commits up, or
+explicitly preserving them. This is a considered exception to canonical-first, not an oversight.
