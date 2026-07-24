@@ -269,6 +269,97 @@ def _question_was_asked(session: Dict[str, Any], screen: Dict[str, Any]) -> bool
     return hits >= 2
 
 
+# ---------------------------------------------------------------------------
+# Negation scoping for red-flag ANSWER keywords.
+#
+# 2026-07-24. classify_screen_answer() checked red-flag keywords before it
+# looked at anything else, so a keyword only had to APPEAR. The most natural
+# ways a caller says no all contain the keyword they are denying, and all five
+# of these escalated to NHS 111 and set screen_red_flag, which blocks
+# book_appointment at the tool boundary for the rest of the call:
+#
+#     "no its not swollen or warm"                  -> dvt red_flag
+#     "no, nothing like that, no surgery or trips"  -> dvt red_flag
+#     "no weight loss no fevers"                    -> serious_spinal red_flag
+#     "no dizziness or double vision"               -> vbi_neck red_flag
+#     "no numbness and my bladder is fine"          -> cauda_equina red_flag
+#
+# This was always live, but it was mostly unreachable while the STT keyterm
+# boost was broken and "calf" transcribed as "car" — the screens rarely armed.
+# Fixing the boost makes this path fire on every clinical call, so the two ship
+# together.
+#
+# Deliberately generous: an occurrence is treated as negated on fairly light
+# evidence, because the alternative is what the table above shows. Two brakes
+# keep that from swallowing a real positive:
+#
+#   1. A keyword that carries its own negator is never negatable. "no feeling",
+#      "cant walk", "wont take my weight" and "grips gone" are red flags
+#      PHRASED negatively; the docstring's "no feeling in my legs" case must
+#      keep firing, and this is what preserves it.
+#   2. An affirmative marker between the negator and the keyword cancels the
+#      negation. "no, but Ive had surgery" answers one half of a compound
+#      screen question and volunteers the other — the "no" does not govern
+#      "surgery", and reading it as if it did is the false negative that costs
+#      a DVT.
+# ---------------------------------------------------------------------------
+
+# Post-_norm, so apostrophes are already deleted: "isn't" arrives as "isnt".
+_NEGATORS: frozenset = frozenset({
+    "no", "not", "nope", "nah", "none", "neither", "nor", "never",
+    "nothing", "without", "cant", "cannot", "isnt", "arent", "wasnt",
+    "werent", "hasnt", "havent", "dont", "doesnt", "didnt", "wont",
+})
+
+# Re-assert the symptom, ending the negator's reach (brake 2 above).
+_AFFIRMATIVE_MARKERS: frozenset = frozenset({
+    "had", "have", "has", "ive", "do", "did", "does", "got", "get",
+    "am", "is", "was", "yes", "yeah", "yep", "yup", "definitely",
+})
+
+# Close the negator's clause outright: "no numbness but my bladder has been..."
+_NEGATION_SCOPE_BREAKERS: frozenset = frozenset({
+    "but", "however", "though", "although", "except", "apart", "aside",
+})
+
+# How far back to look for the governing negator. 5 covers "no dizziness or
+# double vision" (negator three tokens before the keyword, across a list) while
+# staying inside one clause; the scope breakers and affirmative markers stop
+# the scan early far more often than the window does.
+_NEGATION_WINDOW = 5
+
+
+def _occurrence_negated(text_norm: str, keyword: str) -> bool:
+    """True if EVERY occurrence of `keyword` in `text_norm` is negated.
+
+    False when the keyword is absent, when any single occurrence stands
+    un-negated, or when the keyword negates itself (brake 1). One un-negated
+    occurrence is enough to keep the red flag: "no swelling, but it is warm".
+    """
+    k = _norm(keyword)
+    if not k:
+        return False
+    # Brake 1 — a negatively-phrased red flag can never be "negated away".
+    if any(w in _NEGATORS for w in k.split()):
+        return False
+
+    pattern = rf"(?<!\w){re.escape(k)}{_KW_INFLECTION}(?!\w)"
+    found = False
+    for m in re.finditer(pattern, text_norm):
+        found = True
+        before = text_norm[: m.start()].split()
+        negated = False
+        for token in reversed(before[-_NEGATION_WINDOW:]):
+            if token in _NEGATION_SCOPE_BREAKERS or token in _AFFIRMATIVE_MARKERS:
+                break
+            if token in _NEGATORS:
+                negated = True
+                break
+        if not negated:
+            return False
+    return found
+
+
 # NB: normalised through _norm at import. This is the one literal set compared
 # RAW against already-normalised text (see classify_screen_answer), so the
 # contractions below — "everything's fine", "i haven't", "i don't" — would stop
@@ -298,10 +389,14 @@ def _red_flag_hits(text: str, screen: Dict[str, Any]) -> int:
     is painful and swollen" is an ordinary strain, whereas "swollen and warm,
     just the one leg" is the DVT picture. Requiring two independent signals
     keeps the unprompted escalation specific.
+
+    Denied keywords do not count here either — "its not swollen or warm" is two
+    keywords and would clear the two-signal bar on the strength of the caller
+    ruling both out.
     """
     t = _norm(text)
     return sum(1 for k in (screen.get("red_flag_answer_keywords") or [])
-               if _kw_in(k, t))
+               if _kw_in(k, t) and not _occurrence_negated(t, k))
 
 
 def classify_screen_answer(text: str, screen: Dict[str, Any]) -> str:
@@ -309,12 +404,14 @@ def classify_screen_answer(text: str, screen: Dict[str, Any]) -> str:
     'red_flag' | 'clear' | 'unclear'.
 
     Red-flag keywords are checked FIRST — an answer like "no feeling in my
-    legs" contains 'no' but is a positive."""
+    legs" contains 'no' but is a positive. A keyword the caller is explicitly
+    DENYING ("its not swollen or warm") does not count; see
+    _occurrence_negated, which also protects that "no feeling" case."""
     t = _norm(text)
     if not t:
         return "unclear"
     for k in screen.get("red_flag_answer_keywords") or []:
-        if _kw_in(k, t):
+        if _kw_in(k, t) and not _occurrence_negated(t, k):
             return "red_flag"
     first_word = t.split()[0] if t.split() else ""
     if first_word in ("no", "nope", "nah", "none", "neither"):
