@@ -11796,12 +11796,32 @@ class WebSocketCallHandler:
         This is intentionally narrow — it never fires during normal call flow
         because at least one of conditions 2–5 is always true then.
         """
-        # Poll cadence for the dead-air backstop.  Kept at 10.0: the A2 hole was
-        # closed by lowering the post-reask suppression window (20s → 8s) plus
-        # resetting the dead-air anchor on TTS-finish (see _delayed_tts_finished).
-        # A 5s interval was tried but made the two-strike graceful-close hang up
-        # ~5s after the first re-ask — too fast, it cut off a caller mid-booking.
-        _INTERVAL = 10.0
+        # Poll cadence and dead-air threshold are SEPARATE knobs.  They used to
+        # be one constant (_INTERVAL = 10.0) serving as both, which meant the
+        # backstop could only ever notice dead air on a 10 s grid: a 10 s
+        # threshold sampled every 10 s fires somewhere in [10 s, 20 s].
+        #
+        # JV Bolton 2026-07-24 (call CA3e342642f5727…) hit the bad end of that
+        # range.  The watchdog re-asked, got nothing, and retired at 18:03:17
+        # (WATCHDOG_RETIRE reason=audible_reask_done) — after which NOTHING
+        # re-arms for that q_gen by design; this net is the next line of
+        # defence.  Its ticks landed at :21.99 (_since≈5.0, under threshold) and
+        # :31.99 (_since=15.0, fires).  The caller got 17 s of silence
+        # immediately after being told "Sorry, I didn't catch that".
+        #
+        # Why not simply lower the old single constant: it is ALSO the spacing
+        # between fire 1 (soft re-ask) and fire 2 (graceful close + hangup),
+        # because fire 1 resets _last_audio_or_transcript_ts and fire 2 must
+        # clear the same threshold again.  A previous attempt at 5.0 hung up
+        # ~5 s after the re-ask and cut off a caller mid-booking.  Splitting the
+        # constant keeps that spacing at a full 10 s — the threshold is
+        # untouched — while sampling finely enough to actually honour it.
+        #
+        # Net effect: worst-case detection 20 s → 12 s; the post-retire hole
+        # that produced the 17 s of dead air → ~10-12 s.  No threshold moves,
+        # so no re-ask or hangup can arrive sooner than it could before.
+        _POLL_INTERVAL = 2.0    # how often we look
+        _DEAD_AIR_SEC  = 10.0   # how much silence must have elapsed to act
         _PHRASE_2 = (
             "I'm not able to hear you at the moment — "
             "feel free to call back and we'll get that sorted for you."
@@ -11817,7 +11837,7 @@ class WebSocketCallHandler:
 
         try:
             while not self._stop_event.is_set():
-                await asyncio.sleep(_INTERVAL)
+                await asyncio.sleep(_POLL_INTERVAL)
                 if self._stop_event.is_set():
                     break
 
@@ -11825,7 +11845,7 @@ class WebSocketCallHandler:
                 _since = _now - self._last_audio_or_transcript_ts
 
                 # 1. Dead-air window
-                if _since < _INTERVAL:
+                if _since < _DEAD_AIR_SEC:
                     continue
 
                 # 2. LLM currently generating
@@ -11842,7 +11862,7 @@ class WebSocketCallHandler:
                 #    silence nets stay inhibited → dead air until hangup.
                 #    Use the precise cumulative playout clock to distinguish a
                 #    genuinely-playing chunk (now < playout_end) from a stale
-                #    flag. We only reach here when _since >= _INTERVAL (≥10s since
+                #    flag. We only reach here when _since >= _DEAD_AIR_SEC (≥10s since
                 #    the last chunk START), so the playout clock already reflects
                 #    the current chunk — no risk of cutting a mid-flight chunk.
                 if getattr(self._silence_handler, "_tts_playing", False):
@@ -11882,11 +11902,12 @@ class WebSocketCallHandler:
                 #    fills phone_dtmf_buffer — so a non-empty buffer means the
                 #    caller has begun dialling and we skip the nudge entirely.
                 if self.session.get("v3_phone_dtmf_active"):
-                    # Threshold == _INTERVAL (10s): with the 10s poll cadence the
-                    # nudge then fires in the [10s, 20s) window regardless of how
-                    # the poll aligns with the prompt — worst case ~20s, a safe
-                    # margin under the 25s G24 fail line (a 15s threshold could
-                    # land as late as ~25s and brush the line; observed 22.9s).
+                    # Threshold == _DEAD_AIR_SEC (10s).  With the poll and the
+                    # threshold now separate constants the nudge fires in the
+                    # [10s, 10s + _POLL_INTERVAL) window instead of the old
+                    # [10s, 20s) — comfortably under the 25s G24 fail line, and
+                    # strictly tighter than before (a 15s threshold could land
+                    # as late as ~25s and brush the line; observed 22.9s).
                     if (
                         _since >= 10.0
                         and not self.session.get("_phone_dtmf_nudged")
