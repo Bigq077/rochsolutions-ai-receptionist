@@ -285,6 +285,22 @@ _SCHEDULING_SINGLES: frozenset = frozenset({
     "mornings", "afternoons", "evenings", "morning", "afternoon", "evening",
     # Day names
     "monday", "tuesday", "wednesday", "thursday", "friday",
+    # Weekend day names — must reach the LLM even when the clinic is closed
+    # that day, so the LLM can say so rather than the answer being dropped.
+    "saturday", "sunday",
+    # Relative-day scheduling answers.  A caller asked "when would you like to
+    # come in?" routinely replies with a single relative-day word.  Without
+    # these the answer was classified as a non-scheduling single word and
+    # discarded, stranding the caller in the silence-recovery ladder until they
+    # hung up (Vital Edge abandoned booking, 2026-07-24 — caller said "today").
+    "today", "tomorrow", "tonight", "now", "asap", "anytime", "whenever",
+    "soon", "weekend", "weekday",
+    # Flexibility / "give me the first slot" answers.  "flexible" and "either"
+    # must reach the LLM/vagueness handler that offers concrete times — dropping
+    # them here means is_vague_availability() (app/vagueness_detector.py) never
+    # runs.  "earliest"/"soonest" are the most natural one-word reply to
+    # "when would you like to come in?".
+    "flexible", "either", "earliest", "soonest",
     # Numbers (spoken)
     "one", "two", "three", "four", "five", "six", "seven", "eight",
     "nine", "ten", "eleven", "twelve",
