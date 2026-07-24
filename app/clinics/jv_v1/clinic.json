@@ -217,7 +217,8 @@
         "trigger_keywords": ["calf", "calf pain", "calf swelling", "swollen calf", "leg is swollen", "swollen leg", "back of my leg swollen"],
         "screen_question": "Before we go further, can I quickly check — is the calf swollen, warm or red compared with the other side, and have you had any recent surgery, illness, or a long journey sitting still?",
         "red_flag_answer_keywords": ["swollen", "warm", "hot", "red", "surgery", "operation", "flight", "long drive", "long journey", "bed rest", "immobile", "can't walk on it"],
-        "escalation": "A swollen, warm calf like that should be checked urgently to rule out a clot rather than booking a physio or massage — please contact NHS 111 now, or A&E if it's severe, and please don't have it massaged until you've been checked. Call us back once you've been seen."
+        "_escalation_note": "MARK_REVIEW: was 'A swollen, warm calf like that should be checked...'. On the 2026-07-24 21:55 call the caller had just said the calf was NOT swollen, and Susie escalated while asserting it was — the caller heard a symptom attributed to them that they had denied. This is the only one of the six screens that asserted a symptom as fact; the other five already use non-asserting deixis ('Those particular symptoms', 'those signs', 'That pattern of stiffness'), so this now matches them. Clinical content is unchanged: urgency, rule out a clot, NHS 111, A&E if severe, do not massage, call back.",
+        "escalation": "Calf symptoms like that need checking urgently to rule out a clot rather than booking a physio or massage — please contact NHS 111 now, or A&E if it's severe, and please don't have it massaged until you've been checked. Call us back once you've been seen."
       },
       {
         "id": "serious_spinal",
