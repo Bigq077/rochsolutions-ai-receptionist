@@ -467,7 +467,12 @@ def _choose_template(
             patient_name=patient_name, **ck)
 
     # 10. NO AUDIO — safety net graceful close (connection issue, not abandoned)
-    if outcome == "no_audio":
+    # "no_inbound_audio" is the same caller-facing event with a known cause:
+    # Twilio media stopped reaching us mid-call. It must route to the same
+    # template — it was split out for counting, and a new outcome falling
+    # through this branch would silence the owner alert on precisely the
+    # calls that need one.
+    if outcome in ("no_audio", "no_inbound_audio"):
         return templates.format_no_audio_sms(
             patient_name=patient_name, **ck)
 

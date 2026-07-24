@@ -308,7 +308,17 @@ def infer_call_outcome(session: dict[str, Any], summary: dict[str, Any]) -> str:
     # No-audio graceful close — safety net exhausted two re-asks and hung up
     # cleanly because the caller was genuinely inaudible.  Distinct from
     # "abandoned" (caller chose to leave) and "failed" (technical error).
+    #
+    # Split 2026-07-24: "no_audio" previously covered two unrelated events —
+    # a caller who said nothing, and an inbound audio leg that died mid-call
+    # while the caller kept talking.  The second is a FAULT and needs to be
+    # countable separately; lumping them together is why the deafness reports
+    # were impossible to quantify.  connection.py sets inbound_audio_fault
+    # only when no Twilio media frame arrived for >1.5s (frames stream every
+    # ~20ms, so that is ~75 missed frames, not jitter).
     if session.get("no_audio_close"):
+        if session.get("inbound_audio_fault"):
+            return "no_inbound_audio"
         return "no_audio"
 
     handoff_needed = bool((summary.get("handoff", {}) or {}).get("manual_followup_needed"))

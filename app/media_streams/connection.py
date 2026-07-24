@@ -4369,6 +4369,23 @@ class WebSocketCallHandler:
         self._last_filler_at:         float = 0.0   # monotonic time of last filler phrase played
         self._bad_line_played         = False        # once-per-call bad-line phrase guard
         self._last_audio_received_at: float = 0.0   # monotonic time of last inbound Twilio audio
+        # ── Inbound-audio health (2026-07-24) ─────────────────────────────
+        # Twilio streams a media frame every ~20ms for the whole call, silence
+        # included, so "no frame for >1s" means the inbound leg has stopped —
+        # not that the caller is quiet.  Before this the two were
+        # indistinguishable: _last_audio_received_at was written here and read
+        # NOWHERE, on_audio_received() was a literal `pass`, and the STT send
+        # loop substitutes synthetic silence when its queue runs dry
+        # (stt_stream.py, KEEPALIVE_BYTES) so AssemblyAI never complains.
+        # A dead inbound leg therefore looked exactly like a silent caller:
+        # re-ask, re-ask, graceful close, outcome=no_audio.
+        #
+        # Observed on the 22:37 jv_v1 call of 2026-07-24 — 48s, three prompts,
+        # zero partials, and the energy VAD (which reads raw mu-law bytes and
+        # never touches AssemblyAI) equally silent.  Two independent detectors
+        # saw nothing, which is only possible if the bytes never arrived.
+        self._media_frames_in:        int   = 0     # count of inbound media frames
+        self._last_voiced_audio_at:   float = 0.0   # last frame containing non-silence
         # Monotonic timestamp when the most recent LLM turn completed (finally:
         # block cleared _llm_busy).  Used by the tail-fragment guard to discard
         # tiny residual STT finals that arrive immediately after a successful turn.
@@ -5378,8 +5395,16 @@ class WebSocketCallHandler:
             return
 
         self._last_audio_received_at = time.monotonic()
+        self._media_frames_in += 1
         self._silence_handler.on_audio_received()
         self.audio_in_queue.put_nowait(raw_mulaw)
+
+        # Voiced-frame stamp for _inbound_audio_status().  Same cheap 0xFF test
+        # the energy VAD below uses (mu-law silence is almost all 0xFF), but
+        # recorded unconditionally — the VAD only runs while a silence timer is
+        # live, so it cannot answer "was the caller ever audible at all?".
+        if len(raw_mulaw) - raw_mulaw.count(0xFF) > 3:
+            self._last_voiced_audio_at = self._last_audio_received_at
 
         # ── Energy VAD: cancel silence timer the moment caller speaks ─────────
         # Twilio μ-law silence packets consist almost entirely of 0xFF bytes
@@ -5397,6 +5422,70 @@ class WebSocketCallHandler:
             and len(raw_mulaw) - raw_mulaw.count(0xFF) > 3
         ):
             self._silence_handler.on_speech_started()
+
+    # ── Inbound-audio health ────────────────────────────────────────────────
+
+    # Twilio sends a media frame every ~20ms. 1.5s is ~75 missed frames — far
+    # outside jitter, and short enough that the 10s dead-air net always has a
+    # verdict ready by the time it fires.
+    _MEDIA_STALL_SEC: float = 1.5
+
+    def _inbound_audio_status(self) -> tuple:
+        """Classify the caller->us audio leg. Returns (status, gap_seconds).
+
+          "never"   — the stream opened but no media frame ever arrived
+          "stalled" — frames were arriving and have now stopped
+          "silent"  — frames arriving, but none carrying voice this call
+          "flowing" — frames arriving and the caller has been audible
+
+        This is the distinction the recovery ladder never had. "silent" is a
+        caller choosing not to speak, and the re-ask/close behaviour is right.
+        "stalled"/"never" is a fault on the inbound leg, where re-asking is
+        pointless — the caller may be talking the whole time and we are deaf.
+
+        Read-only and allocation-free: the 10s net calls it on every fire.
+        """
+        now = time.monotonic()
+        if self._media_frames_in == 0 or self._last_audio_received_at <= 0.0:
+            return ("never", 0.0)
+        gap = now - self._last_audio_received_at
+        if gap > self._MEDIA_STALL_SEC:
+            return ("stalled", gap)
+        if self._last_voiced_audio_at <= 0.0:
+            return ("silent", gap)
+        return ("flowing", gap)
+
+    # ── Utterance-loss accounting ───────────────────────────────────────────
+
+    def _note_utterance_lost(self, reason: str, text: str, detail: str = "") -> None:
+        """Record that a TRANSCRIBED caller utterance was discarded.
+
+        Every guard that drops a real final transcript calls this. There are
+        ~10 such guards, each added to fix a specific past incident, each
+        logging in its own wording, in its own module, at INFO. Individually
+        defensible; collectively they are what "Susie can't hear me" means,
+        and until now there was no way to count them — diagnosing one report
+        meant reading a full call log by hand.
+
+        One grep now answers it:  grep '\\[ms_lost\\]' <log>
+
+        This does NOT change any drop decision. It only makes the existing
+        ones visible, so the next tuning pass is driven by counts from real
+        calls rather than by argument. The per-call tally rides on the session
+        so the summary row can carry it.
+        """
+        try:
+            tally = self.session.setdefault("utterances_lost", {})
+            tally[reason] = tally.get(reason, 0) + 1
+            total = sum(tally.values())
+        except Exception:
+            total = -1  # session not ready yet — never let accounting break a call
+        logger.warning(
+            "[ms_lost] reason=%s text=%r%s call_total=%d",
+            reason, (text or "")[:60],
+            f" ({detail})" if detail else "",
+            total,
+        )
 
     # ========================================================================
     # Audio input loop
@@ -5543,6 +5632,10 @@ class WebSocketCallHandler:
                             "[ms_conn] stale transcript discarded (pre-barge-in): %r",
                             utterance[:80],
                         )
+                        self._note_utterance_lost(
+                            "stale_pre_barge_in", utterance,
+                            f"{(self._barge_in_flush_before - _enqueue_ts) * 1000.0:.0f}ms early",
+                        )
                         continue
 
                     if not utterance or not utterance.strip():
@@ -5570,6 +5663,10 @@ class WebSocketCallHandler:
                                 _loc_ack_age * 1000.0,
                                 self._LOCATION_ACK_DROP_WINDOW,
                                 utterance[:60],
+                            )
+                            self._note_utterance_lost(
+                                "location_ack_race", utterance,
+                                f"{_loc_ack_age * 1000.0:.0f}ms after ack",
                             )
                             continue
                         # Window expired — clear the one-shot flag so the next
@@ -5643,6 +5740,10 @@ class WebSocketCallHandler:
                             " %.0fms before prior turn completed (not a reply): %r",
                             (self._last_turn_done_at - _enqueue_ts) * 1000.0,
                             utterance[:60],
+                        )
+                        self._note_utterance_lost(
+                            "same_breath_straggler", utterance,
+                            f"{(self._last_turn_done_at - _enqueue_ts) * 1000.0:.0f}ms early",
                         )
                         continue
                     if (
@@ -6405,6 +6506,9 @@ class WebSocketCallHandler:
                                 "(reason=single_char_word): %r",
                                 utterance.strip(),
                             )
+                            self._note_utterance_lost(
+                                "single_char_word", utterance,
+                            )
                             _last_q = self.session.get("last_question", "")
                             if _last_q:
                                 self._silence_handler.set_state(
@@ -6455,6 +6559,9 @@ class WebSocketCallHandler:
                                         "(reason=%s): %r",
                                         _filter_reason,
                                         utterance.strip(),
+                                    )
+                                    self._note_utterance_lost(
+                                        _filter_reason, utterance,
                                     )
                                     # Re-arm watchdog so silence recovery
                                     # still fires after a discarded fragment.
@@ -8174,6 +8281,9 @@ class WebSocketCallHandler:
                                     "[ms_conn v3] clarification in-flight — "
                                     "discarding noise utterance: %r",
                                     utterance[:60],
+                                )
+                                self._note_utterance_lost(
+                                    "name_clarification_in_flight", utterance,
                                 )
                                 continue
                             #
@@ -9899,6 +10009,10 @@ class WebSocketCallHandler:
                     logger.info(
                         "[ms_conn] stale transcript discarded (pre-barge-in): %r",
                         utterance[:80],
+                    )
+                    self._note_utterance_lost(
+                        "stale_pre_barge_in", utterance,
+                        f"{(self._barge_in_flush_before - _enqueue_ts) * 1000.0:.0f}ms early",
                     )
                     continue
 
@@ -12097,14 +12211,41 @@ class WebSocketCallHandler:
 
                 if _safety_net_count == 1:
                     # First fire — standard soft re-ask
+                    # Fail-safe: this loop IS the last line of defence against
+                    # dead air. A diagnostic that can raise here would kill the
+                    # backstop and leave a live caller in permanent silence —
+                    # strictly worse than the fault being diagnosed. Degrade to
+                    # "unknown" and let the existing ladder run unchanged.
+                    try:
+                        _audio_status, _audio_gap = self._inbound_audio_status()
+                    except Exception as _exc:
+                        _audio_status, _audio_gap = "unknown", -1.0
+                        logger.debug("[ms_safety_net] audio status failed: %r", _exc)
                     logger.warning(
                         "[ms_safety_net] 10s dead-air — emitting safety re-ask "
-                        "(since=%.1fs llm_busy=%s tts_playing=%s q_gen=%d)",
+                        "(since=%.1fs llm_busy=%s tts_playing=%s q_gen=%d "
+                        "inbound_audio=%s media_gap=%.1fs frames=%d)",
                         _since,
                         self._llm_busy,
                         getattr(self._silence_handler, "_tts_playing", False),
                         _current_q_gen,
+                        _audio_status, _audio_gap,
+                        getattr(self, "_media_frames_in", -1),
                     )
+                    if _audio_status in ("stalled", "never"):
+                        # The inbound leg is down, not the caller. Re-asking a
+                        # question they cannot answer wastes the one turn we
+                        # have, so say the true thing once and let the second
+                        # fire close the call.
+                        logger.error(
+                            "[ms_conn] INBOUND AUDIO FAULT — status=%s no media "
+                            "for %.1fs (frames_this_call=%d). The caller may be "
+                            "speaking; we are not receiving it. Re-asks cannot "
+                            "recover this.",
+                            _audio_status, _audio_gap,
+                            getattr(self, "_media_frames_in", -1),
+                        )
+                        self.session["inbound_audio_fault"] = _audio_status
                     # Context-aware re-ask: slot phrase only when caller is actually
                     # choosing from a presented list.  At all other call stages use
                     # the last stored question (if any) or a neutral "still there?"
@@ -12244,6 +12385,25 @@ class WebSocketCallHandler:
             return
 
         logger.info("[ms_conn] cleanup call_sid=%s stable=%s", self.call_sid, self._call_stable)
+
+        # One line per call answering "did we lose anything the caller said,
+        # and was the inbound leg healthy?" — the two questions that used to
+        # require reading the whole log by hand. Emitted at WARNING when
+        # something was actually lost so it survives a level filter.
+        try:
+            _lost = dict(self.session.get("utterances_lost") or {})
+            _audio_status, _audio_gap = self._inbound_audio_status()
+            _lost_total = sum(_lost.values())
+            logger.log(
+                logging.WARNING if (_lost_total or _audio_status != "flowing")
+                else logging.INFO,
+                "[ms_lost] CALL SUMMARY call_sid=%s lost_total=%d by_reason=%s "
+                "inbound_audio=%s media_frames=%d",
+                self.call_sid, _lost_total, _lost or "{}",
+                _audio_status, self._media_frames_in,
+            )
+        except Exception as exc:
+            logger.debug("[ms_lost] summary failed: %r", exc)
 
         # Deregister from the active-handler map
         _was_registered = self.call_sid in _active_handlers
