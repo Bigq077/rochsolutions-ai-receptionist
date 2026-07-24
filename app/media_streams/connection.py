@@ -5441,6 +5441,10 @@ class WebSocketCallHandler:
                 on_partial=self._on_partial_transcript,
                 on_final_clear=self._on_final_transcript_clear,
                 tts_text_queue=self.tts_text_queue,
+                # Resolved by _handle_start() before _started_event fires, so
+                # it is always populated by the time this loop runs.  Drives
+                # the per-clinic keyterms_prompt (STT vocabulary boosting).
+                clinic_id=self.session.get("clinic_id"),
             )
         except asyncio.CancelledError:
             pass

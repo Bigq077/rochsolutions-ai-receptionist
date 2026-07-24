@@ -45,6 +45,7 @@ import json
 import logging
 import re
 import time
+from itertools import zip_longest
 from typing import Any, Callable, Coroutine, Optional
 from urllib.parse import quote as _url_quote
 
@@ -68,18 +69,37 @@ logger = logging.getLogger(__name__)
 AsyncCallback = Callable[..., Coroutine[Any, Any, None]]
 
 # ---------------------------------------------------------------------------
-# Word boost — sent once after the AssemblyAI v3 Begin message
-# Improves recognition of physio terms, British idioms, and Northern English
+# Keyterm boosting — sent as ?keyterms_prompt= at connection time (v3)
+#
+# 2026-07-24: this list was previously named _WORD_BOOST_TERMS and was DEAD.
+# Its only sender, _send_word_boost(), was disconnected when v3 started
+# rejecting the post-Begin JSON message with close code 3006, and the terms
+# were never migrated to the URL parameter that replaced it.  The live boost
+# was a hardcoded ["Alcester", "Redditch"] — two Theorem clinic names — so on
+# every other clinic nothing useful was boosted at all.
+#
+# Cost of that: "calf" came back from AssemblyAI as "car" and then "coffee" on
+# two consecutive JV test calls (2026-07-24).  clinical_screening's DVT screen
+# triggers on the literal token "calf", so the deterministic red-flag layer
+# never armed and the life-safety path fell through to the model alone.
+#
+# This list is GENERIC clinical + British-idiom vocabulary — it is domain
+# knowledge, not clinic knowledge, so it legitimately lives in engine code.
+# Clinic proper nouns (names, practitioners, locations, STT variants) and the
+# clinic's own red-flag trigger vocabulary come from clinic.json via
+# build_keyterms() below.  Do NOT add a clinic name here.
 # ---------------------------------------------------------------------------
 
-_WORD_BOOST_TERMS: list[str] = [
-    # Northern English / informal affirmatives (Bug #8)
-    "aye", "yeah", "yep", "nah", "nowt",
-    "owt", "summat", "reight", "sorted",
-    "champion", "mint", "sound",
-    "me back", "me knee", "me shoulder",
-    "gi'o'er", "nesh", "gradely", "mardy",
-    "ta", "cheers", "right",
+# ORDER IS LOAD-BEARING.  The combined list is truncated at _KEYTERMS_MAX, and
+# a clinic with a large screening vocabulary (jv_v1: 100 terms, at the cap)
+# only ever receives this list's opening entries.  Clinical vocabulary is said
+# on every call and is what the booking flow depends on; the dialect block is a
+# comprehension nicety and is also regionally wrong for half the estate (Vital
+# Edge is Kingston-upon-Thames — "nesh" and "gradely" buy it nothing).  So:
+# anatomy and clinical terms first, idiom last.  Reordered 2026-07-24 after
+# jv_v1 was measured spending all 23 of its surviving generic slots on dialect
+# and losing "knee", "hip", "shoulder", "physio" and "assessment".
+_GENERIC_KEYTERMS: list[str] = [
     # Body parts and physio conditions
     "knee", "hip", "shoulder", "ankle",
     "spine", "elbow", "wrist", "neck",
@@ -94,13 +114,16 @@ _WORD_BOOST_TERMS: list[str] = [
     "rehabilitation", "osteopath", "acupuncture",
     "shockwave", "psychotherapy", "laser",
     "prescribing", "Pilates",
-    # Clinic / proper nouns
-    "Theorem", "Alcester", "Redditch",
-    "Kinwarton", "Bromsgrove", "Greig",
-    "Mark", "Leanne", "Dyer",
-    # Location / nearby places
-    "Stratford", "Birmingham", "Evesham",
-    "Warwick", "Bromsgrove", "Worcester",
+    # Northern English / informal affirmatives (Bug #8)
+    "aye", "yeah", "yep", "nah", "nowt",
+    "owt", "summat", "reight", "sorted",
+    "champion", "mint", "sound",
+    "me back", "me knee", "me shoulder",
+    "gi'o'er", "nesh", "gradely", "mardy",
+    "ta", "cheers", "right",
+    # NOTE: clinic proper nouns (Theorem/Alcester/Redditch/Kinwarton/Greig/
+    # Mark/Leanne/Dyer and their nearby towns) used to be hardcoded here.
+    # They now come from each clinic's own clinic.json — see build_keyterms().
     # British phrases
     "fortnight", "whilst", "fortnightly",
     "go on then", "right then", "fair enough",
@@ -109,30 +132,220 @@ _WORD_BOOST_TERMS: list[str] = [
 ]
 
 
-async def _send_word_boost(ws: Any) -> None:
-    """
-    Send word boost configuration to AssemblyAI v3 after the Begin handshake.
+# AssemblyAI v3 keyterms_prompt limits.  Conservative: the documented ceiling
+# is 100 terms of up to 6 words each.  Over-long terms are dropped rather than
+# truncated — a half-term boosts nothing and costs a slot.
+_KEYTERMS_MAX = 100
+_KEYTERM_MAX_WORDS = 6
+_KEYTERM_MAX_CHARS = 50
 
-    AssemblyAI v3 Universal Streaming accepts a JSON config message on the
-    WebSocket after the Begin event to improve recognition of domain-specific
-    vocabulary.  If the server does not support this message type it will
-    silently ignore it or return an error, which is handled gracefully here.
 
-    Ref: https://www.assemblyai.com/docs/speech-to-text/streaming
+# Common English words carry no boosting value and would burn the 100-term
+# budget.  JV alone has 167 screening keywords ("stiff in the morning", "both
+# hands"); boosted whole, they crowd out two entire screens' vocabulary.  The
+# recognition win is in the distinctive WORD — AssemblyAI boosting "calf" helps
+# it hear "calf" inside any phrase — so screening phrases are reduced to their
+# distinctive tokens and the phrases themselves are not sent.
+# Boosting only helps words the model would otherwise get WRONG.  Ordinary
+# English is never mis-heard, so every common word in this set is a wasted slot
+# — and slots are the scarce resource that starved a whole screen.
+_KEYTERM_STOPWORDS: frozenset = frozenset({
+    # articles / prepositions / conjunctions
+    "the", "a", "an", "and", "or", "of", "in", "on", "at", "to", "for", "with",
+    "if", "as", "by", "from", "into", "onto", "over", "under", "about",
+    "after", "before", "since", "while", "than", "then",
+    # pronouns / determiners
+    "my", "me", "i", "it", "its", "he", "his", "she", "her", "him", "they",
+    "them", "their", "you", "your", "we", "our", "this", "that", "these",
+    "those", "there", "here", "any", "all", "both", "each", "some",
+    "several", "multiple", "anything", "something", "everything", "myself",
+    # auxiliaries / very common verbs
+    "is", "are", "was", "were", "be", "been", "being", "am", "have", "has",
+    "had", "do", "does", "did", "can", "cant", "cannot", "will", "wont",
+    "would", "could", "should", "get", "got", "go", "goes", "went", "gone",
+    "come", "came", "take", "took", "make", "made", "put", "keep", "kept",
+    "hold", "held", "use", "used", "done", "give", "gave", "seem", "seems",
+    # common adverbs / adjectives / quantities
+    "no", "not", "so", "very", "just", "really", "quite", "much", "many",
+    "more", "less", "most", "least", "good", "bad", "big", "small", "long",
+    "short", "little", "bit", "up", "out", "down", "off", "when", "still",
+    "also", "only", "even", "own", "same", "other", "another", "one", "two",
+    "hour", "hours", "day", "days", "week", "weeks", "time", "times",
+
+    # ── Ordinary English that happens to appear in screening phrases ────────
+    # Measured 2026-07-24: the three shipped clinics' screening vocabulary
+    # reduces to 121 distinct tokens against a 100-term API cap, so the tiers
+    # below the triggers were being truncated away entirely — jv_v1 kept only
+    # 5 of the generic clinical terms and lost "physio", "physiotherapy",
+    # "assessment", "knee", "hip" and "shoulder", words said on every call.
+    #
+    # Selection rule, applied strictly: a term earns a slot only if STT is
+    # plausibly going to get it WRONG.  Clinical significance is NOT the
+    # criterion — "swollen" and "warm" are red-flag answer keywords and both
+    # transcribed perfectly on the incident calls, while "calf" (short,
+    # low-information, many near-neighbours) did not.  Everything below is
+    # ordinary, high-frequency English with no confusable clinical neighbour.
+    # Anatomical, pathological and mechanism-of-injury words are deliberately
+    # NOT here — those keep their slots.
+    "away", "back", "backs", "bed", "below", "badly", "drive", "drop",
+    "dropping", "fall", "fallen", "fell", "feel", "feeling", "generally",
+    "half", "hand", "hands", "heard", "history", "hot", "huge", "hurt",
+    "landed", "leg", "legs", "lost", "loss", "losing", "low", "lower",
+    "massive", "morning", "mornings", "move", "night", "pain", "red", "rest",
+    "shape", "sides", "sleep", "sore", "straight", "things", "turn", "wake",
+    "walk", "warm", "weight", "wet", "wrong", "black", "double", "angle",
+    "ache", "aching",
+})
+
+
+def _distinctive_tokens(phrase: str) -> list[str]:
+    """Reduce a keyword phrase to the words worth boosting.
+
+    Drops stopwords and 1-2 character fragments. Order preserved so the
+    caller's priority ordering survives.
     """
-    try:
-        msg = json.dumps({"word_boost": _WORD_BOOST_TERMS})
-        await ws.send(msg)
-        logger.info(
-            "[ms_stt] word boost sent: %d terms", len(_WORD_BOOST_TERMS)
-        )
-    except websockets.exceptions.ConnectionClosed:
-        logger.debug("[ms_stt] word boost: connection closed before send")
-    except Exception as exc:
-        # v3 may not support word_boost in this message format — non-fatal
-        logger.warning(
-            "[ms_stt] word boost not supported in v3 streaming — skipping (%r)", exc
-        )
+    out: list[str] = []
+    for word in re.split(r"[^a-z0-9']+", (phrase or "").lower()):
+        word = word.strip("'")
+        if len(word) < 3 or word in _KEYTERM_STOPWORDS:
+            continue
+        out.append(word)
+    return out
+
+
+def _collect_strings(value: Any, out: list[str]) -> None:
+    """Flatten str / list / dict-of-those into *out*. Ignores everything else."""
+    if isinstance(value, str):
+        out.append(value)
+    elif isinstance(value, list):
+        for v in value:
+            _collect_strings(v, out)
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            _collect_strings(k, out)
+            _collect_strings(v, out)
+
+
+# Keys in ``stt_variants`` that name a CATEGORY rather than a spoken term.
+# "clinic_name" and "services" are schema, not vocabulary — boosting the
+# literal string "clinic_name" is nonsense and costs a capped slot.  This is
+# knowledge of the config *schema*, not of any one clinic, so it belongs here.
+_STT_VARIANT_STRUCTURAL_KEYS: frozenset = frozenset({
+    "clinic_name", "services", "practitioners", "locations", "brand_names",
+})
+
+
+def _collect_canonical_keys(value: Any, out: list[str]) -> None:
+    """Collect only the KEYS of a variants mapping.
+
+    ``stt_variants`` maps a canonical term to the ways STT has been heard to
+    mangle it ("joint venture physio" -> "joint vencher physio", "fizzy-oh").
+    Boosting a mangling asks AssemblyAI to EMIT it, which is the opposite of
+    the intent — only the canonical keys belong in keyterms.
+
+    Two shapes appear in the wild, so both are handled:
+      "bolton":   [...variants]              -> key IS the canonical term
+      "services": {"deep_tissue_massage": [...]}  -> key is a category
+
+    Category keys are skipped and recursed into.  Nested keys are slugs
+    ("deep_tissue_massage"), which nobody says out loud, so underscores and
+    hyphens become spaces to recover the spoken form.
+    """
+    if not isinstance(value, dict):
+        return
+    for k, v in value.items():
+        if isinstance(k, str) and k.lower() not in _STT_VARIANT_STRUCTURAL_KEYS:
+            term = re.sub(r"[_\-]+", " ", k).strip()
+            if term:
+                out.append(term)
+        # Nested groupings ("services": {"acupuncture": [...]}) — recurse
+        # into dicts for their keys, but never collect list values.
+        if isinstance(v, dict):
+            _collect_canonical_keys(v, out)
+
+
+def build_keyterms(clinic: Optional[dict]) -> list[str]:
+    """Build the ``keyterms_prompt`` list for one clinic.
+
+    Priority order matters — the list is capped at _KEYTERMS_MAX and truncated
+    from the end, so the most consequential vocabulary goes first:
+
+      1. clinical_screening trigger + red-flag answer keywords.  These decide
+         whether the deterministic red-flag layer arms at all; a miss here is
+         a safety-path miss, which is exactly how "calf" -> "coffee" defeated
+         the DVT screen on 2026-07-24.
+      2. clinic proper nouns — name, brand names, practitioner, locations and
+         the clinic's own hand-written stt_variants.  Unguessable by a general
+         model, and wrong ones send the caller to the wrong site.
+      3. generic physio / British-idiom vocabulary (_GENERIC_KEYTERMS).
+
+    Pure and side-effect free so the composition is testable without a socket.
+    Passing None (clinic unresolved) yields the generic list alone.
+    """
+    clinic = clinic or {}
+    triggers: list[str] = []
+    answers: list[str] = []
+    proper_nouns: list[str] = []
+
+    # Screens are interleaved round-robin rather than concatenated.  JV has six
+    # screens and more vocabulary than the cap allows; concatenating gave the
+    # first five everything and the sixth (inflammatory) nothing at all — the
+    # same silent-starvation failure this fix exists to remove.  Round-robin
+    # degrades every screen a little instead of deleting one entirely.
+    #
+    # Triggers rank above answers: a trigger miss means the screen never arms
+    # and the question is never asked, which is strictly worse than an answer
+    # miss (where the question WAS asked and the caller's reply is still read
+    # by the model).
+    screening = clinic.get("clinical_screening") or {}
+    _trigger_rows: list[list[str]] = []
+    _answer_rows: list[list[str]] = []
+    for screen in screening.get("screens") or []:
+        if not isinstance(screen, dict):
+            continue
+        for key, rows in (
+            ("trigger_keywords", _trigger_rows),
+            ("red_flag_answer_keywords", _answer_rows),
+        ):
+            phrases: list[str] = []
+            _collect_strings(screen.get(key), phrases)
+            tokens: list[str] = []
+            for phrase in phrases:
+                tokens.extend(_distinctive_tokens(phrase))
+            rows.append(tokens)
+    for rows, sink in ((_trigger_rows, triggers), (_answer_rows, answers)):
+        for row in zip_longest(*rows):
+            sink.extend(t for t in row if t)
+
+    for key in ("clinic_name", "brand_names", "practitioner"):
+        _collect_strings(clinic.get(key), proper_nouns)
+    _collect_canonical_keys(clinic.get("stt_variants"), proper_nouns)
+    for loc in clinic.get("locations") or []:
+        if isinstance(loc, dict):
+            _collect_strings(loc.get("name"), proper_nouns)
+            _collect_strings(loc.get("serves_areas"), proper_nouns)
+
+    tiers: list[list[str]] = [
+        triggers, proper_nouns, answers, list(_GENERIC_KEYTERMS),
+    ]
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for tier in tiers:
+        for term in tier:
+            term = (term or "").strip()
+            if not term or len(term) > _KEYTERM_MAX_CHARS:
+                continue
+            if len(term.split()) > _KEYTERM_MAX_WORDS:
+                continue
+            key = term.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(term)
+            if len(out) >= _KEYTERMS_MAX:
+                return out
+    return out
 
 
 _STT_FAILURE_PHRASE = (
@@ -258,7 +471,11 @@ class STTStream:
     The AudioChunkBuffer lives on the instance so it survives reconnects.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, clinic_id: Optional[str] = None) -> None:
+        # Clinic whose vocabulary is boosted (keyterms_prompt).  Usually unset
+        # at construction — connection.py builds STTStream before the Twilio
+        # "start" event resolves the clinic — so _stt_loop passes it to start().
+        self._clinic_id:     Optional[str]      = clinic_id
         self._ws:            Optional[Any]      = None
         self._last_final_at: float              = 0.0
         # Instance-level buffer: persists across reconnects so no audio is
@@ -270,6 +487,25 @@ class STTStream:
         # final, read by connection at turn dispatch. -1 = not yet measured.
         self._t_last_partial:        float      = 0.0
         self._last_endpoint_wait_ms: int        = -1
+
+    def _resolve_clinic(self) -> Optional[dict]:
+        """Load this call's clinic config, or None.
+
+        Imported lazily (app.clinic_config pulls in the clinic loader) and
+        never allowed to raise: a keyterm lookup failing must degrade to the
+        generic vocabulary, never take down the STT connection.
+        """
+        if not self._clinic_id:
+            return None
+        try:
+            from app.clinic_config import get_clinic
+            return get_clinic(self._clinic_id)
+        except Exception as exc:
+            logger.warning(
+                "[ms_stt] clinic %r not loaded for keyterms — using generic "
+                "vocabulary only (%r)", self._clinic_id, exc,
+            )
+            return None
 
     async def request_config_update(
         self, min_turn_silence: int, max_turn_silence: int
@@ -311,6 +547,7 @@ class STTStream:
         on_partial: Optional[AsyncCallback] = None,
         on_final_clear: Optional[AsyncCallback] = None,
         tts_text_queue: Optional[asyncio.Queue] = None,
+        clinic_id: Optional[str] = None,
     ) -> None:
         """
         Open AssemblyAI WebSocket and run send + receive concurrently.
@@ -323,17 +560,28 @@ class STTStream:
         on_partial       : async(text: str) called on partial Turn (barge-in)
         on_final_clear   : async(text: str) called on each end-of-turn to reset _clearing
         tts_text_queue   : If set, failure phrase is played here on fatal STT error
+        clinic_id        : Clinic whose vocabulary is boosted; resolved from the
+                           Twilio "start" event, so it arrives here rather than
+                           at construction. Falls back to the ctor value.
         """
+        if clinic_id:
+            self._clinic_id = clinic_id
         # ── Auth: raw API key in Authorization header (server-to-server) ──────
         # ?token= in the URL is for *temporary* browser tokens — NOT the raw key.
         url        = ASSEMBLYAI_WS_URL_V2 if ASSEMBLYAI_USE_V2 else ASSEMBLYAI_WS_URL
         # min_turn_silence is set to 200ms directly in ASSEMBLYAI_WS_URL (config.py).
         # keyterms_prompt: JSON-encoded array boosted at the STT session level.
-        # Improves recognition of proper nouns not in the standard vocabulary.
+        # Built per-clinic from clinic.json (screening vocabulary first) plus
+        # the generic clinical list — see build_keyterms().  This used to be a
+        # hardcoded ["Alcester", "Redditch"], which boosted nothing on any
+        # other clinic and let "calf" degrade to "coffee" past the DVT screen.
         # v3 only — v2 does not support this parameter.
         if not ASSEMBLYAI_USE_V2:
-            url += "&keyterms_prompt=" + _url_quote(
-                json.dumps(["Alcester", "Redditch"])
+            _keyterms = build_keyterms(self._resolve_clinic())
+            url += "&keyterms_prompt=" + _url_quote(json.dumps(_keyterms))
+            logger.info(
+                "[ms_stt] keyterms_prompt: %d terms for clinic=%r (first 5: %s)",
+                len(_keyterms), self._clinic_id, _keyterms[:5],
             )
         ws_headers = {"Authorization": ASSEMBLYAI_API_KEY}
 
@@ -662,7 +910,8 @@ class STTStream:
                     # (invalid message type), killing the STT connection.  Word
                     # boost for v3 must be configured via URL query parameters
                     # at connection time — not as a WebSocket message.
-                    # See _WORD_BOOST_TERMS and ASSEMBLYAI_WS_URL in config.py.
+                    # That migration is now done: see build_keyterms() and the
+                    # &keyterms_prompt= assembly in start().
 
                 # ── v2 compat: SessionBegins ───────────────────────────────────
                 elif msg_type in ("SessionBegins", "session_begins"):
