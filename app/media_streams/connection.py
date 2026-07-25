@@ -2105,10 +2105,13 @@ class SilenceHandler:
         deadline on every 20ms packet."""
         pass
 
-    # How recently the caller must have made a sound for "I didn't catch that"
-    # to be a true statement. Generous: the whole point is to only claim a
-    # mishearing when there really was something to mishear.
-    _REASK_VOICE_RECENCY_SEC: float = 12.0
+    # NOTE (2026-07-25): a `_REASK_VOICE_RECENCY_SEC = 12.0` window used to sit
+    # here and decide the wording. It is deliberately GONE, not retuned. The
+    # watchdog fires 6.0s or 10.0s after the question, so any window wider than
+    # the wait covers the entire silence and the "they have not spoken" branch
+    # can never be reached — the bug was structural, and a smaller number would
+    # only have moved it. _reask_audio_probe now answers "did the caller make a
+    # sound SINCE we stopped asking", which needs no threshold at all.
 
     def _reask_prefix(self, attempt: int) -> str:
         """Opening words of a no-input re-ask, matched to what actually happened.
@@ -2151,7 +2154,7 @@ class SilenceHandler:
         if probe is None:
             return _apology
         try:
-            status, since_voice = probe()
+            status, _voice_gap, voiced_since_prompt = probe()
         except Exception:
             return _apology
 
@@ -2161,10 +2164,17 @@ class SilenceHandler:
                 if attempt == 1
                 else "I still can't hear anything your end"
             )
-        # Caller made a sound recently but no transcript came of it: a real miss.
-        if 0.0 <= since_voice <= self._REASK_VOICE_RECENCY_SEC:
+        # The caller made a sound AFTER we stopped asking, and no transcript
+        # came of it: a genuine mishearing, so apologise.
+        #
+        # This deliberately asks "since the prompt ended", not "recently". The
+        # first version used a 12s rolling window, which was unreachable
+        # (the watchdog fires at 6s/10s, so the window always covered the whole
+        # silence) and was also fooled by the echo of Susie's own voice
+        # returning through a speakerphone. See _reask_audio_probe.
+        if voiced_since_prompt:
             return _apology
-        # Audio healthy, caller simply has not spoken.
+        # Audio healthy, caller simply has not spoken since we asked.
         return (
             "Are you still there?" if attempt == 1
             else "No rush — take your time"
@@ -3405,9 +3415,23 @@ class SilenceHandler:
             _attempt = self._no_input_reask_count
             _state = (_sess or {}).get("state", "")
 
+            # voice_gap / voiced_since_prompt answer "did the caller actually
+            # speak?" — the question that took a full log read to settle after
+            # the 03:29 call of 2026-07-25, where "as soon as possible" was
+            # answered but nothing reached STT. media_gap (safety net) counts
+            # ANY frame including silence, so it cannot answer this.
+            _vg, _vsp = "-", "-"
+            try:
+                if self._audio_probe is not None:
+                    _, _g, _s = self._audio_probe()
+                    _vg = "inf" if _g == float("inf") else f"{_g:.1f}s"
+                    _vsp = str(_s)
+            except Exception:
+                pass
             logger.info(
-                "[ms_watchdog] WATCHDOG_FIRE q_gen=%d attempt=#%d state=%s",
-                q_gen, _attempt, _state,
+                "[ms_watchdog] WATCHDOG_FIRE q_gen=%d attempt=#%d state=%s "
+                "voice_gap=%s voiced_since_prompt=%s",
+                q_gen, _attempt, _state, _vg, _vsp,
             )
 
             # CONFIRM_BOOKING: one clean re-ask only — hold patiently on further
@@ -5531,17 +5555,50 @@ class WebSocketCallHandler:
             return ("silent", gap)
         return ("flowing", gap)
 
-    def _reask_audio_probe(self) -> tuple:
-        """(status, seconds_since_the_caller_last_made_a_sound) for SilenceHandler.
+    # Trailing echo of Susie's own audio can persist briefly past the end of
+    # playout (line delay, speakerphone, room reverb). Require the caller's
+    # sound to land at least this far AFTER she stopped before crediting it to
+    # them. The fastest genuine reply measured across 2026-07-24/25 was 1.8s,
+    # so 0.3s discriminates comfortably without swallowing a quick answer.
+    _ECHO_TAIL_SEC: float = 0.3
 
-        `seconds_since` is float('inf') when the caller has not been audible at
-        all this call, which _reask_prefix() reads as "they have not spoken"
-        rather than "we missed it".
+    def _reask_audio_probe(self) -> tuple:
+        """(status, voice_gap_seconds, caller_voiced_since_prompt).
+
+        Rewritten 2026-07-25. The first version returned a rolling
+        "seconds since the caller last made a sound", which _reask_prefix()
+        compared against a 12s window. That was wrong twice over, and shipped
+        doing nothing:
+
+          1. ARITHMETIC. The no-input watchdog fires 6.0s or 10.0s after the
+             question, so the gap at fire time is bounded by roughly the wait.
+             12.0 > 10.0 > 6.0, so the window always covered the whole silence
+             and the "they have not spoken" branch was unreachable.
+
+          2. ECHO. `_last_voiced_audio_at` is stamped from raw inbound frame
+             energy, and while Susie is speaking a speakerphone feeds her own
+             voice back into the caller's mic. The stamp then reads "the caller
+             made a sound" when the sound was Susie. On the 03:29 call of
+             2026-07-25 that pinned it to the end of her turn, giving a 10.0s
+             gap inside the 12s window — so the false apology fired anyway.
+
+        The meaningful question is not "recently" but "since we finished
+        asking": `_tts_audio_done_at` is stamped in monotonic time when her
+        playout completes, and `_last_voiced_audio_at` in the same clock on
+        every voiced inbound frame. Comparing the two needs no constant and
+        puts echo during her turn on the correct side of the boundary.
+
+        voice_gap is returned for LOGGING only — never for the decision — so
+        the failure above cannot recur through a tuned threshold.
         """
         status, _gap = self._inbound_audio_status()
-        if self._last_voiced_audio_at <= 0.0:
-            return (status, float("inf"))
-        return (status, time.monotonic() - self._last_voiced_audio_at)
+        voiced_at = self._last_voiced_audio_at
+        if voiced_at <= 0.0:
+            # Caller has not been audible at all this call.
+            return (status, float("inf"), False)
+        voice_gap = time.monotonic() - voiced_at
+        voiced_since_prompt = voiced_at > (self._tts_audio_done_at + self._ECHO_TAIL_SEC)
+        return (status, voice_gap, voiced_since_prompt)
 
     # ── Utterance-loss accounting ───────────────────────────────────────────
 
@@ -12384,16 +12441,28 @@ class WebSocketCallHandler:
                     except Exception as _exc:
                         _audio_status, _audio_gap = "unknown", -1.0
                         logger.debug("[ms_safety_net] audio status failed: %r", _exc)
+                    # media_gap counts ANY inbound frame, silence included, so
+                    # it says the leg is alive but not whether the caller spoke.
+                    # voice_gap is the one that answers that.
+                    _voice_gap, _voiced_since = "-", "-"
+                    try:
+                        _, _vg, _vs = self._reask_audio_probe()
+                        _voice_gap = "inf" if _vg == float("inf") else f"{_vg:.1f}s"
+                        _voiced_since = str(_vs)
+                    except Exception as _exc:
+                        logger.debug("[ms_safety_net] voice probe failed: %r", _exc)
                     logger.warning(
                         "[ms_safety_net] 10s dead-air — emitting safety re-ask "
                         "(since=%.1fs llm_busy=%s tts_playing=%s q_gen=%d "
-                        "inbound_audio=%s media_gap=%.1fs frames=%d)",
+                        "inbound_audio=%s media_gap=%.1fs frames=%d "
+                        "voice_gap=%s voiced_since_prompt=%s)",
                         _since,
                         self._llm_busy,
                         getattr(self._silence_handler, "_tts_playing", False),
                         _current_q_gen,
                         _audio_status, _audio_gap,
                         getattr(self, "_media_frames_in", -1),
+                        _voice_gap, _voiced_since,
                     )
                     if _audio_status in ("stalled", "never"):
                         # The inbound leg is down, not the caller. Re-asking a

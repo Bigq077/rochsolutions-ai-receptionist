@@ -1,135 +1,249 @@
 # tests/regression/test_reask_wording_matches_evidence.py
-"""P2 (2026-07-24) — Susie apologised for mishearing callers she had heard perfectly.
+"""P2 — Susie apologised for mishearing callers she had heard perfectly.
 
-Incident
---------
-jv_v1 call, 23:14-23:17. FOUR re-asks opened with "Sorry, I didn't catch that",
-and on every one the caller had not spoken at all:
+Incident (2026-07-24, jv_v1 23:14-23:17)
+---------------------------------------
+FOUR re-asks opened with "Sorry, I didn't catch that", and on every one the
+caller had not spoken at all:
 
     23:14:19  re-ask after  6.0s   caller first spoke 10.78s after the prompt
     23:15:06  re-ask after 10.0s   caller first spoke 17.08s after the prompt
     23:16:12  re-ask after 10.0s   caller first spoke 30.66s after the prompt
     23:16:27  safety net           (same silence)
 
-Inbound audio was flawless for the whole call: 9183 Twilio media frames over
-186s, 98.7% of the expected ~20ms rate, and the safety net itself logged
-`inbound_audio=flowing media_gap=0.0s frames=7011`. Not one partial transcript
-appeared in any of those windows. The caller's engaged replies on the same call
-all landed in 1.8-3.3s, so these were real silences, not slow recognition.
+Inbound audio was flawless: 9183 frames over 186s, 98.7% of the expected ~20ms
+rate, `inbound_audio=flowing`. No partial appeared in any of those windows,
+while the caller's engaged replies elsewhere landed in 1.8-3.3s. Real silences,
+not slow recognition — so the claim was false every time it was made. To a
+listener that is indistinguishable from being deaf, which is why "Susie can't
+hear me" was the reported symptom on a call where she heard everything.
 
-So the claim "I didn't catch that" was false every time it was made. To a
-listener that is indistinguishable from actually being deaf, which is why
-"Susie can't hear me" was the reported symptom on a call where she heard
-everything said to her.
+Same defect class as the DVT escalation asserting a symptom the caller had
+denied (a04fc58): stating as fact something the evidence contradicts.
 
-Structurally this is the same defect as the DVT escalation asserting a symptom
-the caller had denied (a04fc58): stating as established fact something the
-available evidence contradicts.
+SECOND incident (2026-07-25, 03:29) — the first fix shipped INERT
+-----------------------------------------------------------------
+adb2330 deployed at 03:25. At 03:29:41, with audio flowing and the caller
+silent, it still said "Sorry, I didn't catch that". Two independent faults:
 
-Note the no-input watchdog fires ONLY when nothing was detected —
-_mark_prompt_speech_detected() cancels the task the instant a partial arrives —
-so the apology was never the common case to begin with.
+  1. ARITHMETIC. The decision used a 12.0s "recent voice" window, but the
+     watchdog fires 6.0s or 10.0s after the question — so the window always
+     covered the entire silence and the "they have not spoken" branch was
+     UNREACHABLE. Structural: a smaller constant would only have moved it.
+
+  2. ECHO. `_last_voiced_audio_at` is stamped from raw inbound frame energy,
+     and a speakerphone feeds Susie's own voice back into the caller's mic.
+     The stamp read "the caller made a sound" when the sound was Susie.
+
+Why the original tests missed it: they fed the probe hand-picked values
+(`_REASK_VOICE_RECENCY_SEC + 0.1`) that production can never produce. The
+function was verified against inputs chosen by the test, not inputs the system
+emits. THE TESTS BELOW THEREFORE DRIVE THE REAL PROBE with timings taken from
+the actual calls — that is the part that matters here.
 
 Fix
 ---
-_reask_prefix() picks the opening from what actually happened, via an
-audio_probe supplied by WebSocketCallHandler. The recovery ladder — timings,
-attempt counts, escalation, transfer — is completely unchanged.
+`_reask_audio_probe` answers "did the caller make a sound SINCE we stopped
+asking" by comparing two monotonic stamps it already owns. No threshold, so
+fault (1) cannot recur; echo during her turn falls on the correct side of the
+boundary, so fault (2) cannot either. The recovery ladder — timings, attempt
+counts, escalation, transfer — is unchanged.
 """
+
+import types
 
 import pytest
 
-from app.media_streams.connection import SilenceHandler
+from app.media_streams import connection as conn
+from app.media_streams.connection import SilenceHandler, WebSocketCallHandler
 
 _APOLOGY_1 = "Sorry, I didn't catch that"
 _APOLOGY_2 = "I'm sorry, I'm still not hearing you clearly. Let's try again"
+
+_NOW = 1000.0
 
 
 def _handler(probe):
     """A SilenceHandler with only the probe wired — _reask_prefix touches no more."""
     h = SilenceHandler.__new__(SilenceHandler)
     h._audio_probe = probe
-    h._REASK_VOICE_RECENCY_SEC = SilenceHandler._REASK_VOICE_RECENCY_SEC
     return h
 
 
-# ---------------------------------------------------------------------------
-# The regression: silence must not be reported as a mishearing.
-# ---------------------------------------------------------------------------
-@pytest.mark.parametrize("attempt", [1, 2])
-def test_silent_caller_is_not_told_we_missed_them(attempt):
-    """THE INCIDENT: audio healthy, caller simply has not spoken."""
-    prefix = _handler(lambda: ("flowing", float("inf")))._reask_prefix(attempt)
-    assert "didn't catch" not in prefix
-    assert "not hearing you" not in prefix
-    assert prefix.strip(), "a re-ask must still say something"
+def _real_probe(monkeypatch, *, last_voiced_at, tts_done_at, frames=5000,
+                last_frame_at=None):
+    """The REAL _reask_audio_probe bound to production-shaped state.
 
-
-def test_silent_caller_gets_a_presence_check():
-    assert _handler(lambda: ("flowing", float("inf")))._reask_prefix(1) == (
-        "Are you still there?"
+    Hand-written probe stubs are what let the shipped bug through, so every
+    behavioural test below goes through this.
+    """
+    monkeypatch.setattr(conn.time, "monotonic", lambda: _NOW)
+    h = types.SimpleNamespace(
+        _media_frames_in=frames,
+        _last_audio_received_at=_NOW - 0.02 if last_frame_at is None else last_frame_at,
+        _last_voiced_audio_at=last_voiced_at,
+        _tts_audio_done_at=tts_done_at,
     )
-
-
-def test_long_silence_after_an_earlier_utterance_is_still_silence():
-    """The caller spoke 30s ago; that is not something we just failed to catch."""
-    prefix = _handler(lambda: ("flowing", 30.7))._reask_prefix(1)
-    assert "didn't catch" not in prefix
-
-
-# ---------------------------------------------------------------------------
-# A genuine mishearing must still apologise. This is the half that keeps the
-# apology honest rather than removing it.
-# ---------------------------------------------------------------------------
-def test_recent_voice_with_no_transcript_still_apologises():
-    """Caller audibly spoke and STT produced nothing — we DID miss it."""
-    assert _handler(lambda: ("flowing", 1.5))._reask_prefix(1) == _APOLOGY_1
-    assert _handler(lambda: ("flowing", 1.5))._reask_prefix(2) == _APOLOGY_2
-
-
-def test_voice_just_inside_the_recency_window_apologises():
-    within = SilenceHandler._REASK_VOICE_RECENCY_SEC - 0.1
-    assert _handler(lambda: ("flowing", within))._reask_prefix(1) == _APOLOGY_1
-
-
-def test_voice_just_outside_the_recency_window_does_not():
-    beyond = SilenceHandler._REASK_VOICE_RECENCY_SEC + 0.1
-    assert _handler(lambda: ("flowing", beyond))._reask_prefix(1) != _APOLOGY_1
+    h._MEDIA_STALL_SEC = WebSocketCallHandler._MEDIA_STALL_SEC
+    h._ECHO_TAIL_SEC = WebSocketCallHandler._ECHO_TAIL_SEC
+    h._inbound_audio_status = WebSocketCallHandler._inbound_audio_status.__get__(h)
+    h._reask_audio_probe = WebSocketCallHandler._reask_audio_probe.__get__(h)
+    return h._reask_audio_probe
 
 
 # ---------------------------------------------------------------------------
-# A real fault should say so — and must not be softened into "are you there?",
-# which would blame a silent caller for our broken leg.
+# The 2026-07-25 03:29 regression — the reason the first fix was inert.
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("status", ["stalled", "never"])
-@pytest.mark.parametrize("attempt", [1, 2])
-def test_dead_inbound_leg_says_it_cannot_hear(status, attempt):
-    prefix = _handler(lambda: (status, float("inf")))._reask_prefix(attempt)
-    assert "still there" not in prefix.lower()
-    assert "take your time" not in prefix.lower()
-    assert "hear" in prefix.lower()
+@pytest.mark.parametrize("watchdog_wait", [6.0, 10.0])
+def test_silence_after_the_prompt_is_never_reported_as_a_mishearing(
+    monkeypatch, watchdog_wait
+):
+    """THE ARITHMETIC TRAP, at both real watchdog waits.
+
+    Susie stops speaking, the caller says nothing, the watchdog fires after
+    its wait. Echo pins the last voiced frame to the end of her turn — which
+    is what actually happened at 03:29:41 — so `voice_gap` equals the wait.
+    Any recency window wider than the wait apologises here. This must not.
+    """
+    tts_done = _NOW - watchdog_wait
+    probe = _real_probe(
+        monkeypatch,
+        last_voiced_at=tts_done,       # echo of Susie, not the caller
+        tts_done_at=tts_done,
+    )
+    assert _handler(probe)._reask_prefix(1) == "Are you still there?"
+
+
+def test_the_exact_0329_numbers(monkeypatch):
+    """Reconstructed from the live call that proved adb2330 inert.
+
+        03:29:31.019  Susie stops speaking
+        03:29:41.039  WATCHDOG_FIRE  (10.02s later)  -> said "I didn't catch that"
+    """
+    probe = _real_probe(
+        monkeypatch,
+        last_voiced_at=_NOW - 10.02,   # echo, pinned to end of her turn
+        tts_done_at=_NOW - 10.02,
+    )
+    status, voice_gap, voiced_since = probe()
+    assert status == "flowing"
+    assert voice_gap == pytest.approx(10.02)
+    assert voiced_since is False, (
+        "echo of Susie's own voice during her turn was credited to the caller"
+    )
+    assert _handler(probe)._reask_prefix(1) == "Are you still there?"
+
+
+def test_echo_during_the_prompt_does_not_count_as_the_caller(monkeypatch):
+    """A voiced frame BEFORE she finished is hers, not theirs."""
+    probe = _real_probe(
+        monkeypatch,
+        last_voiced_at=_NOW - 12.0,    # mid-way through her turn
+        tts_done_at=_NOW - 11.0,       # ...which ended after it
+    )
+    assert probe()[2] is False
+    assert _handler(probe)._reask_prefix(1) == "Are you still there?"
+
+
+def test_echo_tail_just_after_playout_still_does_not_count(monkeypatch):
+    """Line delay and reverb outlive the last audio packet."""
+    tts_done = _NOW - 10.0
+    probe = _real_probe(
+        monkeypatch,
+        last_voiced_at=tts_done + (WebSocketCallHandler._ECHO_TAIL_SEC / 2),
+        tts_done_at=tts_done,
+    )
+    assert probe()[2] is False
 
 
 # ---------------------------------------------------------------------------
-# Never let a diagnostic change the recovery ladder.
+# The apology must survive for the case it was written for.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("attempt,expected", [(1, _APOLOGY_1), (2, _APOLOGY_2)])
+def test_caller_spoke_after_the_prompt_but_no_transcript_apologises(
+    monkeypatch, attempt, expected
+):
+    """A genuine mishearing: they made a sound, we produced nothing."""
+    tts_done = _NOW - 10.0
+    probe = _real_probe(
+        monkeypatch,
+        last_voiced_at=tts_done + 2.0,   # well clear of the echo tail
+        tts_done_at=tts_done,
+    )
+    assert probe()[2] is True
+    assert _handler(probe)._reask_prefix(attempt) == expected
+
+
+def test_caller_never_audible_all_call_is_silence_not_a_miss(monkeypatch):
+    probe = _real_probe(monkeypatch, last_voiced_at=0.0, tts_done_at=_NOW - 10.0)
+    status, gap, voiced = probe()
+    assert (gap, voiced) == (float("inf"), False)
+    assert _handler(probe)._reask_prefix(1) == "Are you still there?"
+
+
+# ---------------------------------------------------------------------------
+# A dead leg says so.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("attempt,expected", [
+    (1, "I'm having trouble hearing you — you might be breaking up"),
+    (2, "I still can't hear anything your end"),
+])
+def test_stalled_inbound_leg_says_it_cannot_hear(monkeypatch, attempt, expected):
+    probe = _real_probe(
+        monkeypatch,
+        last_voiced_at=_NOW - 50.0,
+        tts_done_at=_NOW - 10.0,
+        last_frame_at=_NOW - 48.0,       # media stopped: 'stalled'
+    )
+    assert probe()[0] == "stalled"
+    assert _handler(probe)._reask_prefix(attempt) == expected
+
+
+def test_no_frames_at_all_says_it_cannot_hear(monkeypatch):
+    probe = _real_probe(
+        monkeypatch, last_voiced_at=0.0, tts_done_at=_NOW - 10.0, frames=0,
+    )
+    assert probe()[0] == "never"
+    assert "trouble hearing you" in _handler(probe)._reask_prefix(1)
+
+
+# ---------------------------------------------------------------------------
+# A diagnostic must never reshape recovery.
 # ---------------------------------------------------------------------------
 def test_no_probe_falls_back_to_original_wording():
-    """Every existing test double constructs SilenceHandler without a probe."""
+    """Every pre-existing test double constructs SilenceHandler without one."""
     assert _handler(None)._reask_prefix(1) == _APOLOGY_1
     assert _handler(None)._reask_prefix(2) == _APOLOGY_2
 
 
 def test_probe_raising_falls_back_to_original_wording():
-    def _boom():
+    def boom():
         raise RuntimeError("probe exploded")
+    assert _handler(boom)._reask_prefix(1) == _APOLOGY_1
 
-    assert _handler(_boom)._reask_prefix(1) == _APOLOGY_1
-    assert _handler(_boom)._reask_prefix(2) == _APOLOGY_2
+
+def test_probe_returning_the_old_2_tuple_falls_back_safely():
+    """Defence against a half-deployed rollback: arity change must not crash."""
+    assert _handler(lambda: ("flowing", 3.0))._reask_prefix(1) == _APOLOGY_1
 
 
 def test_probe_is_optional_on_the_constructor():
-    """Older call sites must keep working without passing audio_probe."""
     import inspect
-
     sig = inspect.signature(SilenceHandler.__init__)
     assert sig.parameters["audio_probe"].default is None
+
+
+# ---------------------------------------------------------------------------
+# The trap itself, locked.
+# ---------------------------------------------------------------------------
+def test_no_recency_window_constant_survives():
+    """The decision must not depend on a duration compared against the wait.
+
+    A window wider than the watchdog wait (6.0s / 10.0s) makes the silence
+    branch unreachable, which is precisely how the first fix shipped doing
+    nothing. Reintroducing one should fail here rather than on a live call.
+    """
+    assert not hasattr(SilenceHandler, "_REASK_VOICE_RECENCY_SEC"), (
+        "a recency window is back — see the 2026-07-25 03:29 incident in this "
+        "module's docstring before reinstating it"
+    )
