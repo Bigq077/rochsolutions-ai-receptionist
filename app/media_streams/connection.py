@@ -5814,6 +5814,26 @@ class WebSocketCallHandler:
                         bool(self.session.get("v3_confirmed_slot_phrase"))
                         and not self.session.get("phone_confirmed")
                         and not self.session.get("v3_phone_dtmf_active")
+                    ) or (
+                        # 2026-07-24: "rock" was lost AGAIN, same caller, same
+                        # surname the comment above already records from
+                        # 2026-07-07 — because all three arms above missed:
+                        #   * last_bot_prompt had advanced to "Did you say
+                        #     Quentin — is that right?" (no name keyword);
+                        #   * v3_awaiting_surname is only set by the
+                        #     name_collector two-turn path, and this booking
+                        #     collected the name through the LLM;
+                        #   * v3_confirmed_slot_phrase is only set on the
+                        #     numbered-slot path, and this slot was confirmed
+                        #     through the slot-buffer ("no numbered options
+                        #     this turn"), so it was never set.
+                        # Broadest correct arm: we are inside a booking, the
+                        # phone step has not started, so the only thing a short
+                        # trailing fragment can be is part of the name. Covers
+                        # the LLM path both earlier arms were shaped around.
+                        bool(self.session.get("booking_flow_active"))
+                        and not self.session.get("phone_confirmed")
+                        and not self.session.get("v3_phone_dtmf_active")
                     )
                     _short_fragment = 0 < len(utterance.split()) <= 2
                     if (
