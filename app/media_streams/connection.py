@@ -1949,6 +1949,7 @@ class SilenceHandler:
         on_transfer=None,
         get_session=None,
         on_dead_air_ts_reset=None,
+        audio_probe=None,
     ) -> None:
         self.reask_count:             int   = 0
         self.last_audio_received_at:  float = time.time()
@@ -1975,6 +1976,11 @@ class SilenceHandler:
         # the "start" event reassigns self.session).
         self._get_session                   = get_session   # () -> dict | None
         self._on_dead_air_ts_reset          = on_dead_air_ts_reset  # optional async callback() — resets WebSocketCallHandler._last_audio_or_transcript_ts
+        # audio_probe() -> (status, seconds_since_the_caller_last_made_a_sound)
+        # Supplied by WebSocketCallHandler (_reask_audio_probe). Lets the
+        # re-ask wording match what actually happened; see _reask_prefix().
+        # Optional so every existing test double keeps working untouched.
+        self._audio_probe                   = audio_probe
         self._recovery_task: Optional[asyncio.Task] = None  # re-arms timer if STT misses audio
         self._stt_miss_count: int = 0  # consecutive STT misses since last successful transcript
         self._cancelled: bool = False  # set by cancel() — hard synchronous guard for _run()/_transfer()
@@ -2091,8 +2097,78 @@ class SilenceHandler:
 
     def on_audio_received(self) -> None:
         """Called for every Twilio audio packet (~every 20ms, even during silence).
-        Does NOT update last_audio_received_at — use on_speech_started() for that."""
+        Does NOT update last_audio_received_at — use on_speech_started() for that.
+
+        Inbound-audio HEALTH is tracked on WebSocketCallHandler instead
+        (_handle_media / _inbound_audio_status), which owns the frame counters;
+        this hook stays a no-op deliberately so it cannot perturb the watchdog
+        deadline on every 20ms packet."""
         pass
+
+    # How recently the caller must have made a sound for "I didn't catch that"
+    # to be a true statement. Generous: the whole point is to only claim a
+    # mishearing when there really was something to mishear.
+    _REASK_VOICE_RECENCY_SEC: float = 12.0
+
+    def _reask_prefix(self, attempt: int) -> str:
+        """Opening words of a no-input re-ask, matched to what actually happened.
+
+        Measured on the jv_v1 call of 2026-07-24 23:14-23:17: FOUR re-asks
+        said "Sorry, I didn't catch that", and on all four the caller had not
+        spoken at all. Inbound audio was perfect that call — 9183 media frames
+        over 186s, 98.7% of the expected rate, `inbound_audio=flowing`. The
+        gaps were 10.8s, 17.1s and 30.7s of real silence while the caller's
+        engaged replies elsewhere on the same call all landed in 1.8-3.3s.
+
+        So Susie was reporting a hearing failure that had not occurred. That is
+        the same defect as the DVT escalation asserting a symptom the caller
+        had denied (a04fc58): stating as fact something the evidence contradicts.
+        It is also, for a listener, indistinguishable from actually being deaf —
+        which is why "Susie can't hear me" was the reported symptom on calls
+        where she heard everything.
+
+        Note this watchdog fires ONLY when nothing was detected —
+        _mark_prompt_speech_detected() cancels the task the moment a partial
+        arrives — so "I didn't catch that" was never the common case.
+
+        Three real situations, three honest openings:
+
+          voice heard, no transcript  -> a genuine mishearing. Apologise.
+          silence, audio healthy      -> they have not spoken. Do NOT apologise
+                                         for a fault that did not happen; check
+                                         they are still there.
+          audio stalled or absent     -> we really are deaf, and the caller may
+                                         be talking into a dead line.
+
+        Falls back to the original wording whenever the probe is unavailable or
+        raises, so a diagnostic can never change the recovery ladder's shape.
+        """
+        _apology = (
+            "Sorry, I didn't catch that" if attempt == 1
+            else "I'm sorry, I'm still not hearing you clearly. Let's try again"
+        )
+        probe = self._audio_probe
+        if probe is None:
+            return _apology
+        try:
+            status, since_voice = probe()
+        except Exception:
+            return _apology
+
+        if status in ("stalled", "never"):
+            return (
+                "I'm having trouble hearing you — you might be breaking up"
+                if attempt == 1
+                else "I still can't hear anything your end"
+            )
+        # Caller made a sound recently but no transcript came of it: a real miss.
+        if 0.0 <= since_voice <= self._REASK_VOICE_RECENCY_SEC:
+            return _apology
+        # Audio healthy, caller simply has not spoken.
+        return (
+            "Are you still there?" if attempt == 1
+            else "No rush — take your time"
+        )
 
     def on_speech_started(self, stt_source: bool = False) -> None:
         """Call when STT detects actual speech (partial transcript or energy VAD).
@@ -3397,10 +3473,9 @@ class SilenceHandler:
             # written even if repeated, because swapping a keypad instruction
             # for a softer phrase would strand the caller mid-escalation.
             _phrase_is_replay = False
-            if _attempt == 1:
-                _prefix = "Sorry, I didn't catch that"
-            else:  # attempt 2
-                _prefix = "I'm sorry, I'm still not hearing you clearly. Let's try again"
+            # Wording follows the evidence rather than always apologising for a
+            # mishearing — see _reask_prefix(). The ladder itself is unchanged.
+            _prefix = self._reask_prefix(_attempt)
 
             if _state in ("GREETING", "DETECT_INTENT", ""):
                 # v3 bypasses the FlowEngine state machine so state stays
@@ -4500,6 +4575,7 @@ class WebSocketCallHandler:
             # current session even after self.session is reassigned on "start".
             get_session=lambda: self.session,
             on_dead_air_ts_reset=_silence_dead_air_ts_reset_fn,
+            audio_probe=self._reask_audio_probe,
         )
         # WS-C: fire the phase-aware endpoint profile whenever a new question is
         # stored (i.e. the moment Susie ASKS for the name/number, before the
@@ -5454,6 +5530,18 @@ class WebSocketCallHandler:
         if self._last_voiced_audio_at <= 0.0:
             return ("silent", gap)
         return ("flowing", gap)
+
+    def _reask_audio_probe(self) -> tuple:
+        """(status, seconds_since_the_caller_last_made_a_sound) for SilenceHandler.
+
+        `seconds_since` is float('inf') when the caller has not been audible at
+        all this call, which _reask_prefix() reads as "they have not spoken"
+        rather than "we missed it".
+        """
+        status, _gap = self._inbound_audio_status()
+        if self._last_voiced_audio_at <= 0.0:
+            return (status, float("inf"))
+        return (status, time.monotonic() - self._last_voiced_audio_at)
 
     # ── Utterance-loss accounting ───────────────────────────────────────────
 
