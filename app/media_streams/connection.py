@@ -11441,11 +11441,66 @@ class WebSocketCallHandler:
                         _sh_w._q_gen, _arm_q_w[:60], _loc_active_w,
                     )
                 else:
-                    logger.debug(
-                        "[ms_watchdog] Spec W: last sentence has no question — "
-                        "skipping watchdog restart: %r",
-                        _last_sent_w[:60],
-                    )
+                    # ── Question-less turn backstop (2026-07-25) ──────────────
+                    # A turn that asks nothing while a question is still
+                    # outstanding used to arm NOTHING, leaving the 10s
+                    # _silence_safety_net as the only recovery — and that net
+                    # re-anchors to "how can I help today?", discarding the
+                    # booking. Observed on the jv_v1 call of 2026-07-25 02:30:
+                    #
+                    #   02:30:32  "...Would you like to book an assessment?"
+                    #   02:30:34  caller: "please"
+                    #   02:30:36  Susie:  "Right —"        <- asks nothing
+                    #   02:30:47  safety net: "how can I help today?"
+                    #   02:31:04  caller hung up. outcome=abandoned.
+                    #
+                    # The prompt MANDATES that stub ("acknowledge simply:
+                    # 'Right —' and NOTHING ELSE ... the system injects the
+                    # next question"), and the system's injection is gated on
+                    # a CTA-affirm regex that did not match bare "please". So
+                    # the LLM was forbidden from covering and its replacement
+                    # never spoke. The `_loc_active_w` arm above is the same
+                    # bug, patched for the location path only (see its comment
+                    # citing the 2026-06-12 stress test).
+                    #
+                    # Deliberately the smallest possible action: re-arm the
+                    # timer and mutate NOTHING. In particular do not touch
+                    #   last_question         -> the re-ask replays the REAL
+                    #                            outstanding question, so
+                    #                            booking context survives;
+                    #   _no_input_reask_count -> the one-audible-re-ask-per-
+                    #   _q_gen                   q_gen cap at _restart_timer
+                    #                            still bounds this, so a
+                    #                            question-less turn cannot
+                    #                            loop the caller;
+                    #   _watchdog_has_retired -> the enclosing guard already
+                    #                            requires it to be False.
+                    # This makes the whole detector-gate family fail OPEN into
+                    # a normal re-ask instead of fail SILENT into dead air.
+                    #
+                    # Gated on a genuine outstanding question because
+                    # _restart_timer() also starts the W1/W2/W3 silence
+                    # cascade, which has no empty-question guard of its own.
+                    # Same predicate as Spec Z Gate 2 inside _restart_timer,
+                    # so the two agree by construction.
+                    _outstanding_q_w = (_sh_w.last_question or "").strip()
+                    if _outstanding_q_w and _sh_w._prompt_contains_question(
+                        _outstanding_q_w
+                    ):
+                        _sh_w._restart_timer()
+                        logger.info(
+                            "[ms_watchdog] BACKSTOP armed — turn asked nothing"
+                            " (%r) but a question is still outstanding: %r",
+                            _last_sent_w[:40], _outstanding_q_w[:60],
+                        )
+                    else:
+                        # Promoted from debug: this branch is the dead-end that
+                        # cost the 02:30 call and it was invisible at INFO.
+                        logger.info(
+                            "[ms_watchdog] Spec W: turn asked nothing and no"
+                            " question is outstanding — nothing to re-ask: %r",
+                            _last_sent_w[:60],
+                        )
             # ── end Spec W ────────────────────────────────────────────────────
 
             self._tts_audio_done_at = time.monotonic()
