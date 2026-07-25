@@ -225,6 +225,17 @@ def test_bad_max_seconds_falls_back(monkeypatch):
 # ---------------------------------------------------------------------------
 # Twilio side.
 # ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _clear_recording_claim():
+    """start_twilio_recording is idempotent per CallSid (it must not re-fire on
+    Twilio's post-stream re-POST of /ms/incoming), and the claim is held in
+    process-level state. These tests all use the same CallSid, so without this
+    the first one to reach the claim silences the rest."""
+    ac._recording_claimed_local.clear()
+    yield
+    ac._recording_claimed_local.clear()
+
+
 async def test_twilio_recording_is_a_noop_when_disabled(monkeypatch):
     called = False
 

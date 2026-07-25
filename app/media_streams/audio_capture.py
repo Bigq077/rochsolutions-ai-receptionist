@@ -42,6 +42,7 @@ import io
 import logging
 import os
 import wave
+from collections import OrderedDict
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -158,8 +159,70 @@ class CallAudioCapture:
             return None
 
 
+# ---------------------------------------------------------------------------
+# ONE RECORDING REQUEST PER CALL
+#
+# Twilio POSTs /ms/incoming a SECOND time with the SAME CallSid once the
+# <Connect><Stream> verb finishes — it is asking what to do next, not
+# announcing a new call. The recording request fired on every inbound POST,
+# so the post-stream one always hit a call that can no longer be recorded:
+#
+#     16:21:55.191  POST .../Calls/CAxxxx/Recordings.json  HTTP 400
+#                   {"code":21220,"message":"Requested resource is not
+#                    eligible for recording"}
+#
+# Harmless but not free: it is a spurious 400 in every call log, on a line
+# that is being read to diagnose audio loss, and it costs an outbound HTTP
+# round trip during call teardown.
+#
+# The claim is Redis-first because Render can run more than one worker and the
+# re-POST is not guaranteed to land on the process that served the first one.
+# SET NX is atomic, so two workers racing still yield exactly one request. The
+# TTL only has to outlive a single call.
+# ---------------------------------------------------------------------------
+_RECORDING_CLAIM_TTL_S = 3600
+
+# Fallback for when Redis is down. Per-process, so it neither survives a
+# restart nor covers a second worker — which is why it is the fallback and not
+# the mechanism. Bounded: a long-lived process must not accumulate CallSids
+# without limit.
+_recording_claimed_local: "OrderedDict[str, None]" = OrderedDict()
+_RECORDING_CLAIM_LOCAL_MAX = 512
+
+
+async def _claim_recording(call_sid: str) -> bool:
+    """True if this is the first request to record `call_sid`.
+
+    Fails OPEN on an unexpected error — a duplicate 400 is a cosmetic problem,
+    and silently never recording would defeat the diagnostic this module
+    exists for.
+    """
+    try:
+        from .session import _get_redis
+        redis = _get_redis()
+        if redis is not None:
+            claimed = await redis.set(
+                f"ms_rec_claimed:{call_sid}", "1",
+                ex=_RECORDING_CLAIM_TTL_S, nx=True,
+            )
+            return bool(claimed)
+    except Exception as exc:
+        logger.warning(
+            "[audio_capture] recording claim via Redis failed (%r) — "
+            "falling back to the per-process guard", exc,
+        )
+    if call_sid in _recording_claimed_local:
+        return False
+    _recording_claimed_local[call_sid] = None
+    while len(_recording_claimed_local) > _RECORDING_CLAIM_LOCAL_MAX:
+        _recording_claimed_local.popitem(last=False)
+    return True
+
+
 async def start_twilio_recording(call_sid: str) -> None:
     """Ask Twilio to record the in-progress call, dual-channel.
+
+    Idempotent per CallSid — see the claim block above for why that matters.
 
     Dual channel puts the CALLER on one channel and Susie on the other, so the
     recording answers "was the caller talking over her, and did their voice
@@ -178,6 +241,14 @@ async def start_twilio_recording(call_sid: str) -> None:
         logger.warning(
             "[audio_capture] TWILIO_CALL_RECORDING_ENABLED is on but "
             "TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN are not set — skipping"
+        )
+        return
+    # After the credential check, so a misconfigured deploy does not burn the
+    # claim and then silently skip recording once the secrets are fixed.
+    if not await _claim_recording(call_sid):
+        logger.info(
+            "[audio_capture] recording already requested for %s — skipping the "
+            "post-stream duplicate", call_sid,
         )
         return
     url = (
