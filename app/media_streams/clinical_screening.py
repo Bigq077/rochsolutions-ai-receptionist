@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 PENDING_SCREEN_KEY = "pending_screen"        # screen id awaiting question/answer
 SCREEN_RED_FLAG_KEY = "screen_red_flag"      # screen id that answered positive
 SCREENS_COMPLETED_KEY = "screens_completed"  # list of screen ids already run
+SCREEN_TRUNCATED_KEY = "screen_truncation_downgrades"  # screen ids re-asked once
 
 # Brief empathetic acknowledgement spoken immediately before a freshly-armed
 # screen question — this replaces the warm "acknowledge first" the model used to
@@ -566,6 +567,103 @@ def classify_screen_answer(text: str, screen: Dict[str, Any]) -> str:
     return "unclear"
 
 
+# ---------------------------------------------------------------------------
+# TRUNCATED SAFETY ANSWER — do not let half a sentence clear a screen.
+#
+# 2026-07-25, the 16:20 call. The caller was still speaking when the endpointer
+# cut the turn:
+#
+#     16:20:49.782  partial 'it fine and there's no marks'
+#     16:20:49.896  FINAL   'it fine and there's no marks where'
+#
+# 114 ms later, mid-clause. classify_screen_answer read the fragment as a plain
+# negative (_NEGATIVE_PATTERNS matches the 'no') and cleared the screen, and the
+# model moved to booking. Had the full sentence been "there's no marks where I
+# can see, but it does look out of shape", the truncation would have INVERTED
+# the clinical meaning — 'out of shape' is a configured trauma red flag.
+#
+# Safety answers must not be endpointed on a 600 ms pause
+# (media_streams/config.py: min_turn_silence=600).
+#
+# What this canNOT use: the obvious signal is "the final carries no terminal
+# punctuation". It is unavailable. config.py sets format_turns=false on the
+# AssemblyAI v3 socket, so NO final is ever punctuated or capitalised — the
+# apostrophe in "there's" is v3 contraction handling, not sentence formatting.
+# The signal is constant and discriminates nothing. (The other candidate,
+# stt_stream's _last_endpoint_wait_ms, sits at ~min_turn_silence whenever the
+# endpointer times out, which is nearly always, and is gated on _LAT_ON.)
+#
+# What it uses instead: the fragment ends on a closed-class word that cannot
+# close an English clause. 'where' in the logged case; 'but', 'it', 'does' for
+# the same sentence cut anywhere earlier. Purely lexical, needs no new state in
+# connection.py, and is the same idiom as _V3_NOISE_FRAGMENTS there.
+#
+# The list is deliberately narrow. A false positive re-asks a safety question
+# the caller already answered — audible, irritating, and demo-visible — so
+# every word that can legitimately END a short screen answer is excluded, even
+# where it is closed-class:
+#
+#   no / none / nothing / that / this   'no', 'nothing like that'
+#   cant / dont / havent / isnt / …     'no I havent', 'it doesnt'
+#   fine / all / both / any             'all fine', 'no not any'
+#
+# Negated auxiliaries are the sharpest of these: "no I haven't" is a complete,
+# clear answer to every compound screen question in jv_v1, and flagging it
+# would re-ask on the single most common way a caller says no.
+# ---------------------------------------------------------------------------
+#
+# PREPOSITIONS ARE NOT IN THIS LIST, and that is the main thing to know about
+# it. English strands prepositions clause-finally all the time, and the
+# stranded forms are exactly how callers decline a symptom:
+#
+#     "not that I know of"        "nothing I'm aware of"
+#     "nothing to speak of"       "no one I've been in contact with"
+#
+# A first cut included them and flagged "not that I know of" — which is a
+# configured _NEGATIVE_PATTERNS answer. Losing the preposition class costs a
+# little recall ("no nothing apart from" is now missed); admitting it would
+# re-ask a clear answer, which is worse.
+#
+# 'so', 'though' and 'really' are excluded for the same reason: "I don't think
+# so", "it's fine though" and "not really" are all complete and all common.
+_OPEN_CLAUSE_TAIL: frozenset = frozenset(
+    _norm(w) for w in (
+        # coordinators and subordinators — the sharpest signal, because they
+        # promise a clause that never arrived. Omits 'so'/'though' (see above)
+        # and the temporal ones that double as clause-final adverbs
+        # ('since', 'before', 'after', 'until').
+        "and", "but", "or", "nor", "because", "cause", "although",
+        "while", "whilst", "unless", "whether", "than", "if",
+        "when", "whenever", "where", "wherever", "which", "who",
+        "whom", "whose",
+        # determiners / possessives — never clause-final. Omits
+        # this/that/these/those, which end 'nothing like that'.
+        "the", "a", "an", "my", "your", "his", "her", "its", "our", "their",
+        # positive auxiliaries and copula. Their NEGATED forms are omitted:
+        # "no I haven't" is the commonest complete answer in the corpus.
+        # 'been' is also omitted — "no I haven't been" is complete.
+        "is", "was", "are", "were", "am", "be", "being",
+        "has", "have", "had", "does", "did", "will", "would",
+        "can", "could", "should", "shall", "may", "might", "must",
+        # subject pronouns. Omits 'it' ("that's it") and 'you'/'me'.
+        "i", "he", "she", "we", "they",
+    )
+)
+
+
+def _looks_truncated(text: str) -> bool:
+    """True if the utterance ends mid-clause on a word that cannot close one.
+
+    Single-word utterances are never truncated for this purpose: a bare 'no'
+    is the commonest complete answer there is, and _is_junk_fragment already
+    owns the single-word debris case.
+    """
+    words = _norm(text).split()
+    if len(words) < 2:
+        return False
+    return words[-1] in _OPEN_CLAUSE_TAIL
+
+
 def _resolve_screen_answer(
     session: Dict[str, Any],
     clinic: Dict[str, Any],
@@ -580,6 +678,35 @@ def _resolve_screen_answer(
     Returns the same {"action", "speak"} contract as update_screening_state.
     """
     verdict = classify_screen_answer(text, screen)
+
+    # ── TRUNCATED ANSWER GUARD ───────────────────────────────────────────────
+    # Asymmetric on purpose. A truncated POSITIVE is still a positive, so
+    # 'red_flag' is never softened — the guard only ever moves a verdict in the
+    # safe direction. 'unclear' is already the outcome we want, so only 'clear'
+    # is downgraded. See the _OPEN_CLAUSE_TAIL block for the detector.
+    #
+    # 'unclear' costs nothing to act on: it leaves pending_screen set, which
+    # drives the SCREEN REQUIRED steer (prompts/clinic_template_prompt.py) and
+    # keeps booking_blocked_reason() blocking book_appointment. The caller
+    # simply hears the question again — no timer, no debounce, no added
+    # latency, and no change in connection.py.
+    #
+    # Capped at once per screen. Without the cap, a caller whose phrasing
+    # habitually trails off is re-asked the same safety question forever; the
+    # second answer is graded as it comes, truncated or not. One re-ask is
+    # enough to catch the endpointer clipping a sentence, which is what this is
+    # for — it is not an attempt to fix a caller who genuinely never finishes.
+    if verdict == "clear" and _looks_truncated(text):
+        _downgraded = list(session.get(SCREEN_TRUNCATED_KEY) or [])
+        if screen_id not in _downgraded:
+            _downgraded.append(screen_id)
+            session[SCREEN_TRUNCATED_KEY] = _downgraded
+            logger.warning(
+                "[clinical_screening] screen %s answer TRUNCATED — endpointed "
+                "mid-clause, not treating as clear; re-asking: %r",
+                screen_id, text[:80],
+            )
+            verdict = "unclear"
 
     if verdict == "red_flag":
         session[PENDING_SCREEN_KEY] = None
