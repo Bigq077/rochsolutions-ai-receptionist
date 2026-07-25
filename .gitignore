@@ -21,3 +21,7 @@ logs/
 Thumbs.db
 # Local-dev no-Redis token cache (never commit OAuth tokens)
 .local_kv.json
+
+# Diagnostic call audio (never commit patient audio)
+logs/audio/
+*.wav

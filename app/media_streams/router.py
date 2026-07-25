@@ -288,6 +288,20 @@ async def ms_incoming(request: Request) -> Response:
             )
             return Response(content=dial_twiml, media_type="application/xml")
 
+        # Twilio-side dual-channel recording (DEFAULT OFF — see audio_capture.py
+        # for the GDPR note). Scheduled as a background task, never awaited: a
+        # slow webhook delays the whole call, and this is a diagnostic.
+        try:
+            import asyncio as _rec_asyncio  # self-contained: the alias above is
+                                            # bound inside a different try block
+            from .audio_capture import start_twilio_recording, twilio_recording_enabled
+            if twilio_recording_enabled() and call_sid:
+                _rec_asyncio.create_task(
+                    start_twilio_recording(call_sid), name="ms_twilio_recording",
+                )
+        except Exception as _rec_exc:
+            logger.warning("[ms_router] call recording not scheduled: %r", _rec_exc)
+
         # Default (AI-first): connect straight to Susie.
         logger.info("[ms_router] incoming call — stream URL: %s", _build_ws_url(request))
         return Response(

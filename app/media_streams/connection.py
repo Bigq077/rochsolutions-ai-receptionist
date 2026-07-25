@@ -4485,6 +4485,15 @@ class WebSocketCallHandler:
         # saw nothing, which is only possible if the bytes never arrived.
         self._media_frames_in:        int   = 0     # count of inbound media frames
         self._last_voiced_audio_at:   float = 0.0   # last frame containing non-silence
+        # Inbound-audio WAV capture. None unless AUDIO_CAPTURE_ENABLED, so a
+        # normal call allocates nothing and the hot path costs one is-None test.
+        self._audio_capture = None
+        try:
+            from .audio_capture import CallAudioCapture, capture_enabled
+            if capture_enabled():
+                self._audio_capture = CallAudioCapture(self.call_sid or "unknown")
+        except Exception:
+            pass  # a diagnostic must never stop a call being set up
         # Monotonic timestamp when the most recent LLM turn completed (finally:
         # block cleared _llm_busy).  Used by the tail-fragment guard to discard
         # tiny residual STT finals that arrive immediately after a successful turn.
@@ -5498,6 +5507,13 @@ class WebSocketCallHandler:
         self._media_frames_in += 1
         self._silence_handler.on_audio_received()
         self.audio_in_queue.put_nowait(raw_mulaw)
+
+        # Diagnostic capture of exactly what reached this server (DEFAULT OFF).
+        # Pairs with the Twilio-side recording started in router.py: whichever
+        # artefact is silent is the side that lost the caller's audio. See
+        # audio_capture.py — including the GDPR note before enabling.
+        if self._audio_capture is not None:
+            self._audio_capture.append(raw_mulaw)
 
         # Voiced-frame stamp for _inbound_audio_status().  Same cheap 0xFF test
         # the energy VAD below uses (mu-law silence is almost all 0xFF), but
@@ -12636,6 +12652,16 @@ class WebSocketCallHandler:
             )
         except Exception as exc:
             logger.debug("[ms_lost] summary failed: %r", exc)
+
+        # Flush the inbound-audio WAV (no-op unless AUDIO_CAPTURE_ENABLED).
+        if self._audio_capture is not None:
+            try:
+                # call_sid is None at construction (it arrives with Twilio's
+                # "start" event), so name the file here or every call writes
+                # unknown.wav over the last one.
+                self._audio_capture.write(self.call_sid)
+            except Exception as exc:
+                logger.debug("[audio_capture] flush failed: %r", exc)
 
         # Deregister from the active-handler map
         _was_registered = self.call_sid in _active_handlers
