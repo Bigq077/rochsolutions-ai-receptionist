@@ -270,6 +270,151 @@ def _question_was_asked(session: Dict[str, Any], screen: Dict[str, Any]) -> bool
 
 
 # ---------------------------------------------------------------------------
+# ORPHAN SCREEN DETECTION — a screen Layer 2 asked that Layer 1 never armed.
+#
+# 2026-07-25. Every call in the 7-call sweep so far has produced zero
+# [clinical_screening] lines while the MODEL screened anyway, off its own
+# inference from the prompt's static CLINICAL SAFETY SCREENING protocol. That
+# is the belt-and-braces design collapsing to braces — with pending_screen
+# never set, the SCREEN REQUIRED steer never drives, book_appointment's
+# booking_blocked_reason() backstop is inert, and the caller's answer is
+# graded by nothing but the model's reading of it. The failure is silent:
+# a call where Layer 1 is dormant looks identical in the logs to a call where
+# no screen was warranted.
+#
+# _question_was_asked() already knows how to recognise a screen's question in
+# the last bot turn, but it is only ever called with a screen id already
+# pinned by pending_screen or by a trigger hit. Running it UNPINNED across
+# every screen is what closes the hole — and it is not safe as written.
+#
+# Measured against the real bot turn from the 16:20 call:
+#
+#     "Before we look at getting that booked, can I quickly check -"
+#         -> matches dvt on ['before', 'quickly']
+#
+# Both are conversational lead-in words that happen to sit in the DVT
+# question. Unpinned, that arms the DVT screen on a turn where the model was
+# asking about trauma, and then grades the caller's reply against DVT's
+# red-flag keywords (swollen / warm / hot / red / surgery). "It's warm" would
+# have produced a deterministic DVT escalation for a screen nobody asked.
+#
+# Two independent brakes, because either alone is corpus-dependent:
+#
+#   1. CORPUS-UNIQUE. A word is evidence for a screen only if it appears in
+#      exactly one screen's question. This alone kills the case above
+#      ('before' is in 3 of the jv_v1 questions, 'quickly' in 2) — but only
+#      because jv_v1 has six screens. A clinic configured with ONE screen has
+#      no corpus to be unique against and gets the bug back verbatim.
+#   2. STOPLIST. Conversational scaffolding and scheduling vocabulary are
+#      never evidence, however unique they are. This is what protects the
+#      single-screen clinic, and it is what stops an ordinary booking turn
+#      ("we have several morning slots") from matching the inflammatory
+#      screen on ['several', 'morning'].
+#
+# Matching uses _kw_in (word boundary + inflection), not the bare substring
+# containment _question_was_asked uses, so 'double' cannot match 'doubled'.
+# ---------------------------------------------------------------------------
+
+# Never evidence that a screen was asked, however corpus-unique.
+#
+# Two families, both drawn from words that actually occur in the jv_v1 screen
+# questions' lead-ins or in ordinary booking turns:
+#   - conversational scaffolding the model reuses in every warm lead-in;
+#   - scheduling vocabulary, which collides hard ('morning' is in the
+#     inflammatory screen AND in half of all booking turns).
+# Normalised at import, same as _NEGATIVE_PATTERNS.
+_ORPHAN_STOPWORDS: frozenset = frozenset(
+    _norm(w) for w in (
+        # conversational scaffolding / lead-in
+        "before", "quickly", "quick", "further", "alongside", "around",
+        "between", "anything", "something", "really", "sorry", "helps",
+        "point", "right", "looking", "little", "sounds", "actually",
+        "course", "please", "myself", "yourself", "better",
+        # booking / scheduling vocabulary
+        "morning", "mornings", "afternoon", "afternoons", "evening",
+        "evenings", "tomorrow", "monday", "tuesday", "wednesday",
+        "thursday", "friday", "saturday", "sunday", "appointment",
+        "appointments", "available", "availability", "minutes", "several",
+        "booking", "booked", "session", "sessions", "practitioner",
+    )
+)
+
+# How many evidence words must land before we believe the model asked a
+# screen. Same bar as _question_was_asked, but over a much stricter
+# vocabulary — see the brakes above.
+_ORPHAN_MIN_EVIDENCE = 2
+
+
+def _screen_evidence_words(clinic: Dict[str, Any]) -> Dict[str, set]:
+    """Per-screen set of words that are evidence THAT screen's question was
+    asked: >5 chars, unique to one screen across the clinic's whole screen
+    corpus, and not conversational/scheduling scaffolding.
+
+    A screen left with fewer than _ORPHAN_MIN_EVIDENCE words can never be
+    orphan-matched. That is the correct fail-safe direction: no detection,
+    which is exactly today's behaviour, rather than a loose match that arms
+    the wrong screen.
+
+    Recomputed per call rather than cached — six screens of ~30 words is
+    microseconds, and a cache keyed on a mutable clinic dict is a worse bug
+    than the work it saves.
+    """
+    words: Dict[str, set] = {}
+    seen: Dict[str, int] = {}
+    for s in _screens(clinic):
+        sid = s.get("id")
+        if not sid:
+            continue
+        w = {x for x in _norm(s.get("screen_question") or "").split() if len(x) > 5}
+        words[sid] = w
+        for x in w:
+            seen[x] = seen.get(x, 0) + 1
+    return {
+        sid: {x for x in w if seen.get(x) == 1 and x not in _ORPHAN_STOPWORDS}
+        for sid, w in words.items()
+    }
+
+
+def match_asked_screen(
+    clinic: Dict[str, Any], session: Dict[str, Any]
+) -> Optional[str]:
+    """Return the id of a screen the LAST BOT TURN appears to have asked but
+    which Layer 1 never armed, or None.
+
+    Only meaningful on the path where nothing else fired: no pending screen,
+    no trigger hit. Screens already completed this call are skipped, so a
+    cleared screen is not re-graded while its question is still sitting in
+    last_bot_prompt.
+    """
+    raw = (session.get("last_bot_prompt") or "") or (session.get("last_question") or "")
+    if not raw:
+        return None
+    # A screen is a QUESTION. This drops statement turns cheaply and costs
+    # nothing: every configured screen_question ends in '?', and so does the
+    # model's paraphrase of one.
+    if "?" not in raw:
+        return None
+    last = _norm(raw)
+    if not last:
+        return None
+
+    done = set(session.get(SCREENS_COMPLETED_KEY) or [])
+    evidence = _screen_evidence_words(clinic)
+    best_id: Optional[str] = None
+    best_hits = 0
+    # Config order is the tie-break: _screens() order is stable, and > (not
+    # >=) keeps the first-declared screen when two tie.
+    for s in _screens(clinic):
+        sid = s.get("id")
+        if not sid or sid in done:
+            continue
+        hits = sum(1 for w in evidence.get(sid) or () if _kw_in(w, last))
+        if hits >= _ORPHAN_MIN_EVIDENCE and hits > best_hits:
+            best_id, best_hits = sid, hits
+    return best_id
+
+
+# ---------------------------------------------------------------------------
 # Negation scoping for red-flag ANSWER keywords.
 #
 # 2026-07-24. classify_screen_answer() checked red-flag keywords before it
@@ -649,6 +794,38 @@ def update_screening_state(
                     "[clinical_screening] screen %s asked deterministically", sid
                 )
                 return {"action": "ask_screen", "speak": spoken}
+
+        # ── ORPHAN GUARD ─────────────────────────────────────────────────────
+        # Nothing armed and nothing triggered — but the model may have screened
+        # anyway off the prompt's static protocol, in which case this utterance
+        # is the answer to a safety question no flag is tracking. See the
+        # ORPHAN SCREEN DETECTION block above for why the matcher is
+        # deliberately strict.
+        #
+        # The log line is the point. Arming pending_screen is what makes the
+        # SCREEN REQUIRED steer and book_appointment's booking_blocked_reason()
+        # backstop apply on a path where both were previously inert — and it is
+        # the precondition for the truncated-answer guard, which can only run
+        # once a screen is known to be outstanding.
+        #
+        # Guarded on pending being clear: a triggered screen with no configured
+        # screen_question falls out of the branch above with pending_screen
+        # ALREADY set, and must not then be overwritten by a different screen.
+        orphan_id = (
+            None if session.get(PENDING_SCREEN_KEY)
+            else match_asked_screen(clinic, session)
+        )
+        if orphan_id:
+            orphan_screen = get_screen(clinic, orphan_id) or {}
+            session[PENDING_SCREEN_KEY] = orphan_id
+            logger.warning(
+                "[clinical_screening] screen %s ORPHAN — asked by the model, "
+                "never armed by Layer 1; grading this turn as the answer: %r",
+                orphan_id, text[:80],
+            )
+            return _resolve_screen_answer(
+                session, clinic, orphan_id, orphan_screen, text
+            )
         return {"action": "none", "speak": None}
     except Exception:
         logger.exception("[clinical_screening] update failed — failing open")
