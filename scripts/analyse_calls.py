@@ -78,7 +78,27 @@ _ROW_BUILT_RE = re.compile(
 )
 _TTS_FINISHED_RE = re.compile(r"\[ms_silence\] tts_finished in ([\d.]+)s")
 _STT_ATTEMPT_RE = re.compile(r"\[ms_stt\] connecting attempt=(\d+)")
-_SCREEN_RE = re.compile(r"\[clinical_screening\] screen (\S+) (ARMED|clear|POSITIVE)")
+# Every terminal state a screen can reach, so a sweep can be read as a table
+# rather than by grepping five different strings.
+#
+#   ARMED      Layer 1 matched a trigger and asked the question itself
+#   clear      answer classified negative, screen completed
+#   POSITIVE   answer classified red flag, escalation spoken, booking frozen
+#   unclear    answer resolved nothing; screen stays pending and is re-driven
+#   ORPHAN     the MODEL asked a screen Layer 1 never armed (2485229). The
+#              single most diagnostic line in a sweep: ORPHAN with no matching
+#              ARMED anywhere means Layer 1 is dormant and Layer 2 is silently
+#              doing the whole job — the 2026-07-25 16:20 failure.
+#   TRUNCATED  the answer was endpointed mid-clause and was NOT allowed to
+#              clear the screen (188e478). Counts how often a 600 ms pause is
+#              cutting safety answers in half.
+#
+# 'answer' is optional because the unclear/TRUNCATED lines carry it and the
+# others do not.
+_SCREEN_RE = re.compile(
+    r"\[clinical_screening\] screen (\S+) (?:answer )?"
+    r"(ARMED|clear|POSITIVE|unclear|ORPHAN|TRUNCATED)"
+)
 
 # [LAT] key=value pairs we care about. Captured generically so a new field
 # added to the latency line does not require touching this script.

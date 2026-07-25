@@ -220,3 +220,30 @@ def test_cli_reports_no_calls_without_crashing(tmp_path):
     )
     assert proc.returncode == 1
     assert "no calls found" in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# Screen states — a sweep is only readable if every terminal state is counted.
+# ORPHAN and TRUNCATED shipped 2026-07-25 (2485229 / 188e478) and the parser
+# was blind to them; 'unclear' had never been captured at all.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("line,expect", [
+    ("[clinical_screening] screen trauma_fracture ARMED by: 'i fell'",
+     ("trauma_fracture", "ARMED")),
+    ("[clinical_screening] screen dvt clear: 'no'",
+     ("dvt", "clear")),
+    ("[clinical_screening] screen dvt POSITIVE (block=True): 'swollen'",
+     ("dvt", "POSITIVE")),
+    ("[clinical_screening] screen cauda_equina answer unclear: 'eh?'",
+     ("cauda_equina", "unclear")),
+    ("[clinical_screening] screen trauma_fracture ORPHAN — asked by the model, "
+     "never armed by Layer 1; grading this turn as the answer: 'x'",
+     ("trauma_fracture", "ORPHAN")),
+    ("[clinical_screening] screen trauma_fracture answer TRUNCATED — endpointed "
+     "mid-clause, not treating as clear; re-asking: 'x'",
+     ("trauma_fracture", "TRUNCATED")),
+])
+def test_every_screen_state_is_parsed(line, expect):
+    m = analyse_calls._SCREEN_RE.search(line)
+    assert m is not None, line
+    assert (m.group(1), m.group(2)) == expect
