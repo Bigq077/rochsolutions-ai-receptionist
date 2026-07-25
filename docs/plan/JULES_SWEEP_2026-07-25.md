@@ -21,11 +21,39 @@ spend the remaining time where the gate points.
 
 | # | Rule | Why |
 |---|---|---|
-| R1 | **Fix nothing during the sweep.** | A code change mid-run splits the sample and you lose the ability to compare call 3 with call 21. If something is catastrophic: stop, write down the call number, then decide. Never patch and continue. |
+| R1 | **Fix nothing during the sweep** — see §0a for the three exceptions. | A code change mid-run splits the sample: calls 1–8 and 9–24 are then measuring different systems and the aggregate cannot be read as one thing. Log the bug and keep dialling. |
 | R2 | **Do not paste call logs into the chat.** | One call log is ~10k tokens; 24 is ~240k. It will not fit, and the early calls will be lost to compaction. Save to files (§2) and run the aggregator. This is the exact failure `scripts/analyse_calls.py` was built to replace. |
 | R3 | **Collect, don't diagnose.** | Write what happened, not why. A confident wrong theory from three calls is what produced the 2026-07-24 "the inbound audio leg is dying" conclusion, refuted by the next call. |
 | R4 | **Every case gets its own call.** | Do not chain two cases into one call to save time. A failure in case A contaminates case B and you cannot tell which broke. |
 | R5 | **Speakerphone, in a room with some noise.** | That is the demo condition and the one most likely to expose the turn-boundary defects. |
+
+---
+
+## 0a · "I've found a bug — do I stop and fix it?"
+
+**Almost always: no. Log it and keep dialling.**
+
+Tonight is acquisition, not repair. The pattern *across* twenty-four calls is
+the only thing this session can produce that no other method can, and it is
+destroyed by a mid-sweep code change. Small samples have already produced two
+confident wrong answers on this system: "the inbound audio leg is dying"
+(2026-07-24, refuted by the very next call) and the screening diagnosis that
+needed seven calls before its shape was visible. **Twenty-four calls with eight
+known failures is worth more than twelve calls with three fixed.**
+
+There are four days to fix things before 29 July. There are not four days to
+re-run a sweep if tonight's sample is unusable.
+
+**The three exceptions — stop, or adapt, only for these:**
+
+| # | Condition | Action |
+|---|---|---|
+| **S1** | Three **consecutive** calls fail at the identical point for the identical reason | Stop that block. Nine more recordings of the same fact is not data. Note the call number and move to the next block, or end early. |
+| **S2** | C23 fails badly — she talks over every mid-sentence pause | Do **not** stop. Switch to compressed, unnatural delivery for the remainder so the *behavioural* layer still gets measured, and record both results per matrix §0b. Every naturally-spoken result after this point is measuring the turn boundary, not the case. |
+| **S3** | C5A (benign hamstring) produces **any** `[clinical_screening]` line — especially `ORPHAN` — or a benign call gets an escalation | This is `2485229`, shipped tonight, and it contaminates every clinical case after it. Revert and continue: `git revert 2485229`. **This is the one case where fixing mid-sweep is correct.** |
+
+Anything else — a wrong service booked, a lost surname, a re-ask, dead air, a
+wrong price — is a finding. Write it on the sheet and dial the next case.
 
 ---
 
