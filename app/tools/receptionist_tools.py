@@ -2527,6 +2527,10 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
             session["collected"]["insurer"] = insurer
         session["acuity_booking_id"] = booking.provider_booking_id
         session["calendar_status"] = "created"
+        # The provider has accepted the booking — record it. See the note in
+        # _exec_book_appointment; this flag is what every downstream outcome
+        # reader keys off, and until 2026-07-26 the v3 tool path never set it.
+        session["booking_confirmed"] = True
         # Booking confirmed — clear the last-presented date hint so it
         # doesn't resurface in CALL STATE after the appointment is made.
         session.pop("v3_last_presented_date_hint", None)
@@ -4724,6 +4728,24 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         session["collected"]["policy_number"] = policy
     session["calendar_event_id"] = event_id
     session["calendar_status"] = "created"
+    # ── The calendar has accepted the booking — record that it happened ──────
+    # `booking_confirmed` is the flag every downstream outcome reader keys off:
+    # connection.py derives `reason` from it at teardown ("booked" vs
+    # "caller_hung_up"), sets session["call_outcome"], and uses it to suppress
+    # the dropped-call owner alert.
+    #
+    # Until 2026-07-26 it was written ONLY in flow.py (6 sites), never on this
+    # tool path — so every booking made through the v3 media-streams flow landed
+    # in the calendar and was recorded as an abandoned call. Jules's sweep made
+    # it visible: 25 captured calls, real events in the demo calendar, and every
+    # single row reading `reason='caller_hung_up'`, `booking_confirmed=None`.
+    #
+    # The giveaway was one record holding `success=True` AND
+    # `reason='caller_hung_up'` at once: `success` reads `confirmation_sms_sent`
+    # (which this path does set, just below), `reason` reads `booking_confirmed`
+    # (which it did not). None rather than False because session.py seeds the key
+    # as None and nothing here ever overwrote it.
+    session["booking_confirmed"] = True
 
     # Owner heads-up FIRST — Marcus is alerted before the patient confirmation.
     # No-op unless the clinic enables owner_alerts (Theorem etc. unaffected).

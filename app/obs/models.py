@@ -66,6 +66,9 @@ class Call(Base):
     # Booking / escalation signals
     booking_confirmed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     acuity_booking_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Google Calendar clinics set this instead of acuity_booking_id. Captured
+    # from 2026-07-26 — before that a Google Calendar booking left no id at all.
+    calendar_event_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     transfer_attempted: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     graceful_exit: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
@@ -125,6 +128,7 @@ class Call(Base):
             "dialled_number": self.dialled_number,
             "booking_confirmed": self.booking_confirmed,
             "acuity_booking_id": self.acuity_booking_id,
+            "calendar_event_id": self.calendar_event_id,
             "transfer_attempted": self.transfer_attempted,
             "graceful_exit": self.graceful_exit,
             "total_retries": self.total_retries,

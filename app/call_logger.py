@@ -123,8 +123,18 @@ class CallLogger:
                 "chosen_day":    collected.get("chosen_day") or s.get("chosen_day"),
                 "selected_slot": collected.get("selected_slot") or s.get("selected_slot"),
             },
-            "booking_confirmed": s.get("booking_confirmed", False),
+            # bool() so a session that still holds the seeded None (see
+            # media_streams/session.py) records False rather than NULL — a NULL
+            # here read as "capture didn't populate it" and cost an hour of
+            # diagnosis on 2026-07-26.
+            "booking_confirmed": bool(s.get("booking_confirmed")),
             "acuity_booking_id": s.get("acuity_booking_id"),
+            # Clinics on Google Calendar never set acuity_booking_id — they set
+            # calendar_event_id, which was captured nowhere. So for those clinics
+            # the durable record held NO evidence a booking existed: no flag, no
+            # id. Booking integrity was unmeasurable, which is bar #1 in
+            # CLAUDE.md §6.
+            "calendar_event_id": s.get("calendar_event_id") or None,
             "transfer_attempted": s.get("transfer_attempted", False),
             "graceful_exit":      s.get("graceful_exit", False),
             "total_retries":      total_retries,

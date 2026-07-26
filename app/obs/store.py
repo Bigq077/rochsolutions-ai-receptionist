@@ -92,6 +92,7 @@ def init_db() -> bool:
 # both SQLite (tests) and Postgres (prod).
 _ADDED_COLUMNS = {
     "screening": "JSON",
+    "calendar_event_id": "VARCHAR(128)",
     "outcome": "VARCHAR(32)",
     "quality_score": "INTEGER",
     "intent_resolved": "BOOLEAN",
@@ -147,6 +148,7 @@ def _row_from_record(record: Dict[str, Any], turns: List[Dict[str, str]]) -> Cal
         dialled_number=record.get("dialled_number"),
         booking_confirmed=record.get("booking_confirmed"),
         acuity_booking_id=record.get("acuity_booking_id"),
+        calendar_event_id=record.get("calendar_event_id"),
         transfer_attempted=record.get("transfer_attempted"),
         graceful_exit=record.get("graceful_exit"),
         total_retries=record.get("total_retries"),
