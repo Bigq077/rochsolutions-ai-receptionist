@@ -13,10 +13,53 @@ obs rows, and the verification call `CA4969580082db5e757c3b1d04dd38e7ae`
 we have of a *successful* booking and it still contains four defects in sixteen
 turns.
 
-> **Status at 15:30 Sun 26 Jul.** `origin/latency-eval == d60041d`, in sync, so
-> **A4 and D1 are live**. Two further fixes are **built and tested but NOT yet
-> committed or deployed** (collection gate, CONFIRM_PHONE bare-yes). Everything
-> else below is open.
+> **Status at 20:30 Sun 26 Jul.** `origin/latency-eval == de426a6`, in sync.
+> **Sunday's whole fix window is deployed**: A4, D1, the collection gate, the
+> CONFIRM_PHONE bare-yes fix, and all three of B1 / A1(a) / A2-ordering.
+>
+> **Nothing in Sunday's schedule below is outstanding.** What is left open for
+> Monday is A5, A6(2), C1, D2, A3 and the F-series stragglers — see
+> *"What is actually left"* immediately below. All of it shipped with **zero live
+> calls**, which is what tonight's run sheet
+> (`JULES_SWEEP_2026-07-26.md`) exists to correct.
+
+---
+
+## What is actually left — the Monday shortlist
+
+One code day. This is everything known-open, ranked by damage to the demo
+booking call. **The list is over-subscribed on purpose; the line is where it is
+drawn.**
+
+| # | Item | Class | Cost | In or out |
+|---|---|---|---|---|
+| — | *Whatever tonight's gate exposes* | — | unknown | **First, always.** Ahead of everything below |
+| A5 | One confirmation, after the last collection step | `BLOCKER` | medium | **In** — it is the most demo-audible thing left |
+| A6(2) | Reject a non-UK-format phone at the tool boundary | `BLOCKER` cohort | small | **In** — the gate is already the right place |
+| C1 | Endpointing / turn boundary | confidence | large | **In, timeboxed to 16:00.** Drop on the bell |
+| F-035 | Missing filler `.ulaw` clips → 3–4 s dead air | `WATCH` | tiny | **In if still failing** — verify tonight (§8) before spending time |
+| A3 | Name in one pass; F-019 surname dropped from summary | `WATCH` | medium | **Out** — script around it |
+| D2 | `calf`→`cough`/`call`, plus the C3c missed escalation | safety | unknown | **Out as code.** See below — this one is not a Monday item |
+| F-021 | Wrong service booked (semantic residue) | `BLOCKER` if hit | large | **Out** — mitigate by demo script, not code |
+| F-028/029 | Invented price (partial); cauda over-fires on "behind my back" | `WATCH` | medium | **Out** — neither is on the demo path |
+| F-020 | First complete DTMF entry discarded | `WATCH` | medium | **Out** unless C1's phone-capture result implicates it |
+| FM-17 | Concurrency — never tested | unknown | large | **Out.** Real risk, wrong week. Post-demo, before cohort |
+| — | `OBS_JUDGE/ALERTS/DIGEST` still `false` | visibility | small | **Out for demo, in before cohort.** Capture is not alerting: a failure reaches no human automatically |
+
+**D2 needs saying plainly.** It is the only *safety* item left open, and it is
+the one thing on this page that cannot responsibly be closed by a code change
+made on the last code day. `calf` is already in the keyterms and it still
+mis-hears three times out of three, so the 24 Jul approach is exhausted. And
+C3c upgraded it from a missed screen to a possible **missed escalation** — the
+caller volunteered *"had surgery"* and `outcome` was `abandoned`. Tonight's desk
+task answers whether the model escalated. **Until that answer exists, any fix is
+a guess.** If it did not escalate, that is a finding that outranks the demo and
+you decide Monday morning what it means; it is not a slot in a schedule.
+
+**What this leaves.** Three code items and one asset check. That is a realistic
+Monday only because Sunday cleared the whole collection sequence. If tonight's
+gate fails, A5 and A6 both give way to the repair — and that is the sheet
+working as designed, not a lost day.
 
 ---
 
@@ -118,7 +161,11 @@ re-asked **with no retry counter and no escalation, forever**. Bare `no` was
 matched; bare `yes` was not — on a yes/no question. Fixed behind
 `phone_confirm_armed`; regression test `test_confirm_phone_bare_yes.py`.
 
-**(a) is OPEN and is the remaining work.** Read it back, don't request it:
+**(a) is now CLOSED too** — `de426a6`, deployed. Step 8 reads the caller-ID
+number back in three groups and asks a plain yes/no, which the gate accepts since
+`28ff14b`; CALL STATE no longer advertises "no readback needed". The nine strings
+below were the work. **Unverified by any live call** — that is Block A/A3 tonight.
+The original wording of the fix, kept for the record:
 > *"I've got you on 07502 211207 — is that the best number for the booking?"*
 
 A plain yes/no — which the gate now accepts. Only fall back to verbal capture on
@@ -144,8 +191,10 @@ optional `reason` argument was added to the tool schema so the model can satisfy
 the gate from what it collected — without it the gate deadlocks, because after
 the first turn nothing on the LLM path writes `session["reason"]`.
 
-**OPEN:** the prompt still asks the reason *after* `check_availability`. Move it
-before. The backstop stops a reasonless booking; it does not fix the ordering.
+**Ordering CLOSED** — `de426a6`, deployed. New step 1b sits before timing, and
+step 4 may not call `check_availability` until both reason and timing are known.
+The backstop stops a reasonless booking; this stops the wrong-service slot.
+**Unverified by any live call** — A2 tonight.
 
 ### A3 · Name in one pass · `WATCH`
 **Observed:** "first name and surname" → `"rock"` → "And your first name?" →
@@ -207,7 +256,11 @@ playbook already requires it and it would have caught both instances.
 
 ## Block B · Perceived speed
 
-### B1 · The slot readout is too long · `BLOCKER` · **the cheapest big win**
+### B1 · The slot readout is too long · `BLOCKER` · ✅ **CLOSED**
+`de426a6`, deployed. Two times in one natural sentence, no numbered list;
+POST-REJECTION offers the next two rather than a longer list. **Unverified by any
+live call** — A1 tonight. Original entry, for the reasoning:
+
 Six options across three days in one breath — measured at **24.1 s** on the
 worst turn, 16.1 s on the 2026-07-25 test call, where the caller hung up nine
 seconds later.
@@ -273,13 +326,20 @@ only — never on the answer-classification or emergency side.
 
 - ✅ **A4 · false confirmation-text promise** — `d60041d` (26 Jul), deployed.
 - ✅ **D1 · trauma mechanism keywords** — `0fd1961` (26 Jul), deployed.
-- ✅ **A1(b) · CONFIRM_PHONE rejected a plain "yes"** — built 26 Jul, **not yet
-  deployed**. Unbounded re-ask loop; root-caused to `5c7ea4e`/`3bbe4f0`.
+- ✅ **B1 · six slot options in one breath** — `de426a6` (26 Jul), deployed.
+- ✅ **A1(a) · phone asked for, not read back** — `de426a6` (26 Jul), deployed.
+- ✅ **A2 · reason asked after slots** — `de426a6` (26 Jul), deployed.
+- ✅ **A1(b) · CONFIRM_PHONE rejected a plain "yes"** — `28ff14b` (26 Jul),
+  deployed. Unbounded re-ask loop; root-caused to `5c7ea4e`/`3bbe4f0`.
   Correction recorded in `README.md` #13 — `TEST_BASELINE.md` called this drift;
   it was a defect. Baseline is now **95**, not 96.
-- ✅ **A2/A1 backstop · tool-boundary collection gate** — built 26 Jul, **not yet
-  deployed**. `book_appointment` refuses without a reason or without
+- ✅ **A2/A1 backstop · tool-boundary collection gate** — `f302ddb` (26 Jul),
+  deployed. `book_appointment` refuses without a reason or without
   `phone_confirmed is True`.
+
+> ⚠️ **Every ✅ dated 26 Jul is code-verified only.** Six of them shipped without
+> a single live call. "Closed" here means *the defect it was written against
+> cannot recur by construction* — not that anyone has heard it work.
 - ✅ **`booking_confirmed` never set** — `55451e0`. Verified live on
   `CA4969580082db5e757c3b1d04dd38e7ae`.
 - ✅ **Orphan screen detection** — `2485229`, validated in production
