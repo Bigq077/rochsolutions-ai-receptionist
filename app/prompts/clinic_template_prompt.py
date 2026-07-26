@@ -27,6 +27,7 @@ caching for free (static block cached, dynamic block per-turn).
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Tuple
 
 
@@ -1682,17 +1683,39 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
             "again."
         )
     else:
+        # ── Only promise a text if a text is actually going to be sent ───────
+        # This closing line said "I've just sent you a confirmation text"
+        # unconditionally. SMS_ENABLED defaults OFF on this branch (see
+        # notifications/sms.py — deliberate, so an eval service can never text a
+        # real caller), so every caller was told about a text that was never
+        # sent. Heard on CA4969580082db5e757c3b1d04dd38e7ae, 2026-07-26, and it
+        # would have been said to a demo caller in front of ~100 clinics.
+        #
+        # Read the same env var the send path gates on, so the promise and the
+        # send can never disagree. Note the home-visit branch still asks the
+        # caller to text US their address — that direction works regardless of
+        # our outbound switch, so it is unaffected.
+        _sms_on = os.getenv("SMS_ENABLED", "false").strip().lower() in (
+            "true", "1", "yes", "on"
+        )
+        _text_promise = " I've just sent you a confirmation text." if _sms_on else ""
+        _hv_promise = (
+            " I've just sent you a confirmation text —" if _sms_on else ""
+        )
         booking_success = (
             "On success say exactly: 'All booked — you're in for [day] the "
-            "[ordinal] at [time]. I've just sent you a confirmation text. We'll "
+            f"[ordinal] at [time].{_text_promise} We'll "
             "see you then — take care.' Do NOT ask the caller to reply with "
             "their name, and do NOT mention the location again. "
-            "HOME VISIT EXCEPTION: if this booking is a HOME VISIT, the closing "
+            + ("" if _sms_on else
+               "NEVER tell the caller a confirmation text has been sent, or that "
+               "one is coming — no text will be sent on this service. ")
+            + "HOME VISIT EXCEPTION: if this booking is a HOME VISIT, the closing "
             "MUST also ask them to text their address (we collect it by text, "
             "not on the call, so it is accurate). Say instead: 'All booked — "
             "you're in for [day] the [ordinal] at [time]. As it's a home visit, "
             "could you text us your full home address and postcode so we can get "
-            "that to the team? I've just sent you a confirmation text — take "
+            f"that to the team?{_hv_promise} take "
             "care.'"
         )
     # Clinics that ship a condition_knowledge library get the FLUENT variants
