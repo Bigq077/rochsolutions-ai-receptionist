@@ -237,12 +237,28 @@ async def _call_model(prompt: str) -> Optional[str]:
     from anthropic import AsyncAnthropic
 
     client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-    # claude-opus-4-8 (default): adaptive thinking is off unless requested and
-    # sampling params are unsupported — we ask for JSON only and keep max_tokens
-    # small. The final-answer-only instruction keeps reasoning out of the response.
+    # claude-opus-5 (default): thinking is ON by default — unlike claude-opus-4-8,
+    # where omitting the `thinking` parameter meant no thinking at all. That
+    # matters here because max_tokens caps thinking AND response text together:
+    # the old 1024 was sized for the JSON verdict alone, and on Opus 5 the model
+    # can spend most of it reasoning and return truncated or empty JSON. Hence
+    # the larger budget.
+    #
+    # Thinking is deliberately left ON rather than disabled. Disabling it is
+    # allowed (at effort `high` or below, which is the default) but Opus 5 with
+    # thinking off is documented to occasionally leak `<thinking>` tags into the
+    # visible response — which would break JSON parsing on a judge whose entire
+    # output contract is a JSON object. Thinking blocks come back with empty
+    # text by default and are filtered out below, so they cost budget but never
+    # reach the parser.
+    #
+    # Sampling params (temperature / top_p / top_k) are unsupported on Opus 5
+    # and 4.8 alike — none are passed. A safety-classifier refusal returns
+    # stop_reason="refusal" with no text block, which falls through to None
+    # below and simply leaves the call unjudged.
     resp = await client.messages.create(
         model=config.OBS_JUDGE_MODEL,
-        max_tokens=1024,
+        max_tokens=8192,
         system=_JUDGE_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
     )

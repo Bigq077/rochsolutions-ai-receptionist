@@ -105,4 +105,4 @@ OBS_JUDGE_ENABLED = os.getenv("OBS_JUDGE_ENABLED", "false").lower() == "true"
 # Model used by the judge. Defaults to the most capable model; an operator can set
 # a cheaper model (e.g. claude-sonnet-5 / claude-haiku-4-5) to trade some judgement
 # quality for cost at high call volume. Re-run calibration if this changes.
-OBS_JUDGE_MODEL = os.getenv("OBS_JUDGE_MODEL", "claude-opus-4-8")
+OBS_JUDGE_MODEL = os.getenv("OBS_JUDGE_MODEL", "claude-opus-5")
