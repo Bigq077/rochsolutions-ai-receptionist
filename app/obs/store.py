@@ -91,6 +91,7 @@ def init_db() -> bool:
 # the dialect raises, which we swallow — so re-running migrate is always safe on
 # both SQLite (tests) and Postgres (prod).
 _ADDED_COLUMNS = {
+    "screening": "JSON",
     "outcome": "VARCHAR(32)",
     "quality_score": "INTEGER",
     "intent_resolved": "BOOLEAN",
@@ -153,6 +154,7 @@ def _row_from_record(record: Dict[str, Any], turns: List[Dict[str, str]]) -> Cal
         turn_count=record.get("turn_count"),
         tone=record.get("tone"),
         collected=record.get("collected"),
+        screening=record.get("screening") or None,
         transcript=list(turns or []),
         raw=record,
     )

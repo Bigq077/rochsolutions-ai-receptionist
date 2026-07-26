@@ -78,6 +78,11 @@ class Call(Base):
     # Collected slots (name/phone/reason/day/slot)
     collected: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
+    # Clinical screening state, incl. arm_paths = {screen_id: "trigger"|"orphan"}.
+    # "orphan" with no "trigger" anywhere is the dormant-Layer-1 signature that
+    # took a human reading a full log to spot in the 2026-07-25 sweep.
+    screening: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     # The transcript — ordered [{"role","text"}] turns. The input to every
     # downstream layer (judge, regression). Never dropped.
     transcript: Mapped[list | None] = mapped_column(JSON, nullable=True)
@@ -127,6 +132,7 @@ class Call(Base):
             "turn_count": self.turn_count,
             "tone": self.tone,
             "collected": self.collected,
+            "screening": self.screening,
             "transcript": self.transcript or [],
             "created_at": self.created_at.isoformat() if self.created_at else None,
             # Phase 3 judge fields

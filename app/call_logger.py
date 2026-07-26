@@ -131,4 +131,52 @@ class CallLogger:
             "slot_retry_counts":  slot_retry_counts,
             "turn_count":         len(turns),
             "tone":               (s.get("_tone_state") or {}).get("tone"),
+            "screening":          self._screening_summary(),
+        }
+
+    def _screening_summary(self) -> Dict[str, Any]:
+        """Clinical screening state, for the durable call record.
+
+        All of this already lived in the session; none of it was captured. The
+        consequence showed up in Jules's 2026-07-25 sweep: the finding that
+        mattered most — `dvt ORPHAN×1, ARMED×0`, meaning the deterministic layer
+        was dormant and the model was silently doing the whole job — was only
+        visible to a human reading a full call log. It could not be queried, so
+        it could not be trended across a sweep or alerted on.
+
+        `arm_paths` is the field that answers it: {screen_id: how_it_armed}, with
+        "trigger" meaning Layer 1 caught the presentation and "orphan" meaning
+        only the model did. An `orphan` with no `trigger` anywhere in a day's
+        calls is the dormant-Layer-1 signature, and it is now one SQL query.
+
+        Deliberately NOT latency: the per-turn timings live on the connection
+        object rather than the session, so capturing them means editing
+        connection.py (12k lines, the danger zone in CLAUDE.md §4). The `[LAT]`
+        log lines already feed scripts/analyse_calls.py, which is the right tool
+        for that until it can be done safely.
+
+        Returns {} for clinics without screening, so the column stays null
+        rather than filling with empty structures.
+        """
+        s = self._session_ref
+        completed = s.get("screens_completed") or []
+        arm_paths = s.get("screen_arm_paths") or {}
+        red_flag = s.get("screen_red_flag")
+        pending = s.get("pending_screen")
+        truncated = s.get("screen_truncation_downgrades") or []
+        escalated = bool(s.get("safety_escalation"))
+
+        if not (completed or arm_paths or red_flag or pending or truncated or escalated):
+            return {}
+
+        return {
+            # How each screen armed — "trigger" (Layer 1) vs "orphan" (Layer 2 only).
+            "arm_paths":       dict(arm_paths),
+            "completed":       list(completed),
+            # Set and still set at teardown = the screen was never resolved.
+            "pending_at_end":  pending,
+            "red_flag":        red_flag,
+            # A safety answer the endpointer cut mid-clause; we re-asked.
+            "truncated":       list(truncated),
+            "safety_escalation": escalated,
         }

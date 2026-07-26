@@ -40,6 +40,34 @@ PENDING_SCREEN_KEY = "pending_screen"        # screen id awaiting question/answe
 SCREEN_RED_FLAG_KEY = "screen_red_flag"      # screen id that answered positive
 SCREENS_COMPLETED_KEY = "screens_completed"  # list of screen ids already run
 SCREEN_TRUNCATED_KEY = "screen_truncation_downgrades"  # screen ids re-asked once
+SCREEN_ARM_PATHS_KEY = "screen_arm_paths"    # screen id -> how it armed (below)
+
+# How a screen came to be pending. Recorded per screen so the durable call
+# record can answer "did Layer 1 arm this, or did Layer 2 cover for it?" —
+# previously that lived only in the log text, which meant grepping a full call
+# log by hand. Jules's 2026-07-25 sweep produced `dvt ORPHAN×1 ARMED×0`, the
+# exact dormant-Layer-1 signature, and it took a human reading the log to see.
+#   "trigger"          — Layer 1 matched the caller's presentation. Healthy.
+#   "orphan"           — the model asked it; Layer 1 never armed. Layer 1 gap.
+#   "model_asked"      — trigger hit AND the model had already asked it.
+#   "arming_utterance" — the arming turn already contained the red-flag answer.
+ARM_TRIGGER = "trigger"
+ARM_ORPHAN = "orphan"
+ARM_MODEL_ASKED = "model_asked"
+ARM_IN_UTTERANCE = "arming_utterance"
+
+
+def _arm(session: Dict[str, Any], screen_id: str, path: str) -> None:
+    """Mark `screen_id` pending and record HOW it armed.
+
+    Single choke point for `pending_screen` writes inside this module, so the
+    arm path can never silently go unrecorded when a new arming site is added.
+    """
+    session[PENDING_SCREEN_KEY] = screen_id
+    paths = dict(session.get(SCREEN_ARM_PATHS_KEY) or {})
+    paths.setdefault(screen_id, path)  # first arm wins; re-arms are not new info
+    session[SCREEN_ARM_PATHS_KEY] = paths
+
 
 # Brief empathetic acknowledgement spoken immediately before a freshly-armed
 # screen question — this replaces the warm "acknowledge first" the model used to
@@ -870,7 +898,7 @@ def update_screening_state(
             # If the question is already in the last bot turn, treat THIS
             # utterance as the answer instead of re-asking it.
             if _question_was_asked(session, screen):
-                session[PENDING_SCREEN_KEY] = sid
+                _arm(session, sid, ARM_MODEL_ASKED)
                 logger.info(
                     "[clinical_screening] screen %s already asked by the model "
                     "— classifying this turn as the answer: %r", sid, text[:80],
@@ -888,7 +916,7 @@ def update_screening_state(
             # over-escalates ("my calf is painful and swollen" is an ordinary
             # strain — that one gets the screen asked properly).
             if _red_flag_hits(text, screen) >= 2:
-                session[PENDING_SCREEN_KEY] = sid
+                _arm(session, sid, ARM_IN_UTTERANCE)
                 logger.info(
                     "[clinical_screening] screen %s red flag present in the "
                     "arming utterance — escalating without asking: %r",
@@ -896,7 +924,7 @@ def update_screening_state(
                 )
                 return _resolve_screen_answer(session, clinic, sid, screen, text)
 
-            session[PENDING_SCREEN_KEY] = sid
+            _arm(session, sid, ARM_TRIGGER)
             logger.info(
                 "[clinical_screening] screen %s ARMED by: %r", sid, text[:80]
             )
@@ -944,7 +972,7 @@ def update_screening_state(
         )
         if orphan_id:
             orphan_screen = get_screen(clinic, orphan_id) or {}
-            session[PENDING_SCREEN_KEY] = orphan_id
+            _arm(session, orphan_id, ARM_ORPHAN)
             logger.warning(
                 "[clinical_screening] screen %s ORPHAN — asked by the model, "
                 "never armed by Layer 1; grading this turn as the answer: %r",
