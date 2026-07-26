@@ -12,7 +12,13 @@ calls**, and two of them changed what `book_appointment` does. The job is to
 prove the demo path is sound on the build we intend to demo, and to take two
 measurements that decide Monday's plan. Nothing else.
 
-**Head under test: `de426a6`. Rollback: `d60041d`.**
+**Code under test: `de426a6`. Rollback: `d60041d`.**
+
+> The branch tip will be **ahead of `de426a6` by two docs-only commits** — this
+> sheet and the fix queue. No engine file differs. So at P1 check that the deploy
+> is **green and that `de426a6` is in its history**, not that it is the tip. If
+> the tip ever contains a commit touching `app/`, **stop — someone deployed
+> mid-window** (R8).
 
 > Rolling back to `d60041d` unwinds only this afternoon's three booking-path
 > commits. It deliberately **keeps** the two morning fixes — `d60041d`
@@ -77,7 +83,7 @@ box is gone.
 
 | # | Check | Must be |
 |---|---|---|
-| P1 | Deploy green on `latency-eval`, head = **`de426a6`** | confirm before dialling |
+| P1 | Deploy **green** on `latency-eval`, and `git log \| grep de426a6` finds it | confirm before dialling — **and wait 5 min after the docs push lands**, per the deploy protocol. A restarting service is not a test subject |
 | P2 | One throwaway call writes a row + `[obs.store] captured` | yes |
 | P3 | `AUDIO_CAPTURE_ENABLED`, `TWILIO_CALL_RECORDING_ENABLED` | `true` |
 | P4 | Bookings land on demo calendar `63bc844e…` | demo only (FM-16) |
