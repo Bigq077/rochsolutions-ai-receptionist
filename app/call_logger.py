@@ -105,6 +105,24 @@ class CallLogger:
         slot_retry_counts: Dict[str, int] = s.get("slot_retry_counts") or {}
         total_retries = sum(slot_retry_counts.values())
 
+        # ── Gate 5f state (F-023) ────────────────────────────────────────────
+        # The obs transcript is built from `full_reply`, which llm_stream
+        # assembles RAW (:1109) — Gate 5f runs on the TTS path only (:1497).
+        # So a transcript can end "All booked" on a call that booked nothing,
+        # and there is no way to tell from the row whether the caller actually
+        # heard that (a real phantom) or heard the guard's re-steer instead.
+        # That ambiguity was reported as a phantom on 2026-07-27 and cost an
+        # evening. Capturing the guard's own counters settles it:
+        #   fired > 0 and not booked -> guard caught it, caller heard the
+        #                               re-steer. NOT a phantom.
+        #   "All booked" and fired == 0 -> the guard never matched. REAL. Escalate.
+        # int()/bool() coerced, and never allowed to raise: this runs at
+        # teardown on every call.
+        try:
+            _fc_fired = int(s.get("_false_confirm_guard_fired") or 0)
+        except (TypeError, ValueError):
+            _fc_fired = 0
+
         return {
             "call_sid":        self.call_sid,
             "clinic_id":       self._clinic_id,
@@ -140,6 +158,11 @@ class CallLogger:
                 "service":         collected.get("service"),
                 "checked_service": s.get("_checked_service"),
                 "location":        collected.get("location") or s.get("selected_location"),
+            },
+            # Output-guard state — see the Gate 5f note above.
+            "guards": {
+                "false_confirm_fired":    _fc_fired,
+                "false_confirm_resteered": bool(s.get("_false_confirm_resteered")),
             },
             # bool() so a session that still holds the seeded None (see
             # media_streams/session.py) records False rather than NULL — a NULL
