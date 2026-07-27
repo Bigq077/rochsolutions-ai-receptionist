@@ -47,6 +47,41 @@ the clean local form.
    (`phone_confirmed=True`, booking success, `[obs.store] captured`).
 3. Only then **restart the sweep from 0** (Block A ×3 → gate → B/C/D per the run sheet).
 
+## VERIFY CALL — FAILED (phantom booking, F-023 reborn) · call `CA77eebe…`
+The post-fix verify call did **not** book, despite Susie saying *"All booked — you're in for
+Wednesday the 29th"* **three times**:
+```
+book_appointment BLOCKED ×2   ·   success/calendar-event lines: 0
+outcome=abandoned · collected=None · Row built name=John Smith · obs turns=18
+```
+Three things went wrong on the one call:
+1. **Phone confirm phrasing gap.** Caller answered "is that the best number?" with **"it is"** —
+   not in `_PHONE_CONFIRM_AFFIRMATIVES` — so it exited as conversational, number not confirmed.
+   `073e563` (E.164 fallback) is correct but only helps recognised affirmatives ("yes/yeah/sure");
+   "it is" slips through.
+2. **Phantom "All booked" (F-023).** book_appointment was BLOCKED (confirmation-question gate saw
+   `last_bot_prompt="Take your time."`) yet the LLM claimed success anyway. Exactly the B1 risk the
+   run sheet flagged.
+3. **Endpointing (C23) was the proximate trigger.** "do you think…" fragmented into `do`/`you`/
+   `think` → "Take your time" became the last prompt → blocked the book → hallucinated success.
+
+## Did F-023 come from this afternoon? — investigated
+- The phone **loop** = yes, this afternoon (`f302ddb`'s hard phone requirement + `+44`-only
+  `twilio_from_local`).
+- The **phantom** = NOT a change to the guard. None of `f302ddb`/`28ff14b`/`de426a6` touch the
+  success-language guard `8631fc3` or the confirmation gate; `8631fc3` is an ancestor of `d60041d`
+  so the rollback keeps it unchanged. Last night (pre-afternoon) every "All booked" had a real
+  booking; tonight "All booked"×3 had 0 bookings. The afternoon flow rework + added blocks + the
+  pre-existing endpointing bug made a *new path to the phantom reachable* — they didn't break the
+  guard.
+- **Rollback consequence:** `d60041d` fixes the loop and returns to last night's clean-booking
+  flow (phantom goes away in practice), but does NOT close the guard gap or the endpointing trigger
+  — both survive the rollback. **Re-verify a booking after rollback.**
+
+## Decision: ROLLBACK to `d60041d` (Quentin — by the book)
+`073e563` (my phone fix) is unwound by the rollback along with the afternoon commits — fine, since
+the loop it addressed is removed with `f302ddb`. Monday must-fixes: re-do the booking rework +
+phone-confirm phrasing ("it is"), harden F-023 on the new refusal paths, and the endpointing (C23).
+
 ## Not run tonight (gate halt)
-Blocks B, C, D and all desk-work items — deferred to the restarted sweep after the fix
-is verified on a live call.
+Blocks B, C, D and all desk-work items — deferred. No clean sweep tonight; code lands Monday.
