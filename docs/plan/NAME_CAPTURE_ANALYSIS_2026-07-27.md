@@ -176,6 +176,64 @@ demo, alongside **N-3** (guard the lead-in stripper against a merged token).
 
 ---
 
+## The wider class — every field with the same property
+
+The name defect is not an isolated bug. It is one member of a family:
+
+> **The caller hears one thing, the record holds another, and nothing surfaces
+> the difference.** No error, no alert, no escalation. The call sounds perfect.
+
+Every collected field has this exposure. Ranked by real-world harm:
+
+| Field | Defect | Status | Harm when wrong |
+|---|---|---|---|
+| **Phone** | F-024 booked `01392255` (8 digits); C6 `"07700 900123"` → `7009001230`; F-020 first DTMF discarded, a *different* number booked; RS-04 spoken alternate silently ignored | **open** | **Patient is uncontactable.** The clinic cannot reach them, and the patient never learns the booking is unreachable |
+| **Name** | N-1…N-6 above | **open** | Clinic has a patient it cannot match to a record |
+| **Time** | F-8 — caller asks "half past five", she books "five past five" without flagging it | **open** | Patient arrives 25 min late; clinic logs a no-show |
+| **Service** | F-021, reproducible 4/4 | **open**, now *visible* (`service` vs `checked_service`, shipped `91bb11b`) | Wrong appointment type, wrong preparation |
+| **Duration** | F-021's other half — CALL 4 booked 30 min for a 40-min assessment | **open and still invisible** — see below | Double-booking, or a truncated appointment |
+| **Reason** | RS-02 — `args["reason"]` is model-supplied on the jv_v1 LLM path | **deferred** | The record asserts the caller said something they did not |
+| **Insurer / policy** | written to session, **never captured** | **open** | Billing fails after the fact |
+| **Modality** | home visit vs in-clinic | now captured (`location`) | Patient waits at home; practitioner waits at the clinic |
+
+### The phone number is the name bug's twin, and it is worse
+
+Both are identity fields. Both fail silently. But a wrong name is recoverable —
+the clinic phones the patient and sorts it out. **A wrong phone number removes the
+only channel through which that recovery could happen.**
+
+Today's data looks clean — all 38 rows stored a phone matching the caller-ID. That
+is not evidence the path works. **It is evidence that every caller accepted the
+caller-ID.** The single call that tried an alternate (18:38, keypad) failed and
+silently reverted to the caller-ID.
+
+Real patients give alternate numbers constantly — calling from work, from a
+partner's phone, from a landline while asking you to use their mobile. At cohort
+scale that path is exercised daily, and it is the least-tested path in the system.
+
+### Capture gaps found while checking this
+
+Fields written into `session["collected"]` at booking time that **never reach the
+durable record**:
+
+```
+insurer         policy_number         slot         patient_type
+```
+
+And duration is worse: it lives on the session as `_service_duration_choice`
+(set at `receptionist_tools.py:3870 / 4180 / 4688`) and is captured nowhere. So
+`91bb11b` made F-021's *service* half auditable and left its *duration* half
+invisible — she can book the right service for the wrong length and no query will
+show it.
+
+**All of these are write-only additions of exactly the shape already shipped and
+validated in `91bb11b`.** Risk is nil; the cost is a deploy and a validation call,
+which is why they are post-demo and not tonight. First task after the demo,
+before any behavioural fix — because the behavioural fixes need this measurement
+to prove they worked.
+
+---
+
 ## What this changes for Wednesday
 
 The demo script constraint was *"give a simple name, clearly"*. This data makes it
