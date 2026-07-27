@@ -72,30 +72,5 @@ and the Render dashboard facts. **Not yet Accepted; Phase 0 stays blocked.**
     times. `BRANCH_DECISION.md`'s "how to decide" list omitted `jv-v1`; the ADR
     compares all four.
 
-## Correction added 26 Jul
-
-13. **The CONFIRM_PHONE phone-gate failure was a defect, not drift.**
-    `TEST_BASELINE.md` diagnosed it on 21 Jul as *"DRIFT — gate intact, stricter
-    than the test… re-point/quarantine the test"*, on the grounds that a bare
-    "yes" is deliberately ambiguous and no booking can fire on an unconfirmed
-    number. The safety half of that is right; the conclusion is not. Reproduced
-    on 26 Jul: the gate asks a **plain yes/no question** — *"Just to check — is
-    that 0 7 7 0 0, 9 0 0, 4 5 6?"* — and the ambiguous branch it fell into
-    re-emits that identical question with **no retry counter, no escalation and
-    no transfer**, so a caller who answers "yes" is asked the same thing for the
-    rest of the call and never books. Bare `\bno\b` *was* matched, so the gate
-    accepted a bare no and refused a bare yes on a yes/no question.
-    Root cause: `5c7ea4e` (24 Apr) replaced yes/no phone confirmation with
-    explicit phrase commands; `3bbe4f0` (10 Jun) reversed that on the LLM path
-    (`connection.py._PHONE_CONFIRM_AFFIRMATIVES`) for exactly this reason and left
-    the deterministic gate behind. It is the surviving cause of
-    `FIX_QUEUE_PRE_DEMO.md` A1's magic-phrase friction (Jules rows 17/19/21:
-    150–261 s, no booking). Fixed in `flow.py` behind `phone_confirm_armed`, with
-    `tests/regression/test_confirm_phone_bare_yes.py`. **Baseline is now 95, not
-    96** — `test_critical_flows.py` is green and its row in `TEST_BASELINE.md`
-    should be struck. Note the ID collision: FM-21 in
-    `FAILURE_MODE_REGISTER.md` is *screening double-ask*, a different thing; this
-    one has no FM number.
-
 If you find another contradiction between these documents and the code, the code
 wins. Record the correction here.

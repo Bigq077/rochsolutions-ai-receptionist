@@ -10648,33 +10648,6 @@ class FlowEngine:
             )
             import re as _hg_re
             _hg_yes = any(p in text for p in _HG_YES)
-            # Bare affirmatives — restored 2026-07-26 after reproducing an
-            # unbounded re-ask loop (tests/regression/test_confirm_phone_bare_yes.py).
-            #
-            # 5c7ea4e (24 Apr) replaced yes/no phone confirmation with explicit
-            # phrase commands and deleted "yes"/"yeah"/"yep" from _HG_YES. But the
-            # question this gate answers is a plain yes/no question — "Just to
-            # check — is that 0 7 7 0 0, 9 0 0, 4 5 6?" — so a caller who simply
-            # answered it fell to the ambiguous branch and was re-asked the
-            # identical question, with no retry counter and no escalation, for the
-            # rest of the call. That is FIX_QUEUE_PRE_DEMO A1's "magic phrase"
-            # complaint (Jules rows 17/19/21: 150-261 s, no booking) and the
-            # failure behind TEST_BASELINE's phone-gate row.
-            #
-            # 3bbe4f0 (10 Jun) already reversed that decision on the LLM path —
-            # connection.py._PHONE_CONFIRM_AFFIRMATIVES re-admits bare "yes" for
-            # exactly this reason. The deterministic gate was left behind; this
-            # brings the two paths back into agreement.
-            #
-            # Safe here because phone_confirm_armed (checked above) means the
-            # phone question was the last question asked — that turn-boundary
-            # guard is what the April change was really defending against, a
-            # split-turn surname remnant landing on this gate. Word-bounded like
-            # the \bno\b test below, so "yesterday" cannot confirm a number, and
-            # the same token set already used at RETURNING_PLAN_CONFIRM_PHONE.
-            # Weak tokens ("ok", "okay", "right", "fine") stay out: those are the
-            # remnants that genuinely do leak across turns.
-            _hg_bare_yes = bool(_hg_re.search(r'\b(?:yes|yeah|yep|yup)\b', text))
             # Use word-boundary regex for bare "no" so that "afternoon", "noted",
             # etc. never trigger a false phone-denial.
             _hg_no  = (
@@ -10701,7 +10674,7 @@ class FlowEngine:
                 and not any(n in text for n in _SEMANTIC_YES_NEGATION)
             )
 
-            if (_hg_yes or _hg_bare_yes or _semantic_yes) and not _hg_no:
+            if (_hg_yes or _semantic_yes) and not _hg_no:
                 self.session["phone_confirm_armed"]    = False  # disarm — gate consumed
                 self.session["phone_readback_pending"] = False
                 self.session.pop("phone_candidate", None)
@@ -10728,13 +10701,7 @@ class FlowEngine:
                     "twilio_from"       if self.session.get("twilio_from")       else
                     "none"
                 )
-                # Distinguish the three accept routes in the logs so a spike in
-                # bare_yes (or its absence) is visible per call.
-                _cp_kind = (
-                    "explicit_yes" if _hg_yes else
-                    "bare_yes"     if _hg_bare_yes else
-                    "semantic_yes"
-                )
+                _cp_kind = "semantic_yes" if _semantic_yes and not _hg_yes else "explicit_yes"
 
                 if _cp_confirmed:
                     # ── CLEAN PATH: phone found — mark confirmed, advance directly ──
