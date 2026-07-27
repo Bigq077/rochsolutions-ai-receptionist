@@ -149,4 +149,17 @@ re-block). (2) RS-02 after a listen-back. (3) RS-06 endpointing — decide attem
 - **RS-06b (NEW, P2) — SILENCE_WATCHDOG "take your time" still cuts in on pauses after COMPLETE
   phrases** (rs06-1: fired 7× in one call). Separate mechanism from the endpointer; not addressed.
   Fix later: stop it repeating and/or relax grace when the caller is actively engaging. Deferred.
-- Next: DVT/F-017 screen arming, then RS-02 reason-guard.
+- **DVT/F-017 screen arming — SHIPPED `29e3f9b`.** Added the DVT symptom-combination to jv_v1
+  trigger_keywords ("swollen warm"/"swollen red"/"swollen hot" + reverse/"warm red") so the screen
+  engages regardless of how "calf" transcribes; benign "call me back"/"a cough" verified inert;
+  negation safety intact (clears on "not swollen or warm", escalates on volunteered surgery). Test
+  9/9; full suite unchanged vs baseline. **Awaiting live verify.**
+- **RS-02 reason-guard — DEFERRED to post-demo (deliberate).** Code fact: for **jv_v1 the reason
+  only ever comes from the model's `args["reason"]`** — the caller-sourced reason slot
+  (`session["reason"]`) is set only in the FlowEngine/theorem_v3 path, not the jv_v1 LLM path. So
+  the gate can't require a caller-sourced slot without blocking every jv_v1 booking. The only
+  safe check is **grounding `args["reason"]` against the caller's turns (`session["obs_turns"]`)** —
+  which risks false-blocking a legitimate paraphrase ("shoulder's giving me grief" → "shoulder
+  pain"), a happy-path regression we can't take pre-demo. RS-02 also needs a caller to *deliberately
+  refuse* a reason (B1) — unlikely in a cooperative demo. **Post-demo fix:** token-grounding on
+  obs_turns with a paraphrase-tolerant threshold + its own verify pass.
