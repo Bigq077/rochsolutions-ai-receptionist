@@ -192,9 +192,11 @@ live call, a hanging provider call is dead air.
 
 ### Repo docs worth reading
 
-`SUSIE_AUDIT_REPORT.md`, `JVP_IMPLEMENTATION_PLAN.md`, `handoff.md`,
-`CALL_OBSERVABILITY_RESEARCH.md`, `JV_V1_8CALL_TEST_SUITE.md`,
-`JV_V1_TEST_CALL_SCRIPT.md`, `CALL_TEST_SCRIPT.md`.
+`docs/archive/SUSIE_AUDIT_REPORT.md`, `JVP_IMPLEMENTATION_PLAN.md`,
+`docs/archive/handoff.md`, `CALL_OBSERVABILITY_RESEARCH.md`,
+`docs/archive/JV_V1_8CALL_TEST_SUITE.md`, `docs/archive/JV_V1_TEST_CALL_SCRIPT.md`,
+`docs/archive/CALL_TEST_SCRIPT.md`. (Older working docs were moved to
+`docs/archive/` on 2026-07-27 — see `docs/archive/README.md`.)
 
 ---
 
