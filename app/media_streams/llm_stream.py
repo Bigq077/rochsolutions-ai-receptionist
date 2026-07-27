@@ -289,10 +289,6 @@ _PHONE_STEP_MARKERS: tuple = (
     "use this number",
     "best one for your",
     "best number",
-    # Step 8's read-back opener (2026-07-26, A1). Kept in sync with
-    # clinic_template_prompt._PHONE_STEP_MARKERS.
-    "i've got you on",
-    "ive got you on",
     "number you're calling on",
     "number you're calling from",
     "number you're ringing",
