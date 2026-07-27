@@ -109,7 +109,44 @@ Also tonight, no code required:
 - Confirm **what hour Wednesday's demo is.** This blocks Tuesday's clean runs and
   is still unanswered.
 
-### Tuesday 09:00–10:00 — DEPLOY 1 · the safe batch
+### ✅ DEPLOY 1 — SHIPPED AND VALIDATED, Mon 27 Jul 20:31 UK
+
+Brought forward from Tuesday and pushed as `2d553b6` (three commits: `83699c3`,
+`91bb11b`, `2d553b6`). The slot cap was deliberately held back.
+
+| Call | SID | Result |
+|---|---|---|
+| V1 · DVT wording | `CAa1eb555248` | **PASS** — operator heard *"Symptoms like that"*, no "calf". `arm_paths={'dvt':'arming_utterance'}`, `safety_escalation=True` |
+| V2 · booking | `CA486d6cb2f9` | **PASS** — booked, event `iogcd6im5tajn8sk83h3rr8pls`, slot `2026-08-05T20:30` as accepted, phone `07502211207` |
+
+New capture confirmed live on both rows:
+
+```
+service         = msk_initial_assessment
+checked_service = msk_initial_assessment    ← match: no F-021 on this call
+location        = bolton
+guards          = {'false_confirm_fired': 0, 'false_confirm_resteered': False}
+```
+
+First booking in this system's history where "did she book what was checked?" is
+answerable from the record rather than by listening back.
+
+**Note — V1 had no transcript** (`turns=0`, scripted path, F-6b). obs proved the
+screen *armed*; only the operator's ear could confirm the *wording*. That gap is
+why "capture scripted lines into `obs_turns`" is on the post-demo list.
+
+**Also confirmed:** the demo number is served by Render service
+`srv-d9ac6bfaqgkc739dstsg` (pod changed `-678c88fd6c-` → `-7db5f75846-` on the
+push, confirming the deploy landed). The earlier `srv-d56h5bm…` shell was a
+different service — the likely reason log searches kept coming up empty.
+
+**New finding from V2, already covered by the pending cap:** a *specific-day*
+request produced **four** options on one day ("Number 1 … Number 4"). The generic
+path caps single-day results no more than it caps multi-day. `_cap_presented_slots`
+yields two times when only one day is present, so Deploy 2 fixes this shape too —
+and V3/V4/V5 exercise both.
+
+### ~~Tuesday 09:00–10:00~~ — DEPLOY 1 · the safe batch *(done, above)*
 
 Fixes **1 + 2 + 3**. Two write-only changes and one config string.
 
