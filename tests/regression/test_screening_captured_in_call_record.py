@@ -65,7 +65,11 @@ def test_dormant_layer_1_is_detectable_from_the_record_alone(clinic):
     """
     q = cs.get_screen(clinic, "dvt")["screen_question"]
     sess = {"last_bot_prompt": q, "last_question": q}
-    cs.update_screening_state(sess, clinic, "no its not swollen or warm")
+    # The answer must contain no DVT trigger word — otherwise Layer 1 legitimately
+    # arms and the path is 'model_asked', not 'orphan'. (Was "no its not swollen or
+    # warm", which now matches the STT-robust "swollen warm" symptom-combo trigger
+    # added 2026-07-27 for F-017.)
+    cs.update_screening_state(sess, clinic, "no nothing like that at all")
 
     paths = _record(sess)["screening"]["arm_paths"]
     assert "orphan" in paths.values()

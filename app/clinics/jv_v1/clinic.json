@@ -214,7 +214,7 @@
         "id": "dvt",
         "label": "Calf (DVT)",
         "presentation": "calf pain or swelling",
-        "trigger_keywords": ["calf", "calf pain", "calf swelling", "swollen calf", "leg is swollen", "swollen leg", "back of my leg swollen"],
+        "trigger_keywords": ["calf", "calf pain", "calf swelling", "swollen calf", "leg is swollen", "swollen leg", "back of my leg swollen", "swollen warm", "warm swollen", "swollen red", "red swollen", "swollen hot", "hot swollen", "warm red", "red warm"],
         "screen_question": "Before we go further, can I quickly check — is the calf swollen, warm or red compared with the other side, and have you had any recent surgery, illness, or a long journey sitting still?",
         "red_flag_answer_keywords": ["swollen", "warm", "hot", "red", "surgery", "operation", "flight", "long drive", "long journey", "bed rest", "immobile", "can't walk on it"],
         "_escalation_note": "MARK_REVIEW: was 'A swollen, warm calf like that should be checked...'. On the 2026-07-24 21:55 call the caller had just said the calf was NOT swollen, and Susie escalated while asserting it was — the caller heard a symptom attributed to them that they had denied. This is the only one of the six screens that asserted a symptom as fact; the other five already use non-asserting deixis ('Those particular symptoms', 'those signs', 'That pattern of stiffness'), so this now matches them. Clinical content is unchanged: urgency, rule out a clot, NHS 111, A&E if severe, do not massage, call back.",
