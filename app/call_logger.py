@@ -122,6 +122,24 @@ class CallLogger:
                 "reason":        collected.get("reason") or s.get("reason"),
                 "chosen_day":    collected.get("chosen_day") or s.get("chosen_day"),
                 "selected_slot": collected.get("selected_slot") or s.get("selected_slot"),
+                # ── Booking integrity (F-021) ────────────────────────────────
+                # book_appointment can book a different service than the one
+                # check_availability was called with — reproducible 4/4, still
+                # open. Until now the record held neither value, so "did she
+                # book what the caller asked for?" was answerable only by
+                # listening back to the call.
+                #
+                # Both already exist on the session: every booking path writes
+                # collected["service"] (receptionist_tools 2528/4243/4681/4808),
+                # and check_availability pins _checked_service (:3765) so that
+                # booking uses the same one. They were simply never copied here.
+                #
+                # A booked row where these two disagree IS F-021 — no audio
+                # required. `location` is the modality (bolton / remote /
+                # home_visit), which determines price and duration.
+                "service":         collected.get("service"),
+                "checked_service": s.get("_checked_service"),
+                "location":        collected.get("location") or s.get("selected_location"),
             },
             # bool() so a session that still holds the seeded None (see
             # media_streams/session.py) records False rather than NULL — a NULL
