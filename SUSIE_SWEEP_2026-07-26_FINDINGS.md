@@ -83,5 +83,57 @@ Three things went wrong on the one call:
 the loop it addressed is removed with `f302ddb`. Monday must-fixes: re-do the booking rework +
 phone-confirm phrasing ("it is"), harden F-023 on the new refusal paths, and the endpointing (C23).
 
-## Not run tonight (gate halt)
-Blocks B, C, D and all desk-work items — deferred. No clean sweep tonight; code lands Monday.
+## UPDATE — Quentin green-lit in-window re-fix; sweep re-run (2026-07-27 early hrs)
+Rollback (above) shipped, then Quentin authorised re-fixing tonight. Re-applied the 4 afternoon
+commits and landed 3 fixes (all TDD, full suite no new failures vs baseline):
+- **Fix #1** `_confirm_caller_number` E.164 fallback (non-UK caller-ID) — commit in 924bbcf lineage
+- **Fix #2** `4c95c95` phone-confirm accepts "it is"/"that's it" at the read-back
+- **Fix #3** `17d90e7` F-023: catch bare "all booked" phantom (excl. "all booked up")
+
+**Phase 2 verify (V1/V2/V3):** all booked for real (`success:true` + calendar event), no loop, no
+phantom. V2 clean (single ask). V1 friction traced to name/STT mangling, not the fix.
+
+### Re-sweep findings tracker (BATCH — fix by priority AFTER the full sweep, R1)
+| ID | Sev(draft) | Where | Finding |
+|---|---|---|---|
+| RS-01 | P2 | V1 | Name-capture fragile to STT mangling ("Tom Green"→"home green"/"like the color"); name-correction **exits DTMF**, so phone-confirm answers arrive out of state → friction/blocks before it recovers |
+| RS-02 | **P1?** | B1 | Booked despite caller **deflecting on the reason** — `reason:"shoulder pain"` appears **model-supplied** (caller never clearly stated it; 2 turns garbled). `f302ddb` reason-guard bypassable by an inferred reason. **Listen-back needed** (did caller say anything reason-like?) |
+| RS-03 | P2 | B2 | Phone-confirm **doesn't recover** from an unusable answer + silence: `phone_confirmed=None`, 4 blocks, caller abandoned. (No phantom — guard held, `ms_gate5f`=0, no false "all booked".) |
+| — | note | B1/B2 | F-023 not yet cleanly live-exercised (B1 booked real; B2 never claimed booked). Unit-green 47/47. |
+| RS-04 | P2 | C1a | Verbal **alternate** number ignored: caller declined caller-ID and read "07700 900123" aloud, but `collected.phone` kept `+33617769867` (the caller-ID). Spoken alternate-number entry not captured. |
+| RS-05 | P2 | C1b | Keypad entry + readback stalls: keypad captured `07368306992` but booking did not complete (0 success, 4 readback-asks — looped on confirm). |
+| RS-06 | **P1** | all C | Endpointing (C23) **severe** — barge/talk-over partials per call: C1a 85, C1b 49, C2a 44, C2b 41; confirmations split across turns (C2b "that is the best number" / "for the booking"). Biggest single degrader; contaminates RS-01/03/05. |
+| RS-07 | P2 | operator note | Number **read-back repeats on every re-ask** (C1b ×4) instead of once. Fix: latch `readback_done`; re-read ONLY if caller changes/rejects the number; never after `phone_confirmed=True`; never on an unrelated re-ask (name/surname/slot). |
+
+### Block D — all PASS, no new findings
+D1 no over-screening (0 clinical_screening) · D2 "fifty-two pounds" spoken as words · D3 waited
+through 5s silence (0 talk-over) · D4 barge-in stopped promptly both times (operator-confirmed).
+
+### Desk work
+- **C3c (safety) — inconclusive/concerning.** She began "…with a sore calf and recent surgery…"
+  (naming both DVT risk factors) but the caller hung up mid-reply (abandoned) — no explicit
+  escalation reached; deterministic screen still didn't arm (calf→call). Model-only + cut off.
+- **F-035 — OPEN.** `filler_guard] clip not found: audio_clips/filler_checking.ulaw` in tonight's logs.
+- **F-036 — benign.** `SMS_ENABLED is off — suppressed` ×2 (nothing sent), but router logs
+  `✅ booking confirmation SMS already sent` — misleading wording only.
+
+---
+
+## SWEEP COMPLETE — BATCHED BY PRIORITY (fix in this order)
+**P1 — demo-blocking / integrity / safety**
+- RS-06 Endpointing (C23) severe — biggest degrader, contaminates RS-01/03/05. Deep fix.
+- RS-02 Reason-guard bypass — booked with model-supplied reason after deflection (needs listen-back).
+- DVT screen doesn't arm (C3c/F-017) — STT calf→call; model-only backstop. Carried.
+
+**P2 — phone-collection/readback cluster (high-leverage: fix together)**
+- RS-07 readback repeats (should be once) · RS-01 name-correction exits DTMF ·
+  RS-03 no recovery from unusable answer · RS-04 verbal alt-number ignored ·
+  RS-05 keypad+readback stalls · F-035 filler clips missing (dead air).
+
+**P3 / note**
+- F-036 misleading "SMS already sent" log (nothing sent).
+
+**Recommended fix order:** (1) the phone-collection cluster [RS-07+RS-01+RS-03+RS-05] as ONE
+bounded, testable change (readback-once latch; don't drop DTMF on name-correction; recover not
+re-block). (2) RS-02 after a listen-back. (3) RS-06 endpointing — decide attempt vs work-around
+(compact demo delivery). (4) RS-04, F-035, F-036 as time permits.
