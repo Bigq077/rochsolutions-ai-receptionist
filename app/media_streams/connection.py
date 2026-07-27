@@ -1096,20 +1096,6 @@ def _is_use_this_number(transcript: str) -> bool:
     return False
 
 
-def _confirm_caller_number(session: dict) -> str:
-    """The caller-ID number to store when the caller confirms it by voice.
-
-    Prefer the UK-local form (`twilio_from_local`, e.g. "07…") but fall back to
-    the full E.164 caller-ID (`twilio_from`) when it is absent — `twilio_from_local`
-    is only set for `+44` numbers (see call-start setup), so without this fallback a
-    non-UK caller-ID resolves to "", the verbal-confirm guard stays falsy, and
-    `phone_confirmed` is never set. Combined with the A1 book gate that requires
-    `phone_confirmed is True`, that produced an unbounded read-back loop on a `+33`
-    test number (2026-07-26). The UK path is unchanged (local form still wins).
-    """
-    return session.get("twilio_from_local") or session.get("twilio_from", "")
-
-
 def _is_clinic_own_number(num: str, clinic: dict) -> bool:
     """True when an inbound caller-ID is actually one of THIS clinic's own numbers.
 
@@ -6048,7 +6034,7 @@ class WebSocketCallHandler:
                         and self.session.get("booking_flow_active")
                         and _is_use_this_number(utterance)
                     ):
-                        _bk_caller_num = _confirm_caller_number(self.session)
+                        _bk_caller_num = self.session.get("twilio_from_local", "")
                         _bk_lastq = (
                             self.session.get("last_question", "")
                             or self.session.get("last_bot_prompt", "")
@@ -6150,7 +6136,7 @@ class WebSocketCallHandler:
                             # the POST-PHONE CONFIRMATION guard drives the LLM
                             # straight to the booking readback.  Only fires when
                             # a calling number is actually present.
-                            _caller_num = _confirm_caller_number(self.session)
+                            _caller_num = self.session.get("twilio_from_local", "")
                             if _caller_num and _is_use_this_number(utterance):
                                 self.session.setdefault("collected", {})
                                 self.session["collected"]["phone"] = _caller_num
