@@ -153,7 +153,9 @@ re-block). (2) RS-02 after a listen-back. (3) RS-06 endpointing — decide attem
   trigger_keywords ("swollen warm"/"swollen red"/"swollen hot" + reverse/"warm red") so the screen
   engages regardless of how "calf" transcribes; benign "call me back"/"a cough" verified inert;
   negation safety intact (clears on "not swollen or warm", escalates on volunteered surgery). Test
-  9/9; full suite unchanged vs baseline. **Awaiting live verify.**
+  9/9; full suite unchanged vs baseline. **LIVE-VERIFIED 2026-07-27:** dvt-1 (leg "swollen and
+  warm", no clean "calf") → `screen dvt POSITIVE` + escalation; dvt-2 negation → `clear`, no
+  false escalation (and endpointer held+merged live); dvt-3 "call me back" → no fire.
 - **RS-02 reason-guard — DEFERRED to post-demo (deliberate).** Code fact: for **jv_v1 the reason
   only ever comes from the model's `args["reason"]`** — the caller-sourced reason slot
   (`session["reason"]`) is set only in the FlowEngine/theorem_v3 path, not the jv_v1 LLM path. So
