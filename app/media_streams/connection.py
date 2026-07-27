@@ -1124,6 +1124,44 @@ def _confirm_caller_number(session: dict) -> str:
     return session.get("twilio_from_local") or session.get("twilio_from", "")
 
 
+# Continuation words: if the caller's finalised turn ends on one of these, the
+# 600ms silence that ended it (min_turn_silence, config.py) is almost certainly a
+# mid-sentence thinking pause, not the end of the turn. High-precision by design —
+# function words that are almost never a natural turn-end. Commonly-terminal verbs
+# ("want", "like") and demonstratives ("that", "this") are deliberately OUT, so a
+# complete answer ("that's the one I want") never trips it. RS-06 / C23 2026-07-27.
+_CONTINUATION_TAIL_WORDS: frozenset = frozenset({
+    # conjunctions
+    "and", "but", "so", "or", "because", "cause", "cos", "as", "if",
+    "while", "though", "although", "since", "unless", "nor", "plus",
+    # prepositions
+    "to", "for", "with", "at", "on", "in", "of", "from", "by", "about",
+    "into", "onto", "over", "under", "than", "without", "within", "upon",
+    # articles + possessives (almost never a natural turn-end)
+    "a", "an", "the", "my", "your", "his", "her", "our", "their",
+})
+
+# Seconds to hold a mid-clause fragment waiting for the caller to continue before
+# dispatching it anyway. Tunable (edit here): long enough for a real thinking
+# pause, short enough that a rare false-hold (a complete turn that happens to end
+# on a continuation word) adds only this much latency.
+_INCOMPLETE_HOLD_S: float = 1.8
+
+
+def _ends_on_continuation_word(text: str) -> bool:
+    """True when the transcript ends mid-clause (last word is a continuation
+    token) — a 600ms silence after it is very likely a thinking pause, not the
+    end of the turn (RS-06 / C23). Used to EXTEND the endpoint wait ONLY for
+    incomplete-looking utterances, so complete turns keep today's latency.
+    """
+    if not text:
+        return False
+    words = re.sub(r"[^a-z' ]+", " ", text.lower()).split()
+    if not words:
+        return False
+    return words[-1].strip("'") in _CONTINUATION_TAIL_WORDS
+
+
 def _is_clinic_own_number(num: str, clinic: dict) -> bool:
     """True when an inbound caller-ID is actually one of THIS clinic's own numbers.
 
@@ -4454,6 +4492,11 @@ class WebSocketCallHandler:
         # "James") from firing two simultaneous LLM calls.
         self._name_collection_pending: bool = False
         self._name_collection_timer: Optional[asyncio.Task] = None
+        # Continuation-word endpointer (RS-06 / C23): hold an utterance that ended
+        # mid-clause (on a continuation word) and merge it with the next final, so
+        # a thinking pause does not finalise the turn on a fragment.
+        self._incomplete_utt_buffer: str = ""
+        self._incomplete_utt_timer: Optional[asyncio.Task] = None
         # Set to True when _fire_name_reask puts the clarification phrase on
         # tts_text_queue.  Cleared when a subsequent name transcript drains
         # the phrase or when the normal run_turn path executes.
@@ -5328,6 +5371,26 @@ class WebSocketCallHandler:
             intent, _ctx_q[:80],
         )
 
+    async def _fire_incomplete_flush(self) -> None:
+        """Dispatch a held mid-clause fragment once the hold window elapses with
+        no continuation (RS-06 / C23). Re-queues the buffered text as a synthetic
+        3-tuple so it bypasses the STT-phantom guards and flows through the normal
+        turn path. Cancelled (and thus a no-op) when a continuation merges first.
+        """
+        try:
+            await asyncio.sleep(_INCOMPLETE_HOLD_S)
+        except asyncio.CancelledError:
+            return
+        _buf = self._incomplete_utt_buffer
+        self._incomplete_utt_buffer = ""
+        self._incomplete_utt_timer = None
+        if _buf:
+            logger.info(
+                "[ms_conn] incomplete-hold timeout — dispatching buffered "
+                "fragment: %r", _buf[:80],
+            )
+            await self.transcript_queue.put((time.monotonic(), _buf, True))
+
     async def _fire_name_reask(self) -> None:
         """
         Fires 800 ms after an incomplete name utterance ("my name is…") if no
@@ -5835,6 +5898,50 @@ class WebSocketCallHandler:
                     # Caller spoke — reset watchdog reask_completed so safety net
                     # can fire again if the next turn goes silent.
                     self._silence_handler._reask_completed = False
+
+                    # ── Continuation-word endpointer (RS-06 / C23) ───────────
+                    # A 600ms STT endpoint can finalise a turn mid-sentence when
+                    # the caller pauses to think. If the finalised text ends on a
+                    # continuation word, hold it briefly and merge with the next
+                    # final, so Susie answers the whole thought, not a fragment.
+                    # Skips synthetic re-injections (no re-hold loop), phone-DTMF
+                    # entry and name collection (those manage their own fragments);
+                    # typical slot/confirm answers never end on a continuation word.
+                    _hold_skip = (
+                        _synthetic
+                        or self.session.get("v3_phone_dtmf_active")
+                        or "name" in (self.session.get("last_question", "") or "").lower()
+                    )
+                    if not _hold_skip and _ends_on_continuation_word(utterance):
+                        self._incomplete_utt_buffer = (
+                            (self._incomplete_utt_buffer + " " + utterance).strip()
+                            if self._incomplete_utt_buffer else utterance.strip()
+                        )
+                        if self._incomplete_utt_timer:
+                            self._incomplete_utt_timer.cancel()
+                        self._incomplete_utt_timer = asyncio.create_task(
+                            self._fire_incomplete_flush()
+                        )
+                        logger.info(
+                            "[ms_conn] incomplete utterance held (mid-clause) — "
+                            "awaiting continuation: %r",
+                            self._incomplete_utt_buffer[:80],
+                        )
+                        continue
+                    if self._incomplete_utt_buffer:
+                        # A continuation (or a phase change) arrived — merge the
+                        # held fragment into this turn so nothing is ever lost.
+                        if self._incomplete_utt_timer:
+                            self._incomplete_utt_timer.cancel()
+                            self._incomplete_utt_timer = None
+                        utterance = (
+                            self._incomplete_utt_buffer + " " + utterance
+                        ).strip()
+                        self._incomplete_utt_buffer = ""
+                        logger.info(
+                            "[ms_conn] merged held fragment with continuation: %r",
+                            utterance[:100],
+                        )
 
                     # ── C8-2 — location-ack race guard ───────────────────────
                     # Drop phantom second finals that arrive in the brief window
@@ -12701,6 +12808,13 @@ class WebSocketCallHandler:
 
         # Cancel the silence handler timer so it doesn't fire after the call ends
         self._silence_handler.cancel()
+
+        # Cancel any pending continuation-hold timer and drop the buffer so a
+        # flush can't re-queue a fragment after teardown (RS-06 / C23).
+        if self._incomplete_utt_timer:
+            self._incomplete_utt_timer.cancel()
+            self._incomplete_utt_timer = None
+        self._incomplete_utt_buffer = ""
 
         # Spec N: discard any pending transcript — the call has ended
         if self.pending_transcript is not None:
