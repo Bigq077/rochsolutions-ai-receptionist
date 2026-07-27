@@ -980,17 +980,6 @@ TOOL_BOOK_APPOINTMENT = {
                     "policy code — the clinic collects those later, never by phone."
                 ),
             },
-            "reason": {
-                "type": "string",
-                "description": (
-                    "REQUIRED IN PRACTICE — what the appointment is for, in the "
-                    "caller's own words (e.g. 'right shoulder pain since a fall'). "
-                    "The reason decides the appointment type, its length and its "
-                    "price, so this tool REFUSES the booking when no reason is on "
-                    "record. Ask for it before checking availability; pass what the "
-                    "caller actually said, never a guess."
-                ),
-            },
             "followup_note": {
                 "type": "string",
                 "description": (
@@ -3589,16 +3578,6 @@ async def _reschedule_appointment_acuity(args: Dict[str, Any], session: Dict[str
 # Executor: check_availability
 # ---------------------------------------------------------------------------
 
-def _gate_text(value: Any) -> str:
-    """Stripped string, or "" for anything that is not usable text.
-
-    Session slots are written by many paths and are not always strings (None,
-    a bool, a dict from a partial capture). Gates must treat those as absent
-    rather than raise.
-    """
-    return value.strip() if isinstance(value, str) else ""
-
-
 def _resolve_clinic_id(session: Dict[str, Any]) -> str:
     """
     Return the clinic_id for this session, re-deriving it if missing.
@@ -4432,77 +4411,6 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
                     "only book once the caller has answered it."
                 ),
             }
-
-    # ── Collection gate (A1 / A2) ─────────────────────────────────────────
-    # Same shape as the screening backstop above: hold the tool boundary for
-    # the two collection steps that are otherwise enforced by the prompt alone.
-    #
-    # Evidence — docs/plan/FIX_QUEUE_PRE_DEMO.md A1/A2, call
-    # CA4969580082db5e757c3b1d04dd38e7ae: the booking completed with
-    # collected.reason=None (the reason was asked AFTER the slots and never
-    # answered), and a turn was spent asking for a number we already had from
-    # caller ID, followed by "I already have your number confirmed."
-    #
-    # llm_stream.py has backstops for the phone step, but they stop blocking the
-    # moment the model has *asked* the question — asked is not answered, which is
-    # exactly how that call booked. This gate takes the authoritative signals
-    # only: phone_confirmed is True (set by every path that actually confirms a
-    # number — caller-ID accept, spoken number, keypad entry) and a reason on
-    # record. Reschedule/cancel do not come through here.
-    _cg_collected = session.get("collected")
-    if not isinstance(_cg_collected, dict):
-        _cg_collected = {}
-        session["collected"] = _cg_collected
-
-    # args["reason"] is what the model states it knows; session["reason"] is the
-    # canonical slot; collected["reason"] is the mirror obs and the SMS router
-    # read. Any of the three satisfies the gate.
-    _cg_reason = (
-        _gate_text(args.get("reason"))
-        or _gate_text(session.get("reason"))
-        or _gate_text(_cg_collected.get("reason"))
-    )
-    if not _cg_reason:
-        logger.warning(
-            "[book] BLOCKED — no reason on record (A2) clinic=%s",
-            session.get("clinic_id"),
-        )
-        return {
-            "success": False,
-            "error": (
-                "book_appointment cannot fire yet — there is no reason on record "
-                "for this appointment. The reason decides the appointment type, "
-                "its length and its price, so a booking without one gives the "
-                "clinic an appointment it cannot prepare for. Do NOT book. Ask "
-                "what the appointment is for as its own turn (\"What's the "
-                "appointment for?\"), wait for the caller's answer, then call "
-                "book_appointment again passing their own words as `reason`."
-            ),
-        }
-    # Commit the reason both ways, so a booking that passes this gate always
-    # carries the reason it was made for into the call record and the SMS.
-    if not _gate_text(session.get("reason")):
-        session["reason"] = _cg_reason
-    if not _gate_text(_cg_collected.get("reason")):
-        _cg_collected["reason"] = _cg_reason
-
-    if session.get("phone_confirmed") is not True:
-        logger.warning(
-            "[book] BLOCKED — phone not confirmed (A1) phone_confirmed=%r clinic=%s",
-            session.get("phone_confirmed"), session.get("clinic_id"),
-        )
-        return {
-            "success": False,
-            "error": (
-                "book_appointment cannot fire yet — the caller has not confirmed "
-                "a number for this booking. Do NOT book and do NOT treat the "
-                "calling number as confirmed. Read the number you already have "
-                "back to them and ask for a plain yes or no — \"I've got you on "
-                "<number>, is that the best number for the booking?\" — or take a "
-                "different number if they give one. Then call book_appointment "
-                "again."
-            ),
-        }
 
     # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
     if _resolve_clinic_id(session) in ("theorem", "theorem_v2", "theorem_v3"):

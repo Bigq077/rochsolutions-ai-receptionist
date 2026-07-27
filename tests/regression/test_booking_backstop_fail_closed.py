@@ -77,12 +77,7 @@ async def test_fails_closed_when_red_flag_and_backstop_errors(
 async def test_proceeds_when_no_screen_and_backstop_errors(
     backstop_raises, tripwire_after_backstop
 ):
-    # reason / phone_confirmed satisfy the collection gate (A1/A2) that sits
-    # after this backstop — see test_booking_collection_gate.py. They are set
-    # here only so the screening gate is what this test measures.
-    session = {  # no pending_screen, no screen_red_flag
-        "clinic_id": "jv_v1", "reason": "left shoulder pain", "phone_confirmed": True,
-    }
+    session = {"clinic_id": "jv_v1"}  # no pending_screen, no screen_red_flag
     with pytest.raises(_ProceededPastBackstop):
         await rt._exec_book_appointment({}, session)
 
@@ -98,8 +93,4 @@ async def test_normal_block_still_returns_success_false(monkeypatch, tripwire_af
 async def test_normal_clear_proceeds(monkeypatch, tripwire_after_backstop):
     monkeypatch.setattr(cs, "booking_blocked_reason", lambda *_a, **_k: None)
     with pytest.raises(_ProceededPastBackstop):
-        await rt._exec_book_appointment(
-            {},
-            # As above: satisfies the A1/A2 collection gate downstream.
-            {"clinic_id": "jv_v1", "reason": "left shoulder pain", "phone_confirmed": True},
-        )
+        await rt._exec_book_appointment({}, {"clinic_id": "jv_v1"})
