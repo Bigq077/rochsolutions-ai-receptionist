@@ -1068,6 +1068,15 @@ _PHONE_CONFIRM_AFFIRMATIVES: frozenset = frozenset({
     "ok", "okay", "please", "go ahead", "yes please", "perfect",
 })
 
+# Natural yes/no answers to "…is that the best number?" that the single-word
+# affirmative check above misses ("it is", "that's it"). Matched as a whole phrase
+# or with one trailing politeness word ("it is thanks"). Negative intent ("it
+# isn't", "it is not …") is excluded by the guard in _is_use_this_number, which
+# runs before this check. 2026-07-27: "it is" fell through on a live verify call.
+_PHONE_CONFIRM_AFFIRMATIVE_PHRASES: tuple = (
+    "it is", "that is", "that's it", "thats it",
+)
+
 
 def _is_use_this_number(transcript: str) -> bool:
     """
@@ -1091,6 +1100,11 @@ def _is_use_this_number(transcript: str) -> bool:
     if len(words) <= 3 and (
         lowered in _PHONE_CONFIRM_AFFIRMATIVES
         or any(w in _PHONE_CONFIRM_AFFIRMATIVES for w in words)
+    ):
+        return True
+    if len(words) <= 3 and any(
+        lowered == p or lowered.startswith(p + " ")
+        for p in _PHONE_CONFIRM_AFFIRMATIVE_PHRASES
     ):
         return True
     return False
