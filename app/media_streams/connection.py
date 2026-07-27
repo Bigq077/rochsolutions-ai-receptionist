@@ -1145,7 +1145,7 @@ _CONTINUATION_TAIL_WORDS: frozenset = frozenset({
 # dispatching it anyway. Tunable (edit here): long enough for a real thinking
 # pause, short enough that a rare false-hold (a complete turn that happens to end
 # on a continuation word) adds only this much latency.
-_INCOMPLETE_HOLD_S: float = 1.8
+_INCOMPLETE_HOLD_S: float = 2.5
 
 
 def _ends_on_continuation_word(text: str) -> bool:

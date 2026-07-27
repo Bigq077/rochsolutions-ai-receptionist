@@ -137,3 +137,16 @@ through 5s silence (0 talk-over) · D4 barge-in stopped promptly both times (ope
 bounded, testable change (readback-once latch; don't drop DTMF on name-correction; recover not
 re-block). (2) RS-02 after a listen-back. (3) RS-06 endpointing — decide attempt vs work-around
 (compact demo delivery). (4) RS-04, F-035, F-036 as time permits.
+
+---
+
+## FIX LOG (2026-07-27, in-window, Quentin-authorised)
+- **RS-06 endpointing — SHIPPED `41b8b97` + hold-window 1.8→2.5s.** Continuation-word endpointer:
+  holds a mid-clause fragment (ends on conjunction/prep/article/possessive) and merges with the
+  next final; complete turns keep today's latency. Helper unit-tested (20 cases). **Live verify:
+  regression CLEAN** (normal bookings unaffected, no spurious holds, both booked; operator: "feels
+  faster"). Safe + net positive.
+- **RS-06b (NEW, P2) — SILENCE_WATCHDOG "take your time" still cuts in on pauses after COMPLETE
+  phrases** (rs06-1: fired 7× in one call). Separate mechanism from the endpointer; not addressed.
+  Fix later: stop it repeating and/or relax grace when the caller is actively engaging. Deferred.
+- Next: DVT/F-017 screen arming, then RS-02 reason-guard.
