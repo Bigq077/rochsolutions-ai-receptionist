@@ -55,6 +55,10 @@ from app.media_streams import llm_stream as ls
         "perfect youre all booked in",
         "ive got you booked in",
         "weve booked you in for thursday",
+        # 2026-07-27 phantom: bare "all booked" with "you're" between it and "in"
+        # — the read-back-flow shape that slipped Gate 5f on verify call CA77eebe.
+        "all booked youre in for wednesday the 29th at quarter past six",
+        "all booked",
     ],
 )
 def test_detector_fires_on_completion_claim(text):
@@ -87,6 +91,10 @@ def test_detector_fires_on_completion_claim(text):
         "ive got your name and number now",
         "im just checking availability for you",
         "i havent been able to book that im afraid",
+        # "all booked UP" = no availability, the opposite of a confirmation —
+        # the bare-"all booked" pattern must exclude it.
+        "were all booked up for today im afraid",
+        "sorry were fully booked that afternoon",
     ],
 )
 def test_detector_silent_on_non_claims(text):

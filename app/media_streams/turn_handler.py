@@ -415,7 +415,7 @@ _FALSE_CONFIRM_CLAIM_RE = re.compile(
     r"""\b(
         (youre|you\s+are|thats|that\s+is|its|it\s+is)\s+(all\s+|now\s+)?(booked|confirmed)(\s+in)?
       | youre\s+booked\s+in
-      | all\s+booked\s+in
+      | all\s+booked\b(?!\s+up)
       | (ive|i\s+have|weve|we\s+have)\s+(now\s+)?booked\s+(you|that|it|your)
       | (ive|i\s+have)\s+got\s+you\s+booked
       | (got|put)\s+you\s+(booked\s+)?(in|down)\s+for
