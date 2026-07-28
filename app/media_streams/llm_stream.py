@@ -514,6 +514,31 @@ class LLMStream:
             # start of the LLM response (BUG 2 fix).
             session["interim_played"] = True
 
+        # ── V5 unspoken-slot follow-up (deterministic) ───────────────────
+        # After slots were offered, "anything later?" / a specific unspoken
+        # time must be answered from session["available_days"] − last_offered,
+        # not by the model (which anchors on what it already said) and not by
+        # re-fetching check_availability (which leads with the earliest again).
+        try:
+            from app.tools.slot_followup import try_unspoken_followup_speech
+            _follow_speech = try_unspoken_followup_speech(session, user_text)
+        except Exception:
+            logger.exception("[ms_llm] unspoken slot follow-up failed — falling through")
+            _follow_speech = None
+        if _follow_speech:
+            if self._timing is not None:
+                self._timing.path = "slot_followup"
+                self._timing.stamp("t1")
+                self._timing.stamp("t2")
+            await tts_text_queue.put(_follow_speech)
+            _append_history(session, user_text, _follow_speech)
+            await save_session(call_sid, session)
+            logger.info(
+                "[ms_llm] unspoken slot follow-up spoken call_sid=%s text=%r",
+                call_sid, _follow_speech[:120],
+            )
+            return
+
         # ── Step 4: Model selection ──────────────────────────────────────
         model = _pick_model(session)
         # latency-eval: record the model on the timing record (None when OFF).
@@ -1810,21 +1835,61 @@ class LLMStream:
                         ),
                     }
                 elif tool_name == "check_availability" and session.get("last_offered_slots"):
-                    logger.warning(
-                        "[ms_llm] check_availability BLOCKED — slots already retrieved "
-                        "this turn (last_offered_slots present); returning cached result "
-                        "call_sid=%s", call_sid,
+                    # V5: if the caller asked for later / an unspoken time, do NOT
+                    # tell the model to re-present the already-spoken slots.
+                    # Serve the next unspoken batch (or confirm a resolved time)
+                    # from session["available_days"].
+                    from app.tools.slot_followup import (
+                        remaining_slots_after_offer,
+                        next_slot_batch,
+                        utterance_requests_more_slots,
+                        resolve_requested_time,
+                        apply_next_batch_to_session,
+                        apply_resolved_time_to_session,
+                        build_followup_tool_result,
                     )
-                    result = {
-                        "status": "already_retrieved",
-                        "message": (
-                            "check_availability has already returned slot data. "
-                            "Use the data in available_days that was already returned. "
-                            "Do NOT call check_availability again — present the existing "
-                            "slots to the caller."
-                        ),
-                        "available_days": session.get("available_days", {}),
-                    }
+                    _days = session.get("available_days") or []
+                    _offered = session.get("last_offered_slots") or []
+                    _remaining = remaining_slots_after_offer(_days, _offered)
+                    _user = _last_user_text(messages or [])
+                    _hit = resolve_requested_time(_user, _remaining) if _remaining else None
+                    if _hit is not None:
+                        apply_resolved_time_to_session(session, _hit)
+                        result = build_followup_tool_result(_days, [_hit], more=False)
+                        result["message"] = (
+                            "Caller named an unspoken time that IS available. "
+                            "Confirm it and ask whether to book — do NOT say it "
+                            "is unavailable."
+                        )
+                        logger.info(
+                            "[ms_llm] check_availability → unspoken time hit %s "
+                            "call_sid=%s", _hit.get("start"), call_sid,
+                        )
+                    elif _remaining and utterance_requests_more_slots(_user):
+                        _batch, _more = next_slot_batch(_remaining, n=2)
+                        apply_next_batch_to_session(session, _batch, _more)
+                        result = build_followup_tool_result(_days, _batch, _more)
+                        logger.info(
+                            "[ms_llm] check_availability → next unspoken batch "
+                            "%s call_sid=%s",
+                            [s.get("start") for s in _batch], call_sid,
+                        )
+                    else:
+                        logger.warning(
+                            "[ms_llm] check_availability BLOCKED — slots already retrieved "
+                            "this turn (last_offered_slots present); returning cached result "
+                            "call_sid=%s", call_sid,
+                        )
+                        result = {
+                            "status": "already_retrieved",
+                            "message": (
+                                "check_availability has already returned slot data. "
+                                "Use the data in available_days that was already returned. "
+                                "Do NOT call check_availability again — present the existing "
+                                "slots to the caller."
+                            ),
+                            "available_days": session.get("available_days", {}),
+                        }
                 elif (
                     tool_name == "book_appointment"
                     and not session.get("surname_captured")
