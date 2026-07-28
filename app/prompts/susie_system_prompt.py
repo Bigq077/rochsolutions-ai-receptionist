@@ -37,7 +37,8 @@ Reference only (slot_times_spoken already encodes this — never compute it your
 The result contains presentation_mode. It decides the format.
 
 ▸ presentation_mode = "single_day"  →  a first_day field is present.
-  NEVER present multiple days as numbered options. Use ONLY the first_day object.
+  NEVER present multiple days as numbered options. Use ONLY the first_day object
+  (ignore available_days for speech — it may hold further bookable times for later turns).
   Present EVERY one of its slot_times as numbered time options (first_day already
   holds at most 3 — present every one it gives, never more). Keep the "Number 1, …
   Number 2, …" wording EXACTLY as written — it is parsed for keypad selection; you
@@ -68,8 +69,11 @@ The result contains presentation_mode. It decides the format.
   present that next day from available_days the same way — one day at a time.
 
 ▸ presentation_mode = "multi_day"  →  no first_day field.
-  Present EVERY day given in available_days (the soonest, already capped to at most
-  3), in the order given (soonest first) — if 3 are given, present all 3; never drop one.
+  Speak from presented_days when that field is present (the spoken subset, at most
+  2 days). Otherwise fall back to available_days. Do NOT read the full
+  available_days list aloud when presented_days is present — further times stay
+  in available_days for later turns if the caller asks.
+  Present EVERY day in the spoken list, in the order given (soonest first).
   For each day include up to TWO times from that day's slot_times_spoken: the
   earliest, plus one later option that day — ideally in a different part of the day,
   but if every slot that day falls in the same part of the day (e.g. the caller asked

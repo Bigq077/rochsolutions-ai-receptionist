@@ -3631,6 +3631,103 @@ def _resolve_clinic_id(session: Dict[str, Any]) -> str:
 _VALID_SERVICES: frozenset[str] = frozenset({"physiotherapy assessment"})
 
 
+_MAX_PRESENTED_DAYS = 2
+
+
+def _cap_presented_slots(
+    result: Dict[str, Any], max_days: int = _MAX_PRESENTED_DAYS
+) -> Dict[str, Any]:
+    """Trim the SPOKEN availability list to ~2 options. Never trim bookable data.
+
+    Speak via first_day (single_day) or presented_days (multi_day), with
+    more_times=True when truncated. available_days stays the FULL bookable set
+    so unspoken follow-up (slot_followup) and _resolve_slot_iso still see every
+    real time. Does not touch session["available_days"]. Input is copied.
+    """
+    days = result.get("available_days")
+    if not isinstance(days, list) or not days:
+        return result
+
+    kept = days[:max_days]
+    per_day = 1 if len(kept) > 1 else 2
+
+    presented: List[Dict[str, Any]] = []
+    truncated = False
+    for day in kept:
+        if not isinstance(day, dict):
+            presented.append(day)
+            continue
+        trimmed = dict(day)
+        for key in ("slot_times", "slot_times_spoken", "slots"):
+            value = trimmed.get(key)
+            if isinstance(value, list):
+                if len(value) > per_day:
+                    truncated = True
+                trimmed[key] = value[:per_day]
+        presented.append(trimmed)
+
+    if len(days) > max_days:
+        truncated = True
+
+    out = dict(result)
+    out["available_days"] = days
+    out["total_days"] = len(days)
+
+    if len(presented) == 1 and isinstance(presented[0], dict):
+        first = dict(presented[0])
+        if truncated:
+            first["more_times"] = True
+        out["presentation_mode"] = "single_day"
+        out["first_day"] = first
+        out.pop("presented_days", None)
+    else:
+        out["presentation_mode"] = "multi_day"
+        out["presented_days"] = presented
+        out.pop("first_day", None)
+        if truncated:
+            out["more_times"] = True
+
+    return out
+
+
+def _sync_last_offered_to_spoken(
+    session: Dict[str, Any], result: Dict[str, Any]
+) -> None:
+    """Align last_offered_slots with what Haiku will actually speak.
+
+    Unspoken follow-up computes remaining = available_days − last_offered.
+    If last_offered still held _select_presented_tuples (up to 3) while speech
+    only named two, "later" would skip a still-unspoken middle slot — or, with
+    an uncapped six-option readout, remaining would be empty. Sync to the
+    spoken subset from first_day / presented_days.
+    """
+    spoken_slots: List[Dict[str, Any]] = []
+    spoken_labels: List[str] = []
+    if result.get("presentation_mode") == "single_day":
+        fd = result.get("first_day") or {}
+        for s in (fd.get("slots") or []):
+            if isinstance(s, dict) and s.get("start"):
+                spoken_slots.append({"start": s["start"], "end": s.get("end") or ""})
+        spoken_labels = list(fd.get("slot_times_spoken") or [])
+    else:
+        for day in (result.get("presented_days") or []):
+            if not isinstance(day, dict):
+                continue
+            slots = day.get("slots") or []
+            labels = day.get("slot_times_spoken") or []
+            if slots and isinstance(slots[0], dict) and slots[0].get("start"):
+                spoken_slots.append({
+                    "start": slots[0]["start"],
+                    "end": slots[0].get("end") or "",
+                })
+                if labels:
+                    spoken_labels.append(labels[0])
+    if spoken_slots:
+        session["last_offered_slots"] = spoken_slots
+        if spoken_labels:
+            session["slot_labels"] = spoken_labels
+
+
 def _filter_same_day_slots(result: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     """Remove today's date from all availability results.
 
@@ -3878,10 +3975,12 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         session["last_offered_slots"] = pres_raw
         session["slot_labels"]        = pres_labels
         session["available_days"]     = days_data
-        return _filter_same_day_slots(
+        _out = _cap_presented_slots(_filter_same_day_slots(
             {"available_days": days_data, "total_days": len(days_data), "note": "calendar_not_connected"},
             session,
-        )
+        ))
+        _sync_last_offered_to_spoken(session, _out)
+        return _out
 
     calendar_id = _resolve_calendar_id(clinic, location)
 
@@ -3911,10 +4010,12 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         session["last_offered_slots"] = pres_raw
         session["slot_labels"]        = pres_labels
         session["available_days"]     = days_data
-        return _filter_same_day_slots(
+        _out = _cap_presented_slots(_filter_same_day_slots(
             {"available_days": days_data, "total_days": len(days_data), "note": "calendar_check_failed_unfiltered"},
             session,
-        )
+        ))
+        _sync_last_offered_to_spoken(session, _out)
+        return _out
 
     if not free_slots:
         return {"error": "No available slots found. Try a different time preference or wider window.", "slots": []}
@@ -3928,10 +4029,14 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     session["last_offered_slots"] = pres_raw
     session["slot_labels"]        = pres_labels
     session["available_days"]     = days_data
-    return _filter_same_day_slots(
+    # Cap SPEECH only — available_days stays full; last_offered synced to the
+    # spoken two so unspoken follow-up (V5) computes remaining correctly.
+    _out = _cap_presented_slots(_filter_same_day_slots(
         {"available_days": days_data, "total_days": len(days_data)},
         session,
-    )
+    ))
+    _sync_last_offered_to_spoken(session, _out)
+    return _out
 
 
 # ---------------------------------------------------------------------------
