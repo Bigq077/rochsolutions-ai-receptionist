@@ -42,9 +42,18 @@ Gate + clean runs on live `b405017`. No raw logs. For Quentin.
 | `CAdd3373ad0bc4404401b470c7c3dadb93` | Wide-open V4: one option first, then Number 1–3 after reject — redialled PASS |
 | `CAa0ddae86a1839bf757b523a12cddd159` | Clean3 name stutter + spurious “check what's available” before confirm |
 
-**2c fallback recording — STILL OUTSTANDING.** Plan requires one clean end-to-end
-booking, recorded, to play if the live line dies Wednesday. Not done at hand-back
-time — Jules to capture before freeze is considered complete.
+**2c fallback recording — DONE.**
+
+| | |
+|---|---|
+| SID | `CAfd8014413cabf63c8e54ed09c634ca39` |
+| Booked | y — Fri 7 Aug 18:00 · event `e5o2pe3t…` |
+| Name | `Elliot Smith` |
+| service = checked | y |
+| Jules ear | penultimate “yes” felt ignored / she re-asked |
+| Obs transcript | phone: “yes it is” → booking confirm: “yes please” → booked (no second ask visible) |
+
+Likely either (a) the normal phone-yes → “shall I book that in?” two-step sounding like a re-ask, or (b) an STT/turn drop that never hit the transcript. **Usable as fallback audio if the recording itself sounds OK to Jules;** if the re-ask is audible and awkward, re-record one more clean pass.
 
 ## 6 · Git / deploy
 
