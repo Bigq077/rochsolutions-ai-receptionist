@@ -2331,8 +2331,38 @@ class LLMStream:
             logger.error("[ms_llm] GPT fallback error: %r", exc)
             reply_text = SAFE_FALLBACK_PHRASE
 
-        await tts_text_queue.put(reply_text)
-        return reply_text
+        # ── Gate 5 (A1 / phantom-booking bypass, 2026-07-29) ─────────────────
+        # The streaming path sanitises every chunk before TTS (see GATE 5 at
+        # _streaming_tool_loop). This path did not — so whenever Claude was
+        # overloaded and we fell back to GPT, the caller received raw model
+        # output with no filtering whatsoever. That included Gate 5f, the guard
+        # that stops a phantom "all booked" reaching a caller when no booking
+        # exists. The bypass activates under load, which is exactly when a busy
+        # clinic can least afford it.
+        #
+        # _GPT_CONSTRAINT_PREFIX above is not a substitute: it is an instruction
+        # the model is free to ignore, and Gate 5 exists precisely because it
+        # sometimes does.
+        #
+        # TRADE-OFF, deliberate: this sanitises the whole reply in one call,
+        # whereas the streaming path sanitises per chunk. Gate 5a drops the
+        # ENTIRE text it is given, so a reply that carries a reasoning opener
+        # anywhere is dropped whole here where streaming would have lost only
+        # one chunk. That is accepted — the caller then hears SAFE_FALLBACK_PHRASE
+        # and can retry, which is strictly better than an unfiltered phantom
+        # confirmation. Never emit nothing: silence is the documented worse
+        # outcome (cf. the deferred _gate5_fallback on the streaming path).
+        _spoken = sanitise_response(reply_text, session) or SAFE_FALLBACK_PHRASE
+        if _spoken != reply_text:
+            logger.info(
+                "[ms_gate5] GPT fallback reply sanitised before TTS (%d -> %d chars)",
+                len(reply_text), len(_spoken),
+            )
+        # Return the SPOKEN text, not the raw: the caller sees this go into
+        # conversation history and the obs transcript, and a record that differs
+        # from what was said is how A1 stayed invisible for three weeks.
+        await tts_text_queue.put(_spoken)
+        return _spoken
 
 
 # ---------------------------------------------------------------------------
