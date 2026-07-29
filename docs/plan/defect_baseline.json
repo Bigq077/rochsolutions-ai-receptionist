@@ -1,0 +1,48 @@
+{
+  "frozen_utc": "2026-07-29T18:24:17.932666+00:00",
+  "calls_scored": 95,
+  "detectors": {
+    "A1": {
+      "what": "model reasoning spoken aloud",
+      "status": "open",
+      "count": 5,
+      "last_build": "b405017",
+      "evidence": "CA76bc921fe665dbf01a75317913c87e01"
+    },
+    "A2": {
+      "what": "day-name does not match date",
+      "status": "open",
+      "count": 3,
+      "last_build": "2d553b6",
+      "evidence": "CAfe6a41626d0b69eb27f7869e0152c8ff"
+    },
+    "A3": {
+      "what": "spoke one name, stored another",
+      "status": "open",
+      "count": 1,
+      "last_build": "29e3f9b",
+      "evidence": "CA325372e5d833bd2a8c38de9f7b7167b7"
+    },
+    "A4": {
+      "what": "confirmation loop",
+      "status": "open",
+      "count": 19,
+      "last_build": "b405017",
+      "evidence": "CAa4942bcea465e89b9b45d9a3b9d9a03b"
+    },
+    "B1": {
+      "what": "wrong clinical screen for the complaint",
+      "status": "open",
+      "count": 4,
+      "last_build": "b405017",
+      "evidence": "CAdd3373ad0bc4404401b470c7c3dadb93"
+    },
+    "B2": {
+      "what": "screening fires after confirmation",
+      "status": "open",
+      "count": 1,
+      "last_build": "b405017",
+      "evidence": "CA61d1c0c38ac4ef0fe2c1271a1ac1e9c0"
+    }
+  }
+}
