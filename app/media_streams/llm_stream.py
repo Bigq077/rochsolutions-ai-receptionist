@@ -641,7 +641,6 @@ class LLMStream:
                 session["_last_llm_response"] = full_reply
 
         if not transfer_initiated:
-            _append_history(session, user_text, full_reply)
             # Sanitize full_reply before extracting last_bot_prompt / last_question.
             # sanitise_response strips internal reasoning sentences that the LLM
             # sometimes narrates aloud (e.g. "The caller said...", "I'll pick the
@@ -651,7 +650,14 @@ class LLMStream:
             # before the actual spoken response, causing _parse_v3_slot_options to
             # miss numbered options and v3_awaiting_slot_selection to stay unset,
             # which in turn fires the watchdog 4.5 s after TTS ends instead of 10 s.
+            #
+            # Computed BEFORE _append_history (2026-07-29) so the obs record can be
+            # given the spoken form. Same single sanitise_response call as before,
+            # just ordered earlier — no extra pass over the reply.
             _display_reply = sanitise_response(full_reply, session)
+            _append_history(
+                session, user_text, full_reply, spoken_text=_display_reply
+            )
             # SPEC 4: store the phonetic (TTS-substituted) form so that
             # last_bot_prompt reflects what was actually spoken — used by the
             # silence watchdog re-ask and logging.
@@ -2378,8 +2384,19 @@ def _append_history(
     session: Dict[str, Any],
     user_text: str,
     assistant_text: str,
+    spoken_text: Optional[str] = None,
 ) -> None:
-    """Append a user/assistant exchange to conversation_history, trim to MAX_HISTORY_TURNS."""
+    """Append a user/assistant exchange to conversation_history, trim to MAX_HISTORY_TURNS.
+
+    `assistant_text` is the model's raw reply — what it generated.
+    `spoken_text` is what actually reached TTS after Gate 5, i.e. what the caller
+    heard. Pass it whenever the two can differ (the streaming LLM path); omit it
+    on deterministic paths (fast path, slot follow-up) where the text we queue IS
+    the text we speak.
+
+    Only the obs record uses `spoken_text` — see the note at the obs_turns append
+    for why conversation_history deliberately keeps the raw form.
+    """
     history: List[dict] = session.setdefault("conversation_history", [])
     history.append({"role": "user",      "content": user_text})
     history.append({"role": "assistant", "content": assistant_text})
@@ -2401,10 +2418,35 @@ def _append_history(
     #
     # Caller turn first, then the reply, preserving order. Skip empty/whitespace
     # caller text (e.g. silence turns).
+    # The obs record stores what the CALLER HEARD (2026-07-29).
+    #
+    # It used to store `full_reply`, assembled from raw tokens — so a transcript
+    # could not distinguish "the model generated this" from "the caller heard
+    # this". Gate 5 runs per-chunk on the way to TTS, after that record is
+    # written, and strips a great deal. Two conclusions were drawn from these
+    # transcripts today and both were wrong in consequence: the A1 defect counts
+    # were an inference in BOTH directions (over-reporting text the gate caught,
+    # under-reporting severity where it caught nothing). Settling it needed the
+    # raw text replayed through the real chunker and the real gate.
+    #
+    # Recording the spoken form removes that whole class of error: every detector
+    # in scripts/detect_defects.py, the judge in app/obs/judge.py, and anyone
+    # reading a transcript now sees the call as the caller experienced it.
+    #
+    # SCOPE, deliberate: only this record changes. conversation_history above
+    # keeps the RAW reply because it is fed back to the model as its own prior
+    # turns — rewriting the model's memory of what it said is a behavioural
+    # change with its own risk, and is not part of an instrumentation fix.
+    # session["turns"] also keeps the raw form: it feeds the owner-facing summary
+    # and the SMS router for live clinics (see the note above). Both are worth
+    # revisiting, separately, with their own tests.
     obs_turns = session.setdefault("obs_turns", [])
     if user_text and user_text.strip():
         obs_turns.append({"role": "user", "text": user_text})
-    obs_turns.append({"role": "assistant", "text": assistant_text})
+    obs_turns.append({
+        "role": "assistant",
+        "text": assistant_text if spoken_text is None else spoken_text,
+    })
 
 
 # ---------------------------------------------------------------------------
