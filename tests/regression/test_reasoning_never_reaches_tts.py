@@ -95,7 +95,8 @@ CASES = [
         "context shown.\n\n"
         "I need to ask for the reason before booking since book_appointment requires it.\n\n"
         "What's the appointment for, Tom?",
-        ["slot_iso", "book_appointment", "msk_initial_assessment", "call state"],
+        ["slot_iso", "book_appointment", "msk_initial_assessment", "call state",
+         "conversation fragment"],
         "What's the appointment for, Tom?",
     ),
     (

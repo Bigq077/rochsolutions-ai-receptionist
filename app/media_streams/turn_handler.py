@@ -25,6 +25,28 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _BANNED_SENTENCE_RE = [
+    # ── Markdown artefacts (A1, 2026-07-29) ─────────────────────────────────
+    # CAbad8422e read a booking readback aloud as markdown: "**Patient name:**
+    # Jewel". The emphasis markers are pure formatting — they carry no meaning
+    # and TTS has no idea what to do with them. Strip the MARKERS inline, never
+    # the sentence: the readback content (name, phone, slot) is exactly what the
+    # caller needs to hear. Runs first so downstream patterns see clean text.
+    ("markdown_emphasis", re.compile(r"\*+")),
+
+    # ── Internal identifier tokens (A1, 2026-07-29) ─────────────────────────
+    # A snake_case token is machine vocabulary — a tool name, a field name, an
+    # enum. It cannot occur in English speech, so its presence means the model
+    # is narrating its own plumbing. CA76bc921f spoke the literal string
+    # "slot_iso" to a caller, plus "book_appointment" and
+    # "msk_initial_assessment".
+    #
+    # This is a CLASS rule, not another phrase: it catches every tool and field
+    # name that exists now or is added later, without anyone remembering to
+    # update this list. Strips the containing sentence — a sentence built around
+    # an identifier has no salvageable content.
+    ("internal_identifier_token",
+     re.compile(r"[^.!?]*\b[a-z][a-z0-9]*_[a-z0-9_]+\b[^.!?]*[.!?]?", re.IGNORECASE)),
+
     # ── Banned opener words ──────────────────────────────────────────────────
     # Strip sycophantic/robotic openers from the very first token(s) of any
     # LLM chunk.  Anchored to ^ so it ONLY fires at the start of a chunk —
@@ -275,6 +297,97 @@ _BANNED_SENTENCE_RE = [
      )),
 ]
 
+# ---------------------------------------------------------------------------
+# Gate 5g — self-narration strip (A1, 2026-07-29)
+# ---------------------------------------------------------------------------
+# Gate 5b is ~40 patterns, each added after one observed call. It enumerates
+# past leaks; it does not detect the class. Replaying the five A1 calls through
+# the real chunker showed Gate 5 firing ONCE across all five — every new
+# phrasing the model invents walks straight through.
+#
+# The class those leaks share is not a vocabulary. It is that the model is
+# talking to ITSELF — deliberating, classifying the caller's last answer,
+# correcting its own course — rather than to the caller. So the test is
+# structural, applied per sentence:
+#
+#     matches a deliberation pattern
+#       AND contains no second-person reference   (not addressed to the caller)
+#       AND is not a question                     (not asking the caller anything)
+#
+# Both guards are load-bearing, and this is why the rule could not live in the
+# flat _BANNED_SENTENCE_RE list. These two lines share the phrase "I have
+# everything I need":
+#
+#   "I have everything I need to get that booked — shall I go ahead?"  KEEP
+#   "I need to book this in now — I have everything I need."           DROP
+#
+# A flat pattern strips both, and stripping the first hands the caller a dead
+# end mid-booking. That failure has already cost this system a completed
+# booking once (see the Gate 5c note below, 2026-06-12).
+_SELF_NARRATION_RE = re.compile(
+    r"\b(?:"
+    # internal readiness / intent, stated about itself
+    r"I have everything I need"
+    r"|I need to book (?:this|it) in now"
+    r"|let me (?:review what I know|get back on track|start again)"
+    # self-correction mid-turn — CAfe6a4162 ran the wrong clinical screen and
+    # narrated the recovery instead of just recovering
+    r"|that'?s the wrong (?:screen|question|one|flow)"
+    r"|back on track"
+    r"|scratch that"
+    # classifying the caller's answer rather than responding to it —
+    # CA198906b4: "That's a soft affirmative to the booking offer — good."
+    r"|(?:soft|implicit|explicit)\s+affirmative"
+    r"|affirmative"
+    # referring to the conversation as data it is reading rather than a
+    # conversation it is having — CA76bc921f: "…explicitly stated in this
+    # conversation fragment."
+    r"|conversation (?:fragment|context|history)"
+    # stating a precondition it must satisfy before acting — CA198906b4:
+    # "Now I need a timing preference before checking availability."
+    r"|I need (?:a|an|the)\s+[a-z ]{0,30}?before\s+(?:check|book|confirm|look)\w*"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Any second-person reference means the sentence is addressed to the caller.
+_SECOND_PERSON_RE = re.compile(r"\b(?:you|your|yours|you'?re|you'?ve|you'?d)\b",
+                               re.IGNORECASE)
+
+# Split after sentence terminators. Handles the no-space-after-period form the
+# model produces when it runs reasoning and speech together ("...for you now.I
+# need to book this in now...").
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s*")
+
+
+def _is_self_narration(sentence: str) -> bool:
+    """True if `sentence` is the model talking to itself, not to the caller."""
+    if not sentence.strip():
+        return False
+    if "?" in sentence:
+        return False
+    if _SECOND_PERSON_RE.search(sentence):
+        return False
+    return _SELF_NARRATION_RE.search(sentence) is not None
+
+
+def _strip_self_narration(text: str) -> str:
+    """Drop self-narrating sentences, keep everything addressed to the caller.
+
+    Returns `text` UNCHANGED when nothing is dropped. That guard matters: the
+    split/rejoin normalises whitespace as a side effect (the model often runs
+    sentences together as "...for you now.So that's Tom..."), and an audit over
+    all 656 recorded assistant turns showed that touching every multi-sentence
+    turn is a far wider blast radius than this fix is entitled to. Rewrite only
+    the turns we actually strip something from.
+    """
+    parts = _SENTENCE_SPLIT_RE.split(text)
+    kept = [p for p in parts if not _is_self_narration(p)]
+    if len(kept) == len(parts):
+        return text
+    return " ".join(s for s in (p.strip() for p in kept) if s)
+
+
 _MULTI_SPACE_RE  = re.compile(r" {2,}")
 # Also strips leading ': ' colon artefacts left when a reasoning sentence that
 # ended with a colon is removed and the continuation chunk starts with ": ".
@@ -511,6 +624,20 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
         if cleaned != result:
             logger.info("[ms_gate5] removed banned phrase (%s)", desc)
             result = cleaned
+
+    # ── Gate 5g: self-narration strip ────────────────────────────────────────
+    # Runs here, adjacent to 5b, because it is the same kind of operation —
+    # sentence-level, never chunk-level. Sentence-level is deliberate: the
+    # chunk-level equivalent already caused an over-drop once, when an "I
+    # should" trigger discarded a whole chunk and took real slot text with it
+    # (2026-06-18, see the note on _REASONING_OPENER_RE).
+    _narr_cleaned = _strip_self_narration(result)
+    if _narr_cleaned != result:
+        logger.info(
+            "[ms_gate5g] removed self-narration: %r -> %r",
+            result[:80], _narr_cleaned[:80],
+        )
+        result = _narr_cleaned
 
     # ── Gate 5c: redundant booking-offer strip during active booking ─────────
     # Only fires when the caller is already booking — never on pre-booking FAQ
