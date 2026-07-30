@@ -54,6 +54,10 @@ AMBIGUOUS_S = 360
 
 _D = lambda *a: datetime(*a, tzinfo=timezone.utc)
 BUILDS = [
+    # 2026-07-30 19:35Z — 5b0c9c2 (Bug B: caller can change day after name+phone)
+    # + d88e0da (C1 write-guard: refuse a booking on a day the caller was not
+    # told). Pushed together at 19:31Z; AMBIGUOUS_S covers the deploy lag.
+    (_D(2026, 7, 30, 19, 35), "d88e0da"),
     # 2026-07-30 11:30Z — 1b87b99 (C1 detector) + 7c140f4 (Fix A: a follow-up
     # batch can no longer straddle two days). Pushed together.
     (_D(2026, 7, 30, 11, 30), "7c140f4"),
