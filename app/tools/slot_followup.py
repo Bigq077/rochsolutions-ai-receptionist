@@ -16,12 +16,24 @@ No LLM judgment about what exists.
 """
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 def _slot_start(slot: Dict[str, Any]) -> str:
     return str(slot.get("start") or "")
+
+
+def _day_key(slot: Dict[str, Any]) -> str:
+    """The calendar day a slot belongs to. `date` when present, else the ISO date.
+
+    Never returns None, so slots with no usable date group together rather than
+    each looking like its own day.
+    """
+    return str(slot.get("date") or "") or _slot_start(slot)[:10]
 
 
 def flatten_bookable_slots(available_days: Any) -> List[Dict[str, Any]]:
@@ -73,8 +85,35 @@ def remaining_slots_after_offer(
 def next_slot_batch(
     remaining: List[Dict[str, Any]], n: int = 2
 ) -> Tuple[List[Dict[str, Any]], bool]:
-    batch = list(remaining[:n])
-    more = len(remaining) > n
+    """The next `n` unspoken slots, ALL ON ONE DAY.
+
+    Single-day is a correctness requirement, not a preference. `remaining` is
+    flattened across every day in available_days, so `remaining[:n]` could
+    straddle a day boundary — and both consumers of this batch present it as one
+    day, taking their label from batch[0]:
+
+        format_next_batch_speech  -> "On {batch[0].day_label} I also have A, or B"
+        build_followup_tool_result -> first_day.date/day_label from batch[0],
+                                      first_day.slots from the WHOLE batch
+
+    Each slot keeps its own true `start`, so the caller picking the second option
+    books the day it really belongs to — while having been told the first slot's
+    day. That is exactly how CA5c4fb14f (30 Jul 2026) told a caller "Tuesday the
+    4th of August at seven in the evening" and booked 2026-08-05T19:00. Nothing
+    downstream can catch it, because nothing downstream is wrong: the booking
+    matches the slot, only the speech does not.
+
+    So the batch is confined to remaining[0]'s day. `more` means "more times
+    STILL ON THAT DAY", which is what the speech it feeds actually claims ("I've
+    a few others that day"). Slots on later days are not lost — they are simply
+    not announced under the wrong day's name.
+    """
+    if not remaining:
+        return [], False
+    day = _day_key(remaining[0])
+    same_day = [s for s in remaining if _day_key(s) == day]
+    batch = list(same_day[:n])
+    more = len(same_day) > n
     return batch, more
 
 
@@ -281,6 +320,27 @@ def build_followup_tool_result(
             "error": "No further times on that day.",
             "available_days": available_days if isinstance(available_days, list) else [],
         }
+    # Fail-safe: this struct declares presentation_mode="single_day" and carries
+    # ONE date/day_label, so every slot in it must belong to that day. next_slot_batch
+    # guarantees that; this is the backstop for any future caller that does not.
+    # Dropping the off-day slots is the safe direction — offering fewer times costs
+    # the caller a follow-up question, whereas announcing a slot under the wrong
+    # day's name sends a real patient to the clinic on a day they have no
+    # appointment (CA5c4fb14f, 30 Jul 2026).
+    _day = _day_key(batch[0])
+    _same_day = [s for s in batch if _day_key(s) == _day]
+    if len(_same_day) != len(batch):
+        logger.error(
+            "[slot_followup] multi-day batch reached build_followup_tool_result — "
+            "dropping %d off-day slot(s) to protect the spoken day label. "
+            "kept=%s dropped=%s",
+            len(batch) - len(_same_day),
+            [s.get("start") for s in _same_day],
+            [s.get("start") for s in batch if _day_key(s) != _day],
+        )
+        batch = _same_day
+        more = True  # the dropped slots still exist, just not on this day
+
     day_label = batch[0].get("day_label") or ""
     date = batch[0].get("date")
     first_day = {
