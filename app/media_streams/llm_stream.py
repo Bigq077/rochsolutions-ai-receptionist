@@ -190,6 +190,66 @@ def _last_user_text(messages) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# C1 — the date the caller was actually told (write-guard, 2026-07-30)
+# ---------------------------------------------------------------------------
+# CA5c4fb14f: she said "Tuesday the 4th of August at seven in the evening", he
+# said yes, she said "All booked", and the event was created for 2026-08-05 — a
+# Wednesday. Nothing in the call sounds wrong and nothing downstream is
+# inconsistent (the booking matches the slot), so no guard, detector or readback
+# enforcement could see it. The caller arrives to nothing.
+#
+# Steering the model away from mislabelling will not hold — it free-texts the
+# spoken phrase from a multi-day available_days still in its context. The write
+# is the only place the two can be compared, so that is where it is checked.
+_MONTH_NUM = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11,
+    "december": 12,
+}
+# "Tuesday the 4th of August" and "Tuesday 4th August" both occur in her speech.
+_SPOKEN_DATE_RE = re.compile(
+    r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)?\s*"
+    r"(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)\s+(?:of\s+)?"
+    r"(" + "|".join(_MONTH_NUM) + r")",
+    re.IGNORECASE,
+)
+# Only sentences the caller is agreeing to. An availability list names several
+# dates the caller never acted on; latching onto one of those would make this
+# guard fire on correct bookings, and a guard that blocks real bookings is worse
+# than the defect it protects against.
+_SPOKEN_COMMITMENT_RE = re.compile(
+    r"so that'?s|shall i go ahead|you'?re in for|all booked|book that in",
+    re.IGNORECASE,
+)
+
+
+def _spoken_slot_date(text: str, year: int) -> Optional[str]:
+    """The YYYY-MM-DD the caller was told, from a commitment sentence. Else None."""
+    if not text or not _SPOKEN_COMMITMENT_RE.search(text):
+        return None
+    m = _SPOKEN_DATE_RE.search(text)
+    if not m:
+        return None
+    try:
+        return f"{year:04d}-{_MONTH_NUM[m.group(2).lower()]:02d}-{int(m.group(1)):02d}"
+    except (ValueError, KeyError):
+        return None
+
+
+def _note_spoken_slot_date(session: Dict[str, Any], spoken_text: str) -> None:
+    """Record the date last SPOKEN to the caller in a commitment sentence.
+
+    Deliberately overwrites: after a change of mind the newest spoken date is the
+    one the caller agreed to, so a stale earlier date must never outlive it and
+    block a legitimate booking.
+    """
+    from datetime import datetime as _dt
+    date = _spoken_slot_date(spoken_text or "", _dt.now().year)
+    if date:
+        session["last_spoken_slot_date"] = date
+
+
 # Explicit "I want a DIFFERENT DAY" signals (Bug B, 2026-07-30).
 #
 # Deliberately NARROWER than _NEW_SLOT_INTENT_WORDS below, which also matches any
@@ -224,6 +284,28 @@ _NEW_TIME_OF_DAY_WORDS: frozenset = frozenset({
     "morning", "afternoon", "evening", "midday", "noon",
     "earlier", "later", "sooner",
 })
+
+
+def _slot_date_disagrees_with_speech(args: Dict[str, Any], session: Dict[str, Any]) -> bool:
+    """True when the slot about to be booked is on a different DAY from the one
+    the caller was last told.
+
+    Silent — returns False — whenever it cannot be sure:
+      * no commitment sentence has been spoken yet (nothing to compare against);
+      * slot_iso is missing or unparseable (other guards own that).
+    A guard that blocks a real booking on a bad parse is worse than the defect it
+    exists to prevent, so every uncertain case books.
+    """
+    spoken = session.get("last_spoken_slot_date")
+    if not spoken:
+        return False
+    raw = str((args or {}).get("slot_iso") or "").strip()
+    if len(raw) < 10:
+        return False
+    slot_date = raw[:10]
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", slot_date):
+        return False
+    return slot_date != spoken
 
 
 def _caller_requests_different_day(messages) -> bool:
@@ -1993,6 +2075,47 @@ class LLMStream:
                         }
                 elif (
                     tool_name == "book_appointment"
+                    and _slot_date_disagrees_with_speech(args, session)
+                ):
+                    # C1 write-guard (2026-07-30). The slot about to be written is
+                    # on a different DAY from the one we last told the caller.
+                    #
+                    # CA5c4fb14f: "Tuesday the 4th of August at seven in the
+                    # evening" -> "All booked" -> event on 2026-08-05, a Wednesday.
+                    # He would have arrived to nothing. Nothing else can catch this:
+                    # the booking matches the slot, so every downstream check is
+                    # consistent — only the speech disagrees, and by then it has
+                    # already been said.
+                    #
+                    # Fail closed. A booking the caller cannot attend is worse than
+                    # one extra question, and this re-steer is a question, so the
+                    # call continues rather than dead-ending: the model states the
+                    # real day, the caller confirms or corrects, the next spoken
+                    # commitment updates last_spoken_slot_date, and the booking then
+                    # goes through normally.
+                    _spoken_date = session.get("last_spoken_slot_date")
+                    logger.error(
+                        "[ms_book] BLOCKED — slot_iso %r is not the day the caller "
+                        "was told (%s). call_sid=%s",
+                        args.get("slot_iso"), _spoken_date, call_sid,
+                    )
+                    session["_c1_write_guard_fired"] = (
+                        int(session.get("_c1_write_guard_fired") or 0) + 1
+                    )
+                    result = {
+                        "status": "slot_date_mismatch",
+                        "message": (
+                            "NOT booked. The appointment you were about to create is "
+                            "on a different DAY from the one you last told the "
+                            "caller, so one of them is wrong and you must not guess "
+                            "which. Do NOT say they are booked. Tell the caller the "
+                            "day and time you can actually offer, in full — weekday, "
+                            "date and time — and ask them to confirm it is the one "
+                            "they want before you book."
+                        ),
+                    }
+                elif (
+                    tool_name == "book_appointment"
                     and not session.get("surname_captured")
                     and " " not in (session.get("patient_name") or "").strip()
                     and not _surname_step_asked(messages or [])
@@ -2538,10 +2661,13 @@ def _append_history(
     obs_turns = session.setdefault("obs_turns", [])
     if user_text and user_text.strip():
         obs_turns.append({"role": "user", "text": user_text})
-    obs_turns.append({
-        "role": "assistant",
-        "text": assistant_text if spoken_text is None else spoken_text,
-    })
+    _spoken = assistant_text if spoken_text is None else spoken_text
+    obs_turns.append({"role": "assistant", "text": _spoken})
+
+    # C1 write-guard input: remember the date the caller was actually TOLD, taken
+    # from the spoken form for the same reason obs uses it — the raw reply is not
+    # what reached their ear.
+    _note_spoken_slot_date(session, _spoken)
 
 
 # ---------------------------------------------------------------------------
