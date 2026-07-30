@@ -1,4 +1,4 @@
-# Jules hand-back — 28 Jul 2026 (Tue night → Wed early)
+# Jules hand-back — 28 Jul 2026 (Mon night → Tue early)
 
 Gate + clean runs on live `b405017`. No raw logs. For Quentin.
 
