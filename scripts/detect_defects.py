@@ -54,6 +54,15 @@ AMBIGUOUS_S = 360
 
 _D = lambda *a: datetime(*a, tzinfo=timezone.utc)
 BUILDS = [
+    # 2026-07-29 20:20Z — docs + scripts/audit_gate5_blast_radius.py only.
+    # Runtime-identical to 4cb7273; listed so labels stay precise.
+    (_D(2026, 7, 29, 20, 20), "ce45ea8"),
+    # 2026-07-29 20:10Z — 554ebb4, 503a06f, 801152a and 4cb7273 were authored at
+    # different times but PUSHED AS ONE DEPLOY, so none of the first three ever
+    # ran on its own. One boundary, labelled by the tip commit. Boundaries are
+    # DEPLOY times, not commit times — a missing entry here silently mislabels
+    # every later call as the previous build (found by Jules, 30 Jul).
+    (_D(2026, 7, 29, 20, 10), "4cb7273"),
     (_D(2026, 7, 28, 2, 9), "b405017"),
     (_D(2026, 7, 28, 1, 44), "368b4e0"),
     (_D(2026, 7, 27, 19, 16), "2d553b6"),
@@ -95,6 +104,19 @@ _LEAK = re.compile(
     r"|but i'm missing|\*\*[A-Za-z])", re.I)
 
 _ASK = re.compile(r"(shall i (go ahead and )?book|book that in|get that booked)", re.I)
+
+# C1 — the spoken date on a CONFIRMATION turn, compared against the slot we booked.
+# Weekday prefix optional and deliberately ignored: the question is not whether the
+# weekday matches the date (that is A2), it is whether the DATE the caller agreed to
+# is the date that exists in the calendar.
+_SPOKEN_DATE = re.compile(
+    r"(?:(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+)?"
+    r"(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)\s+(?:of\s+)?(" + "|".join(_MONTHS) + r")",
+    re.I,
+)
+# Only turns where the caller is being asked to agree, or told it is done. A date
+# mentioned while browsing availability is not something the caller acted on.
+_CONFIRM_TURN = re.compile(r"all booked|you'?re in for|shall i go ahead", re.I)
 _CAUDA = re.compile(r"saddle area|bladder or bowel", re.I)
 _BACKISH = re.compile(r"\b(back|spine|lumbar|sciatic|leg|legs|buttock)\b", re.I)
 _SCREEN_Q = re.compile(r"can i (just )?(ask|check)|do you (get|have any)", re.I)
@@ -152,6 +174,57 @@ def d_wrong_screen(call):
     return f"cauda screen on reason={(call['collected'] or {}).get('reason')!r}"
 
 
+def d_spoken_slot_not_booked_slot(call):
+    """The caller agreed to one date and a DIFFERENT date exists in the calendar.
+
+    The worst failure this system has, because the call sounds perfect: she
+    confirms, the caller says yes, she says "all booked", and the appointment is
+    on another day. The caller arrives to nothing.
+
+    Distinct from A2 and NOT covered by it. A2 is an internally inconsistent
+    phrase ("Friday the 1st of August" when the 1st is a Saturday) — the date is
+    right, the weekday label is wrong. Here the phrase is perfectly consistent
+    and simply names the wrong day: CA5c4fb14f said "Tuesday the 4th of August"
+    (4 Aug IS a Tuesday) and booked 2026-08-05. A2's detector returns 0 on it,
+    correctly. Nothing caught this class until 30 Jul.
+
+    Only confirmation turns count. A date spoken while browsing availability is
+    not one the caller acted on, so counting it would bury the real hits.
+
+    KNOWN LIMITATION: date only, not time. CAc64a05f1 also had the wrong TIME
+    (spoke half past six, booked 17:30). Spoken times are words ("quarter to
+    six in the evening") and parsing them is a second piece of work; a
+    date-level check already catches both known instances. A same-day wrong-time
+    booking would slip through this as written.
+    """
+    collected = call["collected"] or {}
+    iso = collected.get("selected_slot")
+    if not iso:
+        return None
+    try:
+        booked = datetime.fromisoformat(str(iso)).date()
+    except (ValueError, TypeError):
+        return None
+
+    for turn in (call["transcript"] or []):
+        if (turn.get("role") or "") == "user":
+            continue
+        text_ = turn.get("text") or ""
+        if not _CONFIRM_TURN.search(text_):
+            continue
+        for mm in _SPOKEN_DATE.finditer(text_):
+            try:
+                spoke = datetime(booked.year, _MONTHS[mm.group(2).lower()],
+                                 int(mm.group(1))).date()
+            except ValueError:
+                continue
+            if spoke != booked:
+                ev = call["calendar_event_id"]
+                return (f"agreed {mm.group(0)!r} but booked {booked} "
+                        f"({'event ' + str(ev)[:12] if ev else 'NO EVENT'})")
+    return None
+
+
 def d_screen_after_confirm(call):
     tx = call["transcript"] or []
     ask = next((i for i, t in enumerate(tx) if (t.get("role") or "") != "user"
@@ -192,6 +265,11 @@ def d_name_divergence(call):
 
 
 DETECTORS = [
+    # C1 first: it is the only defect here that sends a real patient to the clinic
+    # on the wrong day, and it is the only one the caller cannot possibly notice.
+    Detector("C1", "agreed one date, booked another", "open",
+             d_spoken_slot_not_booked_slot,
+             "CA5c4fb14fb555756f3f64952ad945788d"),
     Detector("A1", "model reasoning spoken aloud", "open", d_reasoning_leak,
              "CA76bc921fe665dbf01a75317913c87e01"),
     Detector("A2", "day-name does not match date", "open", d_day_date_mismatch,
