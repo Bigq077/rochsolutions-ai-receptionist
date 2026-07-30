@@ -54,6 +54,9 @@ AMBIGUOUS_S = 360
 
 _D = lambda *a: datetime(*a, tzinfo=timezone.utc)
 BUILDS = [
+    # 2026-07-30 11:30Z — 1b87b99 (C1 detector) + 7c140f4 (Fix A: a follow-up
+    # batch can no longer straddle two days). Pushed together.
+    (_D(2026, 7, 30, 11, 30), "7c140f4"),
     # 2026-07-29 20:20Z — docs + scripts/audit_gate5_blast_radius.py only.
     # Runtime-identical to 4cb7273; listed so labels stay precise.
     (_D(2026, 7, 29, 20, 20), "ce45ea8"),

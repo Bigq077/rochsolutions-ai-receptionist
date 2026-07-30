@@ -190,6 +190,70 @@ def _last_user_text(messages) -> str:
     return ""
 
 
+# Explicit "I want a DIFFERENT DAY" signals (Bug B, 2026-07-30).
+#
+# Deliberately NARROWER than _NEW_SLOT_INTENT_WORDS below, which also matches any
+# digit plus "no"/"not"/"slot"/"when". Those fire on ordinary turns — a caller
+# correcting a phone number says digits — and the post-collect guard they would
+# release exists to stop the model spuriously re-searching after name and phone
+# are in (BUG-14). Widening that guard with a loose predicate trades one defect
+# for another, so this set contains only words that refer to a specific calendar
+# day and nothing else.
+#
+# Same-day TIME words (morning / later / earlier) are excluded on purpose: the
+# V5 deterministic follow-up already serves remaining times from available_days,
+# and re-fetching leads with the earliest slots again — the exact problem 368b4e0
+# was written to fix. "may" is omitted for the same reason it is omitted below:
+# it is a common auxiliary verb.
+_DIFFERENT_DAY_WORDS: frozenset = frozenset({
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "january", "february", "march", "april", "june", "july", "august",
+    "september", "october", "november", "december",
+    "tomorrow", "today", "tonight", "weekend",
+})
+_DIFFERENT_DAY_PHRASES = (
+    "next week", "following week", "week after", "next month",
+    "another day", "different day", "other day", "any other day",
+    "another date", "different date",
+)
+
+# Time-of-day change on the SAME day. Only ever used to release the post-collect
+# block so the V5 same-day path downstream can answer it — never to trigger a
+# re-fetch.
+_NEW_TIME_OF_DAY_WORDS: frozenset = frozenset({
+    "morning", "afternoon", "evening", "midday", "noon",
+    "earlier", "later", "sooner",
+})
+
+
+def _caller_requests_different_day(messages) -> bool:
+    """True if the caller's latest utterance names a DIFFERENT calendar day.
+
+    CAc6b971ad (30 Jul 2026): the caller asked for Wednesday seven times after
+    giving name and phone. Each time the post-collect guard blocked
+    check_availability and instructed the model to repeat the Tuesday
+    confirmation verbatim, so she twice said "let me check Wednesday" and then
+    re-read Tuesday back. He hung up without booking.
+    """
+    txt = _last_user_text(messages).lower()
+    if not txt:
+        return False
+    if any(p in txt for p in _DIFFERENT_DAY_PHRASES):
+        return True
+    return bool(set(re.findall(r"[a-z']+", txt)) & _DIFFERENT_DAY_WORDS)
+
+
+def _caller_requests_new_day_or_time(messages) -> bool:
+    """A different day OR a different time of day — i.e. the caller is still
+    choosing when to come in, so the post-collect guard must stand down."""
+    if _caller_requests_different_day(messages):
+        return True
+    txt = _last_user_text(messages).lower()
+    if not txt:
+        return False
+    return bool(set(re.findall(r"[a-z']+", txt)) & _NEW_TIME_OF_DAY_WORDS)
+
+
 def _caller_wants_new_slot(messages) -> bool:
     """True if the caller's latest utterance signals they want a different slot
     (a new-date word or any digit) — i.e. a legitimate reason to re-search
@@ -1750,11 +1814,27 @@ class LLMStream:
                 # phone are both confirmed.  At that point the slot is already
                 # agreed — re-running availability causes Haiku's slot buffer to
                 # misfire and ask for the name a second time.
+                #
+                # ...UNLESS the caller is asking for a different day or time
+                # (Bug B, 2026-07-30). "The slot is already agreed" is only true
+                # while nobody is trying to change it. CAc6b971ad: the caller asked
+                # for Wednesday seven times after giving name and phone; this guard
+                # blocked every availability check and told the model to repeat the
+                # Tuesday confirmation verbatim, so she twice announced "let me
+                # check Wednesday" and then re-read Tuesday. He hung up unbooked.
+                #
+                # The neighbouring guard below already stands down on
+                # _caller_wants_new_slot; the escape simply was never wired into
+                # this one. A purpose-built predicate is used instead of that
+                # broader helper, which also matches any digit and "no"/"not" and
+                # would release this guard on ordinary turns — see the note on
+                # _DIFFERENT_DAY_WORDS.
                 _col = session.get("collected") or {}
                 if (
                     tool_name == "check_availability"
                     and _col.get("phone")
                     and (_col.get("name") or _col.get("full_name"))
+                    and not _caller_requests_new_day_or_time(messages or [])
                 ):
                     logger.warning(
                         "[ms_llm] check_availability BLOCKED — name+phone already "
@@ -1840,7 +1920,22 @@ class LLMStream:
                             "number, then read back the booking summary."
                         ),
                     }
-                elif tool_name == "check_availability" and session.get("last_offered_slots"):
+                elif (
+                    tool_name == "check_availability"
+                    and session.get("last_offered_slots")
+                    # A DIFFERENT-DAY request must not be answered from this day's
+                    # remaining times (Bug B). Everything below serves slots from
+                    # session["available_days"], and its else-branch returns
+                    # already_retrieved — "present the existing slots" — which is
+                    # how the caller who asked for Wednesday was offered Tuesday
+                    # twice more even after the guard above stood down. Fall through
+                    # to the real check_availability for a genuinely new day.
+                    #
+                    # Same-day time requests ("anything later?") deliberately still
+                    # come here: re-fetching leads with the earliest times again,
+                    # which is what 368b4e0 (V5) exists to prevent.
+                    and not _caller_requests_different_day(messages or [])
+                ):
                     # V5: if the caller asked for later / an unspoken time, do NOT
                     # tell the model to re-present the already-spoken slots.
                     # Serve the next unspoken batch (or confirm a resolved time)
