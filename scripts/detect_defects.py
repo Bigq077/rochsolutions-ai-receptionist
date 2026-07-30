@@ -54,6 +54,12 @@ AMBIGUOUS_S = 360
 
 _D = lambda *a: datetime(*a, tzinfo=timezone.utc)
 BUILDS = [
+    # 2026-07-30 22:00Z — ad09f3e (phone_confirmed is set on the LLM path).
+    # CA3145c15f looped the phone question on d88e0da until the caller hung up:
+    # book_appointment's A1 gate cannot be cleared by the model, and the branch
+    # that sets the flag had been unreachable since the 26 Jul Step 8 reword.
+    # Calls before this boundary can loop that way; calls after must not.
+    (_D(2026, 7, 30, 22, 0), "ad09f3e"),
     # 2026-07-30 19:35Z — 5b0c9c2 (Bug B: caller can change day after name+phone)
     # + d88e0da (C1 write-guard: refuse a booking on a day the caller was not
     # told). Pushed together at 19:31Z; AMBIGUOUS_S covers the deploy lag.
