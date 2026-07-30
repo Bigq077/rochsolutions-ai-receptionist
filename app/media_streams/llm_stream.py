@@ -308,6 +308,28 @@ def _slot_date_disagrees_with_speech(args: Dict[str, Any], session: Dict[str, An
     return slot_date != spoken
 
 
+def _spoken_day_phrase(iso_date: str) -> str:
+    """Render '2026-08-05' as 'Wednesday the 5th of August', or '' if unparseable.
+
+    The write-guard's refusal is only actionable if it can name the day the slot
+    is REALLY on. CAb81fe651 (30 Jul 2026): the guard fired correctly on a
+    Wednesday slot, but its message only said "tell the caller the day you can
+    actually offer" without saying what that day was — so the model repeated the
+    Tuesday it had already spoken, the guard fired again on the same mismatch,
+    and the caller hung up. Fail-closed turned a wrong-day booking into no
+    booking, which is safer but still a lost patient.
+    """
+    from datetime import date as _date
+
+    from app.tools.receptionist_tools import _ordinal
+
+    try:
+        d = _date.fromisoformat(str(iso_date or "")[:10])
+    except (ValueError, TypeError):
+        return ""
+    return f"{d.strftime('%A')} the {_ordinal(d.day)} of {d.strftime('%B')}"
+
+
 def _caller_requests_different_day(messages) -> bool:
     """True if the caller's latest utterance names a DIFFERENT calendar day.
 
@@ -2102,6 +2124,27 @@ class LLMStream:
                     session["_c1_write_guard_fired"] = (
                         int(session.get("_c1_write_guard_fired") or 0) + 1
                     )
+                    # Name the real day. Without it the model can only repeat the
+                    # day it already said — the wrong one — so the guard fires
+                    # again on the identical mismatch and the caller is asked the
+                    # same question until they hang up (CAb81fe651, 30 Jul 2026:
+                    # the slot was Wednesday, she re-read "Tuesday the 4th" twice).
+                    # The slot date is authoritative here: it is the appointment
+                    # that would actually exist.
+                    _slot_phrase = _spoken_day_phrase(
+                        str((args or {}).get("slot_iso") or "")[:10]
+                    )
+                    _spoken_phrase = _spoken_day_phrase(_spoken_date or "")
+                    _correction = (
+                        (
+                            f" The slot you are holding is on {_slot_phrase}, not "
+                            f"{_spoken_phrase or 'the day you last said'}. Say "
+                            f"{_slot_phrase} — with the time — and ask if that is "
+                            "the one they want."
+                        )
+                        if _slot_phrase
+                        else ""
+                    )
                     result = {
                         "status": "slot_date_mismatch",
                         "message": (
@@ -2112,6 +2155,7 @@ class LLMStream:
                             "day and time you can actually offer, in full — weekday, "
                             "date and time — and ask them to confirm it is the one "
                             "they want before you book."
+                            + _correction
                         ),
                     }
                 elif (
