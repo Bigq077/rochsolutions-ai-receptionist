@@ -1058,6 +1058,14 @@ _USE_THIS_NUMBER_SIGNALS: tuple = (
     # number" (2026-07-07: "yeah that's the best one" fell through, leaving
     # phone_confirmed unset). Negative intent is still excluded above.
     "best one", "best number",
+    # "…is that the best number?" is a yes/no question about whether the number
+    # is RIGHT, so callers answer in those terms. CA3145c15f (30 Jul 2026):
+    # "yes that's the correct number" matched nothing here — five words, so the
+    # short-affirmative fallback below did not apply either — and the confirm
+    # never fired. The deterministic gate (flow._HG_YES) has accepted "correct"
+    # and "correct number" for months; this brings the LLM path into line, the
+    # same divergence 3bbe4f0 closed for bare "yes".
+    "correct number", "right number",
 )
 
 # Short bare affirmatives that, in the phone-confirm context (buffer empty,
@@ -6175,10 +6183,28 @@ class WebSocketCallHandler:
                             or self.session.get("last_bot_prompt", "")
                             or ""
                         ).lower()
-                        _bk_phone_step = (
-                            "use this number" in _bk_lastq
-                            or "number you're calling on" in _bk_lastq
-                            or "number you booked" in _bk_lastq
+                        # The wording of Step 8 is NOT owned here — it lives in
+                        # clinic_template_prompt, and it changed on 2026-07-26 to
+                        # "I've got you on … — is that the best number for the
+                        # booking?".  The three literals this test used to carry
+                        # were written on 2026-06-23 and none of them appear in
+                        # that sentence, so from 26 Jul this branch could not fire
+                        # on the booking flow at all: phone_confirmed was never
+                        # set, book_appointment's A1 gate refused every write, and
+                        # the model re-asked the phone question it had already been
+                        # answered.  CA3145c15f (30 Jul 2026) looped that way until
+                        # the caller hung up — name, number, slot and reason all
+                        # collected, no booking.
+                        #
+                        # Reuse the marker set instead of a fourth private copy.
+                        # There were already three (here, llm_stream, and
+                        # clinic_template_prompt); the reword updated the other two
+                        # and missed this one, which is the whole defect.  Imported
+                        # locally, matching how this module already pulls LLMStream
+                        # from the same file.
+                        from .llm_stream import _PHONE_STEP_MARKERS
+                        _bk_phone_step = any(
+                            _mk in _bk_lastq for _mk in _PHONE_STEP_MARKERS
                         )
                         if _bk_caller_num and _bk_phone_step:
                             self.session.setdefault("collected", {})
