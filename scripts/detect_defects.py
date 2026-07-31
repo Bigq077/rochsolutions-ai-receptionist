@@ -54,6 +54,11 @@ AMBIGUOUS_S = 360
 
 _D = lambda *a: datetime(*a, tzinfo=timezone.utc)
 BUILDS = [
+    # 2026-07-31 14:43Z — 23c8551 (the surname back-fill no longer consumes the
+    # caller's answer to a different question). CA6dce36c8 stored "Sara Six" —
+    # her answer to a time question — and A3 scored 0 on it. Calls from here
+    # carry build_sha, so this entry only matters if resolution falls through.
+    (_D(2026, 7, 31, 14, 43), "23c8551"),
     # 2026-07-31 02:12Z — 2d3881f (Gate 5 staleness judged on v3_last_offered_day_iso,
     # which survives the slot-cache clear that silently re-armed the bug on
     # CA6dce36c8 mid-call). Calls from here carry build_sha, so this entry only
