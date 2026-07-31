@@ -235,8 +235,29 @@ def d_day_date_mismatch(call):
 
 
 def d_confirmation_loop(call):
-    n = sum(1 for t in _bot(call) if _ASK.search(t))
-    return f"{n} booking confirmations" if n > 1 else None
+    """The same slot offered for confirmation more than once.
+
+    Counting confirmations was wrong. A caller who changes their mind produces
+    two legitimately DIFFERENT confirmations — one for the day they abandoned,
+    one for the day they took. CA78e8b9b7 (31 Jul 2026) did exactly that, booked
+    correctly, and scored as a loop.
+
+    A real loop always re-asks about the SAME day: CA6dce36c8 confirmed Tuesday
+    the 4th twice, CA3145c15f re-confirmed one slot until the caller hung up.
+    So the signature is the date named in the ask, and a repeat is the defect.
+
+    Only _ASK turns count — "all booked" is a completion, not a re-ask.
+    """
+    sigs = []
+    for t in _bot(call):
+        if not _ASK.search(t):
+            continue
+        dm = _SPOKEN_DATE.search(t)
+        sigs.append(dm.group(0).lower() if dm else "")
+    repeats = len(sigs) - len(set(sigs))
+    if repeats:
+        return f"{len(sigs)} booking confirmations, {repeats} for the same day"
+    return None
 
 
 def d_wrong_screen(call):
@@ -283,22 +304,33 @@ def d_spoken_slot_not_booked_slot(call):
     except (ValueError, TypeError):
         return None
 
+    # The LAST confirmation is the one the caller acted on. Earlier ones may name
+    # a day they have since moved off, and that is correct behaviour, not a
+    # defect: CA78e8b9b7 (31 Jul 2026) agreed Tuesday, changed to Wednesday,
+    # confirmed Wednesday, and was booked on Wednesday — a clean call. Scanning
+    # every confirmation turn returned on the abandoned Tuesday and reported the
+    # first correct day-change booking this system produced as its worst defect.
+    #
+    # Same newest-wins rule the engine's write-guard and readback are built on.
+    last_confirm = None
     for turn in (call["transcript"] or []):
         if (turn.get("role") or "") == "user":
             continue
         text_ = turn.get("text") or ""
-        if not _CONFIRM_TURN.search(text_):
+        if _CONFIRM_TURN.search(text_):
+            last_confirm = text_
+    if last_confirm is None:
+        return None
+    for mm in _SPOKEN_DATE.finditer(last_confirm):
+        try:
+            spoke = datetime(booked.year, _MONTHS[mm.group(2).lower()],
+                             int(mm.group(1))).date()
+        except ValueError:
             continue
-        for mm in _SPOKEN_DATE.finditer(text_):
-            try:
-                spoke = datetime(booked.year, _MONTHS[mm.group(2).lower()],
-                                 int(mm.group(1))).date()
-            except ValueError:
-                continue
-            if spoke != booked:
-                ev = call["calendar_event_id"]
-                return (f"agreed {mm.group(0)!r} but booked {booked} "
-                        f"({'event ' + str(ev)[:12] if ev else 'NO EVENT'})")
+        if spoke != booked:
+            ev = call["calendar_event_id"]
+            return (f"agreed {mm.group(0)!r} but booked {booked} "
+                    f"({'event ' + str(ev)[:12] if ev else 'NO EVENT'})")
     return None
 
 
