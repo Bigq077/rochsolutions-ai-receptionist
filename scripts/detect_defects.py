@@ -54,6 +54,14 @@ AMBIGUOUS_S = 360
 
 _D = lambda *a: datetime(*a, tzinfo=timezone.utc)
 BUILDS = [
+    # 2026-07-31 01:00Z — 6f63057 (Bug B: a different-day request steers to
+    # check_availability instead of being answered from the previous day's slots)
+    # + 27c59a5 (the C1 write-guard's refusal names the day the slot is really
+    # on, so the model can recover instead of re-reading the wrong day) + 3c8f3fc
+    # (guard counters land on the call record). Pushed together at 00:56Z.
+    # CAb81fe651 is the call all three come from: it looped on ad09f3e and the
+    # caller hung up. A4 on this build or later is a new defect, not that one.
+    (_D(2026, 7, 31, 1, 0), "6f63057"),
     # 2026-07-30 22:00Z — ad09f3e (phone_confirmed is set on the LLM path).
     # CA3145c15f looped the phone question on d88e0da until the caller hung up:
     # book_appointment's A1 gate cannot be cleared by the model, and the branch
