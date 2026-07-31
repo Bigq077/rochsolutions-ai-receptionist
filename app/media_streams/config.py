@@ -120,14 +120,21 @@ ASSEMBLYAI_WS_URL = (
 # BEHAVIOURAL DELTAS that matter to this codebase — read before flipping:
 #
 #  1. format_turns is REMOVED; formatting is always on. Finals now arrive
-#     punctuated and capitalised. Audited 2026-07-31: the consumers that matter
-#     all normalise first — clinical_screening._norm() blanks punctuation and
-#     fast_path._normalize() strips it — so matching is unaffected. The stale
-#     claim is the COMMENT at clinical_screening.py ~L616 ("no final is ever
-#     punctuated"), which is false under this model. Terminal punctuation
-#     becomes a genuine mid-clause-truncation signal there; _looks_truncated()
-#     still works without it, so that is an improvement to make later, not a
-#     prerequisite.
+#     punctuated and capitalised. A first audit checked only the two normalising
+#     consumers (clinical_screening._norm(), fast_path._normalize()) and wrongly
+#     concluded nothing else cared. A full sweep on 2026-07-31 found three
+#     consumers that read the transcript RAW and break on punctuation:
+#       - connection.py:411 _PHONE_NUMBER_RE ^\d{5,}$ — "07502211207." fails the
+#         match, so the number falls through to _is_short_meaningless_fragment()
+#         and is DISCARDED. Silent loss of the caller's phone number.
+#       - flow.py:1450-1461 _NAME_WRAPPER_PATTERNS — "My name is." no longer
+#         matches ^my name(?:\s+is)?$, so the label is stored AS the name.
+#       - name_collector.py:406 _NAME_AFTER_IS_RE — anchored \s*$, stops firing.
+#     Rather than patch each anchor (and every future one), U35_DEFORMAT below
+#     restores the exact text contract the engine was written against. See
+#     stt_stream._deformat_transcript().
+#     The COMMENT at clinical_screening.py ~L616 ("no final is ever punctuated")
+#     stays true while U35_DEFORMAT is on, and is false if it is turned off.
 #  2. Partials become stable and fully-transcribed rather than word-by-word.
 #     connection.py's barge-in noise gate (_BARGE_NOISE, single-word reject) is
 #     tuned against word-by-word partials — re-check barge-in feel first.
@@ -153,6 +160,20 @@ ASSEMBLYAI_USE_U35 = os.getenv(
 # vendor defaults, so the first A/B changes ONE variable (the model) and not two.
 U35_MIN_TURN_SILENCE = int(os.getenv("U35_MIN_TURN_SILENCE", "600"))
 U35_MAX_TURN_SILENCE = int(os.getenv("U35_MAX_TURN_SILENCE", "1280"))
+
+# U3.5 cannot turn formatting off, so we turn it off on our side of the socket:
+# lowercase + strip terminal/interior punctuation, restoring byte-for-byte the
+# shape every downstream matcher in this engine was written against (see the
+# three raw-transcript consumers listed above).
+#
+# Default ON, and it should stay on for the first A/B: the point of that test is
+# to vary the acoustic model, not the text contract. Set U35_DEFORMAT=false only
+# to deliberately evaluate punctuation as a truncation signal — and expect the
+# phone-number and name-wrapper regressions above until they are fixed properly.
+# Inert unless ASSEMBLYAI_USE_U35 is also on.
+U35_DEFORMAT = os.getenv(
+    "U35_DEFORMAT", "true"
+).strip().lower() in ("true", "1", "yes", "on")
 
 ASSEMBLYAI_WS_URL_U35 = (
     "wss://streaming.assemblyai.com/v3/ws"

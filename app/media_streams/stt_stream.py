@@ -60,6 +60,7 @@ from .config import (
     ASSEMBLYAI_USE_U35,
     ASSEMBLYAI_MAX_RECONNECTS,
     NOISE_ONLY_WORDS,
+    U35_DEFORMAT,
     assemblyai_ws_url,
 )
 # WS-C endpoint-latency measurement (latency-eval branch). Read-once flag; when
@@ -443,6 +444,35 @@ def _is_garbage_transcript(text: str) -> bool:
     words = re.findall(r"[a-zA-Z]{2,}", text.lower())
     real_words = [w for w in words if w not in NOISE_ONLY_WORDS]
     return len(real_words) == 0
+
+
+# U3.5 Pro has no format_turns switch — formatting is always on, so finals
+# arrive as "My name is Sarah." where every matcher in this engine expects
+# "my name is sarah".  Three consumers read the transcript raw and break on that
+# (phone-number capture in connection.py, the name-wrapper patterns in flow.py,
+# _NAME_AFTER_IS_RE in name_collector.py), so we undo the formatting here — one
+# place at the socket boundary — instead of chasing every anchored regex.
+#
+# Apostrophes and hyphens are KEPT: "it's", "o'brien" and "smith-jones" are
+# load-bearing in the name and yes/no matchers.  Digits are kept as-is so
+# "07502211207." still satisfies ^\d{5,}$ after the trailing stop is removed.
+_U35_PUNCT_RE = re.compile(r"[.,!?;:\"“”„…]+")
+
+
+def _deformat_transcript(text: str) -> str:
+    """Strip U3.5's always-on formatting back to the unformatted contract.
+
+    Lowercases and removes sentence punctuation, collapsing any whitespace the
+    removal leaves behind.  A no-op for text that was never formatted, so it is
+    safe if the model or the flag changes underneath it.
+
+        "My name is Sarah."   -> "my name is sarah"
+        "Yes, that's right!"  -> "yes that's right"
+        "07502 211207."       -> "07502 211207"
+    """
+    if not text:
+        return text
+    return " ".join(_U35_PUNCT_RE.sub(" ", text).split()).lower()
 
 
 def _mask_key(url_or_str: str, key: str) -> str:
@@ -901,6 +931,18 @@ class STTStream:
                 text = (
                     msg.get("transcript") or msg.get("text") or ""
                 ).strip()
+
+                # U3.5 formats unconditionally — undo it here so every consumer
+                # downstream sees the same unformatted text it always has.
+                # Applied to partials too: the barge-in noise gate and the
+                # first-turn extractor both read partials.
+                if text and ASSEMBLYAI_USE_U35 and U35_DEFORMAT:
+                    _raw_text = text
+                    text = _deformat_transcript(text)
+                    if text != _raw_text:
+                        logger.debug(
+                            "[ms_stt] deformat %r -> %r", _raw_text[:60], text[:60]
+                        )
 
                 # Per-message diagnostic log (debug level — high frequency)
                 if msg_type not in ("Begin", "SessionBegins", "session_begins", "Termination"):

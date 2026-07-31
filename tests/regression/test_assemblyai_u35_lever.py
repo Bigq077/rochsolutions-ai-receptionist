@@ -20,7 +20,7 @@ import pytest
 
 
 def _load_config(monkeypatch, **env):
-    for key in ("ASSEMBLYAI_USE_U35", "ASSEMBLYAI_USE_V2",
+    for key in ("ASSEMBLYAI_USE_U35", "ASSEMBLYAI_USE_V2", "U35_DEFORMAT",
                 "U35_MIN_TURN_SILENCE", "U35_MAX_TURN_SILENCE"):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
@@ -120,6 +120,90 @@ def test_punctuated_finals_do_not_break_the_safety_matcher(monkeypatch):
     # A complete answer stays complete in both spellings.
     assert _looks_truncated("no I haven't") is False
     assert _looks_truncated("No, I haven't.") is False
+
+
+# ---------------------------------------------------------------------------
+# De-formatting: the three consumers that read the transcript RAW
+# ---------------------------------------------------------------------------
+# The first audit of this lever checked only the two consumers that normalise
+# (clinical_screening, fast_path) and concluded punctuation was harmless. It is
+# not. These three sites break, and each one is a silent caller-facing failure,
+# so they are pinned here as the acceptance criteria for _deformat_transcript().
+
+
+def test_deformat_restores_the_unformatted_contract():
+    from app.media_streams.stt_stream import _deformat_transcript as d
+
+    assert d("My name is Sarah.") == "my name is sarah"
+    assert d("Yes, that's right!") == "yes that's right"
+    assert d("07502 211207.") == "07502 211207"
+    # Idempotent, and a no-op on text that was never formatted — so it stays
+    # safe if the model, or the flag, changes underneath it.
+    assert d("my name is sarah") == "my name is sarah"
+    assert d(d("My name is Sarah.")) == "my name is sarah"
+    assert d("") == ""
+
+
+def test_deformat_keeps_apostrophes_and_hyphens():
+    """Load-bearing in the name and yes/no matchers — stripping them is a bug."""
+    from app.media_streams.stt_stream import _deformat_transcript as d
+
+    assert d("It's O'Brien.") == "it's o'brien"
+    assert d("Smith-Jones.") == "smith-jones"
+
+
+def test_deformat_saves_the_phone_number_from_being_discarded():
+    """connection.py:411 ^\\d{5,}$ — a trailing stop loses the caller's number.
+
+    Without de-formatting, "07502211207." fails the phone match and falls
+    through to _is_short_meaningless_fragment(), which returns True and the
+    number is dropped. Silent, and the caller never gets called back.
+    """
+    from app.media_streams.connection import _is_short_meaningless_fragment
+    from app.media_streams.stt_stream import _deformat_transcript as d
+
+    assert _is_short_meaningless_fragment("07502211207") is False
+    # The regression this guards against:
+    assert _is_short_meaningless_fragment("07502211207.") is True
+    # ...and the fix:
+    assert _is_short_meaningless_fragment(d("07502211207.")) is False
+
+
+def test_deformat_keeps_the_name_wrapper_patterns_firing():
+    """flow.py:1450-1461 — else the LABEL gets stored as the caller's name."""
+    from app.media_streams.flow import _NAME_WRAPPER_PATTERNS
+    from app.media_streams.stt_stream import _deformat_transcript as d
+
+    def _is_wrapper(text: str) -> bool:
+        t = text.strip().lower()
+        return any(p.match(t) for p in _NAME_WRAPPER_PATTERNS)
+
+    assert _is_wrapper("my name is") is True
+    # The regression this guards against:
+    assert _is_wrapper("My name is.") is False
+    # ...and the fix:
+    assert _is_wrapper(d("My name is.")) is True
+
+
+def test_deformat_keeps_name_after_is_extractor_firing():
+    """name_collector.py:406 is anchored \\s*$ — punctuation silences it."""
+    from app.media_streams.name_collector import _extract_name_after_is
+    from app.media_streams.stt_stream import _deformat_transcript as d
+
+    assert _extract_name_after_is("my first theme is quentin") == "Quentin"
+    # The regression this guards against:
+    assert _extract_name_after_is("My first theme is Quentin.") is None
+    # ...and the fix:
+    assert _extract_name_after_is(d("My first theme is Quentin.")) == "Quentin"
+
+
+def test_deformat_defaults_on_but_only_bites_with_u35(monkeypatch):
+    config = _load_config(monkeypatch)
+    assert config.U35_DEFORMAT is True          # on by default
+    assert config.ASSEMBLYAI_USE_U35 is False   # ...and inert, because U35 is off
+
+    config = _load_config(monkeypatch, U35_DEFORMAT="false")
+    assert config.U35_DEFORMAT is False
 
 
 def test_config_import_does_not_leak_env_between_tests(monkeypatch):

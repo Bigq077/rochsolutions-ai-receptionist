@@ -8,8 +8,10 @@ from app.storage.redis_store import redis_delete_key
 from app.media_streams.config import (
     ELEVENLABS_API_KEY,
     ASSEMBLYAI_API_KEY,
-    ASSEMBLYAI_WS_URL,
     OPENAI_API_KEY,
+    # Resolver, not the raw constant: this health check must exercise whatever
+    # socket a live call would open, or it reports green on a model nobody uses.
+    assemblyai_ws_url,
 )
 
 router = APIRouter(prefix="/admin")
@@ -177,9 +179,10 @@ async def diagnostics():
             "error": "ASSEMBLYAI_API_KEY not set",
         }
     else:
+        aa_url = assemblyai_ws_url()
         try:
             async with websockets.connect(
-                ASSEMBLYAI_WS_URL,
+                aa_url,
                 additional_headers={"Authorization": aa_key},
                 open_timeout=8.0,
                 close_timeout=3.0,
@@ -192,7 +195,7 @@ async def diagnostics():
                         "key_prefix": aa_key[:8] + "...",
                         "session_id": data.get("id"),
                         "expires_at": str(data.get("expires_at")),
-                        "url":        ASSEMBLYAI_WS_URL[:80],
+                        "url":        aa_url[:80],
                     }
                 else:
                     results["assemblyai"] = {
@@ -211,7 +214,7 @@ async def diagnostics():
                 "ok":    False,
                 "error": str(exc),
                 "key_prefix": aa_key[:8] + "...",
-                "url":   ASSEMBLYAI_WS_URL[:80],
+                "url":   aa_url[:80],
             }
 
     # ── OpenAI ──────────────────────────────────────────────────────────────

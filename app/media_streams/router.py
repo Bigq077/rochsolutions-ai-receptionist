@@ -46,6 +46,7 @@ import traceback
 import asyncio
 import json as _json
 import time as _time
+from urllib.parse import quote as _url_quote
 
 from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
@@ -55,12 +56,16 @@ from .config import (
     ASSEMBLYAI_WS_URL,
     ASSEMBLYAI_WS_URL_V2,
     ASSEMBLYAI_USE_V2,
+    ASSEMBLYAI_USE_U35,
     MEDIA_STREAMS_ENABLED,
     RENDER_EXTERNAL_URL,
     LEGACY_VOICE_URL,
+    assemblyai_ws_url,
 )
 from .connection import WebSocketCallHandler, _active_handlers
-from .stt_stream import _mask_key, _close_info, _is_garbage_transcript
+from .stt_stream import (
+    _mask_key, _close_info, _is_garbage_transcript, build_keyterms,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -671,7 +676,14 @@ async def ms_test_stt() -> JSONResponse:
     except ImportError:
         return JSONResponse({"error": "websockets not installed"}, status_code=500)
 
-    url        = ASSEMBLYAI_WS_URL_V2 if ASSEMBLYAI_USE_V2 else ASSEMBLYAI_WS_URL
+    # Must mirror stt_stream.start() exactly — resolver AND keyterms. A
+    # diagnostic that tests a different URL than the call uses is worse than no
+    # diagnostic: v3 closes the socket instantly on an unknown query param, so
+    # this endpoint is the pre-flight that proves a model/param combination
+    # (notably universal-3-5-pro + keyterms_prompt) actually connects.
+    url = assemblyai_ws_url()
+    if not ASSEMBLYAI_USE_V2:
+        url += "&keyterms_prompt=" + _url_quote(_json.dumps(build_keyterms(None)))
     ws_headers = {"Authorization": ASSEMBLYAI_API_KEY}
     masked_url = _mask_key(url, ASSEMBLYAI_API_KEY)
 
@@ -680,6 +692,11 @@ async def ms_test_stt() -> JSONResponse:
         "begin_received":    False,
         "messages_received": [],
         "close_info":        None,
+        "stt_variant":       (
+            "v2" if ASSEMBLYAI_USE_V2
+            else "u3.5-pro" if ASSEMBLYAI_USE_U35
+            else "universal-streaming-english"
+        ),
         "url_masked":        masked_url,
         "error":             None,
         "duration_ms":       0.0,
