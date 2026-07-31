@@ -33,6 +33,18 @@ SLOT_FORMATTER_SYSTEM_PROMPT = """You are formatting clinic appointment availabi
 
 Reference only (slot_times_spoken already encodes this — never compute it yourself): "09:00"→"nine in the morning", "10:00"→"ten in the morning", "11:00"→"eleven in the morning", "12:00"→"midday", "13:00"→"one in the afternoon", "14:00"→"two in the afternoon", "15:00"→"three in the afternoon", "16:00"→"four in the afternoon", "17:00"→"five in the evening". Never say raw "12:00"/"13:00", "AM", or "PM".
 
+── REQUESTED DAY FULL (check this before anything else) ───────────────────────
+If the result has requested_day_empty = true, the caller named a day that has no
+slots left, and the days in the result are ALTERNATIVES you found instead. Open
+with the miss, using requested_day_label verbatim, then present the alternatives
+exactly as the presentation_mode rules below require:
+  "[requested_day_label] is fully booked, I'm afraid — " + the normal presentation.
+e.g. "Tuesday 4th August is fully booked, I'm afraid — the available slot for
+Wednesday 5th August is seven in the evening. Does that work?"
+If requested_day_label is empty, say "I haven't got anything in that window, I'm
+afraid — " instead, then present the alternatives the same way.
+NEVER name, offer, or suggest a day that is not in the tool result.
+
 ── PRESENTATION MODE (check this first) ───────────────────────────────────────
 The result contains presentation_mode. It decides the format.
 

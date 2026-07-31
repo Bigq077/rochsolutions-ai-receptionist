@@ -3758,6 +3758,25 @@ def _filter_same_day_slots(result: Dict[str, Any], session: Dict[str, Any]) -> D
     return result
 
 
+# A day_window at or below this is a deliberately narrow search (a named day, or
+# "the next couple of days"), so an empty result is a MISS worth widening rather
+# than a genuine absence of availability.
+_NARROW_WINDOW_MAX_DAYS = 3
+# How far ahead to look once a narrow search misses.
+_WIDEN_WINDOW_DAYS = 14
+
+
+def _spoken_day_label(date_iso: str) -> str:
+    """"2026-08-04" → "Tuesday 4th August". Matches _build_days_data's day_label
+    so the model never has to render a date itself."""
+    try:
+        from datetime import date as _sdl_date
+        d = _sdl_date.fromisoformat(date_iso)
+        return f"{d.strftime('%A')} {_ordinal(d.day)} {d.strftime('%B')}"
+    except Exception:
+        return ""
+
+
 async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     # ── PROMPT L hard gate: reject any service name other than the valid set ──
     # This fires BEFORE any Acuity or Google Calendar request so invalid
@@ -4018,6 +4037,76 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         return _out
 
     if not free_slots:
+        # ── Requested day is full: widen once, and offer REAL alternatives ────
+        # The model passes day_window=1 for a named day (SPECIFIC DAY in the
+        # template prompt), so an empty result here means "that one day is
+        # full" — not "we have nothing".  This used to return a bare error with
+        # no data, leaving Sonnet to invent an alternative day it had no
+        # availability for: a whole extra round-trip, and a real chance of
+        # offering a day that is also full.  Widen and return the miss TOGETHER
+        # with the nearest genuine slots so the caller hears "Tuesday's full,
+        # I've got Wednesday at seven" in a single turn.
+        # Narrow windows only — an empty DEFAULT search really does mean empty.
+        _explicit_window = args.get("day_window")
+        if _explicit_window and int(_explicit_window) <= _NARROW_WINDOW_MAX_DAYS:
+            _requested_iso = after_date_str or w_start.date().isoformat()
+            _wide_end = w_start + timedelta(days=_WIDEN_WINDOW_DAYS)
+            logger.info(
+                "_exec_check_availability (gcal): requested day %s empty — "
+                "widening %sd → %sd",
+                _requested_iso, _explicit_window, _WIDEN_WINDOW_DAYS,
+            )
+            _wide_candidates = generate_candidate_slots(
+                w_start, _wide_end,
+                duration_min=duration_min,
+                clinic_working_hours=working_hours,
+                increment_min=clinic.get("slot_increment_minutes"),
+                break_min=_break_min,
+            )
+            try:
+                _wide_busy = await asyncio.to_thread(
+                    freebusy, tokens, w_start, _wide_end, calendar_id
+                )
+                await _save_gcal_tokens(tokens)
+                free_slots = filter_free_slots(
+                    _wide_candidates, parse_busy(_wide_busy or []), break_min=_break_min
+                )
+            except Exception as _we:
+                # Same posture as the primary freebusy failure above: unfiltered
+                # candidates beat killing the conversation.
+                logger.error(
+                    "check_availability widen freebusy error: %r — "
+                    "falling back to unfiltered candidates", _we
+                )
+                free_slots = _wide_candidates
+
+            if free_slots:
+                presented   = _select_presented_tuples(free_slots, preference=_pref)
+                days_data   = _build_days_data(free_slots, preference=_pref)
+                pres_raw    = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented]
+                pres_labels = [format_slot(s) for s in presented]
+                session["last_offered_slots"] = pres_raw
+                session["slot_labels"]        = pres_labels
+                session["available_days"]     = days_data
+                _out = _cap_presented_slots(_filter_same_day_slots({
+                    "available_days":      days_data,
+                    "total_days":          len(days_data),
+                    # Spoken label is pre-built here for the same reason
+                    # slot_times_spoken is: the model must never render a date
+                    # itself.  Empty when the caller gave a relative narrow
+                    # window ("the next 2 days") rather than a named day.
+                    "requested_day_empty": True,
+                    "requested_date":      _requested_iso,
+                    "requested_day_label": _spoken_day_label(_requested_iso) if after_date_str else "",
+                    "note":                "requested_day_full_widened",
+                }, session))
+                # same-day filtering can empty a widened window whose only slots
+                # were today; fall through to the honest "nothing" rather than
+                # announcing a miss with no alternative attached.
+                if _out.get("available_days"):
+                    _sync_last_offered_to_spoken(session, _out)
+                    return _out
+
         return {"error": "No available slots found. Try a different time preference or wider window.", "slots": []}
 
     presented  = _select_presented_tuples(free_slots, preference=_pref)
