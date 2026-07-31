@@ -37,13 +37,144 @@ absent from the record. **Withdrawn pending audio.**
 | **A1** | Model reasoning spoken aloud | 28 Jul 02:42Z | `b405017` | **OPEN** | High — 5 calls |
 | **A2** | Day-name ≠ date | 27 Jul 23:53Z | `2d553b6` | **not observed** | **Low — no commit targets it** |
 | **A3** | Wrong identity written | 27 Jul 18:35Z | `2d553b6` | **not observed** | Low — no read-back exists |
-| **A4** | Confirmation loop | 29 Jul 02:04Z | `b405017` | **OPEN** | High — 19 calls |
+| **A4** | Confirmation loop | **31 Jul 16:17Z** | **`f0adf21`** | **OPEN — root cause found** | **Proven — mechanism traced, see below** |
 | **B1** | Wrong screen for complaint | 28 Jul 02:23Z | `b405017` | **OPEN** | High |
 | **B2** | Screen after confirmation | 28 Jul 03:04Z | `b405017` | **OPEN** | Medium — 1 call |
 | **B3** | Escalation on a greeting | — | — | **withdrawn** | Detector artifact |
 | **C2a** | Denies a slot that exists ("later") | 28 Jul 01:04Z | `2d553b6` | **FIXED** | High — `368b4e0`, proven |
 | **C2b** | Rejection ("none of those") bypasses cap | 28 Jul 02:23Z | `b405017` | **OPEN** | High — code-confirmed |
 | **C5** | Chunk-join drops space | 29 Jul 02:04Z | `b405017` | present | **Transcript artifact — not confirmed audible** |
+
+---
+
+## A4 · confirmation loop — root cause, 31 Jul 2026
+
+Nineteen calls of evidence, and the register carried only the symptom. This is
+the mechanism. It is **not** a new defect and **not** related to the U3.5 lever —
+the matcher below is model-agnostic and the same phrase fails it on either STT.
+
+### Evidence — `CA587b103bd4a116b0a34b590f1893dbc4`
+
+31 Jul 16:17Z · build `f0adf21` · clinic `jv_v1` · 176 s · **`success=True`,
+`booking_confirmed=True`**. The call *succeeded*. That is the point: A4 is
+invisible to every outcome metric we have.
+
+```
+17 Susie   Thanks Quentin — and I've got you on 07502 211 207
+           — is that the best number for the booking?
+18 caller  um yes that's a good number
+19 Susie   So that's Quentin, Tuesday the 4th of August at half past six
+           — shall I go ahead and book that in?
+20 caller  yeah go ahead
+21 Susie   I've got you on 07502 211 207 — is that the best number...   ← verbatim 17
+22 caller  yes that's the best number
+23 Susie   So that's Quentin, Tuesday the 4th of August...              ← verbatim 19
+24 caller  yes book it please
+25 Susie   All booked
+```
+
+Four wasted turns. The caller answered the same two questions twice.
+
+### Mechanism — one predicate, empirically confirmed
+
+`connection.py:1089` `_is_use_this_number()` gates whether `phone_confirmed` is
+set (`connection.py:6202-6248`). Without it, `book_appointment`'s A1 gate refuses
+the write and the model re-asks. Run against the actual turns:
+
+```python
+_is_use_this_number("um yes that's a good number")   # turn 18 -> False
+_is_use_this_number("yes that's the best number")    # turn 22 -> True
+```
+
+**Turn 18 fails, turn 22 passes, and the loop is exactly the turns between
+them.** The caller escaped only by accidentally saying the magic words.
+
+Why turn 18 fails, both branches:
+
+1. `_USE_THIS_NUMBER_SIGNALS` has `"best number"`, `"correct number"`,
+   `"right number"` — but not `"good number"`.
+2. The bare-affirmative fallback is capped at **≤3 words**. Turn 18 is six
+   (`um / yes / that's / a / good / number`), so a plain "yes" wrapped in one
+   filler and one adjective is out of reach. Note `"um"` alone costs a word;
+   no filler-stripping is applied here, unlike `_resolve_barge_in`.
+
+The parallel gate `flow._HG_YES` (flow.py:10614) **also** misses this phrase, so
+this is not only the known list-divergence — it is a genuine vocabulary gap in
+every copy.
+
+### Why it keeps coming back
+
+Fourth patch to the same hand-maintained phrase list:
+
+| Date | Phrase added | Triggering call |
+|---|---|---|
+| 07 Jul | `best one` | *"yeah that's the best one"* fell through |
+| 26 Jul | (Step 8 reworded; `connection.py` copy missed) | phone step stopped matching entirely |
+| 27 Jul | `it is` | live verify call |
+| 30 Jul | `correct number`, `right number` | `CA3145c15f` — looped until the caller **hung up** |
+| **31 Jul** | **`good number`** ← this entry | `CA587b103b` |
+
+An open-ended set of English affirmatives is being recognised by substring-matching
+a literal list maintained in **three** places (`connection.py`,
+`llm_stream.py`, `clinic_template_prompt.py`) plus a fourth local tuple in
+`flow.py`. Each fix adds the one phrase that call happened to use. The next
+caller says *"yeah that's fine for me"* and we are back here.
+
+### Fix — two parts, in this order
+
+**Minimal, ships now:** add `"good number"` to `_USE_THIS_NUMBER_SIGNALS`, and
+strip leading fillers (`um`, `uh`, `er`) before the ≤3-word count so a filler
+cannot push a bare affirmative out of range. Smallest possible diff, consistent
+with the four prior patches.
+
+**Structural, post-demo:** one shared, tested affirmative vocabulary consumed by
+all four sites, with the ≤3-word cap replaced by *"contains an affirmative token
+and no negative token."* The negative guard already works this way
+(`connection.py:1103`) — it is only the positive side that is length-capped.
+
+**Regression test is non-negotiable** (`tests/regression/`): parametrise the
+five known-failing historical phrases — `yeah that's the best one`, `it is`,
+`yes that's the correct number`, `um yes that's a good number`, plus a bare
+`yes` — and assert `_is_use_this_number` accepts all of them while still
+rejecting `no, a different number` and `that's the wrong number`.
+
+### Resolved from the Render log — it is TWO gates, not one
+
+The open question above ("turn 20 passes the predicate, so why did it still
+loop?") is answered. The log shows the loop is two *independent* write-gates
+firing in sequence, each demanding a question the caller had already answered:
+
+```
+16:19:04  FINAL "um yes that's a good number"
+          → no `booking verbal phone confirm` line: _is_use_this_number = False
+16:19:18  [book] BLOCKED — phone not confirmed (A1) phone_confirmed=None
+          → tool result instructs the model to re-ask ⇒ turn 21
+16:19:30  FINAL "yes that's the best number"
+          → `booking verbal phone confirm — phone_confirmed=True`
+16:19:33  book_appointment BLOCKED — booking confirmation question not yet asked
+          (last_bot_prompt="…is that the best number for the booking?")
+          → model must ask "shall I go ahead…" ⇒ turn 23
+16:19:50  book_appointment → success, event semqra91h0son…
+```
+
+**Gate 1** is `_is_use_this_number` as analysed above. **Gate 2** is the
+booking-confirmation check in `llm_stream.py`: it requires *"shall I go ahead and
+book that in?"* to have been asked **in the current turn**. Because gate 1 forced
+the previous turn to be the phone question, gate 2 could not be satisfied either —
+so a single missing phrase in gate 1 costs **four** turns, not two.
+
+Turn 20 (`"yeah go ahead"`) did *not* wrongly fail: `_bk_phone_step` correctly
+declined to treat a booking-confirm answer as a phone confirmation. That guard is
+working as designed. **Gate 1's vocabulary is the whole defect.**
+
+Both gates are correct in isolation — they exist to stop silent mis-bookings, and
+they did their job. The defect is that gate 1's *recogniser* is too narrow, and
+the cost of a miss is multiplied by gate 2.
+
+### Not related to the U3.5 lever — confirmed, not assumed
+
+Every `[LAT]` line on this call reads `stt_model=universal-streaming-english`.
+The call ran on the **old** model. A4 is independent of the STT work.
 
 ---
 
