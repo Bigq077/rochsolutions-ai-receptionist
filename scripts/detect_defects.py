@@ -54,6 +54,12 @@ AMBIGUOUS_S = 360
 
 _D = lambda *a: datetime(*a, tzinfo=timezone.utc)
 BUILDS = [
+    # 2026-07-31 01:49Z — b2e4980 (Gate 5 stops rewriting the caller's chosen day
+    # back to the one they abandoned). The actual cause of C1: the model was
+    # generating the right day and the output gate was overwriting it, which is
+    # why 7c140f4, 5b0c9c2, 6f63057 and cdc2177 all had no effect on it.
+    # Calls on this build should show c1_write_guard_fired = 0 after a day change.
+    (_D(2026, 7, 31, 1, 49), "b2e4980"),
     # 2026-07-31 01:33Z — e25457f (calls record their own commit).
     #
     # The LAST boundary that should ever need adding. From this deploy on, every
