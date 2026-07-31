@@ -54,6 +54,11 @@ AMBIGUOUS_S = 360
 
 _D = lambda *a: datetime(*a, tzinfo=timezone.utc)
 BUILDS = [
+    # 2026-07-31 02:12Z — 2d3881f (Gate 5 staleness judged on v3_last_offered_day_iso,
+    # which survives the slot-cache clear that silently re-armed the bug on
+    # CA6dce36c8 mid-call). Calls from here carry build_sha, so this entry only
+    # matters if resolution falls through to "unknown".
+    (_D(2026, 7, 31, 2, 12), "2d3881f"),
     # 2026-07-31 01:49Z — b2e4980 (Gate 5 stops rewriting the caller's chosen day
     # back to the one they abandoned). The actual cause of C1: the model was
     # generating the right day and the output gate was overwriting it, which is
