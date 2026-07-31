@@ -181,3 +181,49 @@ def test_pattern_split_preserves_the_full_ordered_list():
         "the bare title-case pattern is the only ungated-unsafe one; if another "
         "is added it must be classified deliberately, not by default"
     )
+
+
+# ---------------------------------------------------------------------------
+# Leading-filler runs (CA023ed77f, 2026-07-31)
+# ---------------------------------------------------------------------------
+# extract_surname's bare-name branch accepted exactly ONE leading filler
+# (idx == 1) — a token count, not a property of the utterance. Real callers
+# stack two ("um yeah", "uh um") and every one of those silently lost the
+# surname: 'Quentin' was stored while the tool arguments carried "Quentin
+# Rock", so the calendar and the call record disagreed on the patient's name.
+
+from app.name_capture import extract_surname  # noqa: E402
+
+
+@pytest.mark.parametrize("utterance", [
+    "quentin rock",                    # no filler
+    "yeah quentin rock",               # one — worked before
+    "um yeah quentin rock",            # two — the reported failure
+    "uh um quentin rock",
+    "so yeah quentin rock",
+    "um uh yeah okay quentin rock",    # a long run
+])
+def test_surname_survives_any_run_of_leading_fillers(utterance):
+    assert extract_surname(utterance, "Quentin") == "Rock"
+
+
+@pytest.mark.parametrize("utterance", [
+    "no sarah wrong",
+    "not quentin rock",
+    "sorry quentin rock",
+    "actually quentin rock",
+    "i said quentin rock",
+])
+def test_a_non_filler_lead_is_still_never_trusted(utterance):
+    """The documented safety property: a correction or aside must not be read
+    as the name. Widening to a filler RUN must not widen to arbitrary words —
+    a wrong surname is never caught by the caller, so "" beats a guess."""
+    first = "Quentin" if "quentin" in utterance else "Sarah"
+    assert extract_surname(utterance, first) == ""
+
+
+def test_name_plus_reason_in_one_breath_still_takes_only_the_surname():
+    """Trusting the LAST token would capture 'Knee'."""
+    assert extract_surname(
+        "um yeah quentin roch i'm calling about my knee", "Quentin"
+    ) == "Roch"

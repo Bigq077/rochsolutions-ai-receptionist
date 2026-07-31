@@ -317,13 +317,26 @@ def extract_surname(caller_utterance: str, first_name: str) -> str:
                 return titlecase_surname(cand)
 
     # 3) Bare name "quentin rock" / "quentin de silva" — the first name leads
-    #    the answer, OR sits just after a single leading filler / STT artefact
-    #    ("yeah sarah jenkins").  A non-filler lead ("no sarah wrong") is NOT
-    #    trusted, so a correction/aside can never be mis-read as the name.
+    #    the answer, OR sits after a RUN of leading fillers / STT artefacts
+    #    ("yeah sarah jenkins", "um yeah quentin rock").  A non-filler lead
+    #    ("no sarah wrong") is NOT trusted, so a correction/aside can never be
+    #    mis-read as the name.
+    #
+    #    This used to accept exactly ONE filler (idx == 1), which is a token
+    #    count, not a property of the utterance. Real callers routinely stack
+    #    two — "um yeah", "uh um" — and every one of those silently lost the
+    #    surname. CA023ed77f (31 Jul 2026): "um yeah quentin rock" stored
+    #    'Quentin' while the model's tool args carried "Quentin Rock", so the
+    #    calendar and the call record disagreed on the patient's name.
+    #
+    #    Testing every leading token instead of counting them keeps the safety
+    #    property exactly as documented — a single non-filler word anywhere
+    #    before the first name still rejects — while removing the arbitrary
+    #    limit. An empty slice makes all() True, so idx == 0 is unchanged.
     tokens = text.split()
     if first_l in tokens:
         idx = tokens.index(first_l)
-        leads = idx == 0 or (idx == 1 and tokens[0] in NAME_LEAD_FILLERS)
+        leads = all(t in NAME_LEAD_FILLERS for t in tokens[:idx])
         if leads and idx < len(tokens) - 1:
             tail = tokens[idx + 1:]
             if len(tokens) <= 5:
