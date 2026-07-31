@@ -572,6 +572,61 @@ def _false_confirmation_claim(text: str) -> bool:
 # sanitise_response — public API, called per-chunk from llm_stream.py
 # ---------------------------------------------------------------------------
 
+_GATE5_MONTHS = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11,
+    "december": 12,
+}
+_GATE5_DAY_MONTH_RE = re.compile(
+    r"the\s+(\d{1,2})(?:st|nd|rd|th)\s+of\s+([A-Za-z]+)", re.IGNORECASE
+)
+
+
+def _confirmed_slot_is_stale(conf_slot: str, session: Dict[str, Any]) -> bool:
+    """True when v3_confirmed_slot_phrase names a day the caller is no longer
+    being offered — i.e. they have changed day since it was captured.
+
+    Compared against session["last_offered_slots"], the batch check_availability
+    most recently returned. That is the one signal here that the readback gate
+    cannot itself have altered; the spoken transcript is not, because this gate
+    rewrites it.
+
+    Returns False — "not stale", leave the existing behaviour alone — whenever it
+    cannot be sure: no offered slots, an unparseable phrase, or slots in a shape
+    it does not recognise. Standing down wrongly re-opens the 2026-07-07 drift
+    defect, so uncertainty must keep the correction, not drop it.
+    """
+    offered = session.get("last_offered_slots")
+    if not offered or not isinstance(offered, (list, tuple)):
+        return False
+    m = _GATE5_DAY_MONTH_RE.search(conf_slot or "")
+    if not m:
+        return False
+    month = _GATE5_MONTHS.get(m.group(2).lower())
+    if not month:
+        return False
+    day = int(m.group(1))
+
+    seen_any = False
+    for slot in offered:
+        iso = ""
+        if isinstance(slot, dict):
+            iso = str(slot.get("start") or slot.get("iso") or slot.get("date") or "")
+        elif isinstance(slot, str):
+            iso = slot
+        if len(iso) < 10:
+            continue
+        try:
+            _y, _mo, _d = int(iso[0:4]), int(iso[5:7]), int(iso[8:10])
+        except ValueError:
+            continue
+        seen_any = True
+        if (_mo, _d) == (month, day):
+            return False          # still on the table — the phrase is current
+    # Only call it stale when we actually read some dates and none matched.
+    return seen_any
+
+
 def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     """
     Clean LLM output before it reaches tts_text_queue.
@@ -704,10 +759,39 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     # protected by _resolve_slot_iso (a hallucinated slot is rejected and forced
     # back to a real offered slot) — this only keeps the SPOKEN date consistent
     # with what was agreed. Runs per-chunk; the readback date sits in one chunk.
+    #
+    # ...UNLESS the caller has since moved to a different day (2026-07-31).
+    # v3_confirmed_slot_phrase is captured ONCE, at the name request. A caller who
+    # changes day afterwards never refreshes it, so this enforcement spent the
+    # rest of the call forcing the ABANDONED day over the correct one. Three
+    # callers (CAb81fe651, CA42486ff4, CAec93b032) chose Tuesday, moved to
+    # Wednesday, and heard "Tuesday the 4th of August at quarter past six" —
+    # Wednesday's time on Tuesday's date, an appointment on no calendar. All
+    # three hung up. The model had generated the correct sentence every time.
+    #
+    # Staleness is judged against last_offered_slots — the batch the tool most
+    # recently returned. Deliberately NOT against last_spoken_slot_date, which is
+    # derived from the SPOKEN text: this gate rewrites that text, so after one
+    # rewrite the spoken date would agree with the stale phrase and the check
+    # would defeat itself. The offered slots come from check_availability, not
+    # from anything this gate can touch.
+    #
+    # Correcting a drifted date is this gate's job; overriding a decision is not.
+    # When the confirmed phrase names a day the caller is demonstrably no longer
+    # being offered, it cannot know which is right — and rewriting a correct day
+    # into a wrong one is strictly worse than leaving a typo alone. It stands down.
     _READBACK_DATE_RE = r"[A-Za-z]+day\s+the\s+\d{1,2}(?:st|nd|rd|th)\s+of\s+[A-Za-z]+"
     _conf_slot = session.get("v3_confirmed_slot_phrase") or ""
     if _conf_slot and session.get("phone_confirmed"):
         _dm = re.search(_READBACK_DATE_RE, _conf_slot)
+        if _dm and _confirmed_slot_is_stale(_conf_slot, session):
+            logger.warning(
+                "[ms_gate5] booking readback date NOT corrected — "
+                "v3_confirmed_slot_phrase %r names a day the caller is no longer "
+                "being offered; leaving the model's date alone",
+                _conf_slot,
+            )
+            _dm = None
         if _dm:
             _canon_date = _dm.group(0)
             _date_corrected = re.sub(
