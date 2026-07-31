@@ -586,19 +586,31 @@ def _confirmed_slot_is_stale(conf_slot: str, session: Dict[str, Any]) -> bool:
     """True when v3_confirmed_slot_phrase names a day the caller is no longer
     being offered — i.e. they have changed day since it was captured.
 
-    Compared against session["last_offered_slots"], the batch check_availability
-    most recently returned. That is the one signal here that the readback gate
-    cannot itself have altered; the spoken transcript is not, because this gate
-    rewrites it.
+    Judged against the day last OFFERED, never against the spoken transcript —
+    this gate rewrites that transcript, so using it would let one rewrite make the
+    spoken date agree with the stale phrase and the check would defeat itself.
 
-    Returns False — "not stale", leave the existing behaviour alone — whenever it
-    cannot be sure: no offered slots, an unparseable phrase, or slots in a shape
-    it does not recognise. Standing down wrongly re-opens the 2026-07-07 drift
-    defect, so uncertainty must keep the correction, not drop it.
+    PRIMARY SIGNAL: v3_last_offered_day_iso. It is set whenever slots are
+    presented, deliberately preserved across slot-map clears, and dropped only on
+    a successful booking — so it survives a turn that clears last_offered_slots.
+
+    CAb81fe651/CA42486ff4/CAec93b032 and then CA6dce36c8 (31 Jul). The first
+    version of this check used last_offered_slots alone, and the logs show
+    precisely what that cost:
+
+        01:56:33  NOT corrected — stood down, Wednesday list spoken correctly
+        01:56:46  [ms_llm] slot cache cleared: day iso='2026-08-05'
+        01:57:20  corrected to confirmed slot: 'Tuesday the 4th of August'
+
+    Clearing the slot cache nulls last_offered_slots, this returned "not stale" by
+    design, and the gate went straight back to forcing the abandoned day. The
+    fail-safe direction re-armed the bug mid-call.
+
+    Returns False — "not stale", keep the existing behaviour — whenever it cannot
+    be sure: no offered day recorded at all, an unparseable phrase, or slots in a
+    shape it does not recognise. Standing down wrongly re-opens the 2026-07-07
+    drift defect, so genuine uncertainty must keep the correction.
     """
-    offered = session.get("last_offered_slots")
-    if not offered or not isinstance(offered, (list, tuple)):
-        return False
     m = _GATE5_DAY_MONTH_RE.search(conf_slot or "")
     if not m:
         return False
@@ -606,6 +618,21 @@ def _confirmed_slot_is_stale(conf_slot: str, session: Dict[str, Any]) -> bool:
     if not month:
         return False
     day = int(m.group(1))
+
+    # Primary: the day last offered, which outlives the slot cache.
+    day_iso = str(session.get("v3_last_offered_day_iso") or "")
+    if len(day_iso) >= 10:
+        try:
+            if (int(day_iso[5:7]), int(day_iso[8:10])) != (month, day):
+                return True
+            return False        # confirmed phrase IS the day on offer
+        except ValueError:
+            pass
+
+    # Fallback: the offered batch itself, for any path that never set the day.
+    offered = session.get("last_offered_slots")
+    if not offered or not isinstance(offered, (list, tuple)):
+        return False
 
     seen_any = False
     for slot in offered:

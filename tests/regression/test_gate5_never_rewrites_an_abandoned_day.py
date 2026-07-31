@@ -178,3 +178,64 @@ class TestItDoesNotOverreach:
         guess."""
         out = sanitise_response(MODEL_SAID, _session(v3_confirmed_slot_phrase=phrase))
         assert "Wednesday the 5th of August" in out
+
+
+class TestItSurvivesTheSlotCacheClear:
+    """CA6dce36c8 (31 Jul 2026). The first version of this check used
+    last_offered_slots alone. The logs caught it failing mid-call:
+
+        01:56:33  NOT corrected  — stood down, Wednesday spoken correctly
+        01:56:46  slot cache cleared: day iso='2026-08-05'
+        01:57:20  corrected to confirmed slot: 'Tuesday the 4th of August'
+
+    Clearing the slot cache nulls last_offered_slots, the check returned "not
+    stale" by design, and the gate resumed forcing the abandoned day. The caller
+    heard Tuesday, hung up, and the booking never happened — even though the model
+    had passed the CORRECT slot_iso (2026-08-05T18:15:00) to book_appointment.
+
+    v3_last_offered_day_iso is the durable signal: preserved across slot-map
+    clears, dropped only on a successful booking.
+    """
+
+    def test_stands_down_after_the_slot_cache_is_cleared(self):
+        session = _session(
+            last_offered_slots=None,               # cleared at 01:56:46
+            v3_last_offered_day_iso="2026-08-05",  # survives
+        )
+        out = sanitise_response(MODEL_SAID, session)
+        assert "Wednesday the 5th of August" in out, (
+            "the day last OFFERED must outlive the slot cache — this is the "
+            "exact state CA6dce36c8 was in when the gate resumed rewriting"
+        )
+
+    def test_the_day_iso_outranks_a_stale_offered_batch(self):
+        """If both are present and disagree, the recorded offered DAY wins — it
+        is the one that is deliberately preserved."""
+        session = _session(
+            last_offered_slots=TUESDAY_OFFERED,
+            v3_last_offered_day_iso="2026-08-05",
+        )
+        assert "Wednesday the 5th of August" in sanitise_response(MODEL_SAID, session)
+
+    def test_correction_still_applies_when_the_offered_day_matches(self):
+        """No day change: the confirmed phrase IS the day on offer, so a drifted
+        date must still be corrected."""
+        session = _session(
+            last_offered_slots=None,
+            v3_last_offered_day_iso="2026-08-04",   # Tuesday, as confirmed
+        )
+        out = sanitise_response(
+            "So that's Sara, Tuesday the 11th of August at half past six in "
+            "the evening — shall I go ahead and book that in?",
+            session,
+        )
+        assert "Tuesday the 4th of August" in out
+
+    @pytest.mark.parametrize("bad", ["", None, "not-a-date", "2026"])
+    def test_an_unusable_day_iso_falls_back_and_never_raises(self, bad):
+        """Runs on every spoken chunk. An exception here costs the turn."""
+        session = _session(
+            last_offered_slots=WEDNESDAY_OFFERED,
+            v3_last_offered_day_iso=bad,
+        )
+        assert "Wednesday the 5th of August" in sanitise_response(MODEL_SAID, session)
