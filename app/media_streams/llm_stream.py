@@ -308,6 +308,52 @@ def _slot_date_disagrees_with_speech(args: Dict[str, Any], session: Dict[str, An
     return slot_date != spoken
 
 
+_DIFFERENT_DAY_STEER = (
+    "DIFFERENT DAY REQUESTED — the caller has just asked about a day other than "
+    "the one you were discussing. The times earlier in this conversation are for "
+    "the OLD day and say nothing about the new one. You do NOT know what is free "
+    "on the day they asked for. Call check_availability for that day now, before "
+    "you say anything about times. Do NOT offer, repeat or re-read any time "
+    "already mentioned, do NOT tell them what you have 'already got', and NEVER "
+    "attach the new day's name to a time that came from the old one. If they have "
+    "already agreed a slot it is not cancelled — the caller is allowed to change "
+    "their mind, so check the new day and let them choose."
+)
+
+
+def _different_day_steer(session: Dict[str, Any], messages) -> str:
+    """The per-turn steer that pushes the model to the tool when the caller names
+    a different day, or "" when it must stay silent.
+
+    CAb81fe651 (30 Jul 2026): the caller asked for Wednesday four times and was
+    served Tuesday every time, the fourth reply calling a Tuesday slot "Wednesday
+    the 5th". He hung up unbooked.
+
+    5b0c9c2 released the guards that used to block this, and they DO release —
+    _caller_requests_different_day returns True on all four of his utterances,
+    checked against the real transcripts. The model never called
+    check_availability at all; it answered from the Tuesday slots still in its
+    message history, which looked to it like good data. There was no block left
+    to remove, so this pushes toward the tool instead.
+
+    Silent unless BOTH hold:
+      * the caller has just named a different day, and
+      * there are older slots in context to answer from — with none, the model
+        calls the tool unprompted and the steer would be noise.
+
+    Self-suppressing: _check_av_ran_turn flips as soon as check_availability
+    executes, so the steer is gone by the presentation pass and can never argue
+    with the slots it just asked for.
+    """
+    if session.get("_check_av_ran_turn"):
+        return ""
+    if not (session.get("last_offered_slots") or session.get("available_days")):
+        return ""
+    if not _caller_requests_different_day(messages or []):
+        return ""
+    return _DIFFERENT_DAY_STEER
+
+
 def _spoken_day_phrase(iso_date: str) -> str:
     """Render '2026-08-05' as 'Wednesday the 5th of August', or '' if unparseable.
 
@@ -1184,6 +1230,40 @@ class LLMStream:
             _active_q = tts_text_queue
             _call_system  = system_prompt
             _call_dynamic = dynamic_prompt
+
+            # ── DIFFERENT DAY REQUESTED steer (Bug B, 2026-07-30) ────────────
+            # CAb81fe651: the caller asked for Wednesday four times. Every reply
+            # served Tuesday, and the fourth said "Wednesday the 5th is what
+            # we've got" about a slot on Tuesday the 4th. He hung up unbooked.
+            #
+            # 5b0c9c2 released the two guards that used to block this, and they
+            # do release — the predicate returns True on all four utterances,
+            # verified against the real transcripts. The model simply never
+            # called check_availability. It answered from the Tuesday slots still
+            # sitting in its message history, which read to it as perfectly good
+            # data. Releasing a block cannot fix that: there was no block left to
+            # release, so the fix has to push toward the tool rather than stop
+            # stopping it.
+            #
+            # Fires ONLY in the exact defect state — the caller has just named a
+            # different day AND there are older slots in context to answer from.
+            # With nothing to answer from, the model calls the tool anyway and
+            # this line never renders.
+            #
+            # Self-suppressing: _check_av_ran_turn flips the moment
+            # check_availability executes, so the steer is gone on the
+            # presentation pass and cannot argue with the slots it just asked
+            # for. (It would be dropped there regardless — the Haiku slot
+            # formatter clears _call_dynamic below.)
+            _dd_steer = _different_day_steer(session, messages or [])
+            if _dd_steer:
+                _call_dynamic = (
+                    (_call_dynamic + "\n\n") if _call_dynamic else ""
+                ) + _dd_steer
+                logger.info(
+                    "[ms_llm] DIFFERENT DAY REQUESTED steer applied iter=%d "
+                    "call_sid=%s", iteration, call_sid,
+                )
             # Flag the post-check_availability slot-presentation pass so Gate 5a
             # exempts its (legitimately time-dense) output from the
             # high_time_density reasoning drop. Tied to _last_check_avail — the
