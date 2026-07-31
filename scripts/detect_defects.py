@@ -54,14 +54,29 @@ AMBIGUOUS_S = 360
 
 _D = lambda *a: datetime(*a, tzinfo=timezone.utc)
 BUILDS = [
-    # 2026-07-31 01:00Z — 6f63057 (Bug B: a different-day request steers to
+    # 2026-07-31 01:18Z — cdc2177 (the booking readback quotes the slot the caller
+    # last agreed to, instead of being told to infer it from a conversation that
+    # held two agreements). CA42486ff4 is the call it comes from: the readback
+    # composed Tuesday's date with Wednesday's time and the write-guard refused.
+    # This is upstream of the guard, so on this build and later
+    # c1_write_guard_fired should be 0 on a clean day-change call — a non-zero
+    # count here means the wrong day is still being spoken somewhere else.
+    (_D(2026, 7, 31, 1, 18), "cdc2177"),
+    # 2026-07-31 00:57Z — 6f63057 (Bug B: a different-day request steers to
     # check_availability instead of being answered from the previous day's slots)
     # + 27c59a5 (the C1 write-guard's refusal names the day the slot is really
-    # on, so the model can recover instead of re-reading the wrong day) + 3c8f3fc
-    # (guard counters land on the call record). Pushed together at 00:56Z.
-    # CAb81fe651 is the call all three come from: it looped on ad09f3e and the
-    # caller hung up. A4 on this build or later is a new defect, not that one.
-    (_D(2026, 7, 31, 1, 0), "6f63057"),
+    # on) + 3c8f3fc (guard counters land on the call record). Pushed at 00:56Z.
+    #
+    # Set from EVIDENCE, not from push time + assumed lag. First written as 01:00Z
+    # on the usual 3-6 min Render estimate, which mislabelled CA42486ff4 (00:57Z)
+    # as ad09f3e — the same mislabel this list has now produced three times.
+    # That call's guards hold `different_day_steer_fired` and
+    # `c1_write_guard_fired`, keys that exist only on 3c8f3fc, so it demonstrably
+    # ran the new build ~1 min after the push. The deploy was faster than the
+    # estimate; the counters proved it and the estimate did not.
+    #
+    # Where a call carries a build fingerprint, prefer it over arithmetic.
+    (_D(2026, 7, 31, 0, 57), "6f63057"),
     # 2026-07-30 22:00Z — ad09f3e (phone_confirmed is set on the LLM path).
     # CA3145c15f looped the phone question on d88e0da until the caller hung up:
     # book_appointment's A1 gate cannot be cleared by the model, and the branch
