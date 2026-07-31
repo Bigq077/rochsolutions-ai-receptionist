@@ -97,5 +97,25 @@ and the Render dashboard facts. **Not yet Accepted; Phase 0 stays blocked.**
     `FAILURE_MODE_REGISTER.md` is *screening double-ask*, a different thing; this
     one has no FM number.
 
+## Correction added 1 Aug
+
+14. **A4's root-cause writeup was wrong about the deterministic gate.**
+    `DEFECT_REGISTER.md` claimed, of *"um yes that's a good number"*: "The
+    parallel gate `flow._HG_YES` (flow.py:10614) **also** misses this phrase, so
+    this is not only the known list-divergence — it is a genuine vocabulary gap
+    in every copy." The second half is false. `_HG_YES` is only one of three
+    accept routes at that gate; `_hg_bare_yes` is a **word-bounded regex** for
+    `yes|yeah|yep|yup` anywhere in the turn, so it matches the "yes" in turn 18
+    and the gate accepts. Verified by running both predicates against the literal
+    transcript: flow accepts, `connection._is_use_this_number` rejects.
+    **The A4 defect was confined to the LLM path.** That matters for more than
+    tidiness — it means the deterministic gate already had the right shape
+    (affirmative token anywhere, guarded by negatives) and the LLM path was the
+    one that had drifted, which is the opposite of the 26 Jul correction above.
+    What flow *did* miss is the same phrase with no affirmative word at all
+    ("that's a good number"), which `_SEMANTIC_YES_PHRASES` now covers.
+    Fixed 1 Aug; see `tests/regression/test_phone_confirm_adjective_slot.py`,
+    which asserts BOTH gates and asserts they agree.
+
 If you find another contradiction between these documents and the code, the code
 wins. Record the correction here.

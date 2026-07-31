@@ -1085,33 +1085,93 @@ _PHONE_CONFIRM_AFFIRMATIVE_PHRASES: tuple = (
     "it is", "that is", "that's it", "thats it",
 )
 
+# The ADJECTIVE SLOT, not one more literal.
+#
+# Step 8 asks "…is that the best number for the booking?", so callers answer by
+# echoing the noun phrase back with whatever positive adjective comes to mind.
+# The tuple above has been patched four times, each time adding the single
+# literal that one call happened to use — "best one" (7 Jul), "correct number"
+# and "right number" (30 Jul, after a caller looped until they hung up), and
+# CA587b103b (31 Jul) then failed on "um yes that's a good number" because
+# "good" was not on the list.  Six words, so the <=3-word fallback below could
+# not rescue it either: the write gate refused, the model re-asked, and because
+# the booking-confirmation gate in llm_stream.py needs its own question asked in
+# the CURRENT turn, one missing adjective cost four turns.
+#
+# Covering the slot ends that particular treadmill.  It is deliberately NOT a
+# general widening: the negative guard still runs first, so "that's not a good
+# number" and "no, a different number" are rejected before this is reached.
+_POSITIVE_NUMBER_RE = re.compile(
+    r"\b(?:good|best|right|correct|fine|great|perfect|ideal|"
+    r"only|usual|main|current)\s+(?:number|one)\b"
+)
+
+# Caller-side disfluencies that can precede an otherwise bare affirmative.
+# "um yeah that's fine" is a four-word turn whose meaning is "yes" — the count
+# is an artefact of the noise, not of the answer.  Stripped only from the FRONT
+# and only as a leading run, so "yes um different number" is untouched (and is
+# rejected by the negative guard regardless).
+_PHONE_CONFIRM_FILLERS: frozenset = frozenset({
+    "um", "umm", "uh", "uhh", "er", "err", "erm", "ah", "oh",
+    "hmm", "hm", "mm", "well", "so", "like", "i mean",
+})
+
+
+def _strip_phone_confirm_fillers(lowered: str) -> str:
+    """Drop a leading RUN of caller disfluencies from an already-lowered turn.
+
+    A run, not one token: real callers stack them ("um uh yeah").  The same
+    lesson as aa0b3bd on the name path, where accepting exactly one filler was
+    a token count masquerading as a property of the utterance.
+    """
+    _toks = lowered.split()
+    _i = 0
+    while _i < len(_toks) and _toks[_i] in _PHONE_CONFIRM_FILLERS:
+        _i += 1
+    # Never strip the whole turn away: a turn that is ONLY fillers is not a
+    # confirmation, and returning "" here would make the <=3-word branch below
+    # read it as an empty string rather than as noise.
+    return " ".join(_toks[_i:]) if _i < len(_toks) else lowered
+
 
 def _is_use_this_number(transcript: str) -> bool:
     """
     True when the caller is confirming they want the number they are calling
     from used for the booking.
 
-    Matches explicit 'use this number' phrasings, or a short bare affirmative
-    (<=3 words) — which, in the verbal phone-confirmation step, reliably means
-    'yes, use the calling number'.  Negative intent ('no', 'a different number')
-    is never matched, so it falls through to the LLM / keypad path unchanged.
+    Matches explicit 'use this number' phrasings, a positive echo of the
+    question's own noun phrase ('that's a good number'), or a short bare
+    affirmative (<=3 words after leading disfluencies) — which, in the verbal
+    phone-confirmation step, reliably means 'yes, use the calling number'.
+    Negative intent ('no', 'a different number') is never matched, so it falls
+    through to the LLM / keypad path unchanged.
+
+    The <=3-word cap is deliberately KEPT.  It is what stops a long turn that
+    merely contains the word "yes" — "yes, but call me on my work phone" — from
+    confirming the wrong number, and a wrong number is an unreachable patient.
+    A miss here only costs a re-ask; a false accept costs the booking.
     """
     lowered = transcript.strip().lower().rstrip(".!?")
     if not lowered:
         return False
     # Explicit negative intent must never be swallowed as a confirmation.
+    # Runs on the ORIGINAL text, before any filler stripping, so nothing can be
+    # hidden behind a disfluency.
     if any(neg in lowered for neg in ("different", "another", "wrong", "not ", "no ")):
         return False
     if any(sig in lowered for sig in _USE_THIS_NUMBER_SIGNALS):
         return True
-    words = lowered.split()
+    if _POSITIVE_NUMBER_RE.search(lowered):
+        return True
+    stripped = _strip_phone_confirm_fillers(lowered)
+    words = stripped.split()
     if len(words) <= 3 and (
-        lowered in _PHONE_CONFIRM_AFFIRMATIVES
+        stripped in _PHONE_CONFIRM_AFFIRMATIVES
         or any(w in _PHONE_CONFIRM_AFFIRMATIVES for w in words)
     ):
         return True
     if len(words) <= 3 and any(
-        lowered == p or lowered.startswith(p + " ")
+        stripped == p or stripped.startswith(p + " ")
         for p in _PHONE_CONFIRM_AFFIRMATIVE_PHRASES
     ):
         return True

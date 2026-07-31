@@ -10693,6 +10693,14 @@ class FlowEngine:
                 "this number is fine", "that number is fine",
                 "best number to reach me", "best number for me",
                 "that one is fine", "this one is fine",
+                # A4 (31 Jul 2026): the LLM path failed on "a good number" and
+                # this list has the same hole — a caller who echoes the
+                # adjective WITHOUT saying "yes" ("that's a good number") is
+                # caught by neither _hg_yes nor _hg_bare_yes and is re-asked.
+                # connection._POSITIVE_NUMBER_RE covers the adjective slot
+                # properly; these are the two members that reach this gate.
+                # _SEMANTIC_YES_NEGATION below still rejects "not a good number".
+                "good number", "a good one",
             )
             _SEMANTIC_YES_NEGATION = ("not", "different", "another", "wrong")
             _semantic_yes = (

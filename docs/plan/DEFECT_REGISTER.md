@@ -37,7 +37,7 @@ absent from the record. **Withdrawn pending audio.**
 | **A1** | Model reasoning spoken aloud | 28 Jul 02:42Z | `b405017` | **OPEN** | High — 5 calls |
 | **A2** | Day-name ≠ date | 27 Jul 23:53Z | `2d553b6` | **not observed** | **Low — no commit targets it** |
 | **A3** | Wrong identity written | 27 Jul 18:35Z | `2d553b6` | **not observed** | Low — no read-back exists |
-| **A4** | Confirmation loop | **31 Jul 16:17Z** | **`f0adf21`** | **OPEN — root cause found** | **Proven — mechanism traced, see below** |
+| **A4** | Confirmation loop | **31 Jul 16:17Z** | **`f0adf21`** | **FIXED 1 Aug** | **Gate 1 vocabulary — adjective slot + filler runs** |
 | **B1** | Wrong screen for complaint | 28 Jul 02:23Z | `b405017` | **OPEN** | High |
 | **B2** | Screen after confirmation | 28 Jul 03:04Z | `b405017` | **OPEN** | Medium — 1 call |
 | **B3** | Escalation on a greeting | — | — | **withdrawn** | Detector artifact |
@@ -98,9 +98,19 @@ Why turn 18 fails, both branches:
    filler and one adjective is out of reach. Note `"um"` alone costs a word;
    no filler-stripping is applied here, unlike `_resolve_barge_in`.
 
-The parallel gate `flow._HG_YES` (flow.py:10614) **also** misses this phrase, so
+~~The parallel gate `flow._HG_YES` (flow.py:10614) **also** misses this phrase, so
 this is not only the known list-divergence — it is a genuine vocabulary gap in
-every copy.
+every copy.~~
+
+**CORRECTED 1 Aug — this was wrong.** `_HG_YES` is one of *three* accept routes
+at that gate. `_hg_bare_yes` is a word-bounded regex for `yes|yeah|yep|yup`
+anywhere in the turn, so it matches the "yes" in turn 18 and the deterministic
+gate **accepts**. Verified by running both predicates against the literal
+transcript. The defect was confined to the LLM path — and the implication is the
+reverse of the one drawn above: the deterministic gate already had the right
+shape, and `connection.py` was the copy that had drifted. What flow genuinely did
+miss is the same phrase with no affirmative word at all ("that's a good number").
+See `docs/plan/README.md` correction 14.
 
 ### Why it keeps coming back
 
@@ -120,23 +130,40 @@ a literal list maintained in **three** places (`connection.py`,
 `flow.py`. Each fix adds the one phrase that call happened to use. The next
 caller says *"yeah that's fine for me"* and we are back here.
 
-### Fix — two parts, in this order
+### Fix — SHIPPED 1 Aug
 
-**Minimal, ships now:** add `"good number"` to `_USE_THIS_NUMBER_SIGNALS`, and
-strip leading fillers (`um`, `uh`, `er`) before the ≤3-word count so a filler
-cannot push a bare affirmative out of range. Smallest possible diff, consistent
-with the four prior patches.
+**What landed** — one step beyond "minimal", deliberately. Adding `"good number"`
+would have been patch five of five, and the table above is the argument against
+doing that again. Instead `connection._POSITIVE_NUMBER_RE` covers the **adjective
+slot** — `(good|best|right|correct|fine|great|perfect|ideal|only|usual|main|
+current)\s+(number|one)` — because step 8 asks *"is that the best number?"* and
+callers answer by echoing that noun phrase with whatever adjective comes to mind.
+Leading filler runs (`um`, `uh`, `erm`, …) are stripped before the ≤3-word count,
+per the plan below. `flow._SEMANTIC_YES_PHRASES` gains the two members that reach
+the deterministic gate.
+
+**What deliberately did NOT change: the ≤3-word cap.** The structural plan below
+proposes replacing it with "contains an affirmative token and no negative token",
+and that would be a regression here. The cap is what rejects *"yes, but call me on
+my work phone instead"* — a turn containing a clean affirmative whose intent is
+the opposite. A miss costs a re-ask; a false accept books an unreachable patient,
+which is a §6.1 correctness failure. The cap stays until the structural fix has a
+negative-intent model better than a substring list. Asserted in
+`test_the_word_cap_still_blocks_a_long_turn_containing_yes`.
 
 **Structural, post-demo:** one shared, tested affirmative vocabulary consumed by
 all four sites, with the ≤3-word cap replaced by *"contains an affirmative token
 and no negative token."* The negative guard already works this way
 (`connection.py:1103`) — it is only the positive side that is length-capped.
 
-**Regression test is non-negotiable** (`tests/regression/`): parametrise the
-five known-failing historical phrases — `yeah that's the best one`, `it is`,
-`yes that's the correct number`, `um yes that's a good number`, plus a bare
-`yes` — and assert `_is_use_this_number` accepts all of them while still
-rejecting `no, a different number` and `that's the wrong number`.
+**Regression test** — `tests/regression/test_phone_confirm_adjective_slot.py`,
+41 cases. All five historical phrases are parametrised as specified, plus the
+false-negative half that matters more (ten negative-intent phrases, the word cap,
+filler-stripping unable to hide a negative, and dictated digits not reading as a
+confirmation). It also asserts the two gates **agree**, since their divergence is
+the standing hazard rather than either one's vocabulary.
+
+Full-suite failing set unchanged: 95 before, 95 after, identical set.
 
 ### Resolved from the Render log — it is TWO gates, not one
 
