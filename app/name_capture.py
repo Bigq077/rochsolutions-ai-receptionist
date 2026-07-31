@@ -65,6 +65,18 @@ SURNAME_STOPWORDS = frozenset({
     "mr", "mrs", "ms", "miss", "mister", "doctor", "dr", "there", "hi",
     "hello", "hey", "ok", "okay", "just", "spelt", "spelled", "spell",
     "like", "would", "to", "of", "as", "so", "well", "um", "uh", "er",
+    # Clock and calendar words. A caller answering "half past five or quarter
+    # past six?" says one of these, and backfill_surname's bare-straggler branch
+    # accepted any single token once awaiting_surname was set: CA6dce36c8 stored
+    # "Sara Six". The window is now bounded at the call site, and this is the
+    # second line — the list was already inconsistent here, with "one" present
+    # and "six" absent purely by accident.
+    "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    "eleven", "twelve", "quarter", "half", "past", "oclock", "noon", "midday",
+    "morning", "afternoon", "evening", "tonight", "today", "tomorrow",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "sunday", "week", "weekend", "next", "later", "earlier", "sooner", "am",
+    "pm", "anytime",
 })
 
 _SURNAME_TOKEN = r"[a-z][a-z'\-]{1,24}"

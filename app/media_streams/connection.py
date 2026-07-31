@@ -1481,9 +1481,37 @@ def _v3_try_persist_name(
         # as "awaiting the surname" when the last bot prompt explicitly asked for
         # it OR the first name locked first-name-only this window (flag set below)
         # — so a bare straggler word ("rock") is accepted as the surname.
-        _awaiting = bool(session.get("v3_awaiting_surname")) or any(
-            k in (last_bot or "").lower()
-            for k in ("surname", "last name", "family name", "full name")
+        # ...but NOT while the caller is answering a different question.
+        #
+        # v3_awaiting_surname is sticky: nothing clears it when the conversation
+        # moves on, and once it is set backfill_surname's branch 3 accepts ANY
+        # bare single word as the surname. CA6dce36c8 (31 Jul 2026), from the
+        # Render trace:
+        #
+        #   [ms_stt] FINAL → queue: 'six'
+        #   [clinical_screening] junk fragment skipped: 'six'
+        #   [ms_conn v3] slot map active — time_selection:
+        #                {'1': 'half past five…', '2': 'quarter past six…'}
+        #   [ms_conn v3] surname back-filled onto stored first name: 'Sara Six'
+        #
+        # She had already said "for me that'd be sara jenkins" — a complete name
+        # — and the real surname was discarded in favour of her answer to the
+        # TIME question. The clinical screener classified the same token as a
+        # junk fragment on the very same turn.
+        #
+        # A slot selection pending means the last question was about a time, so
+        # a bare word is an answer to THAT. The explicit-cue branches above still
+        # run: "my surname is Rock" is unambiguous whatever else is outstanding,
+        # and only the bare-straggler inference is suppressed.
+        _slot_pending = bool(
+            session.get("v3_awaiting_slot_selection")
+            or session.get("v3_dtmf_slot_map")
+        )
+        _awaiting = (not _slot_pending) and (
+            bool(session.get("v3_awaiting_surname")) or any(
+                k in (last_bot or "").lower()
+                for k in ("surname", "last name", "family name", "full name")
+            )
         )
         _sur = _v3_backfill_surname(caller_utterance, _first, awaiting_surname=_awaiting)
         if _sur and _sur.lower() != _first.lower():
