@@ -54,6 +54,14 @@ AMBIGUOUS_S = 360
 
 _D = lambda *a: datetime(*a, tzinfo=timezone.utc)
 BUILDS = [
+    # 2026-07-31 01:33Z — e25457f (calls record their own commit).
+    #
+    # The LAST boundary that should ever need adding. From this deploy on, every
+    # call carries build_sha and build_of() reads it directly; this entry only
+    # covers the case where resolution falls all the way through to "unknown".
+    # Kept deliberately: a fallback that has never been exercised is not a
+    # fallback.
+    (_D(2026, 7, 31, 1, 33), "e25457f"),
     # 2026-07-31 01:18Z — cdc2177 (the booking readback quotes the slot the caller
     # last agreed to, instead of being told to infer it from a conversation that
     # held two agreements). CA42486ff4 is the call it comes from: the readback
