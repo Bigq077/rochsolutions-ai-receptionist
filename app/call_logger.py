@@ -160,9 +160,26 @@ class CallLogger:
                 "location":        collected.get("location") or s.get("selected_location"),
             },
             # Output-guard state — see the Gate 5f note above.
+            # Booking-path guard state. Each of these already existed on the
+            # session and was visible only in the Render logs, so answering "did
+            # the guard fire on that call" meant opening a log window for the
+            # right service in the right five-minute window — which on 30 Jul
+            # cost three round-trips and still did not get answered. They are
+            # counters, not booleans: firing once is the guard working, firing
+            # repeatedly is the caller stuck in it, and that difference is the
+            # whole diagnosis. int() because a session that never armed one holds
+            # None, and a NULL here reads as "capture didn't populate it" — the
+            # ambiguity that cost an hour on 2026-07-26.
             "guards": {
                 "false_confirm_fired":    _fc_fired,
                 "false_confirm_resteered": bool(s.get("_false_confirm_resteered")),
+                # d88e0da — refused a booking whose day was not the day spoken.
+                "c1_write_guard_fired":   int(s.get("_c1_write_guard_fired") or 0),
+                # 6f63057 — pushed the model to check_availability after the
+                # caller named a different day (Bug B).
+                "different_day_steer_fired": int(
+                    s.get("_different_day_steer_fired") or 0
+                ),
             },
             # bool() so a session that still holds the seeded None (see
             # media_streams/session.py) records False rather than NULL — a NULL

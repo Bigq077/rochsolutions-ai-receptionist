@@ -1260,6 +1260,12 @@ class LLMStream:
                 _call_dynamic = (
                     (_call_dynamic + "\n\n") if _call_dynamic else ""
                 ) + _dd_steer
+                # Counted into obs so "did the steer fire" is answerable from the
+                # call record. On 30 Jul that question cost three round-trips
+                # through Render logs.
+                session["_different_day_steer_fired"] = (
+                    int(session.get("_different_day_steer_fired") or 0) + 1
+                )
                 logger.info(
                     "[ms_llm] DIFFERENT DAY REQUESTED steer applied iter=%d "
                     "call_sid=%s", iteration, call_sid,
