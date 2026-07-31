@@ -1366,7 +1366,33 @@ def _is_time_map(slot_map: dict) -> bool:
 
 # Patterns that indicate the LLM just confirmed the caller's name.
 # Each captures the name in group(1).
-_V3_NAME_CONFIRM_PATTERNS = [
+# Function words that legitimately follow "Thanks"/"Right"/"Of course" in
+# ordinary speech and are never a caller's name. Without this, the greeting
+# "Thanks for calling Joint Venture Physiotherapy —" stores the patient as
+# 'For'. That was latent rather than theoretical: it only stayed hidden because
+# the phase gate below used to reject the turn outright, and opening that gate
+# (2026-07-31) would have made it reachable.
+#
+# Deliberately NOT added to app/name_capture.py's NAME_FALSE_POSITIVES: that
+# module is byte-identical across four branches (see the invariant note below),
+# so a guard living here needs no cross-branch coordination to land.
+_V3_NAME_LEAD_STOPWORDS: frozenset = frozenset({
+    "a", "again", "all", "and", "anyway", "both", "ever", "everyone", "for",
+    "much", "no", "of", "or", "so", "that", "the", "then", "though", "to",
+    "very", "yes", "you", "your",
+})
+
+# Readback patterns, split by how strongly they are lexically anchored.
+#
+# ANCHORED: an explicit acknowledgement verb or readback opener precedes the
+# captured word ("Thanks Sarah", "So that's Sarah"). Susie only produces these
+# after the caller has given a name, so the phrase itself is the evidence that
+# this is the name phase — no external phase signal is required.
+#
+# BARE: a title-case word plus punctuation, with no anchoring lexeme. That
+# matches far too much ordinary speech to trust on its own, so it stays behind
+# the phase gate exactly as before.
+_V3_NAME_CONFIRM_PATTERNS_ANCHORED = [
     # Pattern 1a: "Thanks Sarah —" / "Thanks Sarah,"
     re.compile(r'[Tt]hanks\s+([A-Za-z][a-z]{1,25})[\s—–‒,.\-]'),
     # Pattern 1b: "So that's Sarah," / "So that's Sarah —"  (readback)
@@ -1381,6 +1407,9 @@ _V3_NAME_CONFIRM_PATTERNS = [
     re.compile(r'[Oo]f course\s+([A-Za-z][a-z]{1,25})[\s—–,\-]'),
     # Pattern 1f: "Just to confirm — that's Sarah," (alternate readback opening)
     re.compile(r"[Jj]ust to confirm[^,—]*[,—]\s*(?:that'?s\s+)?([A-Za-z][a-z]{1,25})[\s—–,\-]"),
+]
+
+_V3_NAME_CONFIRM_PATTERNS_BARE = [
     # Pattern 2 (Spec T amendment): name-first responses — "Sarah — got it.",
     #   "Sarah, noted.", "Sarah — if you'd like to use..."
     #   Permissive: title-case word + em-dash-or-comma + space.  The
@@ -1388,6 +1417,12 @@ _V3_NAME_CONFIRM_PATTERNS = [
     #   "Awlstuh, perfect.", day-names, and other openers from matching.
     re.compile(r'^([A-Z][a-z]{1,19})\s*[—,]\s'),
 ]
+
+# Preserved as the full ordered list — anchored first, so the more specific
+# match still wins when both could fire.
+_V3_NAME_CONFIRM_PATTERNS = (
+    _V3_NAME_CONFIRM_PATTERNS_ANCHORED + _V3_NAME_CONFIRM_PATTERNS_BARE
+)
 
 # ── Name capture ────────────────────────────────────────────────────────────
 # Surname extraction lives in app/name_capture.py — ONE pure module, kept
@@ -1536,16 +1571,32 @@ def _v3_try_persist_name(
     _name_requested_this_turn = any(
         p in _last_bot_lower for p in _NAME_REQUEST_PHRASES
     )
-    if not post_slot_pending and not _name_requested_this_turn:
-        return False
+    # The phase gate used to return False here, which lost the name on the very
+    # turn that proves it was given. By the time Susie says "Thanks Sarah — I've
+    # got you on 07502…" she has ALREADY moved on to the phone question, so
+    # last_bot contains no name-request phrase and post_slot_pending is not
+    # necessarily set — the readback and the request never co-occur in one
+    # response. CA8f9c5578 (31 Jul 2026): the caller said "uh sarah jenkins",
+    # nothing was stored, and book_appointment was later refused with
+    # patient_name=None while the tool arguments carried "Sarah Jenkins".
+    #
+    # An ANCHORED readback is self-evidencing — "Thanks <word>" is produced only
+    # after a name was given — so it no longer needs a second phase signal. The
+    # BARE title-case pattern is too permissive for that and stays gated.
+    _patterns = (
+        _V3_NAME_CONFIRM_PATTERNS
+        if (post_slot_pending or _name_requested_this_turn)
+        else _V3_NAME_CONFIRM_PATTERNS_ANCHORED
+    )
 
-    for pattern in _V3_NAME_CONFIRM_PATTERNS:
+    for pattern in _patterns:
         m = pattern.search(last_bot)
         if m:
             candidate = m.group(1).capitalize()
             if (
                 candidate.lower() not in _V3_NAME_FALSE_POSITIVES
                 and candidate.lower() not in _V3_SLOT_LEAD_WORDS
+                and candidate.lower() not in _V3_NAME_LEAD_STOPWORDS
             ):
                 # The readback only ever contains the FIRST name (Susie never
                 # reads the surname back), so recover the surname from the
