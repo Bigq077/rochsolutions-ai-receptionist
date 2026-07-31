@@ -76,8 +76,11 @@ ELEVENLABS_SIMILARITY_BOOST = 0.75
 #   ?token= is for TEMPORARY tokens from /v3/token endpoint — NOT the raw API key.
 #
 # Valid speech_model values (v3):
-#   universal-streaming-english | universal-streaming-multilingual | whisper-rt | u3-rt-pro
+#   universal-streaming-english | universal-streaming-multilingual | whisper-rt
+#   universal-3-5-pro   (Universal-3.5 Pro Realtime — see ASSEMBLYAI_USE_U35 below)
 #   "slam-1" and "universal" are NOT valid v3 model names — connection rejected instantly.
+#   NOTE: this comment previously listed "u3-rt-pro". That is not a name
+#   AssemblyAI documents anywhere; corrected 2026-07-31 while adding U3.5.
 #
 # end_utterance_silence_threshold does NOT exist in v3.
 #   v3 equivalent: min_turn_silence (ms, URL param).
@@ -102,6 +105,65 @@ ASSEMBLYAI_WS_URL = (
     "&min_turn_silence=600"
 )
 
+# ---------------------------------------------------------------------------
+# Universal-3.5 Pro Realtime (latency-eval lever, default OFF)
+# ---------------------------------------------------------------------------
+# Same v3 socket, same Begin/Turn/Termination message types — only the
+# speech_model and the endpointing params change, so stt_stream's receive loop
+# needs no branching. Activate with ASSEMBLYAI_USE_U35=true.
+#
+# Why it is worth testing (vendor figures, 2026-07-31):
+#   4.1% WER on AA-WER Streaming vs universal-streaming-english, ~0.4s to first
+#   final, 6.99% pooled WER on Pipecat's real-agent-conversation benchmark.
+#   $0.45/hr — CONFIRM the delta against current spend before any live use.
+#
+# BEHAVIOURAL DELTAS that matter to this codebase — read before flipping:
+#
+#  1. format_turns is REMOVED; formatting is always on. Finals now arrive
+#     punctuated and capitalised. Audited 2026-07-31: the consumers that matter
+#     all normalise first — clinical_screening._norm() blanks punctuation and
+#     fast_path._normalize() strips it — so matching is unaffected. The stale
+#     claim is the COMMENT at clinical_screening.py ~L616 ("no final is ever
+#     punctuated"), which is false under this model. Terminal punctuation
+#     becomes a genuine mid-clause-truncation signal there; _looks_truncated()
+#     still works without it, so that is an improvement to make later, not a
+#     prerequisite.
+#  2. Partials become stable and fully-transcribed rather than word-by-word.
+#     connection.py's barge-in noise gate (_BARGE_NOISE, single-word reject) is
+#     tuned against word-by-word partials — re-check barge-in feel first.
+#  3. Turn detection is punctuation-based, not confidence-based, and the vendor
+#     defaults move (min 400->100, max 1280->1000, vad 0.4->0.3). Our 600ms was
+#     hand-tuned against the OLD endpointer, so it is NOT carried over blind:
+#     the values below are separate and env-sweepable. Do not assume the knee
+#     is in the same place.
+#  4. end_of_turn_confidence_threshold is deprecated (already unused here — see
+#     the WS-C note below), `language` is replaced by native code-switching,
+#     and turn_is_formatted is gone (not read anywhere in this repo).
+#
+# NOT yet wired: the new `prompt` param (conversation context injectable at
+# connect and refreshable after each agent turn with no reconnect) and
+# mid-stream keyterms_prompt updates. Both are follow-ups — build_keyterms()
+# currently fires once at connection time.
+ASSEMBLYAI_USE_U35 = os.getenv(
+    "ASSEMBLYAI_USE_U35", "false"
+).strip().lower() in ("true", "1", "yes", "on")
+
+# Endpointing for U3.5, deliberately independent of the 600ms tuned for the old
+# model. Defaults start AT our current conversation values rather than the
+# vendor defaults, so the first A/B changes ONE variable (the model) and not two.
+U35_MIN_TURN_SILENCE = int(os.getenv("U35_MIN_TURN_SILENCE", "600"))
+U35_MAX_TURN_SILENCE = int(os.getenv("U35_MAX_TURN_SILENCE", "1280"))
+
+ASSEMBLYAI_WS_URL_U35 = (
+    "wss://streaming.assemblyai.com/v3/ws"
+    "?speech_model=universal-3-5-pro"
+    "&sample_rate=16000"
+    "&encoding=pcm_s16le"
+    # no format_turns — removed in U3.5, formatting is always on
+    f"&min_turn_silence={U35_MIN_TURN_SILENCE}"
+    f"&max_turn_silence={U35_MAX_TURN_SILENCE}"
+)
+
 # v2 fallback — 8kHz input, no upsampling needed (battle-tested, older)
 # Activate with ASSEMBLYAI_USE_V2=true
 ASSEMBLYAI_USE_V2 = os.getenv("ASSEMBLYAI_USE_V2", "false").lower() == "true"
@@ -110,6 +172,20 @@ ASSEMBLYAI_WS_URL_V2 = (
     "?sample_rate=8000"
     "&end_utterance_silence_threshold=1200"
 )
+
+
+def assemblyai_ws_url() -> str:
+    """Return the STT socket URL for the active flag combination.
+
+    Precedence is V2 > U3.5 > default, deliberately: ASSEMBLYAI_USE_V2 is the
+    break-glass fallback to the battle-tested 8kHz socket, so if someone sets it
+    during an incident it must win even if the U3.5 lever was left on.
+    """
+    if ASSEMBLYAI_USE_V2:
+        return ASSEMBLYAI_WS_URL_V2
+    if ASSEMBLYAI_USE_U35:
+        return ASSEMBLYAI_WS_URL_U35
+    return ASSEMBLYAI_WS_URL
 
 # ---------------------------------------------------------------------------
 # Claude model constants

@@ -57,8 +57,10 @@ from .config import (
     ASSEMBLYAI_WS_URL,
     ASSEMBLYAI_WS_URL_V2,
     ASSEMBLYAI_USE_V2,
+    ASSEMBLYAI_USE_U35,
     ASSEMBLYAI_MAX_RECONNECTS,
     NOISE_ONLY_WORDS,
+    assemblyai_ws_url,
 )
 # WS-C endpoint-latency measurement (latency-eval branch). Read-once flag; when
 # OFF every stamp below is skipped on one falsy check — no hot-path cost.
@@ -568,8 +570,9 @@ class STTStream:
             self._clinic_id = clinic_id
         # ── Auth: raw API key in Authorization header (server-to-server) ──────
         # ?token= in the URL is for *temporary* browser tokens — NOT the raw key.
-        url        = ASSEMBLYAI_WS_URL_V2 if ASSEMBLYAI_USE_V2 else ASSEMBLYAI_WS_URL
-        # min_turn_silence is set to 200ms directly in ASSEMBLYAI_WS_URL (config.py).
+        # V2 > U3.5 > default; see config.assemblyai_ws_url() for why V2 wins.
+        url        = assemblyai_ws_url()
+        # min_turn_silence is set directly in the URL constant (config.py).
         # keyterms_prompt: JSON-encoded array boosted at the STT session level.
         # Built per-clinic from clinic.json (screening vocabulary first) plus
         # the generic clinical list — see build_keyterms().  This used to be a
@@ -587,9 +590,16 @@ class STTStream:
 
         masked_url = _mask_key(url, ASSEMBLYAI_API_KEY)
         audio_fmt  = "pcm_s16le@16kHz" if not ASSEMBLYAI_USE_V2 else "pcm_s16le@8kHz"
+        # stt_variant is grep-able per call: the A/B is worthless if a transcript
+        # cannot be attributed to the model that produced it.
+        stt_variant = (
+            "v2" if ASSEMBLYAI_USE_V2
+            else "u3.5-pro" if ASSEMBLYAI_USE_U35
+            else "universal-streaming-english"
+        )
         logger.info(
-            "[ms_stt] init — url=%s audio=%s chunk_target=%dms(%dB)",
-            masked_url, audio_fmt,
+            "[ms_stt] init — stt_variant=%s url=%s audio=%s chunk_target=%dms(%dB)",
+            stt_variant, masked_url, audio_fmt,
             AudioChunkBuffer.TARGET_DURATION_MS, AudioChunkBuffer.TARGET_BYTES,
         )
 
