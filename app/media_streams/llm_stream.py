@@ -237,17 +237,79 @@ def _spoken_slot_date(text: str, year: int) -> Optional[str]:
         return None
 
 
-def _note_spoken_slot_date(session: Dict[str, Any], spoken_text: str) -> None:
-    """Record the date last SPOKEN to the caller in a commitment sentence.
+# The slot itself, as spoken — "Wednesday the 5th of August at quarter past six
+# in the evening" out of "So that's Sarah, Wednesday the 5th of August at quarter
+# past six in the evening — shall I go ahead and book that in?".
+#
+# CA42486ff4 (31 Jul 2026): once name and phone were in, the booking readback told
+# the model to fill the day "from the slot the caller already agreed to earlier in
+# this conversation". That call had TWO agreements earlier in the conversation —
+# Tuesday 6:30, then Wednesday 6:15 — so the instruction was ambiguous by
+# construction and the model composed Tuesday's date with Wednesday's time, an
+# appointment that existed on no calendar. Capturing the phrase means the readback
+# can state the slot instead of asking the model to pick one.
+#
+# Bounded at the first dash, full stop or question mark so it cannot swallow the
+# rest of the sentence ("— shall I go ahead and book that in?").
+_SPOKEN_SLOT_PHRASE_RE = re.compile(
+    r"((?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+"
+    r"(?:the\s+)?\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?"
+    r"(?:" + "|".join(_MONTH_NUM) + r")"
+    r"(?:\s+at\s+[^—\-—.?!]{1,60})?)",
+    re.IGNORECASE,
+)
 
-    Deliberately overwrites: after a change of mind the newest spoken date is the
-    one the caller agreed to, so a stale earlier date must never outlive it and
-    block a legitimate booking.
+
+def _spoken_slot_phrase(text: str) -> Optional[str]:
+    """The slot as it was said, from a commitment sentence. Else None."""
+    if not text or not _SPOKEN_COMMITMENT_RE.search(text):
+        return None
+    m = _SPOKEN_SLOT_PHRASE_RE.search(text)
+    if not m:
+        return None
+    phrase = " ".join(m.group(1).split()).strip(" ,;")
+    # A phrase with no time is still useful (the day is the thing that goes
+    # wrong), but an empty or absurd capture is not.
+    return phrase if 8 <= len(phrase) <= 90 else None
+
+
+def _phrase_date(phrase: str) -> Optional[str]:
+    """The YYYY-MM-DD named inside an already-extracted slot phrase.
+
+    Unlike _spoken_slot_date this does NOT require a commitment marker — the
+    phrase has already been established as one. Used to tell a stale confirmed
+    slot from a current one.
+    """
+    from datetime import datetime as _dt
+    m = _SPOKEN_DATE_RE.search(phrase or "")
+    if not m:
+        return None
+    try:
+        return (
+            f"{_dt.now().year:04d}-{_MONTH_NUM[m.group(2).lower()]:02d}-"
+            f"{int(m.group(1)):02d}"
+        )
+    except (ValueError, KeyError):
+        return None
+
+
+def _note_spoken_slot_date(session: Dict[str, Any], spoken_text: str) -> None:
+    """Record the slot last SPOKEN to the caller in a commitment sentence.
+
+    Deliberately overwrites: after a change of mind the newest spoken slot is the
+    one the caller agreed to, so a stale earlier one must never outlive it and
+    block a legitimate booking. This is the property that lets the caller move
+    Tuesday -> Wednesday and still get booked, and it is pinned by test.
     """
     from datetime import datetime as _dt
     date = _spoken_slot_date(spoken_text or "", _dt.now().year)
     if date:
         session["last_spoken_slot_date"] = date
+        # Only alongside a parsed date, so the phrase and the date can never
+        # describe different turns.
+        phrase = _spoken_slot_phrase(spoken_text or "")
+        if phrase:
+            session["last_spoken_slot_phrase"] = phrase
 
 
 # Explicit "I want a DIFFERENT DAY" signals (Bug B, 2026-07-30).
@@ -2050,6 +2112,31 @@ class LLMStream:
                     # existing behaviour is unchanged whenever the slot was not
                     # captured.
                     _rb_slot = (session.get("v3_confirmed_slot_phrase") or "").strip()
+                    # ...but it is captured on ONE transition — the name request
+                    # at the end of the slot flow — so a caller who changes day
+                    # after giving their name never refreshes it. It then names a
+                    # day the caller has since moved off, and being injected
+                    # "verbatim" makes that authoritative.
+                    #
+                    # last_spoken_slot_date is rewritten on EVERY commitment
+                    # sentence, so it is the day the caller most recently agreed
+                    # to. If the captured phrase names a different day, it is
+                    # stale and the newest agreement wins — the same
+                    # newest-wins rule the write-guard is built on.
+                    if _rb_slot and session.get("last_spoken_slot_date"):
+                        _rb_slot_date = _phrase_date(_rb_slot)
+                        if (
+                            _rb_slot_date
+                            and _rb_slot_date != session["last_spoken_slot_date"]
+                        ):
+                            logger.warning(
+                                "[ms_llm] v3_confirmed_slot_phrase is stale (%s, "
+                                "caller has since agreed %s) — using the latest "
+                                "spoken slot. call_sid=%s",
+                                _rb_slot_date, session["last_spoken_slot_date"],
+                                call_sid,
+                            )
+                            _rb_slot = ""
                     if _rb_slot:
                         _rb_msg = (
                             "Name, phone number and the appointment slot are all "
@@ -2059,7 +2146,39 @@ class LLMStream:
                             f"\"So that's {_rb_name_txt}, {_rb_slot}"
                             f"{_rb_loc_clause} — shall I go ahead and book that in?\""
                         )
+                    elif session.get("last_spoken_slot_phrase"):
+                        # The slot most recently AGREED, taken from the last
+                        # commitment sentence actually spoken to the caller.
+                        #
+                        # CA42486ff4 (31 Jul 2026): the branch below used to tell
+                        # the model to fill the day "from the slot the caller
+                        # already agreed to earlier in this conversation". That
+                        # call had two agreements earlier in the conversation —
+                        # Tuesday 6:30, then Wednesday 6:15 after he changed his
+                        # mind — so the instruction was ambiguous by construction.
+                        # The model took Tuesday's date and Wednesday's time and
+                        # tried to book "Tuesday the 4th at quarter past six", a
+                        # slot that existed on no calendar. The write-guard caught
+                        # it, but by then the wrong day had already been said.
+                        #
+                        # _note_spoken_slot_date overwrites on every commitment, so
+                        # this is the LATEST agreement, not the first — that is
+                        # what lets the caller change day and still get booked.
+                        _rb_spoken = session["last_spoken_slot_phrase"]
+                        _rb_msg = (
+                            "Name and phone number are already confirmed. Do NOT "
+                            "call check_availability and do NOT ask for the day or "
+                            "time again. The slot the caller agreed to is "
+                            f"\"{_rb_spoken}\" — that exact day and time, not any "
+                            "other day or time mentioned earlier in this "
+                            "conversation. Say EXACTLY this, then stop: "
+                            f"\"So that's {_rb_name_txt}, {_rb_spoken}"
+                            f"{_rb_loc_clause} — shall I go ahead and book that in?\""
+                        )
                     else:
+                        # No commitment sentence has been spoken yet, so there is
+                        # genuinely nothing to quote. Left as it was — but this is
+                        # now the rare path, not the one a day change lands on.
                         _rb_msg = (
                             "Name and phone number are already confirmed. "
                             "Do NOT call check_availability. Produce the booking "
