@@ -123,9 +123,18 @@ class CallLogger:
         except (TypeError, ValueError):
             _fc_fired = 0
 
+        # Which build served this call. Recorded rather than reconstructed:
+        # detect_defects' deploy-boundary list has misattributed calls four
+        # times, most recently on 2026-07-31 when a boundary set from push time
+        # plus the usual Render lag estimate labelled a call with the previous
+        # build — the deploy had landed in about a minute. A wrong build label
+        # makes a fix look unproven when it worked, or proven when it never ran.
+        from app.build_info import build_sha as _build_sha
+
         return {
             "call_sid":        self.call_sid,
             "clinic_id":       self._clinic_id,
+            "build_sha":       _build_sha(),
             "start_utc":       self._start_utc.isoformat(),
             "end_utc":         end.isoformat(),
             "duration_s":      duration_s,

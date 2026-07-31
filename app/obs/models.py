@@ -47,6 +47,11 @@ class Call(Base):
     # Primary identity
     call_sid: Mapped[str] = mapped_column(String(64), primary_key=True)
     clinic_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    # The commit the process was running, recorded by the process itself. Indexed
+    # because grouping defects by build is the main question asked of this table.
+    # NULL on every call written before 2026-07-31 — those still fall back to
+    # detect_defects' deploy-boundary list, which is why that list stays.
+    build_sha: Mapped[str | None] = mapped_column(String(16), index=True, nullable=True)
 
     # Timing
     start_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -118,6 +123,7 @@ class Call(Base):
         return {
             "call_sid": self.call_sid,
             "clinic_id": self.clinic_id,
+            "build_sha": self.build_sha,
             "start_utc": self.start_utc.isoformat() if self.start_utc else None,
             "end_utc": self.end_utc.isoformat() if self.end_utc else None,
             "duration_s": self.duration_s,

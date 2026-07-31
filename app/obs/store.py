@@ -92,6 +92,9 @@ def init_db() -> bool:
 # both SQLite (tests) and Postgres (prod).
 _ADDED_COLUMNS = {
     "screening": "JSON",
+    # 2026-07-31 — the running commit, recorded by the process instead of
+    # reconstructed from deploy timestamps. NULL on every earlier call.
+    "build_sha": "VARCHAR(16)",
     "calendar_event_id": "VARCHAR(128)",
     "outcome": "VARCHAR(32)",
     "quality_score": "INTEGER",
@@ -138,6 +141,7 @@ def _row_from_record(record: Dict[str, Any], turns: List[Dict[str, str]]) -> Cal
     return Call(
         call_sid=record.get("call_sid"),
         clinic_id=record.get("clinic_id"),
+        build_sha=record.get("build_sha"),
         start_utc=_parse_dt(record.get("start_utc")),
         end_utc=_parse_dt(record.get("end_utc")),
         duration_s=record.get("duration_s"),

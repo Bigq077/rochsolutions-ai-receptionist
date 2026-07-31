@@ -117,11 +117,33 @@ BUILDS = [
 
 
 def build_at(when: datetime) -> tuple[str, bool]:
-    """Return (build_label, is_ambiguous)."""
+    """Return (build_label, is_ambiguous) from the deploy-boundary list."""
     for cut, label in BUILDS:
         if when >= cut:
             return label, (when - cut).total_seconds() < AMBIGUOUS_S
     return "?", False
+
+
+def build_of(call) -> tuple[str, bool]:
+    """The build that served this call — recorded if we have it, inferred if not.
+
+    From 2026-07-31 the process writes its own commit onto every call
+    (app/build_info.py), so there is nothing to infer and nothing to be ambiguous
+    about: a recorded SHA is never near a boundary, it IS the answer.
+
+    Everything before that date has no SHA and still comes from BUILDS, which is
+    why that list stays. It has misattributed calls four times — most recently
+    when a boundary set from push time plus the usual Render lag estimate put
+    CA42486ff4 on the previous build, the deploy having landed in about a minute.
+    Those mistakes are silent and they invert the conclusion: a fix looks
+    unproven when it worked, or proven when it never ran.
+    """
+    sha = (call.get("build_sha") or "").strip()
+    if sha and sha != "unknown":
+        return sha, False
+    when = call["start_utc"]
+    when = when.replace(tzinfo=timezone.utc) if when.tzinfo is None else when
+    return build_at(when)
 
 
 # --- helpers ---------------------------------------------------------------
@@ -358,7 +380,7 @@ def main() -> int:
     for call in calls:
         when = call["start_utc"]
         when = when.replace(tzinfo=timezone.utc) if when.tzinfo is None else when
-        label, ambiguous = build_at(when)
+        label, ambiguous = build_of(call)
         for det in DETECTORS:
             try:
                 detail = det.fn(call)
@@ -379,9 +401,13 @@ def main() -> int:
         print(f"{det.id:4}{det.what:38}{len(det.hits):>4}  "
               f"{last[0]:%d %b %H:%M}Z{'':10}{last[1]}")
 
-    newest = build_at(max(
-        (c["start_utc"].replace(tzinfo=timezone.utc)
-         if c["start_utc"].tzinfo is None else c["start_utc"]) for c in calls))[0]
+    # The build of the most recent call, not of the most recent timestamp — with
+    # recorded SHAs the two can differ, and the call is the one that has evidence.
+    newest = build_of(max(
+        calls,
+        key=lambda c: (c["start_utc"].replace(tzinfo=timezone.utc)
+                       if c["start_utc"].tzinfo is None else c["start_utc"]),
+    ))[0]
     print(f"\n=== occurrences on the newest build seen ({newest}) ===")
     any_live = False
     for det in DETECTORS:

@@ -50,6 +50,9 @@ def _connect():
 _HEADLINE = (
     "call_sid", "start_utc", "duration_s", "booking_confirmed",
     "calendar_event_id", "acuity_booking_id", "success", "reason",
+    # Recorded by the process, so it needs no interpretation. NULL on anything
+    # before 2026-07-31 — for those, detect_defects' boundary list is the answer.
+    "build_sha",
     "final_state", "turn_count", "clinic_id", "caller_number",
 )
 
