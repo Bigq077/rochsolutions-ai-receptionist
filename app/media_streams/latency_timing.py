@@ -33,8 +33,24 @@ _lat_log = logging.getLogger("susie.latency")
 # Monotonic turn counter (offline correlation only; not a concurrency mechanism).
 _turn_counter = itertools.count(1)
 
-# STT model is fixed for the eval (AssemblyAI v3 universal-streaming-english).
-_STT_MODEL = os.getenv("STT_MODEL_TAG", "universal-streaming-english")
+def _flag(env: str, default: str = "false") -> bool:
+    """Truthy env read, matching config.py's parsing exactly."""
+    return os.getenv(env, default).strip().lower() in ("true", "1", "yes", "on")
+
+
+# STT model actually in use this run. Previously hardcoded to
+# universal-streaming-english via an env var nobody sets, which meant every
+# [LAT] line reported the same model regardless of which one served the call —
+# the one field the A/B depends on could not distinguish the two arms of the
+# A/B. Tags and precedence (V2 > U3.5 > default) mirror stt_stream.py's
+# stt_variant and config.py's _ws_url(); STT_MODEL_TAG still overrides, for
+# labelling offline replays. Derived here rather than imported to preserve this
+# module's stdlib-only / no-hot-path-import guarantee (see docstring).
+_STT_MODEL = os.getenv("STT_MODEL_TAG") or (
+    "v2" if _flag("ASSEMBLYAI_USE_V2")
+    else "u3.5-pro" if _flag("ASSEMBLYAI_USE_U35")
+    else "universal-streaming-english"
+)
 
 # Lever flags recorded per turn so one log file can hold an A/B run (spec §6).
 # Kept here (not imported from the levers) to avoid any hot-path coupling.

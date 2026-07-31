@@ -206,6 +206,80 @@ def test_deformat_defaults_on_but_only_bites_with_u35(monkeypatch):
     assert config.U35_DEFORMAT is False
 
 
+# ---------------------------------------------------------------------------
+# [LAT] attribution: the log line must name the model that actually ran
+# ---------------------------------------------------------------------------
+# _STT_MODEL was hardcoded to universal-streaming-english via STT_MODEL_TAG, an
+# env var nothing sets. Every [LAT] line therefore reported the old model even
+# when U3.5 served the call, so the one field the A/B needs to tell its two arms
+# apart could not tell them apart. A whole eval call was read as a control run
+# on the strength of that field before anyone checked [ms_stt] init.
+
+
+def _load_latency_timing(monkeypatch, **env):
+    for key in ("ASSEMBLYAI_USE_U35", "ASSEMBLYAI_USE_V2", "STT_MODEL_TAG"):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    import app.media_streams.latency_timing as lt
+    return importlib.reload(lt)
+
+
+@pytest.mark.parametrize("env,expected", [
+    ({},                                  "universal-streaming-english"),
+    ({"ASSEMBLYAI_USE_U35": "true"},      "u3.5-pro"),
+    ({"ASSEMBLYAI_USE_V2":  "true"},      "v2"),
+    # V2 > U3.5, same precedence as assemblyai_ws_url().
+    ({"ASSEMBLYAI_USE_U35": "true",
+      "ASSEMBLYAI_USE_V2":  "true"},      "v2"),
+])
+def test_lat_stt_model_follows_the_lever(monkeypatch, env, expected):
+    assert _load_latency_timing(monkeypatch, **env)._STT_MODEL == expected
+
+
+def test_lat_stt_model_matches_the_stt_variant_tag(monkeypatch):
+    """[LAT] and [ms_stt] init must agree, or offline joins are wrong.
+
+    Both lines are grepped when attributing a run; if they disagree on the
+    spelling of the model, the two halves of the same call stop joining.
+    """
+    lt = _load_latency_timing(monkeypatch, ASSEMBLYAI_USE_U35="true")
+    config = _load_config(monkeypatch, ASSEMBLYAI_USE_U35="true")
+    stt_variant = (
+        "v2" if config.ASSEMBLYAI_USE_V2
+        else "u3.5-pro" if config.ASSEMBLYAI_USE_U35
+        else "universal-streaming-english"
+    )
+    assert lt._STT_MODEL == stt_variant
+
+
+def test_lat_stt_model_tag_still_overrides(monkeypatch):
+    """Offline replays label themselves; an explicit tag beats the live flags."""
+    lt = _load_latency_timing(
+        monkeypatch, ASSEMBLYAI_USE_U35="true", STT_MODEL_TAG="replay-2026-07-31"
+    )
+    assert lt._STT_MODEL == "replay-2026-07-31"
+
+
+@pytest.mark.parametrize("raw", ["TRUE", "1", "yes", "on", " true "])
+def test_lat_stt_model_accepts_the_same_spellings_as_config(monkeypatch, raw):
+    """Divergent parsing would make [LAT] disagree with the socket it describes."""
+    assert _load_latency_timing(
+        monkeypatch, ASSEMBLYAI_USE_U35=raw
+    )._STT_MODEL == "u3.5-pro"
+
+
+def test_latency_timing_stays_free_of_hot_path_imports():
+    """The module's stated guarantee — derive from env, never import config."""
+    import pathlib
+    src = pathlib.Path(
+        "app/media_streams/latency_timing.py"
+    ).read_text(encoding="utf-8")
+    for forbidden in ("from app.media_streams.config", "import config",
+                      "from .config", "from app.media_streams import config"):
+        assert forbidden not in src
+
+
 def test_config_import_does_not_leak_env_between_tests(monkeypatch):
     """Reload back to the pristine state so later modules see the real config."""
     config = _load_config(monkeypatch)
