@@ -115,6 +115,83 @@ def _spell_currency(m: "_re.Match") -> str:
         words += f" {_int_to_words(int(pence))}"
     return words
 
+
+# P22c: spell phone numbers as words before synthesis.
+# Same root cause as the currency rule above — eleven_flash_v2_5 runs with text
+# normalization OFF, so a bare "07502 211 207" is read as one rushed digit run
+# and callers cannot check it against their own number.  Step 8 of the template
+# prompt asks the model to say the digits in three word-groups, but that is a
+# prompt-side hope: when the model emits numerals instead, the readback muddles.
+# This makes the pacing deterministic regardless of what the model produced.
+#
+# Scoped to UK phone shapes ONLY.  Everything else that carries digits on a call
+# — "the 4th of August", "6:30", "45 minutes", a B49 postcode — must survive
+# untouched, so the span has to start 0 or +44 and carry 10-13 digits.  A price
+# list ("125, 175") is excluded by the prefix rule; £-prices are already words
+# by the time this runs.
+_PHONE_SPAN_RE = _re.compile(r"(?<![\d:])(\+?\d[\d\s,‑-]{7,24}\d)(?![\d:])")
+
+# "oh", not "zero" — UK convention, and it matches the wording step 8 already
+# asks the model for, so the two paths sound the same.
+_DIGIT_WORDS = {
+    "0": "oh",   "1": "one", "2": "two",   "3": "three", "4": "four",
+    "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine",
+}
+
+
+def _spell_phone(m: "_re.Match") -> str:
+    """Render a UK phone-shaped digit span as spoken words, grouped for pacing.
+
+    Returns the span UNCHANGED whenever it is not confidently a phone number —
+    a false negative just leaves today's behaviour, a false positive reads a
+    date or a duration out digit-by-digit.
+
+        "07502 211 207" -> "oh seven five oh two, two one one, two oh seven"
+        "+447502211207" -> the same (spoken in the familiar 0-form)
+    """
+    span   = m.group(1)
+    digits = _re.sub(r"\D", "", span)
+
+    # UK only: 0-prefixed, or +44 which we speak back in the 0-form a caller
+    # recognises rather than as "plus four four".
+    _was_intl = False
+    if span.lstrip().startswith("+") or digits.startswith("44"):
+        if not digits.startswith("44"):
+            return span
+        digits   = "0" + digits[2:]
+        _was_intl = True
+    elif not digits.startswith("0"):
+        return span
+
+    if not (10 <= len(digits) <= 11):
+        return span
+
+    # Honour the grouping already in the text.  A landline is written 0121 496
+    # 0000 and read that way; imposing the mobile 5/3/3 on it produces "oh one
+    # two one four, nine six oh, oh oh oh", which is harder to check than the
+    # rushed run this rule exists to fix.  Only a bare unseparated run gets the
+    # default grouping — which mirrors flow._format_phone_readback, so the
+    # caller-ID readback and the dictation readback stay paced alike.
+    _authored = [g for g in _re.split(r"[\s,‑-]+", span.strip()) if g.isdigit()]
+    if len(_authored) > 1 and not _was_intl:
+        groups = _authored
+    else:
+        groups = [digits[:5], digits[5:8], digits[8:]]
+
+    # No group should run longer than five digits without a pause, however it
+    # was written — "01527 123456" needs a breath in the second half too.
+    _paced: list[str] = []
+    for g in groups:
+        if len(g) > 5:
+            _paced.extend(g[i:i + 3] for i in range(0, len(g), 3))
+        elif g:
+            _paced.append(g)
+
+    # ", " between groups is the pause; ElevenLabs honours comma prosody even
+    # with normalization off.
+    return ", ".join(" ".join(_DIGIT_WORDS[d] for d in g) for g in _paced)
+
+
 # OpenAI fallback path.
 # Alcester: British English /ˈɔːlstə/ — "AWL-stuh".
 #   OpenAI TTS has no pronunciation dictionary so needs the phonetic form.
@@ -130,7 +207,10 @@ def _apply_tts_substitutions_elevenlabs(text: str) -> str:
     """
     for pattern, replacement in _TTS_SUBSTITUTIONS_ELEVENLABS:
         text = pattern.sub(replacement, text)
+    # Currency first: it turns "£175" into words, so no price can still look
+    # like a digit span to the phone rule below.
     text = _CURRENCY_RE.sub(_spell_currency, text)
+    text = _PHONE_SPAN_RE.sub(_spell_phone, text)
     return text
 
 
@@ -144,6 +224,9 @@ def _apply_tts_substitutions_openai(text: str) -> str:
     for pattern, replacement in _TTS_SUBSTITUTIONS_OPENAI:
         text = pattern.sub(replacement, text)
     text = _CURRENCY_RE.sub(_spell_currency, text)
+    # Applied here too so the dev-bypass path does not sound different from the
+    # ElevenLabs one; words are read as words by either engine.
+    text = _PHONE_SPAN_RE.sub(_spell_phone, text)
     return text
 
 
