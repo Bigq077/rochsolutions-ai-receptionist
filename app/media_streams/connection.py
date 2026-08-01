@@ -5362,6 +5362,7 @@ class WebSocketCallHandler:
                 "[ms_conn] DTMF 11-digit complete → immediate finalize %r",
                 complete,
             )
+            self._commit_dtmf_phone_for_booking(complete)
             self._inject_phone_context_for_lookup(complete)
             await self.transcript_queue.put((time.monotonic(), complete))
             await save_session(self.call_sid, self.session)
@@ -5423,6 +5424,7 @@ class WebSocketCallHandler:
             "[ms_conn] DTMF idle-finalize after %.1fs → synthetic transcript %r",
             _KEYPAD_IDLE_FINALIZE_SEC, complete,
         )
+        self._commit_dtmf_phone_for_booking(complete)
         self._inject_phone_context_for_lookup(complete)
         await self.transcript_queue.put((time.monotonic(), complete))
         await save_session(self.call_sid, self.session)
@@ -5469,10 +5471,55 @@ class WebSocketCallHandler:
             "synthetic transcript %r",
             len(complete), complete,
         )
+        self._commit_dtmf_phone_for_booking(complete)
         self._inject_phone_context_for_lookup(complete)
         await self.transcript_queue.put((time.monotonic(), complete))
         await save_session(self.call_sid, self.session)
         logger.info("[ms_conn v3] DTMF phone collection complete (near-complete finalize)")
+
+    def _commit_dtmf_phone_for_booking(self, phone: str) -> None:
+        """A keypad-entered number IS the confirmation — record it as one.
+
+        CAb4e2cf4b (31 Jul 2026): the caller declined the caller-ID number, was
+        correctly routed to the keypad, typed 11 digits, and the finalize path
+        queued them as a transcript without ever setting `phone_confirmed`.
+        `book_appointment`'s A1 gate reads exactly that flag, so the write was
+        refused and its error text told the model to *"read the number you
+        already have back to them"* — the caller-ID readback the caller had just
+        declined. Four wasted turns, and the same shape as A4 without sharing
+        its cause.
+
+        Typing eleven digits is a stronger confirmation than any spoken "yes":
+        the caller entered them deliberately, digit by digit, and step 8 of the
+        template prompt explicitly forbids reading a keypad-entered number back
+        ("Do NOT digit-by-digit read back a keypad-entered number"). So there is
+        no later step that could ever set the flag — without this, the A1 gate
+        can only be satisfied on the keypad path by the caller re-confirming a
+        DIFFERENT number, which is exactly the wrong outcome.
+
+        Cancel / reschedule are excluded: there the typed number is a LOOKUP key
+        for finding an existing booking, not the contact number for a new one.
+        """
+        intent = self.session.get("v3_caller_intent", "")
+        if intent in ("cancel", "reschedule"):
+            return
+        _digits = re.sub(r"\D", "", phone or "")
+        if len(_digits) < 10:
+            # Below the finalize thresholds this should be unreachable; refuse
+            # to confirm a partial number rather than trusting the caller typed
+            # what they meant to.
+            return
+        self.session.setdefault("collected", {})["phone"] = phone
+        self.session["phone_number"]    = phone
+        self.session["phone_confirmed"] = True
+        # Marks the number as caller-authored so the verbal-confirm branches
+        # below cannot later overwrite it with the caller ID.
+        self.session["phone_entered_by_keypad"] = True
+        logger.info(
+            "[ms_conn v3] keypad phone committed — %s + phone_confirmed=True "
+            "(typed, not caller ID)",
+            phone,
+        )
 
     def _inject_phone_context_for_lookup(self, phone: str) -> None:
         """Inject a synthetic assistant turn into conversation_history before a
@@ -6345,7 +6392,25 @@ class WebSocketCallHandler:
                         _bk_phone_step = any(
                             _mk in _bk_lastq for _mk in _PHONE_STEP_MARKERS
                         )
-                        if _bk_caller_num and _bk_phone_step:
+                        # Never overwrite a number the caller TYPED with the one
+                        # they are calling from.  A caller who declined the
+                        # caller ID and keyed in a different number, then said
+                        # "yes that's the best number" to any later phone
+                        # question, would otherwise have their typed number
+                        # silently replaced by the one they explicitly rejected
+                        # — a booking on an unreachable number that nothing
+                        # reads back.  Latent until the keypad path started
+                        # setting phone_confirmed; guarded here so it stays that
+                        # way.
+                        if self.session.get("phone_entered_by_keypad"):
+                            logger.info(
+                                "[ms_conn v3] verbal phone confirm SKIPPED — "
+                                "keypad number already on record (%r); refusing "
+                                "to overwrite it with caller ID %r",
+                                (self.session.get("collected") or {}).get("phone"),
+                                _bk_caller_num,
+                            )
+                        elif _bk_caller_num and _bk_phone_step:
                             self.session.setdefault("collected", {})
                             self.session["collected"]["phone"] = _bk_caller_num
                             self.session["phone_confirmed"] = True
@@ -6437,7 +6502,14 @@ class WebSocketCallHandler:
                             # straight to the booking readback.  Only fires when
                             # a calling number is actually present.
                             _caller_num = _confirm_caller_number(self.session)
-                            if _caller_num and _is_use_this_number(utterance):
+                            # Same guard as the booking branch above: a typed
+                            # number outranks the caller ID and must never be
+                            # overwritten by it.
+                            if (
+                                _caller_num
+                                and _is_use_this_number(utterance)
+                                and not self.session.get("phone_entered_by_keypad")
+                            ):
                                 self.session.setdefault("collected", {})
                                 self.session["collected"]["phone"] = _caller_num
                                 # phone_confirmed=True is REQUIRED: _get_confirmed_phone
