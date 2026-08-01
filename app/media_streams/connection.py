@@ -5503,6 +5503,18 @@ class WebSocketCallHandler:
         intent = self.session.get("v3_caller_intent", "")
         if intent in ("cancel", "reschedule"):
             return
+        # Deliberately scoped OFF the deterministic FlowEngine path. There,
+        # COLLECT_PHONE already reads the number back and CONFIRM_PHONE sets
+        # phone_confirmed itself, with ~10 sites that reset it to False when the
+        # caller rejects the readback. Setting it early here would mean reasoning
+        # about every one of those resets for no benefit — that path never had
+        # the defect, because it has a confirmation step. The v3 / LLM path is
+        # the one with no confirmation step and therefore no way to set the flag.
+        if self.session.get("state") in (
+            "COLLECT_PHONE", "COLLECT_PHONE_RETURNING",
+            "RETURNING_PLAN_COLLECT_PHONE",
+        ):
+            return
         _digits = re.sub(r"\D", "", phone or "")
         if len(_digits) < 10:
             # Below the finalize thresholds this should be unreachable; refuse

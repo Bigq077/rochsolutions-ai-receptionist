@@ -131,6 +131,29 @@ def test_a_partial_number_is_never_confirmed(partial):
         assert s.get("phone_confirmed") is not True, partial
 
 
+@pytest.mark.parametrize("state", [
+    "COLLECT_PHONE", "COLLECT_PHONE_RETURNING", "RETURNING_PLAN_COLLECT_PHONE",
+])
+def test_deterministic_flow_states_are_left_alone(state):
+    """The FlowEngine path reads the number back and sets phone_confirmed at its
+    own CONFIRM_PHONE gate, with ~10 sites that reset it to False when the caller
+    rejects the readback. It never had this defect — it has a confirmation step.
+    Setting the flag early there would mean reasoning about every one of those
+    resets for no benefit, so this helper stays out of it."""
+    s = _booking_session(state=state)
+    _Harness(s)._commit_dtmf_phone_for_booking("07700900456")
+    assert s.get("phone_confirmed") is not True
+    assert s.get("phone_entered_by_keypad") is not True
+
+
+def test_the_v3_path_is_still_covered():
+    """The observed defect: state is GREETING on the v3/LLM path, not a
+    COLLECT_PHONE state, so the exclusion above must not disable the fix."""
+    s = _booking_session(state="GREETING")
+    _Harness(s)._commit_dtmf_phone_for_booking("07700900456")
+    assert s["phone_confirmed"] is True
+
+
 def test_a_ten_digit_number_is_accepted():
     """The idle-finalize path pads to 11, but near-complete finalizes at 9+;
     ten digits is a real UK number missing its leading zero."""
