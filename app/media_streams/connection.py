@@ -1192,6 +1192,56 @@ def _confirm_caller_number(session: dict) -> str:
     return session.get("twilio_from_local") or session.get("twilio_from", "")
 
 
+# ── Keypad number shape (C3) ─────────────────────────────────────────────────
+# "A valid UK mobile starts with 07 and is 11 digits" is not a new rule invented
+# here — it is already stated verbatim in susie_system_prompt.py ("INVALID PHONE
+# NUMBER — keypad entry"), together with what to do about a misentry. The rule
+# was only ever enforced by asking the model nicely, and on CA3590527b the model
+# did the opposite: the caller typed nine digits, the near-complete path
+# finalized them, `_commit_dtmf_phone_for_booking` refused them as too short so
+# `phone_confirmed` was never set, and the model padded "079871247" with "00"
+# into 07987124700 — a number in no DTMF frame and no transcript — then booked
+# it and scheduled two SMS reminders to it.
+#
+# Note the rule does not exist at all in clinic_template_prompt.py, which is the
+# prompt jv_v1 and vital_edge actually run, so on the live clinics there was no
+# rule to follow either. Hence a deterministic guard rather than more prompt.
+#
+# The three finalize paths each had their own idea of "complete" — idle padded a
+# 10-digit buffer to 11 unconditionally, near-complete accepted 9 raw, immediate
+# truncated to buf[:11], and the commit required 10. One normaliser and one
+# predicate now decide it for all of them.
+_UK_MOBILE_RE = re.compile(r"^07\d{9}$")
+
+
+def _normalise_keypad_number(phone: str) -> str:
+    """Digits only, in the 07… form a caller would recognise.
+
+    A caller who omits the leading zero types ten digits starting 7; that is the
+    same number, not a different one, and the idle-finalize path has always
+    padded it. Doing it here means the other two paths agree. `44…` is folded the
+    same way, which also repairs a caller who dials the country code in.
+
+    Note what is deliberately NOT repaired: a 10-digit buffer already starting
+    `0` is an 11-digit entry with a digit dropped, and padding it (as the idle
+    path used to, unconditionally) invents a number. It stays 10 digits and is
+    rejected below.
+    """
+    d = re.sub(r"\D", "", phone or "")
+    if d.startswith("44"):
+        d = "0" + d[2:]
+    elif len(d) == 10 and d.startswith("7"):
+        d = "0" + d
+    return d
+
+
+def _is_valid_uk_mobile(phone: str) -> bool:
+    """True for an 11-digit UK mobile. Landlines are deliberately excluded —
+    the booking confirmation and both reminders are SMS, so a landline on a
+    booking is a patient who is never told about their appointment."""
+    return bool(_UK_MOBILE_RE.match(_normalise_keypad_number(phone)))
+
+
 # Continuation words: if the caller's finalised turn ends on one of these, the
 # 600ms silence that ended it (min_turn_silence, config.py) is almost certainly a
 # mid-sentence thinking pause, not the end of the turn. High-precision by design —
@@ -5354,7 +5404,16 @@ class WebSocketCallHandler:
         if len(buf) >= 11:
             # Full UK number collected via keypad — push as synthetic
             # transcript immediately; no idle window needed.
-            complete = buf[:11]
+            #
+            # Was `buf[:11]`, which turned a caller who dialled the country code
+            # (447700900456) into the 11-digit garbage 44770090045 and queued it
+            # as if it were their number. Normalising folds `44…` back to `07…`;
+            # anything that still is not a UK mobile is a misentry (C3).
+            complete = _normalise_keypad_number(buf)
+            if not _is_valid_uk_mobile(complete):
+                await self._reask_invalid_keypad_number(buf)  # saves the session
+                return
+            self.session["phone_dtmf_reask_count"] = 0
             self.session["phone_dtmf_buffer"]   = ""
             self.session["phone_awaiting_dtmf"] = False
             self.session["v3_phone_dtmf_active"] = False
@@ -5413,10 +5472,19 @@ class WebSocketCallHandler:
           and not self.session.get("v3_phone_dtmf_active"):
             return
         if len(buf) < 10:
+            # Sub-10 buffers belong to the near-complete task; re-asking here
+            # too would speak the same prompt twice 1.5 s apart.
             return
-        # Pad 10-digit buffer with leading 0 so the flow gate's 11-digit
-        # threshold accepts it; otherwise truncate to 11.
-        complete = ("0" + buf) if len(buf) == 10 else buf[:11]
+        # Was an unconditional `"0" + buf` for 10 digits. That is right for a
+        # caller who omitted the leading zero (7700900456) and wrong for an
+        # 11-digit entry that dropped a digit (0770090045 -> 00770090045), and
+        # it could not tell them apart. `_normalise_keypad_number` pads only the
+        # first shape; the second now fails validation and is re-asked (C3).
+        complete = _normalise_keypad_number(buf)
+        if not _is_valid_uk_mobile(complete):
+            await self._reask_invalid_keypad_number(buf)  # saves the session
+            return
+        self.session["phone_dtmf_reask_count"] = 0
         self.session["phone_dtmf_buffer"]   = ""
         self.session["phone_awaiting_dtmf"] = False
         self.session["v3_phone_dtmf_active"] = False
@@ -5461,8 +5529,21 @@ class WebSocketCallHandler:
             return
         if len(buf) < 9:
             return
-        # Use the buffer as-is — the caller typed these digits and stopped.
-        complete = buf
+        # This is the CA3590527b line. It used to be `complete = buf` — "the
+        # caller typed these digits and stopped" — which queued a nine-digit
+        # fragment as if it were a phone number. `_commit_dtmf_phone_for_booking`
+        # then refused it as too short, so `phone_confirmed` stayed unset and
+        # the ONLY record of the number was the fragment sitting in the model's
+        # context. It padded it with "00" and booked that.
+        #
+        # Nine digits is not a UK mobile, so it is a misentry regardless of the
+        # caller having stopped typing. The 9-digit arming stays — that is what
+        # gets us here to ask — but it no longer implies acceptance.
+        complete = _normalise_keypad_number(buf)
+        if not _is_valid_uk_mobile(complete):
+            await self._reask_invalid_keypad_number(buf)  # saves the session
+            return
+        self.session["phone_dtmf_reask_count"] = 0
         self.session["phone_dtmf_buffer"]   = ""
         self.session["phone_awaiting_dtmf"] = False
         self.session["v3_phone_dtmf_active"] = False
@@ -5476,6 +5557,71 @@ class WebSocketCallHandler:
         await self.transcript_queue.put((time.monotonic(), complete))
         await save_session(self.call_sid, self.session)
         logger.info("[ms_conn v3] DTMF phone collection complete (near-complete finalize)")
+
+    async def _reask_invalid_keypad_number(self, buf: str) -> None:
+        """The keypad buffer stopped on something that is not a UK mobile.
+
+        The critical part is what does NOT happen: the digits are never queued
+        as a synthetic transcript. On CA3590527b the nine digits reached the
+        model and it padded them into a number nobody had typed. A fragment the
+        model never sees cannot be completed by it.
+
+        The buffer is cleared so the caller retypes cleanly rather than
+        appending to a partial they can no longer see, and the keypad stays
+        armed for the first two attempts. Wording follows the CORRECT examples
+        in susie_system_prompt.py — in particular it never says "type that on
+        your keypad" as if they had not (they just did), and never uses "Sorry,
+        I didn't catch that", which is a G2 banned phrase.
+
+        Bounded on purpose: an unbounded "that's not right, try again" is a
+        worse failure than the bug it replaces, so attempt 2 offers the caller
+        ID as an escape and attempt 3 hands off to speech and stops.
+
+        Deliberately NOT setting `_clarification_in_flight` — that guard is
+        one-shot and name-scoped, and would discard the caller's next real
+        utterance. Here the expected next input is DTMF, so there is no
+        competing-LLM race to guard against.
+        """
+        attempt = int(self.session.get("phone_dtmf_reask_count", 0)) + 1
+        self.session["phone_dtmf_reask_count"] = attempt
+        self.session["phone_dtmf_buffer"] = ""
+
+        _caller_num = _confirm_caller_number(self.session)
+        if attempt == 1:
+            _reask = (
+                "That doesn't look like a complete number — could you "
+                "double-check it and type it again on your keypad?"
+            )
+            _keypad_stays_armed = True
+        elif attempt == 2 and _caller_num:
+            # Reuses the existing verbal affirmative: `_is_use_this_number` is
+            # already wired at three sites and stores the caller ID itself, so
+            # "use this number" here resolves without any new branch.
+            _reask = (
+                "I'm still not getting a full number. I can use the number "
+                "you're calling from instead — just say 'use this number', "
+                "or type it again on your keypad."
+            )
+            _keypad_stays_armed = True
+        else:
+            _reask = (
+                "I'm still not getting a full number — could you read it out "
+                "to me instead?"
+            )
+            _keypad_stays_armed = False
+
+        self.session["phone_awaiting_dtmf"]  = _keypad_stays_armed
+        self.session["v3_phone_dtmf_active"] = _keypad_stays_armed
+
+        await self.tts_text_queue.put(_reask)
+        self.session["last_bot_prompt"] = _reask
+        self.session["last_question"]   = _reask
+        await save_session(self.call_sid, self.session)
+        logger.warning(
+            "[ms_conn] DTMF buffer %r is not a UK mobile — re-ask attempt %d, "
+            "keypad_armed=%s, digits NOT queued to the model",
+            buf, attempt, _keypad_stays_armed,
+        )
 
     def _commit_dtmf_phone_for_booking(self, phone: str) -> None:
         """A keypad-entered number IS the confirmation — record it as one.
@@ -5510,17 +5656,32 @@ class WebSocketCallHandler:
         # about every one of those resets for no benefit — that path never had
         # the defect, because it has a confirmation step. The v3 / LLM path is
         # the one with no confirmation step and therefore no way to set the flag.
+        # COLLECT_PHONE_RESCHEDULE was missing from this list until C3. It is a
+        # FlowEngine phone-collection state exactly like the other three —
+        # flow.py:9922 groups it with them for `phone_readback_pending`, so it
+        # has its own readback and its own CONFIRM_PHONE gate. The intent guard
+        # above does not cover it either: `v3_caller_intent` is only ever set on
+        # the v3/LLM path (two sites in this file), so on a deterministic
+        # reschedule it is unset and "reschedule" never matches. The state
+        # therefore fell through both guards and set `phone_confirmed` early,
+        # ahead of the ~10 sites that reset it when the caller rejects the
+        # readback — the one thing this helper is documented not to do.
         if self.session.get("state") in (
             "COLLECT_PHONE", "COLLECT_PHONE_RETURNING",
-            "RETURNING_PLAN_COLLECT_PHONE",
+            "COLLECT_PHONE_RESCHEDULE", "RETURNING_PLAN_COLLECT_PHONE",
         ):
             return
-        _digits = re.sub(r"\D", "", phone or "")
-        if len(_digits) < 10:
-            # Below the finalize thresholds this should be unreachable; refuse
-            # to confirm a partial number rather than trusting the caller typed
-            # what they meant to.
+        # Was `len(_digits) < 10`, a fourth private opinion about what counts as
+        # complete, and the one that disagreed with the 9-digit near-complete
+        # path. Sharing the predicate is the point of C3: a number this refuses
+        # can no longer be a number the finalize paths queued.
+        if not _is_valid_uk_mobile(phone):
             return
+        # Store the normalised form. This is what the A3 gate in
+        # receptionist_tools compares the model's `phone` argument against, so
+        # "the number that was confirmed" and "the number on record" must be the
+        # same string, not two spellings of it.
+        phone = _normalise_keypad_number(phone)
         self.session.setdefault("collected", {})["phone"] = phone
         self.session["phone_number"]    = phone
         self.session["phone_confirmed"] = True
