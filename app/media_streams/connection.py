@@ -1242,6 +1242,39 @@ def _is_valid_uk_mobile(phone: str) -> bool:
     return bool(_UK_MOBILE_RE.match(_normalise_keypad_number(phone)))
 
 
+# Explicit rejections of the keypad read-back (C2). Deliberately tight: an
+# unmatched answer falls through to the LLM, which is safe, whereas a false
+# REJECT wipes a number the caller just typed correctly. Ambiguity must land in
+# the fall-through, not here.
+#
+# Note there is no affirmative matcher alongside this one. `_is_use_this_number`
+# already returns True for a bare "yes"/"yeah"/"correct", and the booking
+# verbal-confirm block it feeds is skipped outright once a keypad number is on
+# record (the `phone_entered_by_keypad` guard). So "yes" needs no handling here
+# — it simply falls through to the LLM with the number already confirmed.
+_PHONE_READBACK_REJECT_PHRASES: tuple = (
+    "wrong number", "not right", "isn't right", "isnt right", "not correct",
+    "incorrect", "that's wrong", "thats wrong", "not it", "not that",
+    "try again", "type it again", "start again",
+)
+_PHONE_READBACK_REJECT_WORDS: frozenset = frozenset({
+    "no", "nope", "nah", "wrong", "negative",
+})
+
+
+def _is_phone_readback_rejection(transcript: str) -> bool:
+    """True when the caller is telling us the number we just read back is wrong."""
+    lowered = (transcript or "").strip().lower().rstrip(".!?")
+    if not lowered:
+        return False
+    if any(p in lowered for p in _PHONE_READBACK_REJECT_PHRASES):
+        return True
+    words = _strip_phone_confirm_fillers(lowered).split()
+    # Length-capped so a long turn that merely contains "no" ("no rush, but can
+    # you also tell me about parking?") is not read as a rejection of the number.
+    return bool(words) and len(words) <= 6 and words[0] in _PHONE_READBACK_REJECT_WORDS
+
+
 # Continuation words: if the caller's finalised turn ends on one of these, the
 # 600ms silence that ended it (min_turn_silence, config.py) is almost certainly a
 # mid-sentence thinking pause, not the end of the turn. High-precision by design —
@@ -5423,7 +5456,8 @@ class WebSocketCallHandler:
             )
             self._commit_dtmf_phone_for_booking(complete)
             self._inject_phone_context_for_lookup(complete)
-            await self.transcript_queue.put((time.monotonic(), complete))
+            if not await self._readback_keypad_number(complete):
+                await self.transcript_queue.put((time.monotonic(), complete))
             await save_session(self.call_sid, self.session)
             logger.info("[ms_conn v3] DTMF phone collection complete")
         elif len(buf) >= 10:
@@ -5494,7 +5528,8 @@ class WebSocketCallHandler:
         )
         self._commit_dtmf_phone_for_booking(complete)
         self._inject_phone_context_for_lookup(complete)
-        await self.transcript_queue.put((time.monotonic(), complete))
+        if not await self._readback_keypad_number(complete):
+            await self.transcript_queue.put((time.monotonic(), complete))
         await save_session(self.call_sid, self.session)
         logger.info("[ms_conn v3] DTMF phone collection complete (idle-finalize)")
 
@@ -5554,7 +5589,8 @@ class WebSocketCallHandler:
         )
         self._commit_dtmf_phone_for_booking(complete)
         self._inject_phone_context_for_lookup(complete)
-        await self.transcript_queue.put((time.monotonic(), complete))
+        if not await self._readback_keypad_number(complete):
+            await self.transcript_queue.put((time.monotonic(), complete))
         await save_session(self.call_sid, self.session)
         logger.info("[ms_conn v3] DTMF phone collection complete (near-complete finalize)")
 
@@ -5621,6 +5657,103 @@ class WebSocketCallHandler:
             "[ms_conn] DTMF buffer %r is not a UK mobile — re-ask attempt %d, "
             "keypad_armed=%s, digits NOT queued to the model",
             buf, attempt, _keypad_stays_armed,
+        )
+
+    async def _readback_keypad_number(self, phone: str) -> bool:
+        """Read a just-typed number back and wait for a yes/no (C2).
+
+        Returns True when it has taken the turn over, in which case the caller
+        must NOT also queue the digits as a synthetic transcript — the model
+        would answer at the same time as this read-back.
+
+        Scoped by `phone_entered_by_keypad`, which the commit sets exactly when
+        it accepted the number, and only on the v3 booking path. So the
+        read-back fires iff the commit committed: cancel/reschedule lookups (the
+        number is a search key, and `_inject_phone_context_for_lookup` already
+        drives those) and the deterministic FlowEngine states (which have their
+        own CONFIRM_PHONE readback) are excluded for free, with no second copy
+        of that scoping to keep in sync.
+
+        What this catches, now that C3 and the A3 gate have closed fabrication:
+        a digit Twilio drops or mangles in transit. The caller is the only party
+        who can detect that, so it has to be spoken.
+
+        The number goes in as plain digits. `_spell_phone` (tts_stream.py) turns
+        any phone-shaped span into "oh seven seven oh oh, nine oh oh, …" on the
+        way out — pre-spacing it here would be spelled twice.
+
+        Wording deliberately avoids "keypad"/"type"/"star key": the Spec M
+        sticky rule (~line 9727) re-arms DTMF on any bot line carrying those,
+        and this turn wants the caller's VOICE, not more digits.
+        """
+        if not self.session.get("phone_entered_by_keypad"):
+            return False
+
+        _readback = f"Thanks — I've got {phone}. Is that correct?"
+
+        # The keypad is closed for this turn; the answer is spoken. This also
+        # re-enables the dead-air net, which is suppressed while DTMF is live
+        # (~line 12931), so a caller who says nothing is still re-prompted.
+        self.session["phone_awaiting_dtmf"]  = False
+        self.session["v3_phone_dtmf_active"] = False
+        # One-shot. Cleared unconditionally by the intercept on the very next
+        # turn, so an ambiguous answer cannot leave it armed for a later "no"
+        # about something else to land on and wipe a good number.
+        self.session["v3_keypad_readback_pending"] = True
+
+        # The model never saw the digits (they are not queued), so without this
+        # the caller's "yes" would arrive answering a question absent from the
+        # history.
+        self.session.setdefault("conversation_history", []).append(
+            {"role": "assistant", "content": _readback}
+        )
+        await self.tts_text_queue.put(_readback)
+        self.session["last_bot_prompt"] = _readback
+        self.session["last_question"]   = _readback
+        await save_session(self.call_sid, self.session)
+        logger.info(
+            "[ms_conn v3] keypad number read back for confirmation: %s", phone,
+        )
+        return True
+
+    async def _reject_keypad_number(self) -> None:
+        """The caller said the number we read back is wrong (C2).
+
+        Everything the commit set is torn back down. Leaving `phone_confirmed`
+        True would let book_appointment's A1 gate pass on a number the caller
+        has just told us is wrong, and the A3 gate would then hold the booking
+        to it — the two gates would faithfully deliver the rejected number.
+        """
+        self.session.get("collected", {}).pop("phone", None)
+        self.session.pop("phone_number", None)
+        self.session["phone_confirmed"]         = False
+        self.session["phone_entered_by_keypad"] = False
+        self.session["phone_dtmf_buffer"]       = ""
+        self.session["phone_awaiting_dtmf"]     = True
+        self.session["v3_phone_dtmf_active"]    = True
+        # Not a fresh ladder: a rejected read-back is a failed entry like any
+        # other, so it counts toward the same three rungs and cannot loop.
+        self.session["phone_dtmf_reask_count"] = (
+            int(self.session.get("phone_dtmf_reask_count", 0)) + 1
+        )
+        # The EXACT line clinic_template_prompt mandates for arming the keypad —
+        # not paraphrased, because that wording is what the prompt tells the
+        # model is the only acceptable decline response.
+        _retype = (
+            "No problem — go ahead and type the number on your keypad. "
+            "You can press the star key to reset at any time."
+        )
+        self.session.setdefault("conversation_history", []).append(
+            {"role": "assistant", "content": _retype}
+        )
+        await self.tts_text_queue.put(_retype)
+        self.session["last_bot_prompt"] = _retype
+        self.session["last_question"]   = _retype
+        await save_session(self.call_sid, self.session)
+        logger.warning(
+            "[ms_conn v3] keypad read-back REJECTED by caller — number cleared, "
+            "phone_confirmed=False, keypad re-armed (attempt %d)",
+            self.session["phone_dtmf_reask_count"],
         )
 
     def _commit_dtmf_phone_for_booking(self, phone: str) -> None:
@@ -6513,6 +6646,35 @@ class WebSocketCallHandler:
                         # Stash on the per-call LLMStream so _stream_claude can
                         # stamp t1/t2 without threading a param through 5 call sites.
                         llm._timing = self._turn_timing
+
+                    # ── Keypad read-back answer (C2) ─────────────────────────
+                    # MUST sit above the booking verbal-confirm block below.
+                    # `_is_use_this_number` returns True for a bare "yes", so
+                    # the caller's confirmation here enters that block; it is
+                    # skipped only by its `phone_entered_by_keypad` guard. That
+                    # guard is load-bearing for this feature — if it is ever
+                    # removed, "yes" starts overwriting the typed number with
+                    # the caller ID they declined.
+                    #
+                    # One-shot: the flag is cleared on the first turn after the
+                    # read-back whatever the answer was. An unmatched answer
+                    # must not leave it armed for a later "no" — about parking,
+                    # about anything — to land on and wipe a good number.
+                    if self.session.get("v3_keypad_readback_pending"):
+                        self.session["v3_keypad_readback_pending"] = False
+                        if _is_phone_readback_rejection(utterance):
+                            logger.info(
+                                "[ms_conn v3] keypad read-back rejected: %r",
+                                utterance[:60],
+                            )
+                            await self._reject_keypad_number()
+                            continue
+                        # Affirmative or ambiguous — fall through to the LLM
+                        # unchanged, with the number already confirmed. This is
+                        # today's behaviour for every non-"no" answer, so an
+                        # imperfect rejection matcher can only fail to catch a
+                        # rejection, never invent one.
+                        await save_session(self.call_sid, self.session)
 
                     # ── Booking-flow verbal phone confirm ────────────────────
                     # Reschedule/cancel set v3_awaiting_phone_confirm and have a
