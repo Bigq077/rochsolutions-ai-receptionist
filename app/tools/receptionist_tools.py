@@ -18,7 +18,7 @@ import logging
 import re
 import time as _time
 from datetime import datetime, timedelta, date as _date_type
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import pytz
 
@@ -3440,6 +3440,46 @@ def _phone_key(p: str) -> str:
     return d
 
 
+def _reconcile_booking_phone(
+    args: Dict[str, Any], session: Dict[str, Any]
+) -> Tuple[Optional[str], str]:
+    """Compare the model's `phone` argument against the number actually
+    confirmed on this call.
+
+    Returns ``(corrected_number, reason)``. ``corrected_number`` is the
+    confirmed number when it differs from the argument and the booking should
+    use it instead; ``None`` when there is nothing to change. ``reason`` is a
+    short tag for the caller to log ("match", "mismatch", "no_reference").
+
+    Pure — no session or args mutation — so the A3 gate is testable without
+    executing a booking.
+
+    `phone` is the only identity field on a booking that is model-authored;
+    every other one is machine-captured. On CA3590527b (1 Aug 2026) the caller
+    typed nine digits, the keypad commit refused them as too short, and the
+    model padded them with "00" into a plausible-looking UK mobile —
+    07987124700, a number that appears in no DTMF frame and no transcript. The
+    booking succeeded and two reminders were scheduled to it. The A1 gate
+    cannot catch this: it asks whether *a* number was confirmed, not whether
+    *this* number is that one.
+
+    Every path that sets phone_confirmed also writes collected["phone"]
+    (connection.py x3, flow.py x2) in either local or E.164 form; _phone_key
+    folds both to the same core, so a formatting difference never registers as
+    a mismatch.
+    """
+    _ref = (
+        _gate_text((session.get("collected") or {}).get("phone"))
+        or _gate_text(session.get("phone_number"))
+    )
+    _ref_key = _phone_key(_ref)
+    if not _ref_key:
+        return None, "no_reference"
+    if _phone_key(_gate_text(args.get("phone"))) == _ref_key:
+        return None, "match"
+    return _ref, "mismatch"
+
+
 def _is_placeholder_name(n: str) -> bool:
     """True when a name is a placeholder/non-name and must not reach Acuity."""
     n = (n or "").strip().lower()
@@ -4697,6 +4737,37 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
                 "again."
             ),
         }
+
+    # ── A3: book the number that was confirmed, not the one the model typed ──
+    # Placed above the backend branch so Acuity, Google Calendar and provisional
+    # bookings are all covered by one gate.
+    #
+    # Correct rather than block. The confirmed number is machine-captured and
+    # reachable; the argument is not. Blocking would add a conversational dead
+    # end to the one flow that already loops, and would lose a booking the
+    # caller believes they have — a missed patient to prevent a wrong digit.
+    # A caller reached on a number they did not nominate is recoverable; a
+    # caller reached on a number that does not exist is not.
+    #
+    # phone_confirmed=True with nothing on record should be unreachable, so
+    # fail open there but say so loudly — that combination means one of the
+    # five confirm sites has stopped mirroring and A3 is blind until it is fixed.
+    _a3_fix, _a3_reason = _reconcile_booking_phone(args, session)
+    if _a3_reason == "no_reference":
+        logger.error(
+            "[book] A3 SKIPPED — phone_confirmed=True but no number on record "
+            "(collected.phone=%r phone_number=%r) clinic=%s",
+            _cg_collected.get("phone"), session.get("phone_number"),
+            session.get("clinic_id"),
+        )
+    elif _a3_fix:
+        logger.error(
+            "[book] A3 — booking phone corrected: model passed %r, confirmed "
+            "number is %r; booking on the confirmed number. clinic=%s",
+            args.get("phone"), _a3_fix, session.get("clinic_id"),
+        )
+        session["phone_arg_corrected"] = True
+        args["phone"] = _a3_fix
 
     # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
     if _resolve_clinic_id(session) in ("theorem", "theorem_v2", "theorem_v3"):
