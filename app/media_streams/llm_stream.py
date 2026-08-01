@@ -312,6 +312,63 @@ def _note_spoken_slot_date(session: Dict[str, Any], spoken_text: str) -> None:
         phrase = _spoken_slot_phrase(spoken_text or "")
         if phrase:
             session["last_spoken_slot_phrase"] = phrase
+            _refresh_confirmed_slot_phrase(session, phrase, date)
+
+
+def _refresh_confirmed_slot_phrase(
+    session: Dict[str, Any], phrase: str, date: str
+) -> None:
+    """Move v3_confirmed_slot_phrase onto the day the caller has just agreed to.
+
+    v3_confirmed_slot_phrase is captured ONCE, at the name request
+    (connection.py). A caller who changes day after that never refreshes it, so
+    the Gate-5 date guard in turn_handler finds it naming an abandoned day and
+    stands down — correctly, since it cannot tell which day is right, but it then
+    stays stood down for the REST of the call (CA2c2f9b6a, 2 Aug 2026: the caller
+    moved Thursday -> Friday and every readback from there on ran with the date
+    guard blind). The guard that exists because CA5c4fb14f said "Tuesday the 4th"
+    and booked the 5th must not disarm itself mid-call.
+
+    Refreshing it re-arms the guard on the new day. The condition that makes this
+    safe is the last one:
+
+        the newly spoken day must be the day check_availability last OFFERED.
+
+    Without it this would be circular — Gate 5 rewrites the spoken text, so a
+    correction toward the stale phrase would come back here as "the caller agreed
+    to the stale day" and confirm itself. v3_last_offered_day_iso comes from the
+    tool result and nothing in the gate can touch it, which breaks the loop: a
+    gate-rewritten date names the abandoned day, which by construction is not the
+    day on offer, so it can never refresh anything.
+
+    Never CREATES the key — an absent phrase means the slot flow has not reached
+    the name request, and three other readers treat its presence as "a slot is
+    locked" (connection.py surname straggler, clinic_template_prompt PHONE STEP
+    OUTSTANDING, slot_followup's early return). This only ever moves an existing
+    phrase forward.
+
+    Silent no-op whenever it cannot be sure — no confirmed phrase, an unparseable
+    one, no offered day recorded. Every one of those leaves today's behaviour
+    exactly as it is.
+    """
+    conf = (session.get("v3_confirmed_slot_phrase") or "").strip()
+    if not conf:
+        return
+    conf_date = _phrase_date(conf)
+    if not conf_date or conf_date == date:
+        return                      # nothing captured to move, or already current
+    day_iso = str(session.get("v3_last_offered_day_iso") or "")
+    if len(day_iso) < 10 or day_iso[5:10] != date[5:10]:
+        # Compared on MM-DD for the same reason _confirmed_slot_is_stale does:
+        # the spoken phrase carries no year, so a December call reading into
+        # January would disagree on the year alone and skip a valid refresh.
+        return
+    session["v3_confirmed_slot_phrase"] = phrase
+    logger.info(
+        "[ms_llm] v3_confirmed_slot_phrase refreshed %r -> %r "
+        "(caller moved to the day now on offer, %s)",
+        conf, phrase, day_iso,
+    )
 
 
 # Explicit "I want a DIFFERENT DAY" signals (Bug B, 2026-07-30).
