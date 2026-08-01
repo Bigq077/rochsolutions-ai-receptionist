@@ -220,50 +220,145 @@ def test_the_shared_yes_patterns_were_not_edited():
     )
 
 
-# ── D2: the re-steer must be recorded as the question asked ──────────────────
+# ── State comes from what was SPOKEN, not what was generated ─────────────────
+#
+# The root cause under D1/D2. sanitise_response IS the gate chain and several
+# gates are stateful, so running it a second time at turn end over the raw
+# full_reply fired them twice: Gate 5f, having already re-steered per-chunk,
+# returned "" for the whole reply. And even when it did not blank, it described
+# the GENERATION, not the delivery — so the model's own history said "All
+# booked" when the caller had heard "shall I go ahead?". The model then believed
+# it had confirmed, said it again, and was rewritten again.
 
-def test_gate5f_records_what_the_caller_heard():
-    from app.media_streams import turn_handler as th
-
-    session = {"booking_flow_active": True}
-    spoken = th.sanitise_response("All booked — you're in for Thursday at seven.", session)
-    assert "shall i go ahead" in spoken.lower(), "the re-steer should be spoken"
-    assert session.get("_false_confirm_spoken") == th._FALSE_CONFIRM_RESTEER
-
-
-def test_the_second_pass_still_blanks_but_the_text_survives():
-    """The exact CA7e389a47 mechanism: the end-of-turn sanitise_response over
-    full_reply is Gate 5f's SECOND call, so it returns "". The recorded text is
-    what lets llm_stream restore last_bot_prompt."""
+def test_the_second_gate_pass_is_what_blanked_the_reply():
+    """The mechanism, pinned. This is why deriving state from a second pass over
+    full_reply could never be correct."""
     from app.media_streams import turn_handler as th
 
     session = {"booking_flow_active": True}
     first = th.sanitise_response("All booked — see you Thursday.", session)
     second = th.sanitise_response("All booked — see you Thursday.", session)
-    assert first.strip() != ""
-    assert second.strip() == "", "second pass drops it — this is the bug's source"
-    assert session["_false_confirm_spoken"] == th._FALSE_CONFIRM_RESTEER
+    assert "shall i go ahead" in first.lower(), "first pass re-steers"
+    assert second.strip() == "", "second pass drops it — the source of the bug"
 
 
-def test_the_restore_is_wired_into_the_turn_end():
-    import inspect
-    src = inspect.getsource(ls.LLMStream)
-    assert '_display_reply = session["_false_confirm_spoken"]' in src, (
-        "without this, last_bot_prompt is '' after a re-steer and every "
-        "subsequent book_appointment is blocked as 'question not asked'"
+def test_spoken_chunks_are_accumulated():
+    s = {}
+    ls._record_spoken(s, "So that's Quentin, Thursday the 6th.")
+    ls._record_spoken(s, "Shall I go ahead and book that in?")
+    assert s["_spoken_this_turn"] == (
+        "So that's Quentin, Thursday the 6th. Shall I go ahead and book that in?"
     )
 
 
-def test_the_restored_prompt_satisfies_the_confirmation_gate():
-    """The whole point: what the caller heard must pass the gate that reads
-    last_bot_prompt, or the re-ask can never complete."""
+def test_chunks_are_joined_with_a_space():
+    """ResponseChunker._emit() strips each chunk. Joining without a separator
+    produces "available.Friday 7th August" — the C5 artifact in
+    docs/plan/AUDIT_2026-07-29.md."""
+    s = {}
+    ls._record_spoken(s, "There's nothing else available.")
+    ls._record_spoken(s, "Friday 7th August has two slots.")
+    assert "available.Friday" not in s["_spoken_this_turn"]
+    assert "available. Friday" in s["_spoken_this_turn"]
+
+
+def test_empty_chunks_are_ignored():
+    s = {}
+    for junk in ("", "   ", None):
+        ls._record_spoken(s, junk)
+    assert not s.get("_spoken_this_turn")
+
+
+def test_the_accumulator_is_cleared_each_turn():
+    """Or a turn inherits the previous turn's speech as its own."""
+    import inspect
+    src = inspect.getsource(ls.LLMStream)
+    assert 'session.pop("_spoken_this_turn", None)' in src
+
+
+def test_the_turn_end_prefers_spoken_and_falls_back():
+    """The fallback is load-bearing: SAFE_FALLBACK_PHRASE, the guaranteed
+    fallback, the Gate-5 fallback and the ack filler all speak WITHOUT passing
+    through the chunk seam. A turn carried entirely by one of those must not
+    blank last_bot_prompt."""
+    import inspect
+    src = inspect.getsource(ls.LLMStream)
+    assert '_spoken_turn = (session.pop("_spoken_this_turn", "") or "").strip()' in src
+    assert "_display_reply = sanitise_response(full_reply, session)" in src, (
+        "the no-chunks fallback was removed — a fallback-only turn would blank "
+        "the state"
+    )
+
+
+def test_history_records_what_was_heard_and_turns_stays_raw():
+    """conversation_history feeds the model its own prior turns, so it must hold
+    what was actually said. session["turns"] feeds live clinics' owner summaries
+    and the SMS router and is deliberately left on the raw shape."""
+    s = {}
+    ls._append_history(
+        s, "um go for it",
+        "Sorry — before I confirm anything, shall I go ahead and book that in for you?",
+        raw_text="All booked — you're in for Thursday.",
+    )
+    assert "shall i go ahead" in s["conversation_history"][-1]["content"].lower()
+    assert s["turns"][-1]["text"] == "All booked — you're in for Thursday."
+
+
+def test_the_model_is_never_told_it_said_something_it_did_not():
+    """The loop's engine. With the raw claim in history the model reads back its
+    own "All booked", believes the booking happened, and re-claims it — which
+    Gate 5f rewrites again, forever."""
+    s = {}
+    ls._append_history(
+        s, "um go for it",
+        "Sorry — before I confirm anything, shall I go ahead and book that in for you?",
+        raw_text="All booked — you're in for Thursday.",
+    )
+    assert "all booked" not in s["conversation_history"][-1]["content"].lower()
+
+
+def test_what_the_caller_heard_satisfies_the_confirmation_gate():
+    """The re-steer must contain the phrase the book gate looks for, or the
+    re-ask can never complete however good the affirmation matcher is."""
     from app.media_streams import turn_handler as th
 
     lbp = th._FALSE_CONFIRM_RESTEER.lower()
     assert "shall i go ahead" in lbp or "book that in" in lbp
 
 
-def test_the_spoken_marker_is_cleared_each_turn():
+def test_the_old_stash_patch_is_gone():
+    """It papered over the second stateful pass; the accumulator removes the
+    need for it. Leaving both would mean two mechanisms for one fact."""
     import inspect
-    src = inspect.getsource(ls.LLMStream)
-    assert 'session.pop("_false_confirm_spoken", None)' in src
+    from app.media_streams import turn_handler as th
+    assert "_false_confirm_spoken" not in inspect.getsource(th)
+    assert "_false_confirm_spoken" not in inspect.getsource(ls)
+
+
+# ── Client construction (found by reading CA7d46c2bc back) ───────────────────
+
+def test_the_classifier_passes_its_api_key_explicitly():
+    """Every other Anthropic client in this module passes api_key explicitly.
+    A classifier that cannot authenticate fails closed — indistinguishable, in
+    the transcript, from the caller having said no."""
+    import inspect
+    src = inspect.getsource(ls._classifier_client)
+    assert "api_key=ANTHROPIC_API_KEY" in src
+
+
+def test_the_classifier_client_is_reused():
+    """A per-call client pays connection setup inside the timeout budget. The
+    first such call measured 1.8s locally before it even reached auth — a
+    fail-closed timeout on the caller's first 'go for it'."""
+    ls._classifier_client_cached = None
+    a = ls._classifier_client()
+    b = ls._classifier_client()
+    assert a is b
+
+
+def test_the_timeout_leaves_room_for_a_cold_call():
+    from app.media_streams import config
+    assert 1.2 <= config.BOOK_CLASSIFIER_TIMEOUT_S <= 2.0, (
+        "too tight and a cold connection fails closed; too loose and it "
+        "outlasts the filler that is covering it"
+    )

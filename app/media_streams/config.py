@@ -232,7 +232,7 @@ BOOK_CLASSIFIER_ENABLED = os.getenv(
 # Short and explicit. The write-ack filler is already playing when the gate runs
 # (measured 1.25s ahead of it), so this hides under audio; an unbounded wait
 # here would be dead air at the exact moment the caller expects to be booked.
-BOOK_CLASSIFIER_TIMEOUT_S = float(os.getenv("BOOK_CLASSIFIER_TIMEOUT_S", "1.0"))
+BOOK_CLASSIFIER_TIMEOUT_S = float(os.getenv("BOOK_CLASSIFIER_TIMEOUT_S", "1.5"))
 
 # Backwards-compatible aliases matching realtime.py naming
 CLAUDE_MODEL       = SONNET

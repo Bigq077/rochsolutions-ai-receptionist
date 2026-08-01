@@ -594,6 +594,35 @@ def _book_verdict_deterministic(text: str) -> str:
     return "unsure"
 
 
+_classifier_client_cached = None
+
+
+def _classifier_client():
+    """One reused client for L2.
+
+    Two fixes over the first cut, both found by reading CA7d46c2bc back:
+
+    1. `api_key` is passed explicitly, matching how this module builds its main
+       client (line ~805). `AsyncAnthropic()` with no argument only works when
+       the key happens to be in os.environ; every other client here is explicit,
+       and a classifier that silently cannot authenticate fails closed — which
+       looks exactly like the caller having said no.
+    2. Built once. A per-call client pays connection setup inside a 1.5s budget;
+       the first such call measured 1.8s locally before it even reached auth.
+       That is a fail-closed timeout on the caller's first "go for it" and
+       nothing in the transcript would explain it.
+    """
+    global _classifier_client_cached
+    if _classifier_client_cached is None:
+        import anthropic as _anthropic
+        _classifier_client_cached = _anthropic.AsyncAnthropic(
+            api_key=ANTHROPIC_API_KEY,
+            timeout=_BOOK_CLASSIFIER_TIMEOUT_S,
+            max_retries=0,          # the wait_for below is the only budget
+        )
+    return _classifier_client_cached
+
+
 async def _classify_book_reply(text: str) -> str:
     """L2 — Haiku on the utterances L1 could not settle. 'yes' | 'no'.
 
@@ -607,11 +636,8 @@ async def _classify_book_reply(text: str) -> str:
     the caller is waiting to be booked. 1.0s fits inside the write-ack filler
     that is already playing (measured: filler queued 1.25s before the gate).
     """
-    import anthropic as _anthropic
-
-    client = _anthropic.AsyncAnthropic(timeout=_BOOK_CLASSIFIER_TIMEOUT_S)
     resp = await asyncio.wait_for(
-        client.messages.create(
+        _classifier_client().messages.create(
             model=HAIKU,
             max_tokens=5,
             temperature=0,
@@ -1080,23 +1106,38 @@ class LLMStream:
             # Computed BEFORE _append_history (2026-07-29) so the obs record can be
             # given the spoken form. Same single sanitise_response call as before,
             # just ordered earlier — no extra pass over the reply.
-            _display_reply = sanitise_response(full_reply, session)
-            # D2 — Gate 5f is stateful and this is its SECOND invocation this
-            # turn (the first ran per-chunk on the way to TTS). Having already
-            # re-steered, it drops this whole pass to "". What the caller heard
-            # was the re-steer, so that is what last_bot_prompt and the history
-            # must record; "" leaves the session believing the confirmation
-            # question was never asked, and the book gate below reads exactly
-            # that. Narrow on purpose: only when the gate fired this turn AND
-            # the pass came back empty.
-            if not _display_reply.strip() and session.get("_false_confirm_spoken"):
-                _display_reply = session["_false_confirm_spoken"]
-                logger.info(
-                    "[ms_llm] D2 — last_bot_prompt restored to the spoken "
-                    "re-steer (Gate 5f blanked the end-of-turn pass)"
-                )
+            # What the caller HEARD, accumulated per-chunk as Gate 5 released it
+            # (_record_spoken). This replaces a second sanitise_response() pass
+            # over the raw full_reply, which was wrong twice over:
+            #
+            #   1. sanitise_response IS the gate chain, and several gates are
+            #      stateful. Running it again at turn end fired them a second
+            #      time on text they had already processed. Gate 5f, having
+            #      re-steered per-chunk, took its already-fired branch and
+            #      returned "" for the WHOLE reply — so last_bot_prompt went
+            #      empty at the exact moment the caller had just been asked the
+            #      confirmation question, and every later book_appointment was
+            #      blocked as "question not asked". CA7e389a47.
+            #   2. Even when it did not blank, it described the model's
+            #      GENERATION, not the delivery. Gate 5f rewrites what is
+            #      spoken; the raw text still claimed "All booked". Feeding that
+            #      back as the model's own memory is why it kept re-claiming a
+            #      booking it had never actually announced.
+            #
+            # Fallback to the old derivation when nothing was recorded: several
+            # paths speak without passing through the chunk seam (SAFE_FALLBACK,
+            # the guaranteed fallback, the Gate-5 fallback, the ack filler). A
+            # turn carried entirely by one of those must not blank the state.
+            _spoken_turn = (session.pop("_spoken_this_turn", "") or "").strip()
+            if _spoken_turn:
+                _display_reply = _spoken_turn
+            else:
+                _display_reply = sanitise_response(full_reply, session)
+            # assistant_text -> conversation_history + obs (what was heard).
+            # raw_text -> session["turns"] only, which feeds live clinics' owner
+            # summaries and SMS windows and stays on the raw shape.
             _append_history(
-                session, user_text, full_reply, spoken_text=_display_reply
+                session, user_text, _display_reply, raw_text=full_reply
             )
             # SPEC 4: store the phonetic (TTS-substituted) form so that
             # last_bot_prompt reflects what was actually spoken — used by the
@@ -1439,7 +1480,10 @@ class LLMStream:
         # call-scoped, so once one succeeds the guard stays off for the rest of
         # the call.
         session["_false_confirm_resteered"] = False
-        session.pop("_false_confirm_spoken", None)
+        # What the caller hears this turn, accumulated by _record_spoken as each
+        # post-Gate-5 chunk is released. Cleared here so a turn can never inherit
+        # the previous turn's speech.
+        session.pop("_spoken_this_turn", None)
         # L1/L2: the affirmation verdict is memoised per turn. The tool loop can
         # retry book_appointment up to MAX_TOOL_ITERATIONS times (CA7e389a47 did
         # three in one turn), and without this each retry would re-run the
@@ -2013,6 +2057,7 @@ class LLMStream:
                                 # GATE 5: sanitise before TTS
                                 chunk = sanitise_response(chunk, session)
                                 if chunk:
+                                    _record_spoken(session, chunk)
                                     # t2 — first content chunk to TTS (WS-A gate cost)
                                     if self._timing is not None:
                                         self._timing.stamp("t2")
@@ -2040,6 +2085,7 @@ class LLMStream:
                 # GATE 5: sanitise flush chunk before TTS
                 final_chunk = sanitise_response(final_chunk, session)
                 if final_chunk:
+                    _record_spoken(session, final_chunk)
                     # t2 fallback — whole reply arrived as a single flush chunk
                     # (first-write-wins, so a no-op if t2 already stamped above).
                     if self._timing is not None:
@@ -3019,29 +3065,75 @@ def _advance_fp_state(session: Dict[str, Any], turn_type: Any) -> None:
     pass
 
 
+def _record_spoken(session: Dict[str, Any], chunk: str) -> None:
+    """Accumulate one post-Gate-5 chunk — the text the caller actually hears.
+
+    Recorded HERE, synchronously inside the turn, and deliberately not in
+    connection.py's TTS loop even though that loop is strictly closer to the
+    audio. The loop runs asynchronously: on CA7e389a47 the turn-end derivation
+    ran at 18:34:24.023 and the ElevenLabs request for the same text went out at
+    .133, so anything read from the loop at turn end is empty or partial.
+
+    The known cost of the earlier seam: `_pre_slot_cancelled`
+    (connection.py ~11478) can still drop a chunk recorded here, and phonetic
+    substitution happens later. Neither makes this worse than what it replaces —
+    the previous source was the RAW generated reply, which contains the dropped
+    text too and has had no gate applied at all. This is strictly closer to what
+    was spoken, not perfectly equal to it.
+
+    Chunks arrive already stripped (ResponseChunker._emit), so they are joined
+    with an explicit space. Joining without one produces "available.Friday 7th
+    August" — the C5 artifact recorded in docs/plan/AUDIT_2026-07-29.md.
+    """
+    if not chunk or not chunk.strip():
+        return
+    _prev = session.get("_spoken_this_turn") or ""
+    session["_spoken_this_turn"] = (_prev + " " + chunk.strip()).strip() if _prev else chunk.strip()
+
+
 def _append_history(
     session: Dict[str, Any],
     user_text: str,
     assistant_text: str,
     spoken_text: Optional[str] = None,
+    raw_text: Optional[str] = None,
 ) -> None:
     """Append a user/assistant exchange to conversation_history, trim to MAX_HISTORY_TURNS.
 
-    `assistant_text` is the model's raw reply — what it generated.
-    `spoken_text` is what actually reached TTS after Gate 5, i.e. what the caller
-    heard. Pass it whenever the two can differ (the streaming LLM path); omit it
-    on deterministic paths (fast path, slot follow-up) where the text we queue IS
-    the text we speak.
+    `assistant_text` is what the caller HEARD — the post-Gate-5 text. As of
+    2026-08-02 conversation_history stores this rather than the raw generation.
 
-    Only the obs record uses `spoken_text` — see the note at the obs_turns append
-    for why conversation_history deliberately keeps the raw form.
+    `raw_text` is what the model produced. It is kept ONLY for session["turns"],
+    which feeds the owner-facing actionable summary and the SMS router for live
+    clinics and has always been tuned against the raw shape (see the note below).
+    Defaults to assistant_text on the deterministic paths, where the text we
+    queue IS the text we speak.
+
+    `spoken_text` overrides what the obs record stores; it now normally equals
+    assistant_text and is kept for callers that pass it explicitly.
+
+    WHY history changed (CA7d46c2bc / CA7e389a47, 1 Aug 2026). Gate 5f rewrites
+    the SPOKEN text when the model claims a booking that never happened, but
+    history used to record the claim. So the model read back its own "All
+    booked — you're in for Thursday", believed it had already confirmed, and
+    said it again; Gate 5f rewrote it again. Three affirmatives from the caller,
+    no booking, and nothing in the model's context ever revealed that the
+    sentence it thought it had spoken was never said out loud.
+
+    The note below scoped this out on 2026-07-29 as "worth revisiting,
+    separately, with their own tests". This is that revisit. session["turns"]
+    and the SMS path remain out of scope, as it said.
     """
     history: List[dict] = session.setdefault("conversation_history", [])
     history.append({"role": "user",      "content": user_text})
     history.append({"role": "assistant", "content": assistant_text})
     if len(history) > MAX_HISTORY_TURNS:
         session["conversation_history"] = history[-MAX_HISTORY_TURNS:]
-    session.setdefault("turns", []).append({"role": "assistant", "text": assistant_text})
+    # Raw, deliberately — live clinics' summaries and SMS windows are tuned
+    # against this shape and must not move as a side effect of the history fix.
+    session.setdefault("turns", []).append(
+        {"role": "assistant", "text": raw_text if raw_text is not None else assistant_text}
+    )
 
     # Both sides of the exchange, for the observability capture/judge (app/obs/**).
     # The judge cannot score a call it can only half-hear, and session["turns"] on
