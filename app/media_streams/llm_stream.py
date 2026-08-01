@@ -64,6 +64,8 @@ from .config import (
     F_COLLECTED,
     WS_A_FAST_FIRST_CHUNK,
     WS_A_MIN_WORDS_FIRST,
+    BOOK_CLASSIFIER_ENABLED,
+    BOOK_CLASSIFIER_TIMEOUT_S as _BOOK_CLASSIFIER_TIMEOUT_S,
 )
 from .chunker import ResponseChunker
 from .fast_path import try_fast_path
@@ -526,6 +528,154 @@ def _book_reply_is_affirmative(messages) -> bool:
     return is_yes and not is_no
 
 
+# ── The affirmation verdict: L1 deterministic, L2 classifier ────────────────
+#
+# `_book_reply_is_affirmative` above is INTENTIONALLY left alone. It still feeds
+# the FM-25 write-ack filler (one call site) and is imported directly by
+# tests/regression/test_write_ack_filler_gate.py, which calls it synchronously.
+# Making it async to add a classifier would break both. The gates get their own
+# function instead.
+#
+# Why this exists at all — measured against the live pattern sets on 1 Aug 2026:
+#
+#     "go for it"                         BOOK=False  <- CA7e389a47, lost booking
+#     "crack on" / "go on then"           BOOK=False
+#     "don't do it"                       BOOK=True   <- WRONG booking
+#     "don't book it"                     BOOK=True   <- WRONG booking
+#     "yes but can we do friday instead"  BOOK=True   <- books the WRONG SLOT
+#
+# Substring matching cannot be repaired by adding more substrings: adding
+# "go for it" to the yes list also makes "don't go for it" book. The negation
+# and correction cues below are what close the wrong-booking half, and they are
+# deterministic — no classifier is involved in that decision.
+
+# A yes token immediately behind one of these is a refusal, not a confirmation.
+_NEGATION_CUES: tuple = (
+    "don't", "dont", "do not", "please don't", "please dont", "rather not",
+    "no need", "hold off", "not yet",
+)
+# An affirmative paired with one of these is a correction in progress. FM-01's
+# docstring already required blocking these ("yes, actually no"); only the
+# literal "actually no" was ever caught.
+_CORRECTION_CUES: tuple = (
+    "but ", "but,", "instead", "actually", "hang on", "hold on", "wait",
+    "can we", "could we", "can i", "change", "different", "rather",
+    "sorry", "although",
+)
+
+
+def _book_verdict_deterministic(text: str) -> str:
+    """L1 — 'yes' | 'no' | 'unsure', with no network call.
+
+    Ordering is the safety property: negation and correction are checked BEFORE
+    the affirmative, so "don't book it" and "yes but can we do Friday instead"
+    can never reach the yes branch. Anything this cannot settle returns 'unsure'
+    and is handed to L2 — it never guesses.
+    """
+    from app.media_streams.fast_path import _YES_PATTERNS, _NO_PATTERNS
+    t = " " + (text or "").strip().lower() + " "
+    if not t.strip():
+        return "no"          # absent reply is not consent
+    if any(c in t for c in _NEGATION_CUES):
+        return "no"
+    if any(p in t for p in _NO_PATTERNS):
+        return "no"
+    _is_yes = any(p in t for p in _YES_PATTERNS)
+    if _is_yes and any(c in t for c in _CORRECTION_CUES):
+        # "yeah actually hang on", "yes but can we do Friday instead" — an
+        # affirmative the caller is retracting. 'no', not 'unsure': FM-01
+        # requires that these never book, and a hard requirement should not be
+        # delegated to a classifier that could return yes. The cost of the
+        # stricter reading is a re-ask on "yes, sorry, go ahead" — which is the
+        # trade this gate is explicitly biased toward.
+        return "no"
+    if _is_yes:
+        return "yes"
+    return "unsure"
+
+
+async def _classify_book_reply(text: str) -> str:
+    """L2 — Haiku on the utterances L1 could not settle. 'yes' | 'no'.
+
+    Fails CLOSED (returns 'no'), which routes to a re-ask rather than a booking.
+    That is only a safe default because the re-ask path works — it did not
+    before the D2 fix in this same commit, where Gate 5f's re-steer left
+    last_bot_prompt empty and the re-ask could never satisfy the gate.
+
+    Timeout is explicit and short. Every other Haiku call in this codebase has
+    none, and on the booking turn an unbounded hang is dead air at the moment
+    the caller is waiting to be booked. 1.0s fits inside the write-ack filler
+    that is already playing (measured: filler queued 1.25s before the gate).
+    """
+    import anthropic as _anthropic
+
+    client = _anthropic.AsyncAnthropic(timeout=_BOOK_CLASSIFIER_TIMEOUT_S)
+    resp = await asyncio.wait_for(
+        client.messages.create(
+            model=HAIKU,
+            max_tokens=5,
+            temperature=0,
+            system=(
+                "You judge whether a caller consented to an action a receptionist "
+                "just offered. Answer with exactly one word: YES or NO.\n"
+                "YES only if they are agreeing to go ahead now.\n"
+                "NO if they are declining, hesitating, asking a question, "
+                "correcting a detail, or asking to wait."
+            ),
+            messages=[{
+                "role": "user",
+                "content": (
+                    "The receptionist asked whether to go ahead. "
+                    f"The caller replied: \"{text}\"\nYES or NO?"
+                ),
+            }],
+        ),
+        timeout=_BOOK_CLASSIFIER_TIMEOUT_S,
+    )
+    _answer = (resp.content[0].text or "").strip().lower() if resp.content else ""
+    return "yes" if _answer.startswith("y") else "no"
+
+
+async def _book_reply_verdict(messages, session) -> bool:
+    """True when the caller clearly consented. Used by FM-01 and FM-23.
+
+    L1 settles the clear cases with no network call and no latency; only the
+    genuinely ambiguous middle reaches L2. Memoised per turn because the tool
+    loop retries book_appointment on a block and the utterance cannot change
+    between retries.
+    """
+    text = _last_user_text(messages or []).lower()
+    _cache = session.get("_book_verdict_cache") or {}
+    if text in _cache:
+        return _cache[text]
+
+    verdict = _book_verdict_deterministic(text)
+    if verdict == "unsure":
+        if not BOOK_CLASSIFIER_ENABLED:
+            # Flag off: behave as today — an unsettled reply blocks and re-asks.
+            verdict = "no"
+            logger.info("[ms_llm] L2 disabled — unsure reply blocks: %r", text[:60])
+        else:
+            try:
+                verdict = await _classify_book_reply(text)
+                logger.info(
+                    "[ms_llm] L2 classifier: %r -> %s", text[:60], verdict,
+                )
+            except Exception as exc:
+                verdict = "no"
+                logger.error(
+                    "[ms_llm] L2 classifier failed (%r) — failing closed to a "
+                    "re-ask, NOT to a booking", exc,
+                )
+    else:
+        logger.info("[ms_llm] L1 verdict: %r -> %s", text[:60], verdict)
+
+    _result = verdict == "yes"
+    _cache[text] = _result
+    session["_book_verdict_cache"] = _cache
+    return _result
+
+
 def _cancel_reply_consents(messages) -> bool:
     """FM-23: cancel_appointment is DESTRUCTIVE — it may fire only on an EXPLICIT
     cancel instruction, in the template cancel-retention context. The confirm is
@@ -931,6 +1081,20 @@ class LLMStream:
             # given the spoken form. Same single sanitise_response call as before,
             # just ordered earlier — no extra pass over the reply.
             _display_reply = sanitise_response(full_reply, session)
+            # D2 — Gate 5f is stateful and this is its SECOND invocation this
+            # turn (the first ran per-chunk on the way to TTS). Having already
+            # re-steered, it drops this whole pass to "". What the caller heard
+            # was the re-steer, so that is what last_bot_prompt and the history
+            # must record; "" leaves the session believing the confirmation
+            # question was never asked, and the book gate below reads exactly
+            # that. Narrow on purpose: only when the gate fired this turn AND
+            # the pass came back empty.
+            if not _display_reply.strip() and session.get("_false_confirm_spoken"):
+                _display_reply = session["_false_confirm_spoken"]
+                logger.info(
+                    "[ms_llm] D2 — last_bot_prompt restored to the spoken "
+                    "re-steer (Gate 5f blanked the end-of-turn pass)"
+                )
             _append_history(
                 session, user_text, full_reply, spoken_text=_display_reply
             )
@@ -1275,6 +1439,12 @@ class LLMStream:
         # call-scoped, so once one succeeds the guard stays off for the rest of
         # the call.
         session["_false_confirm_resteered"] = False
+        session.pop("_false_confirm_spoken", None)
+        # L1/L2: the affirmation verdict is memoised per turn. The tool loop can
+        # retry book_appointment up to MAX_TOOL_ITERATIONS times (CA7e389a47 did
+        # three in one turn), and without this each retry would re-run the
+        # classifier on an utterance that has not changed.
+        session.pop("_book_verdict_cache", None)
         _flow_suppressed: bool = False
 
         for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
@@ -2486,7 +2656,9 @@ class LLMStream:
                             "confirmation."
                         ),
                     }
-                elif tool_name == "book_appointment" and not _book_reply_is_affirmative(messages):
+                elif tool_name == "book_appointment" and not await _book_reply_verdict(
+                    messages, session
+                ):
                     # FM-01: the confirmation question was asked (the guard above
                     # passed) but the caller has not given a clear yes. Block on a
                     # negative, ambiguous or absent reply, or an affirmative paired
@@ -2509,7 +2681,7 @@ class LLMStream:
                     }
                 elif tool_name == "reschedule_appointment" and not (
                     "move it for you" in (session.get("last_bot_prompt") or "").lower()
-                    and _book_reply_is_affirmative(messages)
+                    and await _book_reply_verdict(messages, session)
                 ):
                     # FM-23: reschedule gate — mirrors FM-01. The template reschedule
                     # CTA is the enforced "Shall I go ahead and move it for you?".

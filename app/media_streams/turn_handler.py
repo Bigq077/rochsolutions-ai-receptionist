@@ -879,6 +879,17 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
         )
         if not session.get("_false_confirm_resteered"):
             session["_false_confirm_resteered"] = True
+            # D2: record what the caller actually HEARS. sanitise_response runs
+            # twice per turn — per-chunk on the way to TTS, and again over the
+            # whole raw full_reply so last_bot_prompt can be derived from it.
+            # This gate is stateful, so that second pass takes the `else` branch
+            # below and returns "" for the entire reply. last_bot_prompt then
+            # became "" while the caller had just been asked the confirmation
+            # question, and llm_stream's confirmation gate — which looks for
+            # "shall i go ahead" in last_bot_prompt — blocked every subsequent
+            # book_appointment as "question not asked". CA7e389a47 looped that
+            # way through five caller affirmatives and ended unbooked.
+            session["_false_confirm_spoken"] = _FALSE_CONFIRM_RESTEER
             logger.error(
                 "[ms_gate5f] false booking confirmation with no successful "
                 "book_appointment — re-steering to the confirmation question: %r",

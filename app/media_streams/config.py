@@ -218,6 +218,22 @@ SONNET = "claude-sonnet-4-6"
 # Fast LLM (simple turns after fast/info tools: collect_and_store, get_clinic_info)
 HAIKU = "claude-haiku-4-5-20251001"
 
+# ── Booking-affirmation classifier (L2) ─────────────────────────────────────
+# The book/reschedule gates settle clear yes/no answers deterministically (L1)
+# and hand only the ambiguous middle to Haiku. Default ON: with it OFF an
+# unsettled reply blocks and re-asks, which is the pre-1-Aug-2026 behaviour and
+# the reason CA7e389a47 lost a booking ("go for it" matched nothing).
+# Set BOOK_CLASSIFIER_ENABLED=false to disable without a redeploy if the
+# classifier misbehaves live — L1 alone is still strictly better than before,
+# because it is what blocks "don't book it" and "yes but make it Friday".
+BOOK_CLASSIFIER_ENABLED = os.getenv(
+    "BOOK_CLASSIFIER_ENABLED", "true"
+).lower() == "true"
+# Short and explicit. The write-ack filler is already playing when the gate runs
+# (measured 1.25s ahead of it), so this hides under audio; an unbounded wait
+# here would be dead air at the exact moment the caller expects to be booked.
+BOOK_CLASSIFIER_TIMEOUT_S = float(os.getenv("BOOK_CLASSIFIER_TIMEOUT_S", "1.0"))
+
 # Backwards-compatible aliases matching realtime.py naming
 CLAUDE_MODEL       = SONNET
 CLAUDE_MAX_TOKENS  = 1024
