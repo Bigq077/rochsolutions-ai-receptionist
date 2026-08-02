@@ -27,9 +27,9 @@ implying more confidence than exists.
 
 | Track | Items | State |
 |---|---|---|
-| Closed | `U-06`, `B-18`, `B-13`, `B-14` | Shipped 2 Aug with tests |
+| Closed | `U-06`, `B-18`, `B-13`, `B-14`, `B-15` | Shipped 2 Aug with tests |
 | Parked | `B-01` – `B-04` | Two provisioning items + the name work — owner decision, not capacity |
-| Track A — deterministic, no dial time | `B-15`, `B-17` (both anchored, plans written), then `B-09` | Next up |
+| Track A — deterministic, no dial time | `B-17` (anchored, plan written), then `B-09` | Next up |
 | Track B — needs an owner decision | `B-19` / `B-07` | Blocked on filler cadence |
 | Track C — prompt-side, needs dial time | `B-06` `B-08` `B-10` `B-11` `B-12` `B-16` | After Track A |
 | Track D — verification only | `U-02` – `U-05` | Needs a phone |
@@ -146,7 +146,26 @@ Redditch may not be live vocabulary on this branch at all (several
 changing anything** — one call where Susie says the word settles it.
 
 #### `B-15` · `capture_phase` mislabelled
-**ANCHORED 2 Aug. Root cause: a sticky flag outranks the live question.**
+**CLOSED — `f0f7de1`, 2 Aug.** Fixed as planned below, plus one adjacent defect
+found while writing the diff: the phone branch had only hard flags where the name
+branch had a prompt fallback, and `v3_awaiting_phone_confirm` is set in exactly
+one place (connection.py:5292, the reschedule/cancel DTMF path). On an ordinary
+booking the phone step therefore **never** resolved to `"phone"` — so the phone
+re-ask wording at connection.py:13535 was unreachable on the booking path. Both
+had to move together: reordering alone would have demoted the phone step from
+`"name"` to `"conversation"`, trading a wrong label for a worse one.
+Test: `tests/regression/test_capture_phase_follows_the_question.py`, 20 cases;
+11 verified failing on the parent commit, and the 9 that pass there are exactly
+the invariants the fix preserves.
+
+**Behaviour change to watch on the next sweep:** dead air at the phone step now
+answers *"is the number you're calling on the best one to reach you? Just say use
+this number"* instead of asking for the name again. That branch is pre-existing
+and was written for this case; this is the first build on which it can fire.
+
+Original analysis follows.
+
+**Root cause: a sticky flag outranked the live question.**
 
 Not one of the three call sites — the resolver itself.
 [`capture_phase()`](../../app/media_streams/latency_timing.py) (latency_timing.py:74-100)

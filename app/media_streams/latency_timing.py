@@ -71,31 +71,111 @@ def _active_flags() -> str:
     return "|".join(on)
 
 
-def capture_phase(session: dict) -> str:
-    """Which flow phase the turn ended in — enum only, never the digits/name.
+# Markers that identify the phone question as the one on the table (B-15).
+#
+# Deliberately a SUBSET of _PHONE_STEP_MARKERS in app/prompts/clinic_template_prompt.py
+# — the vetted list for "has the phone question been put to the caller?". Copied
+# rather than imported to keep this module stdlib-only: it is a leaf on the
+# per-turn hot path, and importing a 2,500-line prompt module for nine strings
+# would buy a cold-start cost for nothing. test_capture_phase_follows_the_question.py
+# asserts the subset relation, so the two cannot drift apart silently.
+#
+# ONE member of that list is excluded on purpose: "on your keypad". It also
+# appears in the LOCATION rung-3 prompt (connection.py:688, flow.py:9901 —
+# "on your keypad, just press 1 for Awlstuh"), so keying on it would classify a
+# location question as phone capture. Nothing is lost: every phone-keypad prompt
+# says "type the number" in the same breath, and once digits are actually being
+# typed v3_phone_dtmf_active is set and the flag branch below catches it first.
+_PHONE_QUESTION_MARKERS: tuple = (
+    "use this number",
+    "best one for your",
+    "best number",
+    # Step 8's read-back opener, for a turn clipped before "best number" reaches
+    # last_bot_prompt. Generic enough that the model could in principle say
+    # "I've got you on Thursday", but it does not: the template mandates this
+    # opener for the phone step only. The dead-air consumer also tests
+    # v3_location_q_active and v3_awaiting_slot_selection BEFORE the phase, so a
+    # stray match cannot reach the phone re-ask from a location or slot turn.
+    "i've got you on",
+    "ive got you on",
+    "number you're calling on",
+    "number you're calling from",
+    "number you're ringing",
+    "type the number",
+)
 
-    Used by WS-C's safety gate: any clipped/abandoned turn in phone/name capture
-    is a hard fail. Derived from existing session flags; returns one of
-    ``conversation | phone | name``.
+_NAME_QUESTION_MARKERS: tuple = ("your name", "first name", "surname", "full name")
+
+
+def capture_phase(session: dict) -> str:
+    """Which phase the turn belongs to — enum only, never the digits/name.
+
+    Returns one of ``conversation | phone | name``. Three consumers, and the
+    ordering below is what keeps them honest:
+
+      * the dead-air re-ask (connection.py, live regardless of LATENCY_TIMING) —
+        picks the wording, so this answers "what did Susie just ask?";
+      * the ``[LAT]`` / ``[LAT-EP]`` lines — per-phase latency and cutoff buckets;
+      * ``_ws_c_apply_endpoint_profile`` — raises the endpointer's silence floor
+        during capture so a spelled name or read-out number cannot be clipped.
+
+    B-15 (2 Aug 2026) — the question on the table now outranks a stale flag.
+    ``v3_awaiting_surname`` is sticky by design: it has three assignment sites,
+    all in ``_v3_try_capture_name``, and both False-sites require a surname to
+    have actually been found (connection.py:1790 — "nothing clears it when the
+    conversation moves on"). It stays True so a later bare straggler word can be
+    back-filled as the surname, which is load-bearing and must NOT be changed.
+
+    But it was tested BEFORE the prompt, so a caller who gave a first name only
+    was in phase "name" for the rest of the call — the slot choice, the phone
+    step, the booking confirmation, the closing. The cost was audible: a caller
+    who went quiet at the booking-confirm step was answered with "could I take
+    your first name and surname again?".
+
+    So the flag is now a FALLBACK, consulted only when no prompt was recorded at
+    all — the genuine "we cannot tell" case — rather than an override of a
+    question we can read. A live prompt about anything else ends name capture,
+    which is the whole fix.
+
+    Second defect closed in the same pass: the phone branch had only hard flags
+    where the name branch had a prompt fallback, and ``v3_awaiting_phone_confirm``
+    is set in exactly ONE place (connection.py:5292, the reschedule/cancel DTMF
+    path). On an ordinary booking the phone step therefore never resolved to
+    "phone" — it read "name" when the surname flag was stuck and "conversation"
+    otherwise, which left the phone re-ask wording unreachable on the booking
+    path. Phone now has the symmetric prompt test.
     """
     if not session:
         return "conversation"
-    # Phone capture: DTMF entry active, or awaiting a verbal "use this number".
+
+    # 1 · Hard flags first. Both are set and cleared tightly around the moment
+    #     they describe, so when either is on it beats any reading of the text.
     if (
         session.get("v3_phone_dtmf_active")
         or session.get("v3_awaiting_phone_confirm")
     ):
         return "phone"
-    # Name capture: first-name locked and awaiting surname, or the current
-    # prompt is a name question.
-    if session.get("v3_awaiting_surname"):
-        return "name"
+
+    # 2 · Otherwise: the question actually on the table. Phone is tested before
+    #     name to match the precedence the flags above already established; a
+    #     turn carrying both markers is a phone turn.
     _prompt = (
         (session.get("last_bot_prompt") or "")
         + " "
         + (session.get("last_question") or "")
     ).lower()
-    if any(k in _prompt for k in ("your name", "first name", "surname", "full name")):
+    if _prompt.strip():
+        if any(k in _prompt for k in _PHONE_QUESTION_MARKERS):
+            return "phone"
+        if any(k in _prompt for k in _NAME_QUESTION_MARKERS):
+            return "name"
+        # A prompt we can read, about neither — the call has moved on, whatever
+        # any sticky flag still says. This line IS the B-15 fix.
+        return "conversation"
+
+    # 3 · No prompt recorded. Now, and only now, the sticky flag is the best
+    #     evidence available.
+    if session.get("v3_awaiting_surname"):
         return "name"
     return "conversation"
 
