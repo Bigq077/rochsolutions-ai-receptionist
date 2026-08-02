@@ -1139,6 +1139,18 @@ def _is_use_this_number(transcript: str) -> bool:
     True when the caller is confirming they want the number they are calling
     from used for the booking.
 
+    ⚠️ NO CALL SITES as of U-06 (2 Aug 2026). Do not wire it to one. It returns
+    True for "don't use that one" — the negation guard below tests for the
+    substrings "not " and "no ", neither of which occurs in "don't", so the
+    refusal falls through to _USE_THIS_NUMBER_SIGNALS and matches "use that
+    one". Every phone-confirm site now uses _phone_confirm_verdict, which
+    checks negation before the affirmative and cannot fail that way.
+
+    Kept, not deleted: several regression tests assert this behaviour precisely
+    so the defect stays documented, and the phrase lists below are still read
+    by _is_phone_readback_rejection's neighbours. Removing it is a separate
+    cleanup, not part of U-06.
+
     Matches explicit 'use this number' phrasings, a positive echo of the
     question's own noun phrase ('that's a good number'), or a short bare
     affirmative (<=3 words after leading disfluencies) — which, in the verbal
@@ -1289,8 +1301,14 @@ def _phone_confirm_is_yes(text: str) -> bool:
 
     _phone_confirm_verdict applies the ordering _book_verdict_deterministic uses:
     negation and correction first, affirmative last, so a refusal can never reach
-    the yes branch. Left in place at the reschedule/cancel lookup site (~7571),
-    which is a different question with its own keypad fallback.
+    the yes branch.
+
+    U-06 (2 Aug 2026): also wired at the reschedule/cancel lookup site, which
+    this docstring previously recorded as deliberately left alone. That site's
+    keypad `else` bounds an answer the predicate MISSES; it cannot bound one the
+    predicate matches wrongly, which is the "don't use that one" case. All three
+    phone-confirm sites now share this predicate — see
+    tests/regression/test_reschedule_phone_confirm_verdict.py.
     """
     from .llm_stream import _phone_confirm_verdict
     return _phone_confirm_verdict(text) == "yes"
@@ -5720,9 +5738,13 @@ class WebSocketCallHandler:
             )
             _keypad_stays_armed = True
         elif attempt == 2 and _caller_num:
-            # Reuses the existing verbal affirmative: `_is_use_this_number` is
-            # already wired at three sites and stores the caller ID itself, so
-            # "use this number" here resolves without any new branch.
+            # Reuses the existing verbal affirmative, so "use this number" here
+            # resolves without any new branch. Originally that was
+            # `_is_use_this_number`; since U-06 (2 Aug 2026) all three sites run
+            # `_phone_confirm_verdict`, whose affirmative set carries
+            # "use this/that number" explicitly. The escape is unaffected.
+            # (This rung is U-04 — offered in the wording, never yet exercised
+            # on a real call.)
             _reask = (
                 "I'm still not getting a full number. I can use the number "
                 "you're calling from instead — just say 'use this number', "
@@ -7670,13 +7692,35 @@ class WebSocketCallHandler:
                             _calling_number = self.session.get(
                                 "twilio_from_local", ""
                             )
-                            # Use the shared robust matcher (not a brittle inline
-                            # substring check): it catches STT truncations like
-                            # "this number" / "that number" for "use this number",
-                            # bare affirmatives, and excludes negatives. The old
-                            # inline check missed "this number" and dropped the
-                            # caller into the keypad path as if they'd said "no".
-                            if _is_use_this_number(utterance):
+                            # U-06 (2 Aug 2026): moved from _is_use_this_number to
+                            # the verdict, which is where the two booking sites
+                            # went in 8d152f0.
+                            #
+                            # 8d152f0 left this site behind on the reasoning that
+                            # it is "a different question with its own keypad
+                            # fallback". Both halves are true and neither rescues
+                            # it. The keypad fallback is the `else` below, so it
+                            # only bounds an answer the predicate FAILED to match
+                            # — it does nothing about one the predicate matches
+                            # WRONGLY, and _is_use_this_number("don't use that
+                            # one") is True: its negation guard tests for "not "
+                            # and "no ", neither of which occurs in "don't", so
+                            # the refusal reaches _USE_THIS_NUMBER_SIGNALS and
+                            # hits "use that one". A caller refusing the caller ID
+                            # would have it used as the lookup key.
+                            #
+                            # Milder than the booking sites — a wrong lookup key
+                            # fails to find the appointment rather than booking on
+                            # an unreachable number — but the caller is then told
+                            # their appointment can't be found, on a number they
+                            # just explicitly rejected.
+                            #
+                            # The verdict checks negation and correction BEFORE
+                            # the affirmative, so no addition to the affirmative
+                            # set can ever make a refusal read as consent. "unsure"
+                            # is falsy here and still routes to the keypad, exactly
+                            # as a non-match did before.
+                            if _phone_confirm_is_yes(utterance):
                                 # Caller confirmed → use calling number
                                 self.session["lookup_phone"] = _calling_number
                                 _filler = _random.choice(FILLER_PHRASES)

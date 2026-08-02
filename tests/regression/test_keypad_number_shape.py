@@ -250,14 +250,21 @@ def test_the_reask_ladder_terminates(no_redis):
 
 
 def test_the_second_attempt_offers_the_caller_id_as_an_escape(no_redis):
-    """Reuses `_is_use_this_number`, which is already wired at three sites and
-    stores the caller ID itself — so the escape needs no new branch."""
+    """Reuses the verbal affirmative already wired at the phone-confirm sites,
+    so the escape needs no new branch.
+
+    Asserted against `_phone_confirm_is_yes`, not `_is_use_this_number`: U-06
+    (2 Aug 2026) moved all three sites onto the verdict, so the old predicate is
+    no longer what decides this. If the wording offered here ever stops being
+    accepted by the predicate that actually runs, the escape is a dead end and
+    the caller is stranded on rung 2.
+    """
     h = _ReaskHarness(_booking_session())
     asyncio.run(h._reask_invalid_keypad_number("079871247"))
     asyncio.run(h._reask_invalid_keypad_number("079871247"))
     said = h.tts_text_queue.items[1]
     assert "use this number" in said.lower()
-    assert conn._is_use_this_number("use this number") is True
+    assert conn._phone_confirm_is_yes("use this number") is True
 
 
 def test_no_caller_id_skips_straight_to_speech(no_redis):

@@ -224,13 +224,19 @@ class TestTheLoopIsBounded:
 class TestTheCallSitesActuallyUseIt:
     def test_both_booking_sites_are_wired(self):
         src = inspect.getsource(conn.WebSocketCallHandler)
-        assert src.count("_phone_confirm_is_yes(utterance)") == 2
+        # 2 booking sites + the reschedule lookup site (U-06). Counted here
+        # rather than ==2 so this test keeps failing if a site is UNWIRED.
+        assert src.count("_phone_confirm_is_yes(utterance)") == 3
 
-    def test_the_reschedule_lookup_site_is_deliberately_untouched(self):
-        """A different question ("was it booked under this number?") with its
-        own keypad fallback. Out of scope for this fix."""
+    def test_the_reschedule_lookup_site_is_wired_too(self):
+        """Was "deliberately untouched" when this file was written, on the
+        grounds that it is a different question with its own keypad fallback.
+        Reversed by U-06: that fallback is the `else`, so it bounds a MISS and
+        not a wrong MATCH, and _is_use_this_number("don't use that one") is a
+        wrong match. Owned by test_reschedule_phone_confirm_verdict.py; asserted
+        here so the two files cannot drift apart."""
         src = inspect.getsource(conn.WebSocketCallHandler)
-        assert "_is_use_this_number(utterance)" in src
+        assert "_is_use_this_number(utterance)" not in src
 
     def test_the_keypad_guard_is_still_in_front_of_the_store(self):
         """A typed number outranks the caller ID and must never be overwritten
