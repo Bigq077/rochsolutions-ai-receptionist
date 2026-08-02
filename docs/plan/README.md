@@ -10,6 +10,7 @@ Written 21 Jul 2026. Ten-day window to the Hands On Money meeting.
 | 2 | `BRANCH_DECISION.md` | **Open question. Must be settled before Phase 0 runs.** Which branch is the production base. |
 | 3 | `PRODUCTION_READINESS_PLAN.md` | The 10-day phased plan with gates and triage rules. |
 | 4 | `FAILURE_MODE_REGISTER.md` | Ranked risk register. Tier 1 must be closed before any clinic goes live. |
+| 4a | `REGISTER_B_U.md` | The `B-nn` sweep defects and `U-nn` unverified-on-a-call items, with tracks. **Note the ID collision warning at the top** — `DEFECT_REGISTER.md`'s `B1`/`B2`/`B3` are unrelated to `B-01`…`B-20`. |
 | 5 | `SKILL_PLAYBOOK.md` | Which engineering skill to invoke at which phase, and which to skip. |
 | 6 | `KICKOFF_PROMPT.md` | Paste-ready first message for Claude Code. |
 
