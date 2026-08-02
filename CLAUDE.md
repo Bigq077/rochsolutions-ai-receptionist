@@ -37,9 +37,18 @@ promoted by merging as-is."* That line has been re-chartered: it now applies to
 the **WS latency levers** (still experimental, still default OFF), not to the
 branch. Do not cite it as a reason to avoid basing work here.
 
-> ⚠️ **A push to `latency-eval` is a live deploy** — it auto-deploys the demo
-> Render service. Push outside call hours, with the revert commit in hand, and
-> coordinate first so two people are not pushing over one another.
+> ✅ **`latency-eval` is not a live line — push whenever.** Corrected 2026-08-02
+> by the repo owner. This block previously said a push here was a live deploy
+> needing out-of-hours timing and coordination; that was wrong and it cost real
+> time, because agents kept staging finished, suite-verified work overnight for
+> a deploy window that does not exist.
+>
+> The gated branches are the two **deployment** branches — `jv-v1-onboarding`
+> and `vitaledge-onboarding` — which serve live clinics. Apply out-of-hours
+> timing, a revert commit in hand, and coordination **there**, not here.
+>
+> The canonical-first rule is unchanged: engine fixes land here first and the
+> clinic branches inherit them by cherry-pick.
 
 > ⚠️ **Check which branch and which worktree you are actually in before
 > measuring anything.** There are ~15 registered worktrees under

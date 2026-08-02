@@ -117,5 +117,33 @@ and the Render dashboard facts. **Not yet Accepted; Phase 0 stays blocked.**
     Fixed 1 Aug; see `tests/regression/test_phone_confirm_adjective_slot.py`,
     which asserts BOTH gates and asserts they agree.
 
+## Correction added 2 Aug
+
+15. **`latency-eval` is not a live line.** `CLAUDE.md` §2 carried a ⚠️ block
+    stating that a push to `latency-eval` "is a live deploy", to be done outside
+    call hours, with a revert commit in hand, and coordinated first. Confirmed
+    wrong by the repo owner on 2026-08-02. Corrected in place.
+
+    Unlike corrections 1–14 this one was not resolvable by reading the code —
+    which branch a Render service tracks is set in the Render dashboard, not in
+    `render.yaml` (which declares one service with `autoDeploy: true` and **no
+    branch pin**). So the usual "the code wins" tie-break had nothing to bite on
+    and the false warning survived every previous audit.
+
+    It was not harmless. Finished, suite-verified engine work was staged
+    overnight for a deploy window that does not exist, and the caution leaked
+    into how risk was argued about — a change gets held for more evidence
+    because pushing feels expensive, not because the evidence is thin.
+
+    The genuinely gated branches are the two **deployment** branches,
+    `jv-v1-onboarding` and `vitaledge-onboarding`, which serve live clinics.
+    Out-of-hours timing, a revert in hand and coordination belong there.
+
+    Watch for the same class of error elsewhere in these documents: any claim
+    about **deployment topology** (which service tracks which branch, what
+    auto-deploys, which env vars are set where) is unverifiable from the repo
+    and should be treated as unconfirmed until a human says otherwise.
+    `DEPLOYMENT_INVENTORY.md` is the right home for the answers.
+
 If you find another contradiction between these documents and the code, the code
 wins. Record the correction here.
