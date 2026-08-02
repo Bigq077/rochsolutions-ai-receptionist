@@ -1256,6 +1256,17 @@ _PHONE_READBACK_REJECT_PHRASES: tuple = (
     "wrong number", "not right", "isn't right", "isnt right", "not correct",
     "incorrect", "that's wrong", "thats wrong", "not it", "not that",
     "try again", "type it again", "start again",
+    # CA6e1024db (2 Aug 2026). "no it's wrong it's wrong it's wrong let me
+    # retype it" — 11 words, so the <=6 cap below dropped it, and the list had
+    # "that's wrong" but not "it's wrong". The keypad was never re-armed and the
+    # nine digits the caller then typed were all discarded.
+    #
+    # Fixed HERE rather than by raising the cap: the cap exists to stop "no rush
+    # but can you also tell me about parking" reading as a rejection, and a
+    # false rejection destroys a number the caller typed correctly. Phrases
+    # short-circuit ahead of the cap, so a specific phrase is free of that
+    # trade-off where a longer word window is not.
+    "it's wrong", "its wrong", "retype", "re-type",
 )
 _PHONE_READBACK_REJECT_WORDS: frozenset = frozenset({
     "no", "nope", "nah", "wrong", "negative",
@@ -1273,6 +1284,40 @@ def _is_phone_readback_rejection(transcript: str) -> bool:
     # Length-capped so a long turn that merely contains "no" ("no rush, but can
     # you also tell me about parking?") is not read as a rejection of the number.
     return bool(words) and len(words) <= 6 and words[0] in _PHONE_READBACK_REJECT_WORDS
+
+
+def _is_keypad_arming_line(bot_line: str) -> bool:
+    """True when a bot line tells the caller to enter a phone number on the keypad.
+
+    Spec M's safety net (~line 9889): whenever such a line is spoken, phone DTMF
+    is armed even if the deterministic path that normally arms it did not run.
+    That "even if" is the entire point, and CA6e1024db (2 Aug 2026) is what it
+    looks like when the net has a hole. Three layers missed in sequence:
+
+      1. _is_phone_readback_rejection missed an 11-word rejection (cap is 6),
+      2. so _reject_keypad_number never ran and never set v3_phone_dtmf_active,
+      3. and the model, improvising, said "Go ahead and retype it. You can press
+         the star key to reset at any time." — which does not contain the word
+         "keypad", so this net's `"keypad" in line` requirement failed too.
+
+    The caller typed nine digits into a closed keypad, every one was discarded
+    with no log line, 10s of dead air followed and the call was abandoned. The
+    three layers mask one another, which is why a hole in this one stayed
+    invisible until layer 1 also missed.
+
+    The "type"/"star key" requirement is P10 and stays: "use the top keypad to
+    enter the code" is a building-access line, not a phone prompt, and it was
+    falsely arming DTMF on Calls 4/5. It carries "keypad" and neither of the
+    other two, so it remains excluded.
+
+    "retype" stands alone because it is a phone-re-entry word in this system and
+    appears in no building-access wording — the case above is precisely a line
+    that means the keypad without naming it.
+    """
+    lc = (bot_line or "").lower()
+    if "retype" in lc or "re-type" in lc:
+        return True
+    return "keypad" in lc and ("type" in lc or "star key" in lc)
 
 
 # Continuation words: if the caller's finalised turn ends on one of these, the
@@ -9885,11 +9930,12 @@ class WebSocketCallHandler:
                             # "press the star key") — NOT the building-access line
                             # "use the top keypad to enter the code", which has no
                             # "type"/"star key" and was falsely arming DTMF (Call 4/5).
-                            _last_bot_lc = _last_bot.lower()
+                            # The predicate lives at module level so it can be
+                            # tested directly and so this net and the wording in
+                            # _reject_keypad_number cannot drift apart (CA6e1024db).
                             if (
                                 not self.session.get("v3_phone_dtmf_active")
-                                and "keypad" in _last_bot_lc
-                                and ("type" in _last_bot_lc or "star key" in _last_bot_lc)
+                                and _is_keypad_arming_line(_last_bot)
                             ):
                                 self.session["v3_phone_dtmf_active"] = True
                                 logger.info(

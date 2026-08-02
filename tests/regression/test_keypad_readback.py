@@ -228,6 +228,104 @@ def test_ambiguity_falls_through_rather_than_wiping_a_good_number():
         assert conn._is_phone_readback_rejection(ambiguous) is False, ambiguous
 
 
+# ── CA6e1024db (2 Aug 2026): the emphatic rejection ──────────────────────────
+#
+# The caller rejected the read-back and typed nine more digits into a keypad
+# that was never re-armed. Every one was discarded (`DTMF raw digit='0'
+# v3_phone_dtmf_active=False`, no `buf=` line), 10s of dead air followed, and
+# the call was abandoned with name, number and slot all collected.
+#
+# Three layers had to miss, and each missed for its own reason. They mask one
+# another — any single one catching it hides the other two — so all three are
+# pinned here.
+
+def test_the_emphatic_rejection_that_lost_CA6e1024db():
+    """Layer 1. Verbatim from the call.
+
+    words[0] == "no" and it IS in _PHONE_READBACK_REJECT_WORDS, but the turn is
+    11 words and the cap is 6, so the word branch drops it. The phrase branch
+    has to carry this one: a caller who is emphatic enough to reject a read-back
+    is exactly the caller who repeats themselves.
+    """
+    assert conn._is_phone_readback_rejection(
+        "no it's wrong it's wrong it's wrong let me retype it"
+    ) is True
+
+
+@pytest.mark.parametrize("no", [
+    # Over the 6-word cap, so each one depends on a phrase match.
+    "no it's wrong let me type it in again please",
+    "no no no it's wrong I'll do it again",
+    "sorry that's wrong can I retype it for you",
+    "it's wrong",
+    "let me retype it",
+])
+def test_long_form_rejections_are_caught(no):
+    assert conn._is_phone_readback_rejection(no) is True, no
+
+
+def test_the_cap_still_earns_its_keep():
+    """The fix must not be "raise the cap". These are the turns the cap exists
+    to reject, and they must stay rejected — a false rejection destroys a
+    number the caller typed correctly."""
+    for not_a_rejection in (
+        "no rush but can you also tell me about parking and the stairs",
+        "now that you mention it, is there parking at the clinic",
+        "no problem at all, what time did you say it was",
+    ):
+        assert conn._is_phone_readback_rejection(not_a_rejection) is False, not_a_rejection
+
+
+# ── Layer 3: the Spec M net must catch an improvised re-arm line ─────────────
+
+def test_the_mandated_line_arms_the_keypad():
+    """_reject_keypad_number's wording and the Spec M net must agree — if they
+    ever diverge the deterministic path arms DTMF and the net does not."""
+    assert conn._is_keypad_arming_line(
+        "No problem — go ahead and type the number on your keypad. "
+        "You can press the star key to reset at any time."
+    ) is True
+
+
+def test_the_improvised_retype_line_arms_the_keypad():
+    """CA6e1024db layer 3, verbatim. When layer 1 missed, the model improvised
+    this — and it does not contain the word "keypad", so the net's
+    `"keypad" in line` requirement failed and DTMF stayed shut while the caller
+    typed nine digits into it."""
+    assert conn._is_keypad_arming_line(
+        "Go ahead and retype it. You can press the star key to reset at any time."
+    ) is True
+
+
+def test_the_building_access_line_still_does_not_arm_the_keypad():
+    """P10. This line has "keypad" and is NOT a phone prompt — it was falsely
+    arming DTMF on Calls 4/5. Widening the net must not re-open that."""
+    assert conn._is_keypad_arming_line(
+        "When you arrive, use the top keypad to enter the code 1234."
+    ) is False
+
+
+def test_the_spec_m_net_actually_uses_the_predicate():
+    """The helper is only worth anything if the live call site calls it. Pinned
+    because the original defect was an inline condition in a 15k-line method
+    that no test could reach — the predicate passing while the call site keeps
+    its own copy is exactly the failure this must not allow back."""
+    src = inspect.getsource(conn.WebSocketCallHandler)
+    assert "_is_keypad_arming_line(_last_bot)" in src
+    assert '"keypad" in _last_bot_lc' not in src, (
+        "Spec M has drifted back to an inline condition"
+    )
+
+
+def test_the_readback_itself_never_arms_the_keypad():
+    """This turn wants the caller's VOICE. If the read-back armed DTMF the
+    dead-air net would stay suppressed and a silent caller is never
+    re-prompted."""
+    h = _committed()
+    asyncio.run(h._readback_keypad_number("07700900456"))
+    assert conn._is_keypad_arming_line(h.tts_text_queue.items[0]) is False
+
+
 # ── Wording constraints ──────────────────────────────────────────────────────
 
 def test_the_readback_does_not_rearm_dtmf():
