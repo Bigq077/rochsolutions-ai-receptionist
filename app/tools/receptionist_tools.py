@@ -6329,6 +6329,19 @@ def _gcal_event_service(ev: Dict[str, Any]) -> str:
     return ""
 
 
+# Placeholder values the model emits into patient_name when it has not carried
+# the real name through from lookup_patient. Observed live: patient_name=
+# "Unknown" on CA1fc9cb13337ccc7eb936e0dbf5c8fc3d (2026-08-02) — harmless there
+# only because the appointment_id branch matched first. None of these may ever
+# be allowed to select an appointment to move or cancel.
+_PLACEHOLDER_PATIENT_NAMES = frozenset({
+    "unknown", "unknown caller", "unknown patient", "unnamed",
+    "caller", "the caller", "patient", "the patient", "client", "the client",
+    "name", "patient name", "first name", "full name", "lookup result name",
+    "n/a", "na", "none", "null", "tbc", "tbd", "-",
+})
+
+
 def _match_gcal_event(events: List[Dict[str, Any]], args: Dict[str, Any],
                       session: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Pick the calendar event a cancel/reschedule targets: prefer the
@@ -6344,11 +6357,40 @@ def _match_gcal_event(events: List[Dict[str, Any]], args: Dict[str, Any],
         ev = next((e for e in events if pk == _phone_key(_gcal_event_phone(e))), None)
         if ev:
             return ev
+    # Name is the LAST resort, and the only branch that can select an event the
+    # caller never confirmed at lookup. Both callers are destructive (cancel and
+    # reschedule), so a wrong match here moves or cancels a stranger's
+    # appointment. Two hazards, both reachable:
+    #
+    #   1. The model passes a placeholder instead of the looked-up name.
+    #   2. The comparison is a SUBSTRING, so a short fragment ("jo") silently
+    #      matches any summary containing it ("Jonathan Smith").
+    #
+    # So this branch now refuses anything it cannot resolve to exactly one
+    # event: no placeholders, nothing under 3 characters, and no guessing when
+    # several appointments match. Returning None is safe — both callers surface
+    # "No upcoming appointment found", and the prompt's not-found path offers to
+    # check another number rather than dead-ending on a transfer.
+    #
+    # The length floor can reject a genuine two-letter first name. That is
+    # deliberate: this is the third fallback, reached only when the confirmed
+    # appointment_id and the booked-under phone have BOTH already missed.
     name_norm = (args.get("patient_name") or "").strip().lower()
-    if name_norm:
-        ev = next((e for e in events if name_norm in (e.get("summary") or "").lower()), None)
-        if ev:
-            return ev
+    if len(name_norm) < 3 or name_norm in _PLACEHOLDER_PATIENT_NAMES:
+        if name_norm:
+            logger.warning(
+                "[ms_tools] _match_gcal_event: refusing name fallback for "
+                "unusable patient_name=%r — no appointment targeted", name_norm,
+            )
+        return None
+    matches = [e for e in events if name_norm in (e.get("summary") or "").lower()]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        logger.warning(
+            "[ms_tools] _match_gcal_event: patient_name=%r matched %d events — "
+            "ambiguous, refusing to guess", name_norm, len(matches),
+        )
     return None
 
 
