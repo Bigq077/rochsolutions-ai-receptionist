@@ -36,6 +36,7 @@ implying more confidence than exists.
 | Unclassified | `B-20` | 30-min read before it can be scheduled — **do this first, it is the only clinical row** |
 | **Deferred to last** | `B-17`, `B-22` (the SMS family) | Owner decision 2 Aug — unprovable on this branch, see below |
 | **Unrecorded** | **`B-05`, `U-01`** | **See "Gaps" below** |
+| New — plan written | `B-23` (reason re-asked when already given) | `PLAN_REASON_CAPTURE.md`. Owner decision open on F5 |
 
 ---
 
