@@ -1,9 +1,10 @@
 # B/U register — sweep defects and unverified items
 
-**Opened 2026-08-02.** Branch `latency-eval`, statuses as of `e5a8ee9`.
+**Opened 2026-08-02.** Branch `latency-eval`, statuses as of `13dd9f3`.
 
 This register was carried in conversation only until now. Everything below was
-re-checked against the code at `e5a8ee9` before being written down; where a row
+re-checked against the code — originally at `e5a8ee9`, and re-anchored at
+`13dd9f3` for `B-15`, `B-25` and `A3` — before being written down; where a row
 rests on a claim I could not anchor to a file and line, it says so rather than
 implying more confidence than exists.
 
@@ -27,19 +28,416 @@ implying more confidence than exists.
 
 | Track | Items | State |
 |---|---|---|
-| Closed | `U-06`, `B-18`, `B-13`, `B-14`, `B-15` | Shipped 2 Aug with tests |
-| Parked | `B-01` – `B-04` | Two provisioning items + the name work — owner decision, not capacity |
-| Track A — deterministic, no dial time | `B-09` | **Next up** |
-| Track B — needs an owner decision | `B-19` / `B-07` | Blocked on filler cadence |
-| Track C — prompt-side, needs dial time | `B-06` `B-08` `B-10` `B-11` `B-12` `B-16` | After Track A |
-| Track D — verification only | `U-02` – `U-05` | Needs a phone |
-| Investigated, decision open | `B-20` (Layer 2 over-screening) | Root-caused 2 Aug — not a Layer 1 gap. Needs the A/B/C authority decision |
+| Closed | `U-06`, `B-18`, `B-13`, `B-14`, `B-15`, **`B-25`** | Shipped 2 Aug with tests. **`B-15` closed on a different defect than the one it was sold on** — see the honest verdict in its section |
+| Parked | `B-01` – `B-04` | Two provisioning items + the name work — owner decision, not capacity. **`A3` now has a live instance, see the sweep section** |
+| **Track A — do this first** | **`B-31`** | **A 200-char cap silently disabled the clinical screening layer on a live call.** Deterministic, proven offline, no dial time. Schedule with `B-20` — fixing either alone changes the failure, not the risk |
+| Track A — deterministic, no dial time | `B-09`, **`B-26`** | `B-26` is ~15 min and stops a false alarm on every call |
+| Track B — needs an owner decision | `B-19` / `B-07` | Blocked on filler cadence. **`B-07` now has a second arm — `B-30`** |
+| Track C — prompt-side, needs dial time | `B-06` `B-08` `B-10` `B-11` `B-12` `B-16` | **`B-10` and `B-16` confirmed live 2 Aug**, see the sweep section |
+| Track D — verification only | `U-02` – `U-05` | **Still entirely open.** Sweep call 2 exercised the keypad commit, C2 read-back and the overwrite guard — none of which are `U-nn` rows. `U-03` is the *reschedule* path (call 7) and was not touched |
+| **Decision open — highest severity on this register** | `B-20` (Layer 2 over-screening) | **First live sighting 2 Aug with a caller-audible objection AND a clinical misread.** The recorded amplifier risk fired for the first time and was masked by `B-31`. A/B/C authority decision now has evidence; my recommendation changed from B to C — see below |
 | Withdrawn | `B-24` (claimed Layer 1 coverage gap) | My claim, wrong. Widening those triggers would manufacture `B-20` |
-| **Deferred to last** | `B-17`, `B-22` (the SMS family) | Owner decision 2 Aug — unprovable on this branch, see below |
+| **Deferred to last** | `B-17`, `B-22` (the SMS family) | Owner decision 2 Aug. **`B-17` is worse than recorded — it has a second consumer.** Revisit warranted |
+| New from the sweep | `B-27` `B-28` **`B-31`** `B-30` | See the sweep section. `B-28` is root-caused by `B-31` |
+| Withdrawn same night | `B-29` (claimed the DVT grader knew half its question) | My claim, wrong — written from a truncated keyword list quoted in `B-20` rather than from `clinic.json`. **That quotation is now corrected too** |
 | **Unrecorded** | **`B-05`, `U-01`** | **See "Gaps" below** |
-| New — plan written | `B-23` (reason re-asked when already given) | `PLAN_REASON_CAPTURE.md`. Owner decision open on F5 |
+| New — plan written | `B-23` (reason re-asked when already given) | `PLAN_REASON_CAPTURE.md`. **Fired live in the F4 shape.** Owner decision open on F5 |
 
 ---
+
+## Sweep — 2 Aug 2026, 21:33–21:59, three calls
+
+Build `dc31c6c`/`1328f39`, service `low-latency-joint-venture`, number
+`+447366263180`, clinic `jv_v1` (`prompt_engine=template_v1`).
+
+Calls placed: **1** (colloquial booker, two day-changes), **2** (caller-ID
+refusal), **4** (dead air at the phone step). Call 3 was dropped — call 2 had
+already exercised the keypad path end to end. Call 7 not yet placed.
+
+All three booked correctly: number digit-for-digit, slot as spoken, day name
+matching the date on every calendar entry. **Surname is the exception — see `A3`
+below.**
+
+### The three calls are in obs — re-anchor, do not re-argue
+
+Every transcript quoted in this section is re-fetchable. Do not carry these
+quotes forward in prose when you can pull them:
+
+| Call | SID | `python scripts/show_call.py` | Booked |
+|---|---|---|---|
+| 1 — colloquial booker, two day-changes | `CAa8862c123a675855d2757c34b3a863a5` | `CAa8862c12` | Sat 8 Aug 11:00, event `75rjjof4r3tf…` |
+| 2 — caller-ID refusal, the DVT screen | `CA2ada6263fbd072aa1872854f0daa4286` | `CA2ada6263` | Thu 6 Aug 16:30, event `ndgtm3oo0f8o…` |
+| 4 — surname refusal, `B-25` | `CAce42c36b7d76889991800a3497a86594` | `CAce42c36b` | Sat 8 Aug 11:45, event `onmme2flm1mj…` |
+
+All three: `build_sha=1328f3926695`, `clinic_id=jv_v1`, `booking_confirmed=True`,
+`final_state=GREETING`, caller `+447502211207`.
+
+> **What obs cannot settle.** It stores what was *said*, not what the engine
+> *did* — there is no tool-call trace. So `B-28` (no `clinical_screening` line on
+> call 2) and the `B-13`/`B-26` prewarm 401s are **Render-log claims** and are
+> not re-checkable from obs. And per the standing caveat, stored assistant turns
+> are **post-Gate-5**, so a wrong sentence here may be the gate rewriting a
+> correct generation. Neither caveat touches the caller turns, which is where
+> every finding below actually rests.
+
+### `A3` · confirmed live — a mangled surname reached a real calendar event
+
+`A3` in `DEFECT_REGISTER.md` (surname written with no read-back) had been argued
+from four manglings across older calls. Call 1 is a clean instance, and calls 1
+and 4 together isolate the mechanism:
+
+| Call | Caller said | Stored as | Read back? |
+|---|---|---|---|
+| 1 | *"uh rook"* | `Quentin Rook` | **No** — final confirm was *"So that's **Quentin**, Saturday the 8th…"*, first name only |
+| 4 | *"um yeah that'll be roch r-o-c-h"* | `Quentin Roch` ✓ | Yes, incidentally — *"So that's **Quentin Roch**, Saturday the 8th…"* |
+
+The true surname is **Roch**. Call 1 put **Rook** on Google Calendar event
+`75rjjof4r3tfoldhu936cqei90` and the caller was never given a chance to hear it.
+Call 4 got it right **only because the caller spelled it unprompted.**
+
+**Read the read-back column carefully — call 1 is the compliant one.** The prompt
+forbids a surname read-back at *both* sites:
+
+- Step 7 ([clinic_template_prompt.py:2057](../../app/prompts/clinic_template_prompt.py)):
+  *"never read back, spell, or confirm the surname … the surname is registered
+  silently … accept ANY distinct word the caller gives as the surname and move
+  on."*
+- Step 9, WARM READBACK ([:2095](../../app/prompts/clinic_template_prompt.py)):
+  *"State caller **first name**, day, date, and time"*, example *"So that's
+  James, …"*.
+
+So call 1 followed the prompt exactly and wrote `Rook` to a real calendar.
+Call 4's *"So that's Quentin Roch"* was the model **violating step 9** — and that
+stray violation was the only moment in three calls at which a caller could have
+caught a mangled surname. The design is doing what it says; what it says is the
+defect.
+
+Two details worth keeping:
+
+1. The prompt's own example of the STT split is *"Quentin **Rock**"*
+   ([:2065](../../app/prompts/clinic_template_prompt.py)). The author already
+   knew this exact surname mangles, and the instruction written in response was
+   to accept the mangled word **silently**.
+2. Call 4's surname loop (*"I do need a surname to complete the booking"*, twice)
+   is a **separate** instruction from the silent-acceptance rule and the two now
+   pull against each other: the caller was pressed hard for a surname that,
+   once given, is never checked.
+
+This is the first end-to-end demonstration in one sitting: wrong input → no
+verification → real record. It does not change `A3`'s scope. The parked
+`B-01`–`B-04` note stands — closing this is a **design reversal**, not an
+addition, and the reversal must name which of the two rules above it is undoing.
+
+### Verified working on a live call for the first time
+
+| What | Evidence |
+|---|---|
+| Date guard (`7b698f6` + `100b561`) | Call 1 survived **three** day changes. `v3_confirmed_slot_phrase refreshed 'Thursday…' -> 'Saturday the 8th…' (caller moved to the day now on offer)`. Zero `NOT corrected` lines |
+| `8d152f0` verdict confirm | Call 2: *"no, it's actually 07798…"* did **not** store the caller ID |
+| Keypad overwrite guard | Call 2, twice: `verbal phone confirm SKIPPED — keypad number already on record; refusing to overwrite it with caller ID` |
+| `capture_phase` (`779ceda`) | `phone` on the phone turns, `name` on the name turns, `conversation` after |
+| `B-13` prewarm branch (`a5e8415`) | Fired at ERROR on all three calls — see `B-26` for what it revealed |
+
+> **The suite's Call 1 turn 9 and Call 2 turn 1 criteria are both wrong.**
+> They expect an `L1 verdict: … -> yes|no` line at the booking phone-confirm.
+> That call site logs `booking verbal phone confirm — stored calling number …`
+> instead, and on the **no** path logs nothing at all. The pass criterion for a
+> refusal is an **absence**: no store line, and the caller ID not on the
+> booking. Fix the suite before dialling call 2 again or a blocker and a pass
+> score identically.
+
+---
+
+## `B-25` · the phone confirm fired on a question about names
+
+**CLOSED — `13dd9f3`, 2 Aug.** Found on sweep call 4, `CAce42c36b`.
+
+```
+21:57:48  v3_phone_dtmf_active = True (name confirmed — phone collection phase)
+21:57:48  Susie: "Thanks Quentin — and your surname?"
+21:57:53  Caller: "just quentin's fine"
+21:57:53  [ms_conn v3] verbal phone confirm — stored calling number 07502211207
+                       + phone_confirmed=True and exited DTMF
+```
+
+The caller was **refusing to give a surname.** It was read as consent to book on
+the caller ID and set `phone_confirmed` — the flag satisfying
+`book_appointment`'s A1 write gate — **24 seconds before the phone question was
+asked.**
+
+**Root cause: two sites, one gate.** Both perform the verbal phone confirm; only
+the booking-flow site (`connection.py:6902` **at the parent `1328f39`**) tested
+`_PHONE_STEP_MARKERS` against the live question. The DTMF-active site
+(`:7094` at the parent) is a copy that never got one. `_phone_confirm_is_yes`
+answers *"did the caller say yes?"* and has never answered *"yes to what?"* —
+that is the gate's entire job.
+
+**The window is not narrow.** `v3_phone_dtmf_active` goes True the moment a
+**first name** is captured, so the whole surname exchange sits inside it.
+Reproduced before writing the fix:
+
+```
+_phone_confirm_verdict("just quentin's fine")             -> "yes"
+_phone_confirm_verdict("um yeah that'll be roch r-o-c-h") -> "yes"   ← the surname ANSWER
+_phone_confirm_verdict("that's ok")                       -> "yes"
+```
+
+The surname answer trips it too; it only missed on that call because the refusal
+one turn earlier had already switched DTMF off.
+
+**Fix:** the marker test moved into `_phone_question_on_the_table` and **both**
+sites call it. One implementation deliberately — this defect *is* a copy that
+drifted, and a third private copy is how it recurs (§A4). Fails closed: an
+unknown phrasing blocks the intercept and the LLM re-asks. No carve-out for a
+bare *"use this number"* — every prompt that invites it already contains a
+marker, so a caller cannot be coached to say it without the question carrying
+one.
+
+At `13dd9f3` the anchors are: the helper
+[connection.py:1317](../../app/media_streams/connection.py), the booking-flow
+caller `:6975`, the DTMF-active caller `:7161`. `_phone_confirm_is_yes` is
+`:1288` and is unchanged.
+
+Test: `tests/regression/test_phone_confirm_needs_the_phone_question.py`, 25
+cases. `test_the_dtmf_site_is_gated` is the load-bearing fails-before. The two
+invariant tests **pass** on the parent, which is what a preserved invariant
+should do. Suite 95/2850, failing set byte-identical to baseline.
+
+> **Two self-inflicted lessons worth keeping.** The first draft broke
+> `test_phone_confirm_verdict.py` by landing a clause between the verdict and
+> the keypad guard, which it pins by adjacency — the clause was moved rather
+> than that test loosened. The second draft broke two more tests because the
+> **comment** spelled `_phone_confirm_is_yes(utterance)` literally, and the
+> sibling tests count call sites by substring over module source, comments
+> included. Neither would have surfaced without diffing failing sets against
+> baseline; looking for green would have shown 96 failures and explained
+> nothing.
+
+---
+
+## `B-26` · the prewarm probes an endpoint the call path never uses — NEW
+
+**Track A, ~15 min. Opened by `B-13`'s own fix.**
+
+`prewarm()` fires `GET /v1/models`
+([tts_stream.py:323](../../app/media_streams/tts_stream.py)) and now logs, on a
+401:
+
+> *"ElevenLabs rejected the API key (401) … credits exhausted or key invalid.
+> The first call will fall back to OpenAI TTS mid-sentence."*
+
+It fired after **all three** sweep calls. **The claim is false.** Synthesis uses
+`POST /v1/text-to-speech/{voice}/stream` and returned **200 roughly thirty-five
+times across the same three calls**, including twelve seconds after a 401.
+Exhausted credits would fail the stream endpoint too. This reads as an API key
+scoped for TTS but not `models_read`.
+
+So `B-13` traded a silent lie for a loud one: an ERROR on every call, naming a
+consequence that does not occur. Fix is to probe something the synthesis path
+actually needs, or to demote a `/v1/models` 401 to a warning that says what it
+means.
+
+> Recorded honestly: I called this demo-blocking on first read and was wrong.
+> The evidence to catch it — thirty-five 200s in the same log — was present in
+> call 1 and I did not weigh it until call 2 repeated the pattern.
+
+---
+
+## `B-27` · the DIFFERENT-DAY steer fires on a slot *selection* — NEW
+
+Two sightings, calls 2 and 4.
+
+- Call 2: *"thursday the 6th at half past 4 you said the first slot you offered"*
+  → `DIFFERENT DAY REQUESTED steer applied` → a **redundant**
+  `check_availability` for the same day, identical result, ~4 s of the caller's
+  time.
+- Call 4: *"um yeah this saturday at quarter to 12 in the morning works"* → same.
+
+Both are the caller **choosing** from what was just offered. Same shape as
+`B-16`: a selection misread as a navigational request. Cheap, cosmetic, no
+correctness exposure — but it makes the steer's log line untrustworthy as
+evidence that a day change happened.
+
+**It is countable without Render logs.** obs exports the counter in `guards`, so
+the false-positive rate is measurable across the whole corpus:
+
+| Call | `different_day_steer_fired` | Genuine day changes | False |
+|---|---|---|---|
+| 1 `CAa8862c12` | 2 | 2 — the caller really did ask for Friday, then Saturday | 0 |
+| 2 `CA2ada6263` | 1 | 0 | **1** |
+| 4 `CAce42c36b` | 1 | 0 | **1** |
+
+Call 1 is the control and it matters: the steer is **not** simply always-on. It
+fires correctly on a navigational request and incorrectly on a selection, which
+is what makes it a discrimination defect rather than noise. Two of four firings
+across three calls were false — a rate worth confirming against the stored corpus
+before scheduling, since that is a cheap query and this row is otherwise cosmetic
+enough to deprioritise on impact alone.
+
+---
+
+## `B-28` · the orphan detector cannot see the screens it exists to count — NEW
+
+Sweep call 2 asked a full DVT screen (verbatim in the `B-20` section below).
+**There is not one `clinical_screening` line anywhere in that call** — no
+`trigger`, no `orphan`, no `red_flag`.
+
+Every orphan in the register's count of ten was caught at
+[clinical_screening.py:975](../../app/media_streams/clinical_screening.py). This
+one was not. **The ten is a floor of unknown tightness**, and any `B-20`
+frequency estimate built from obs understates by an unknown amount. This
+compounds the existing evidence caveat (only 2 of 13 trigger-armed calls have
+their arming utterance stored) — that one limits *arming* statistics, this one
+limits *orphan* statistics, which is the half `B-20` rests on.
+
+**Root-caused the same night — it is `B-31`, and it is worse than a counting
+problem.** The floor caveat above stands; the cause is not.
+
+---
+
+## `B-29` · ~~the DVT grader knows only half of its own question~~ — **WITHDRAWN 2 Aug, same night it was opened**
+
+I claimed the grader's red-flag vocabulary was `swollen / warm / hot / red` — the
+first half of its own question — so *"long journey"* would go unscored. **That is
+false.** `clinic.json`'s `dvt.red_flag_answer_keywords` is:
+
+```
+swollen, warm, hot, red, surgery, operation, flight, long drive,
+long journey, bed rest, immobile, can't walk on it
+```
+
+Both halves are covered, including the exact phrase the caller used. Replayed
+against the stored turn:
+
+```
+classify_screen_answer(<call 2 caller turn>, dvt) -> "red_flag"
+_red_flag_hits(...)                               -> 1
+```
+
+I wrote the row from the four keywords quoted in `B-20`'s amplifier paragraph and
+never opened the config. **That paragraph is wrong too and is corrected below.**
+
+The one true thing in the original row — *whatever asks the question must grade
+all of it* — is already satisfied here. Do not schedule this.
+
+---
+
+## `B-30` · two write fillers play back to back — NEW
+
+Call 4, 21:58:54–55: *"Just locking that in now…"* then *"Getting that all
+booked in for you…"*, one second apart. The `TTS dedup: skipping duplicate
+chunk` guard that caught this on call 1 keys on identical text and these differ.
+Cosmetic. Belongs with `B-07`/`B-19` as the same filler-cadence decision.
+
+---
+
+## `B-31` · a 200-character cap silently switched off the clinical safety net — NEW
+
+**Track A — deterministic, proven offline, no dial time needed. This is the most
+serious deterministic defect on the register.** Root cause of `B-28`.
+
+`last_bot_prompt` is capped at 200 characters
+([llm_stream.py:1281](../../app/media_streams/llm_stream.py)):
+
+```python
+session[F_LAST_BOT_PROMPT] = _apply_tts_subs(_display_reply)[:200]
+```
+
+`match_asked_screen` — the orphan detector — reads that field and early-returns
+`None` if it contains no `"?"`
+([clinical_screening.py:424](../../app/media_streams/clinical_screening.py)),
+on the reasoning that *"every configured screen_question ends in '?'"*. True of
+the config. **Not true of a 200-character prefix of one.**
+
+Sweep call 2's screening question, measured against the exact stored text:
+
+```
+len(question)                     = 205        ← five characters over
+question[:200] ends with '?'      = False
+match_asked_screen(FULL)          = 'dvt'
+match_asked_screen(question[:200]) = None      ← and returns SILENTLY
+```
+
+The silent return is why `B-28` saw no log line of any kind. A detector that
+found nothing logs nothing, so a suppressed safety check and a call with no
+red flags are **indistinguishable in the logs**.
+
+### What the deterministic layer would have done
+
+Replayed offline through the real functions against the real stored turns:
+
+```
+match_asked_screen           -> 'dvt'
+update_screening_state       -> action='escalate', block=True
+                                "…need checking urgently to rule out a clot…
+                                 please contact NHS 111 now…"
+screen_arm_paths             -> {'dvt': 'orphan'}
+screen_red_flag              -> 'dvt'
+```
+
+So on that call the deterministic layer had computed an NHS 111 escalation and a
+booking block, and a five-character overrun meant it was never consulted. Susie
+said *"That's reassuring"* and booked the appointment instead.
+
+> **Two defects cancelled each other out, and neither is safe.** `B-20`'s
+> recorded amplifier risk — *"an incidental affirmative would produce a
+> deterministic NHS 111 escalation for a complaint that never warranted one… no
+> call has hit this, so it is live risk, not live damage"* — **call 2 hit it.**
+> It was the first call to satisfy the condition. The only reason it did not
+> produce a false escalation is that `B-31` suppressed the layer entirely. The
+> outcome we observed (booked, with a false reassurance) is the *product* of two
+> failures, and fixing either one alone changes what the next such call does.
+> **Fix `B-31` before `B-20` and the next ankle caller gets sent to NHS 111.**
+> They must be scheduled as one piece of work.
+
+### Blast radius — and why it is exactly the orphan path
+
+Every configured `screen_question` is comfortably under the cap, so **Layer 1's
+own questions never truncate**:
+
+| Screen | `len(screen_question)` | Survives the cap |
+|---|---|---|
+| `cauda_equina` | 160 | ✅ |
+| `dvt` | 185 | ✅ |
+| `serious_spinal` | 165 | ✅ |
+| `trauma_fracture` | 173 | ✅ |
+| `vbi_neck` | 182 | ✅ |
+| `inflammatory` | 150 | ✅ |
+
+Only a **model paraphrase** can overrun — and a paraphrase is by definition the
+Layer 2 orphan case. The arithmetic on call 2, exactly:
+
+```
+config  dvt.screen_question                                       185
+  swap "Before we go further,"  →  "Before we look at getting you booked in,"   +19
+  swap "the area"               →  "the ankle"                                  +1
+spoken                                                            205   → cap 200
+```
+
+Nineteen characters of conversational throat-clearing is the entire margin.
+**The bug fires precisely and only on the path `B-20` is about**, and it fires on
+a paraphrase no reviewer would look at twice.
+
+`last_bot_prompt` has ~20 other readers in `connection.py` (CTA-affirm, keypad
+prompts, the surname window). The truncation is pre-existing and known — the
+comment at [connection.py:9836](../../app/media_streams/connection.py) already
+records it hiding a booking CTA past char 200 — so this is the **second** defect
+from the same cap. Scope any fix against those readers before widening it.
+
+### Fix — three options, my recommendation is 1 + 2
+
+1. **Drop the `"?"` early-return**, or fall back to `last_question` (which holds
+   the extracted question sentence) when `last_bot_prompt` has no `"?"`. Smallest
+   diff, removes the silent-failure mode.
+2. **Log the near-miss.** When evidence hits are ≥1 but below threshold, or when
+   the field looks truncated, emit a line. The defect's whole cost was that a
+   suppressed check is invisible; a detector that can fail silently will do it
+   again for a different reason.
+3. Raise the cap. **Do not do this alone** — the other ~20 readers were written
+   against 200 and one of them (CTA-affirm) has already been tuned around it.
+
+Test must pin the 205-char call-2 question by length, not by paraphrase: the
+regression is *"a question one character over the cap is still detected"*.
 
 ## Closed
 
@@ -152,9 +550,9 @@ changing anything** — one call where Susie says the word settles it.
 **CLOSED — `779ceda`, 2 Aug.** Fixed as planned below, plus one adjacent defect
 found while writing the diff: the phone branch had only hard flags where the name
 branch had a prompt fallback, and `v3_awaiting_phone_confirm` is set in exactly
-one place (connection.py:5292, the reschedule/cancel DTMF path). On an ordinary
+one place (connection.py:5335, the reschedule/cancel DTMF path). On an ordinary
 booking the phone step therefore **never** resolved to `"phone"` — so the phone
-re-ask wording at connection.py:13535 was unreachable on the booking path. Both
+re-ask wording at connection.py:13599 was unreachable on the booking path. Both
 had to move together: reordering alone would have demoted the phone step from
 `"name"` to `"conversation"`, trading a wrong label for a worse one.
 Test: `tests/regression/test_capture_phase_follows_the_question.py`, 20 cases;
@@ -166,21 +564,62 @@ answers *"is the number you're calling on the best one to reach you? Just say us
 this number"* instead of asking for the name again. That branch is pre-existing
 and was written for this case; this is the first build on which it can fire.
 
+> **Honest verdict on the severity I claimed — the headline scenario may not be
+> constructible.** Recorded 2 Aug after sweep call 4.
+>
+> I sold `B-15` on consumer 1: a caller who goes quiet at the **booking-confirm**
+> step gets asked for their name again. That needs `v3_awaiting_surname` stuck
+> `True` at a later step, which needs the call to *reach* a later step with no
+> surname captured. Both clear sites require a surname to have been found —
+> [connection.py:1869](../../app/media_streams/connection.py) (backfill) and
+> `:1924` — so the stickiness is real. But **the call does not get past the name
+> step without one.** Sweep call 4, verbatim:
+>
+> ```
+> [user     ] just quentin's fine
+> [assistant] I do need a surname to complete the booking — could you give me one?
+> [user     ] i'd rather not just quentin
+> [assistant] I completely understand, but I do need a surname to complete the
+>             booking — it's just so we can get you properly registered.
+> ```
+>
+> Two refusals, two hard re-asks, and the caller gave one. That matches step 7's
+> *"A surname is REQUIRED before booking"*
+> ([clinic_template_prompt.py:2062](../../app/prompts/clinic_template_prompt.py)).
+> It is **prompt** adherence, not a deterministic gate, so it is not a proof —
+> but I have no live instance of consumer 1, and the mechanism that would produce
+> one is actively fought by the prompt. Treat the caller-audible claim as
+> **unproven**, not as demonstrated.
+>
+> **The fix stands regardless, on the adjacent defect rather than on this one.**
+> The phone branch never resolving to `"phone"` on an ordinary booking — so the
+> phone re-ask wording at connection.py:13599 was unreachable — is live,
+> caller-facing, and has nothing to do with the sticky flag. That is what `779ceda`
+> is worth. Consumers 2 and 3 remain correctness fixes behind default-off flags.
+>
+> Filed here rather than quietly dropped because this is the fifth time a one-line
+> defect description has turned out to be mis-scoped once anchored, and the
+> pattern is worth more than the row.
+
 Original analysis follows.
 
 **Root cause: a sticky flag outranked the live question.**
 
 Not one of the three call sites — the resolver itself.
-[`capture_phase()`](../../app/media_streams/latency_timing.py) (latency_timing.py:74-100)
+[`capture_phase()`](../../app/media_streams/latency_timing.py) (latency_timing.py:110-190)
 tests in this order: phone flags → `v3_awaiting_surname` → prompt keywords. The
 middle test is the defect, because that flag is never cleared by anything outside
 name capture.
 
 `v3_awaiting_surname` has **exactly three assignment sites**, all inside
-`_v3_try_capture_name` in connection.py — `:1826` and `:1881` set it `False`,
-`:1887` sets it `True`. Both `False` sites require a surname to have actually
-been found. The code says so itself at connection.py:1790: *"v3_awaiting_surname
+`_v3_try_capture_name` in connection.py — `:1869` and `:1924` set it `False`,
+`:1930` sets it `True`. Both `False` sites require a surname to have actually
+been found. The code says so itself at connection.py:1833: *"v3_awaiting_surname
 is sticky: nothing clears it when the conversation moves on."*
+
+> Line numbers in this subsection were re-anchored 2 Aug at `13dd9f3`; the
+> original four (`:1826` `:1881` `:1887` `:1790`) were stale by ~43 lines and
+> pointed into the middle of the same function. The claims were unchanged.
 
 So a caller who gives a first name only leaves the flag `True` **for the rest of
 the call**, and `capture_phase()` answers `"name"` on every subsequent turn —
@@ -191,9 +630,9 @@ Three consumers, three very different costs:
 
 | # | Consumer | Cost | Live today? |
 |---|---|---|---|
-| 1 | Dead-air re-ask, [connection.py:13500](../../app/media_streams/connection.py) | **Caller-audible.** `_cap_phase == "name"` selects *"Sorry — could I take your first name and surname again?"* So a caller who goes quiet at the **booking-confirm** step is asked for their name again | **YES** — the site comments *"pure lookup, independent of LATENCY_TIMING"* |
-| 2 | `[LAT]` / `[LAT-EP]` lines (latency_timing.py:192; `_ep_prev_phase` at connection.py:6852 carries it into `emit_cutoff`) | Every turn after the stick is bucketed `name`. Phone-capture turns recorded as name turns; any per-phase latency or cutoff analysis is wrong for the whole tail of the call | No — `LATENCY_TIMING` defaults `false` |
-| 3 | `_ws_c_apply_endpoint_profile`, [connection.py:12937](../../app/media_streams/connection.py) | Early-returns when the phase is unchanged. Stuck at `name`, the **phone** profile is never pushed and the **conversation** profile is never restored — flatly contradicting its own docstring, *"Leaving capture restores the conversation profile"* | No — `WS_C_SEMANTIC_ENDPOINT` defaults `false` |
+| 1 | Dead-air re-ask, [connection.py:13588](../../app/media_streams/connection.py) (`_cap_phase` resolved at `:13564`) | **Caller-audible.** `_cap_phase == "name"` selects *"Sorry — could I take your first name and surname again?"* So a caller who goes quiet at the **booking-confirm** step is asked for their name again. **Unproven live — see the honest verdict above** | **YES** — the site comments *"pure lookup, independent of LATENCY_TIMING"* |
+| 2 | `[LAT]` / `[LAT-EP]` lines (latency_timing.py:259 and `:302`; `_ep_prev_phase` at connection.py:6895 carries it into `emit_cutoff`) | Every turn after the stick is bucketed `name`. Phone-capture turns recorded as name turns; any per-phase latency or cutoff analysis is wrong for the whole tail of the call | No — `LATENCY_TIMING` defaults `false` |
+| 3 | `_ws_c_apply_endpoint_profile`, [connection.py:12986](../../app/media_streams/connection.py) | Early-returns when the phase is unchanged. Stuck at `name`, the **phone** profile is never pushed and the **conversation** profile is never restored — flatly contradicting its own docstring, *"Leaving capture restores the conversation profile"* | No — `WS_C_SEMANTIC_ENDPOINT` defaults `false` |
 
 > **Consumer 1 probably explains some of `B-08`** ("asks for information already
 > given"). Investigate `B-08` with this in mind before treating it as a prompt
@@ -392,11 +831,21 @@ caller. These belong in the call suite.
 | `U-04` | Rung-2 verbal fallback |
 | `U-05` | The `dc5c89d` bound — two unsettled answers go to the keypad |
 
-> `CALL_SUITE_2026-08-02.md` names build `7610f9a` and is **eight commits stale**
-> as of `e5a8ee9`. Its Call 1 tests a date guard that `7b698f6` has since
-> rewritten. Refresh it to HEAD before dialling, or the sweep scores the wrong
-> build — and confirm the Render service/branch pairing first, which per
-> `README.md` correction 15 is not knowable from this repo.
+> ~~`CALL_SUITE_2026-08-02.md` names build `7610f9a` and is eight commits
+> stale~~ — **resolved by `1328f39`**, which rewrote the suite against `dc31c6c`.
+> It is now two commits stale (`dc31c6c` → `1328f39` → `13dd9f3`) — but **one of
+> those two is `B-25`, which changes the phone-confirm path the suite's Call 1
+> turn 9 and Call 2 turn 1 criteria are aimed at.** So the suite is not merely
+> behind; it is behind on the one behaviour it tests most directly. Re-read those
+> two criteria against `13dd9f3` before dialling, and deploy `13dd9f3` — the
+> sweep above ran on `1328f39`, i.e. **before** the `B-25` fix existed. Confirm
+> the Render service/branch pairing while you are there, which per `README.md`
+> correction 15 is not knowable from this repo.
+>
+> **Two suite criteria are known wrong and were not fixed by that rewrite** —
+> Call 1 turn 9 and Call 2 turn 1, both expecting an `L1 verdict:` line the
+> booking phone-confirm site does not emit. See the boxed note in the sweep
+> section. Fix those before Track D is dialled or a blocker scores as a pass.
 
 ---
 
@@ -444,11 +893,19 @@ the nearest one anyway. There is no knee screen; an aching knee warrants none.
 
 **Amplifier:** [clinical_screening.py:975](../../app/media_streams/clinical_screening.py)
 does not merely log the orphan — it arms the screen and **grades the answer**. A
-shoulder caller's reply is then scored against DVT's red-flag words
-(`swollen / warm / hot / red`). Negation scoping (24 Jul) covers *"no, it's not
-swollen"*, but an incidental affirmative would produce a deterministic NHS 111
-escalation for a complaint that never warranted one. No call has hit this —
-`red_flag=None` on all ten — so it is live risk, not live damage.
+shoulder caller's reply is then scored against DVT's twelve red-flag words —
+`swollen, warm, hot, red, surgery, operation, flight, long drive, long journey,
+bed rest, immobile, can't walk on it`. Negation scoping (24 Jul) covers *"no,
+it's not swollen"*, but an incidental affirmative would produce a deterministic
+NHS 111 escalation for a complaint that never warranted one.
+
+> **Corrected 2 Aug, twice over.** This paragraph originally listed only the
+> first four keywords, and I built `B-29` on that truncated list before opening
+> the config — read the real list above, not a quotation of it. And the closing
+> claim, *"no call has hit this — `red_flag=None` on all ten — so it is live
+> risk, not live damage"*, **was true of the ten archived orphans and is no
+> longer true.** Sweep call 2 hit it. It produced no escalation only because
+> `B-31` had already switched the layer off. See `B-31`.
 
 **Why the row said "Layer 1 gap":** the taxonomy at
 [clinical_screening.py:51](../../app/media_streams/clinical_screening.py) defines
@@ -457,9 +914,90 @@ two causes. The third — Layer 2 asking something it never should have — has 
 identical signature and is not in the enum. **Correcting that comment is part of
 the fix**, or this mis-scopes again.
 
-**Owner decision still open:** A / B / C on screening authority, see the session
-notes. Recommendation is B — the model may screen on a real presentation but
-never when the complaint matches no screen.
+#### First live sighting — sweep call 2, `CA2ada6263`, 2 Aug 21:47
+
+Until tonight `B-20` rested entirely on obs archaeology. Here it is happening,
+verbatim, four turns into a call:
+
+```
+[user     ] um yeah i'd like to book an appointment please
+[assistant] Right — what's the appointment for?
+[user     ] uh my left ankle just got a small bit on it i just want to get assessed
+[assistant] Before we look at getting you booked in, can I quickly check — is the
+            ankle swollen, warm or red compared with the other side, and have you
+            had any recent surgery, illness, or a long journey sitting still?
+[user     ] um i mean i had a long journey sitting still but i don't think that's
+            why it's a problem i'm kind of confused just just want to get assessed
+            mate i don't know why you're asking me this question
+[assistant] That's reassuring — thanks for bearing with me on that, it's just a
+            quick safety check we run. Do you have a preference for when you'd
+            like to come in?
+```
+
+Three separate things go wrong in six lines, and they should not be conflated:
+
+1. **The model authored a DVT screen unprompted.** No `clinical_screening` line
+   exists anywhere in this call (`B-28`) — Layer 1 did not arm it. Same signature
+   as the ten archived orphans, now with the arming turn present.
+2. **The caller objected out loud.** *"i'm kind of confused… i don't know why
+   you're asking me this question."* The cost of over-screening had been argued
+   as theoretical caller friction. It is not theoretical; a caller said so, mid
+   call, unprompted.
+3. **The answer was a positive DVT risk factor and was called reassuring.**
+   *"i had a long journey sitting still"* is textbook immobility exposure — and
+   it is **in the screen's red-flag vocabulary verbatim**. Susie replied
+   *"That's reassuring."* Nothing contradicted her because the deterministic
+   layer never ran on that turn: `B-31`, a 200-character cap that truncated the
+   question's `"?"` away and made the orphan detector return `None` silently.
+
+**Point 3 is the serious one and it is a new class of finding.** The register has
+until now treated over-screening as *asking a question that was not warranted* —
+a friction and false-escalation risk. This is the inverse failure: having asked,
+the system **affirmatively reassured a caller about a risk factor they had just
+confirmed.** No deterministic layer participated at any point — not in asking,
+not in grading, not in the reply.
+
+> To be exact about the clinical claim, because it is easy to overstate: a long
+> journey plus an ankle injury is **not** a DVT diagnosis, and nothing here says
+> this caller was at risk. The defect is that the system asked a screening
+> question, received an affirmative, and told the caller it was reassuring —
+> without anything, anywhere, evaluating the answer. That is unsafe **as a
+> mechanism**, regardless of this caller's actual risk.
+
+> **Do not read point 3 as "the model overrode the safety layer".** Replayed
+> offline, the layer would have escalated this caller to NHS 111 and blocked the
+> booking — arguably itself wrong for an ankle sprain, and exactly the false
+> escalation `B-20`'s amplifier paragraph predicted. Call 2 is a **compound**
+> failure: `B-20` produced an unwarranted question, `B-31` suppressed the
+> unwarranted escalation that would have followed, and the residue was a false
+> reassurance. Fixing one without the other changes the failure, not the risk.
+
+#### Owner decision — A / B / C, and my recommendation has changed
+
+**Still open.** It was B. It is now C:
+
+| | Option | What call 2 does to it |
+|---|---|---|
+| A | Prompt-side tightening — keep the catalogue, add stronger "only when CALL STATE says SCREEN REQUIRED" language | Unchanged: the prompt already says this in `clinic.json`'s `how_to_use` and the header at [:379](../../app/prompts/clinic_template_prompt.py) overrides it. Adding more words to the losing side of a contradiction |
+| B | The model may screen on a real presentation, never when the complaint matches no screen | **Would not have stopped this call.** An ankle *is* a plausible DVT context, so a "does the complaint plausibly warrant a screen" test passes here. B was scoped against orphans on shoulders and knees; it does not survive a plausible one |
+| C | **Layer 1 arms, or nothing is asked.** Remove the question catalogue from the model's prompt entirely | Stops all three failures above at the first one. The model cannot mis-grade a question it never asked — and `B-31` cannot fire either, since only a model *paraphrase* overruns the 200-char cap; every configured question is 150–185 chars |
+
+C's cost is honest and should be weighed, not waved past: any screen Layer 1
+misses is then never asked at all, where today the model sometimes catches one by
+accident. `B-24`'s withdrawal is what makes that affordable — Layer 1's triggers
+were checked against 967 caller turns and were right every time, and the two
+screens with zero arms had zero qualifying presentations. There is no known
+coverage gap for C to expose.
+
+**`B-31` is required under all three options and does not wait on this
+decision.** Under A or B the orphan detector stays load-bearing and must not fail
+silently. Under C the orphan path should become unreachable — but "should be
+unreachable" is not a reason to leave a silent failure in the one component that
+would tell you it wasn't. Fix `B-31` first, in its own commit, so that whichever
+option is chosen, the next call *reports* what the screening layer did.
+
+~~`B-29` is required either way.~~ Withdrawn — the grader already covers its
+whole question.
 
 ### `B-24` · ~~Layer 1 coverage gap~~ — **WITHDRAWN 2 Aug, the claim was mine and it was wrong**
 
@@ -518,6 +1056,37 @@ Recorded honestly rather than filled in:
   branches, report a failed booking SMS as sent.
   **Worth noting as a pattern:** a one-line defect description carried across
   sessions had, in both cases, the wrong scope. Anchor before scheduling.
+
+- **Line-number rot is now measured, not suspected.** Re-anchoring the `B-15`
+  section at `13dd9f3` found **eleven** stale references. The drift is **not a
+  constant** — it ranges +36 to +88 (`:1826`→`:1869` is +43, `:13500`→`:13588`
+  is +88, `latency_timing.py:74`→`:110` is +36) — so you cannot correct these by
+  applying an offset; each must be re-grepped by symbol. `connection.py` grows
+  under every fix, including my own `13dd9f3`, which moved the `:7094` site cited
+  in `B-25`'s own root-cause paragraph. Treat any `connection.py:NNNN` written
+  before 2 Aug as approximate.
+- **`B-29` is the register quoting itself.** I opened it, and withdrew it four
+  hours later, on the strength of a four-keyword list that appeared inside
+  `B-20`'s prose. The real list in `clinic.json` has twelve entries and contains
+  the exact phrase I said was missing. Nothing in this file is a source; it is
+  all commentary on sources. **Read the config, the code, or the transcript —
+  never a row in here — before opening a row.** This is a different failure from
+  the anchoring one above: those rows were unanchored, this one was anchored to
+  the wrong artefact.
+- **The night's most serious finding came from a replay, not from a call.**
+  `B-31` was invisible in the logs by construction, invisible in obs (no
+  tool-call trace), and invisible in the transcript. It surfaced only by running
+  `match_asked_screen` and `update_screening_state` offline against the stored
+  turns. **Replay the pure predicates against obs before concluding a
+  deterministic layer "did nothing"** — "no log line" and "did not run" and "ran
+  and found nothing" are three different things, and the logs distinguish none
+  of them.
+- **One residual left deliberately in code, not fixed here.** The `capture_phase`
+  docstring at
+  [latency_timing.py:125](../../app/media_streams/latency_timing.py) cites
+  `connection.py:1790` for the sticky-flag comment; the real line is `1833`. It
+  is comment-only and this pass was docs-only by design — fold it into the next
+  commit that touches that file rather than spending a commit on it.
 
 If you find the source these came from, fold it in here and delete this section.
 
