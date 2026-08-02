@@ -35,10 +35,11 @@ implying more confidence than exists.
 | Track B — needs an owner decision | `B-19` / `B-07` | Blocked on filler cadence. **`B-07` now has a second arm — `B-30`** |
 | Track C — prompt-side, needs dial time | `B-06` `B-08` `B-10` `B-11` `B-12` `B-16` | **`B-10` and `B-16` confirmed live 2 Aug**, see the sweep section |
 | Track D — verification only | `U-02` – `U-05` | **Still entirely open.** Sweep call 2 exercised the keypad commit, C2 read-back and the overwrite guard — none of which are `U-nn` rows. `U-03` is the *reschedule* path (call 7) and was not touched |
-| **Decision open — highest severity on this register** | `B-20` (Layer 2 over-screening) | **First live sighting 2 Aug with a caller-audible objection AND a clinical misread.** The recorded amplifier risk fired for the first time and was masked by `B-31`. A/B/C authority decision now has evidence; my recommendation changed from B to C — see below |
+| **Decision open — highest severity on this register** | `B-20` (Layer 2 over-screening) | **Recommendation is B**, scored against all 18 orphan calls: 16 over-reach, **2 genuine Layer 1 saves** (`B-32`). C would remove the saves. Deploy the B prompt change **together with** `c69eb61`, not after it |
 | Withdrawn | `B-24` (claimed Layer 1 coverage gap) | My claim, wrong. Widening those triggers would manufacture `B-20` |
 | **Deferred to last** | `B-17`, `B-22` (the SMS family) | Owner decision 2 Aug. **`B-17` is worse than recorded — it has a second consumer.** Revisit warranted |
 | New from the sweep | `B-27` `B-28` **`B-31`** `B-30` | See the sweep section. `B-28` is root-caused by `B-31` |
+| New — blocks nothing, decides `B-20` | **`B-32`** (STT noise defeats Layer 1 triggers) | Two observed misses, both rescued by Layer 2. **Do not fix by adding keywords.** One safe 15-min config addition (`calves`) is separable |
 | Withdrawn same night | `B-29` (claimed the DVT grader knew half its question) | My claim, wrong — written from a truncated keyword list quoted in `B-20` rather than from `clinic.json`. **That quotation is now corrected too** |
 | **Unrecorded** | **`B-05`, `U-01`** | **See "Gaps" below** |
 | New — plan written | `B-23` (reason re-asked when already given) | `PLAN_REASON_CAPTURE.md`. **Fired live in the F4 shape.** Owner decision open on F5 |
@@ -529,6 +530,87 @@ Test: `tests/regression/test_orphan_survives_the_prompt_cap.py`, 17 cases.
 > landed mid-run, and the second was read from a **tail-truncated** background
 > log that yielded 14 of 95 `FAILED` lines. Both were discarded. Capture failing
 > sets to a file you redirect yourself, and never diff across trees.
+
+## `B-32` · STT noise defeats Layer 1's exact-phrase triggers — NEW
+
+**Opened 3 Aug. A finding, not a lead — two observed instances with call SIDs.
+It is NOT a vocabulary gap and must not be fixed by adding keywords.**
+
+Both words were already in `clinic.json`. The transcriber destroyed them:
+
+| Call | Caller said (as transcribed) | Layer 1 | Config has | The model |
+|---|---|---|---|---|
+| `CAcaae3aa7` (25 Jul) | *"hi my **call's** been very sore lately"* | `None` | `calf` | asked `dvt`, caller disclosed **recent surgery**, escalated to NHS 111 — **correctly** |
+| `CA3264ed4b` (30 Jul) | *"for some **back pin**"* | `None` | `back pain` | said *"back pain can be really debilitating"*, asked `cauda_equina` — **correctly** |
+
+Verified against the matcher directly:
+
+```
+match_screen_trigger("hi my calf has been very sore lately") -> dvt
+match_screen_trigger("hi my call's been very sore lately")   -> None
+match_screen_trigger("for some back pain")                   -> cauda_equina
+match_screen_trigger("for some back pin")                    -> None
+```
+
+One letter in each case. `_norm` deletes apostrophes, so `"call's"` becomes
+`calls`, and `_kw_in`'s inflection whitelist (`s|es|ed|ing|ness`) does not bridge
+`calf`→`calls` or `pain`→`pin`. Both behaved exactly as designed.
+
+**These are the only two Layer 1 misses in the corpus** — 2 of 18 orphan calls,
+the other 16 being genuine `B-20` over-reach. Both were caught by Layer 2, which
+is why they are the load-bearing evidence in the `B-20` A/B/C decision and why
+that recommendation moved from C back to B.
+
+### Why "just add the words" is wrong
+
+The obvious config fix is a trap and the numbers say so. `call` appears in **2 of
+999** caller turns; the other is *"hi can you call me back later"* — no complaint,
+no pain word. Adding `call` or `calls` to `dvt.trigger_keywords` would arm a DVT
+screen on a caller asking to be rung back, i.e. **manufacture a `B-20` orphan of
+exactly the kind we are trying to remove.** `pin` as a back trigger is worse.
+
+More fundamentally: STT errors cannot be enumerated. Three confirmed manglings of
+clinical vocabulary in this corpus alone — `calf`→`call's`, `back pain`→`back
+pin`, and `ankle's`→`angles` (`CAc0a67a9d`, *"my left angles in a lot of pain"*).
+There is no finite keyword list that closes this.
+
+> The `angles` one is worth noting precisely because it changed nothing: plain
+> ankle pain is not a trigger for any screen, so Layer 1 was silent for the right
+> reason and the mangling was irrelevant. Only manglings that land on a word
+> carrying clinical signal cost anything — which is why the count here is two,
+> not three.
+
+### What is actually available
+
+1. **Nothing — accept Layer 2 as the cover.** This is what happened on both calls
+   and it worked. It is also `B-20` option B's implicit position, and the honest
+   reason B beats C.
+2. **Phonetic or edit-distance matching on trigger keywords only.** Would catch
+   both. Engine work in `_kw_in`'s neighbourhood, with a real false-positive
+   budget to establish first — `_kw_in`'s docstring records that loosening
+   matching is precisely how `red`/`tired`, `numb`/`number`, `hot`/`photo` and
+   `fell`/`fellow` produced false escalations. **Not a pre-demo change.**
+3. **One safe config addition, unrelated to STT**, found while scoping this and
+   worth doing on its own merit: `calf` does not match `calves` (irregular
+   plural — `_kw_in`'s docstring says explicitly these "belong in the clinic
+   config as their own keywords"), and `calves` is **absent** from
+   `dvt.trigger_keywords`. It occurs **0 times** in 999 caller turns, so it
+   carries no collision risk. Small, safe, and it does not touch this row's root
+   cause — a real caller saying *"my calves have been sore"* arms nothing today.
+
+**Do not schedule 2 before the demo.** Option 1 is the status quo and is adequate
+*provided `B-20` resolves to B or A rather than C* — which is the dependency
+worth writing down. Option 3 is fifteen minutes and independent of all of it.
+
+> **Scoping honesty.** I first tried to size this with seventeen phrasings I
+> invented and judged "should arm", of which ten missed. That instrument was
+> wrong and the number is discarded: I am not the clinician who decides what
+> warrants a screen, and constructing a coverage gap is exactly the mistake that
+> made `B-24` wrong. Everything above is observed caller speech with a call SID.
+> Anything that needs a clinical judgement on what *ought* to trigger belongs to
+> Marcus, not to this register.
+
+---
 
 ## Closed
 
@@ -1041,6 +1123,25 @@ Three separate things go wrong in six lines, and they should not be conflated:
    layer never ran on that turn: `B-31`, a 200-character cap that truncated the
    question's `"?"` away and made the orphan detector return `None` silently.
 
+> **"That's reassuring" is not the model's phrasing — it is scripted.** Found
+> 3 Aug in `clinic.json`'s `clinical_screening.how_to_use`, verbatim:
+>
+> > *"If the answer is clearly no / none of those, reassure briefly (**'that's
+> > reassuring'**) and carry on to booking as normal."*
+>
+> It appears again, correctly used, on `CA3264ed4b`. So the model did not
+> improvise a clinical judgement and then dress it in warm language. It was
+> handed the question, the verdict rule, and the reassurance wording, and its
+> only error was classifying *"i had a long journey sitting still, **but i don't
+> think that's why it's a problem**"* as a clearly-no — latching onto the
+> caller's own hedge.
+>
+> This matters for the fix: the config grants the model **grading authority**,
+> not just asking authority, and does it in one sentence that reads as a tone
+> instruction. Whichever of A/B/C is chosen, that sentence needs the deterministic
+> grader named as the authority for the *verdict*, with the scripted line as
+> wording only.
+
 **Point 3 is the serious one and it is a new class of finding.** The register has
 until now treated over-screening as *asking a question that was not warranted* —
 a friction and false-escalation risk. This is the inverse failure: having asked,
@@ -1063,29 +1164,79 @@ not in grading, not in the reply.
 > unwarranted escalation that would have followed, and the residue was a false
 > reassurance. Fixing one without the other changes the failure, not the risk.
 
-#### Owner decision — A / B / C, and my recommendation has changed
+#### Owner decision — A / B / C. **Recommendation: B.**
 
-**Still open.** It was B. It is now C:
+Recorded plainly because it has moved twice in a day and the reasoning matters
+more than the answer: **B on 2 Aug (morning) → C on 2 Aug (after call 2) → back
+to B on 3 Aug**, after classifying all eighteen orphan calls instead of arguing
+from call 2 alone. C was a conclusion drawn from one call.
 
-| | Option | What call 2 does to it |
+##### The evidence the options are scored against
+
+Every jv_v1 call in obs replayed turn-by-turn through the real engine, post-`B-31`.
+Eighteen calls where the model screened and Layer 1 did not. Classified by what
+the caller had actually said **before** the screen was asked:
+
+| | Calls | What happened |
 |---|---|---|
-| A | Prompt-side tightening — keep the catalogue, add stronger "only when CALL STATE says SCREEN REQUIRED" language | Unchanged: the prompt already says this in `clinic.json`'s `how_to_use` and the header at [:379](../../app/prompts/clinic_template_prompt.py) overrides it. Adding more words to the losing side of a contradiction |
-| B | The model may screen on a real presentation, never when the complaint matches no screen | **Would not have stopped this call.** An ankle *is* a plausible DVT context, so a "does the complaint plausibly warrant a screen" test passes here. B was scoped against orphans on shoulders and knees; it does not survive a plausible one |
-| C | **Layer 1 arms, or nothing is asked.** Remove the question catalogue from the model's prompt entirely | Stops all three failures above at the first one. The model cannot mis-grade a question it never asked — and `B-31` cannot fire either, since only a model *paraphrase* overruns the 200-char cap; every configured question is 150–185 chars |
+| **The complaint matched no screen** | **8** | knee→`cauda_equina` ×2, shoulder→`cauda_equina` ×2, shoulder→`vbi_neck`, knee→`inflammatory` ×2, knee→`trauma_fracture`. Wrong body part or wrong pattern entirely |
+| **Same region, no red-flag signal** | **8** | ankle→`dvt` ×4 (incl. call 2), shin and ankle→`trauma_fracture`, neck→`vbi_neck` ×2. The screen is *arguable* from the body part; nothing the caller said indicated it |
+| **Genuine Layer 1 miss, rescued by Layer 2** | **2** | `CAcaae3aa7` and `CA3264ed4b` — see `B-32` |
 
-C's cost is honest and should be weighed, not waved past: any screen Layer 1
-misses is then never asked at all, where today the model sometimes catches one by
-accident. `B-24`'s withdrawal is what makes that affordable — Layer 1's triggers
-were checked against 967 caller turns and were right every time, and the two
-screens with zero arms had zero qualifying presentations. There is no known
-coverage gap for C to expose.
+So **16 of 18 are over-reach and 2 are saves.** The saves are the entire
+argument, and until this morning I had them as a hypothetical.
 
-**`B-31` is required under all three options and does not wait on this
-decision.** Under A or B the orphan detector stays load-bearing and must not fail
-silently. Under C the orphan path should become unreachable — but "should be
-unreachable" is not a reason to leave a silent failure in the one component that
-would tell you it wasn't. Fix `B-31` first, in its own commit, so that whichever
-option is chosen, the next call *reports* what the screening layer did.
+##### The scoring
+
+| | Option | Effect on the 18, measured |
+|---|---|---|
+| A | Prompt-side tightening — keep the catalogue, add stronger "only when CALL STATE says SCREEN REQUIRED" language | **Unquantifiable, and aimed at the wrong line.** `how_to_use` already says exactly this; [:384](../../app/prompts/clinic_template_prompt.py) then tells the model to "match the caller's presentation to a row, then ask". Adding words to the losing side of a contradiction |
+| **B** | **The model may screen on a real presentation, never when the complaint matches no screen** | **Removes the 8 that matched no screen. Keeps both saves.** Residual is the 8 same-region asks — the least harmful kind, and the kind a physio would not blink at |
+| C | **Layer 1 arms, or nothing is asked.** Remove the catalogue from the prompt | Removes all 16 over-reaches — **and both saves.** `CAcaae3aa7` gets booked for physiotherapy and massaged with a possible clot |
+
+**Be honest about what B does not do:** it would **not** have stopped call 2. An
+ankle is a defensible DVT context, so call 2 sits in the second band. B removes
+half the over-screening, not all of it. That is the trade, stated plainly rather
+than sold.
+
+##### Why C is now the wrong answer
+
+C rested on `B-24`'s withdrawal — Layer 1's triggers were checked against the
+corpus and were right every time, so there appeared to be no coverage gap for C
+to expose. **That finding stands and is not what `B-32` contradicts.** `B-32` is
+a different failure: both saves are calls where the trigger word *was* in the
+config and the transcriber destroyed it (`"calf"` → `"call's"`, `"back pain"` →
+`"back pin"`). Not a vocabulary gap — transcription noise defeating exact-phrase
+matching.
+
+That distinction is the whole decision. A vocabulary gap can be closed in
+`clinic.json` and then C becomes safe. **STT noise cannot be enumerated**, so
+under C there is nothing left covering it. Layer 2 is not redundant
+belt-and-braces here; on 2 of 18 orphan calls it was the only layer working.
+
+##### What B actually requires, and what it does not
+
+- **It is a prompt change, not engine work.** The line to change is
+  [:384](../../app/prompts/clinic_template_prompt.py) — "match the caller's
+  presentation to a row" is the grant of authority. Bounding it ("only where the
+  caller's stated complaint is the presentation named in that row") is the fix.
+- **Do not widen Layer 1's triggers to compensate.** `B-24` is explicit that
+  widening manufactures `B-20`, and the two neck→`vbi_neck` calls in the second
+  band are exactly what the compound `trigger_all_groups` was designed to
+  suppress.
+- **`B-32` is separate and does not block this.** See its row for why it should
+  not be "fixed" by adding keywords.
+
+**`B-31` was required under all three options and is done** (`c69eb61`). Under A
+or B the orphan detector stays load-bearing and must not fail silently; under C
+the orphan path *should* become unreachable, which is not a reason to leave a
+silent failure in the component that would tell you it hadn't.
+
+> **Deploy order.** `c69eb61` makes a call-2-shaped call escalate to NHS 111 and
+> block the booking. Under B that call still screens (band two), so `c69eb61`
+> alone shifts the failure from a false reassurance to a false escalation without
+> removing the cause. **Land the B prompt change and `c69eb61` together**, then
+> dial call 2's script again before anything else.
 
 ~~`B-29` is required either way.~~ Withdrawn — the grader already covers its
 whole question.
@@ -1117,6 +1268,17 @@ The six turns containing *"stiff"* are **answers to Susie's screening question**
 **Consequence for `B-23`:** the F6 sequencing argument — *wire the extractor only
 after Layer 1 coverage is fixed* — loses its basis. There is no coverage work.
 See `PLAN_REASON_CAPTURE.md` §7.
+
+> **`B-32` does not reopen this row — read both before citing either.** This
+> withdrawal says Layer 1's *vocabulary* is right: the words callers used were
+> matched, and the words that were absent were absent from the corpus too.
+> `B-32` says something different — that on two calls the right word **was** in
+> the config and the transcriber mangled it. Vocabulary coverage and transcription
+> robustness are separate properties and only the first was ever tested here.
+> The instruction above is unchanged: **do not widen these triggers.** `B-32`'s
+> one config suggestion (`calves`, an irregular plural of a keyword already
+> present) is an addition of an existing concept's inflection, not a widening of
+> what the screen is for.
 
 ### Evidence caveat — stored transcripts are incomplete for screening analysis
 Of the 13 calls that armed a screen via `trigger`, only **2** contain the arming
@@ -1156,6 +1318,16 @@ Recorded honestly rather than filled in:
   under every fix, including my own `13dd9f3`, which moved the `:7094` site cited
   in `B-25`'s own root-cause paragraph. Treat any `connection.py:NNNN` written
   before 2 Aug as approximate.
+- **Three ways of getting a screening claim wrong, all mine, all in 24 hours.**
+  `B-24`: asserted a coverage gap from *absence of arms*, without checking whether
+  the vocabulary ever appeared — wrong, withdrawn. `B-29`: asserted a grader gap
+  from a keyword list *quoted in this file* rather than from `clinic.json` —
+  wrong, withdrawn. `B-32` (scoping): tried to size a trigger gap with seventeen
+  phrasings **I invented and judged should arm** — discarded before it reached a
+  row. The pattern is one thing: **screening claims must come from observed
+  caller speech with a call SID, and any judgement about what *ought* to trigger
+  is clinical, not engineering.** `B-32` as written contains only the two cases
+  that actually happened.
 - **`B-29` is the register quoting itself.** I opened it, and withdrew it four
   hours later, on the strength of a four-keyword list that appeared inside
   `B-20`'s prose. The real list in `clinic.json` has twelve entries and contains
