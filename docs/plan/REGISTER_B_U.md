@@ -29,11 +29,12 @@ implying more confidence than exists.
 |---|---|---|
 | Closed | `U-06`, `B-18`, `B-13`, `B-14`, `B-15` | Shipped 2 Aug with tests |
 | Parked | `B-01` – `B-04` | Two provisioning items + the name work — owner decision, not capacity |
-| Track A — deterministic, no dial time | `B-17` (anchored, plan written), then `B-09` | Next up |
+| Track A — deterministic, no dial time | `B-09` | **Next up** |
 | Track B — needs an owner decision | `B-19` / `B-07` | Blocked on filler cadence |
 | Track C — prompt-side, needs dial time | `B-06` `B-08` `B-10` `B-11` `B-12` `B-16` | After Track A |
 | Track D — verification only | `U-02` – `U-05` | Needs a phone |
-| Unclassified | `B-20` | 30-min read before it can be scheduled |
+| Unclassified | `B-20` | 30-min read before it can be scheduled — **do this first, it is the only clinical row** |
+| **Deferred to last** | `B-17`, `B-22` (the SMS family) | Owner decision 2 Aug — unprovable on this branch, see below |
 | **Unrecorded** | **`B-05`, `U-01`** | **See "Gaps" below** |
 
 ---
@@ -85,9 +86,9 @@ so this is a design reversal, not an addition.
 
 ## Track A — deterministic, testable without a phone
 
-### P3 hygiene batch — `B-13` `B-14` `B-15` `B-17`
+### P3 hygiene batch — `B-13` `B-14` `B-15` (`B-17` deferred, see below)
 
-All four make logs or config lie. They are cheap, and they are the instruments
+All of them make logs or config lie. They are cheap, and they are the instruments
 every other item on this register will be read through — which is why they come
 before the behavioural work rather than after it.
 
@@ -259,6 +260,50 @@ the copy that drifted.
 4. **Canonical-first applies and matters here.** Fix lands on `latency-eval`,
    then cherry-picks to both onboarding branches — which is where it actually
    pays, since this branch cannot send an SMS at all.
+
+---
+
+## Deferred — the SMS family, `B-17` and `B-22`
+
+**Owner decision, 2 Aug: all SMS work goes to the end of the queue.**
+
+The reasoning is sound and worth writing down so it is not relitigated. SMS
+cannot fire on this branch at all (`SMS_ENABLED` defaults `false` and must stay
+that way here), so nothing in this family is provable by any call we can place
+before the demo. Every hour spent on it is an hour of unverifiable work while
+`B-09` silently books wrong days and the by-ear backlog grows.
+
+**What deferring costs, stated plainly** so the decision can be revisited with
+open eyes: on the two live clinic branches, a booking SMS that genuinely fails
+stays invisible for as long as this sits in the queue. That is a real patient
+getting no confirmation with nothing in the record to say so. It is the right
+trade against a demo three days out, and it stops being the right trade the
+moment the demo is behind us.
+
+**Do them as one batch when they come up.** `B-17` and `B-22` are the same
+subsystem, they want the same test scaffolding, and they cherry-pick to the same
+two branches in the same operation.
+
+### `B-17` · booking SMS reports success it never checked
+Full analysis above. Anchored, plan written, ~45 min. **Deferred.**
+
+### `B-22` · Susie promises a text before anyone knows it was sent — NEW
+**Lead, opened 2 Aug while scoping `B-17`. Deferred with it.**
+
+The closing line is built from the `SMS_ENABLED` **env var at prompt-construction
+time**, not from the send's outcome —
+[clinic_template_prompt.py:1710](../../app/prompts/clinic_template_prompt.py):
+`_text_promise = " I've just sent you a confirmation text." if _sms_on else ""`
+(and `:2133` for the reschedule closing).
+
+So on a live branch with the flag on, Susie tells the caller the text is sent
+before the send has been attempted, let alone confirmed. **`B-17` does not fix
+this** — it makes the failure visible in logs; this one is what the caller hears.
+Of the two, this is the one with a caller-facing consequence, and it needs a
+different shape of fix: defer the closing, or condition it on the write result.
+
+Harmless on `latency-eval` (flag off ⇒ the promise is never spoken). Matters only
+where SMS is live, which is the same place `B-17` matters — hence one batch.
 
 ---
 
