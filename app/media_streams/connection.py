@@ -1349,10 +1349,32 @@ def _ends_on_continuation_word(text: str) -> bool:
     token) — a 600ms silence after it is very likely a thinking pause, not the
     end of the turn (RS-06 / C23). Used to EXTEND the endpoint wait ONLY for
     incomplete-looking utterances, so complete turns keep today's latency.
+
+    Digits are TOKENS, not punctuation. The character class used to be
+    ``[^a-z' ]+``, which deleted every numeral before the last word was read —
+    so "quarter to 7" tokenised to ["quarter", "to"] and the turn was judged to
+    end on the preposition. The hold then engaged on a turn that was already
+    complete, and nothing ever arrived to merge with it, so the caller paid the
+    full _INCOMPLETE_HOLD_S in silence.
+
+    That landed on the single commonest turn in a UK booking, because British
+    clock readings put a preposition immediately before the numeral: "quarter
+    to 7", "the one at 4", "28 please at 5". Confirmed in the obs store on the
+    slot-selection turn of CA85b1f4cc and CA63da640f4d (both 'um yeah quarter
+    to 7', 2 Aug 2026).
+
+    Worse, it made endpointing depend on how AssemblyAI happened to render the
+    number: "quarter to seven" was correctly read as complete on the identical
+    audio, because "seven" is a word and survived the strip. Keeping digits
+    makes the two spellings behave the same.
+
+    The change can only ever REMOVE a hold, never add one: _CONTINUATION_TAIL_WORDS
+    contains no digit, so a token carrying a digit can never match, and keeping
+    digits only ever replaces the tested last token with one that cannot match.
     """
     if not text:
         return False
-    words = re.sub(r"[^a-z' ]+", " ", text.lower()).split()
+    words = re.sub(r"[^a-z0-9' ]+", " ", text.lower()).split()
     if not words:
         return False
     return words[-1].strip("'") in _CONTINUATION_TAIL_WORDS
