@@ -40,7 +40,6 @@ import logging
 import os
 import re as _re
 import time
-from pathlib import Path
 from typing import Any, Optional
 
 import httpx
@@ -244,55 +243,37 @@ def _apply_tts_substitutions_openai(text: str) -> str:
 _ELEVENLABS_EXHAUSTED: bool = False
 
 # ---------------------------------------------------------------------------
-# ElevenLabs pronunciation dictionary locator (loaded once at startup)
+# ElevenLabs pronunciation dictionary — REMOVED 2026-08-02 (B-14)
 # ---------------------------------------------------------------------------
-
-_PRON_DICT_LOCATOR: Optional[dict] = None   # populated by _get_pron_dict_locator()
-_PRON_DICT_LOADED: bool = False              # True once we've attempted the load
-
-
-def _get_pron_dict_locator() -> Optional[dict]:
-    """
-    Return the pronunciation_dictionary_locators entry for the shared
-    ElevenLabs pronunciation dictionary, or None if the config file has
-    not been created yet (run scripts/setup_pronunciation_dictionary.py).
-
-    Loaded once and cached in _PRON_DICT_LOCATOR.  The file is at
-    config/pronunciation_dict.json relative to the project root.
-
-    Returns a single-element list suitable for the API body field, e.g.:
-        [{"pronunciation_dictionary_id": "...", "version_id": "..."}]
-    or None if the file is missing / malformed.
-    """
-    global _PRON_DICT_LOCATOR, _PRON_DICT_LOADED
-    if _PRON_DICT_LOADED:
-        return _PRON_DICT_LOCATOR
-
-    _PRON_DICT_LOADED = True
-    config_path = Path(__file__).resolve().parent.parent.parent / "config" / "pronunciation_dict.json"
-    try:
-        data = json.loads(config_path.read_text(encoding="utf-8"))
-        pid  = data.get("pronunciation_dictionary_id")
-        vid  = data.get("version_id")
-        if pid and vid:
-            _PRON_DICT_LOCATOR = [{"pronunciation_dictionary_id": pid, "version_id": vid}]
-            logger.info(
-                "[ms_tts] Pronunciation dictionary loaded: id=%s version=%s", pid, vid
-            )
-        else:
-            logger.warning(
-                "[ms_tts] pronunciation_dict.json missing id/version_id — "
-                "run scripts/setup_pronunciation_dictionary.py"
-            )
-    except FileNotFoundError:
-        logger.info(
-            "[ms_tts] config/pronunciation_dict.json not found — "
-            "ElevenLabs pronunciation dictionary not active"
-        )
-    except Exception as exc:
-        logger.warning("[ms_tts] Could not load pronunciation_dict.json: %r", exc)
-
-    return _PRON_DICT_LOCATOR
+# There was a loader here that read config/pronunciation_dict.json for a
+# {pronunciation_dictionary_id, version_id} pair and injected it into every
+# synthesis request. It never once ran: the file on disk was
+# {"Alcester": "Awlstuh"} — a word->alias map, not the locator pair the loader
+# wanted — so the lookup always failed, the locator stayed None, and the request
+# body was never touched. Removed rather than repaired, for three reasons:
+#
+#   1. The one word it demonstrably mattered for is already handled, locally and
+#      deterministically, by _TTS_SUBSTITUTIONS_ELEVENLABS above. That rule
+#      exists because call logs caught "Alcester" being mispronounced, and it
+#      costs a regex rather than a round trip.
+#   2. Turning it on would put pronunciation in TWO places that can disagree.
+#      One vocabulary maintained in several copies is the standing failure
+#      pattern of this codebase — see DEFECT_REGISTER.md §A4, where an
+#      affirmative list lived in four places and each fix patched one of them.
+#   3. It has never executed in production, so removing it cannot change a
+#      call. ENABLING it would have been the risky move: an untested field on
+#      every TTS request, three days before a demo.
+#
+# ⚠️ One thing the dictionary would have covered that nothing covers now:
+# "Redditch" (the doubled-d artefact, per scripts/setup_pronunciation_dictionary.py).
+# There is no local substitution for it. That is recorded as an open row in
+# REGISTER_B_U.md rather than fixed here — adding a substitution would change
+# spoken output on no current evidence, and Redditch may not even be live
+# vocabulary on this branch.
+#
+# To re-enable: scripts/setup_pronunciation_dictionary.py still creates the
+# dictionary and writes real locator IDs; restore the loader from this commit's
+# parent and decide, first, which of the two mechanisms owns pronunciation.
 
 
 _elevenlabs_client: Optional[httpx.AsyncClient] = None
@@ -466,10 +447,6 @@ class TTSStream:
                 "similarity_boost": ELEVENLABS_SIMILARITY_BOOST,
             },
         }
-        _pron_locator = _get_pron_dict_locator()
-        if _pron_locator:
-            body["pronunciation_dictionary_locators"] = _pron_locator
-
         logger.info(
             "[ms_tts] synthesise_chunk: model=%s len=%d text=%r",
             ELEVENLABS_MODEL_ID, len(text), text[:60],

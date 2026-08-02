@@ -27,9 +27,9 @@ implying more confidence than exists.
 
 | Track | Items | State |
 |---|---|---|
-| Closed | `U-06`, `B-18` | Shipped 2 Aug with tests |
+| Closed | `U-06`, `B-18`, `B-13`, `B-14` | Shipped 2 Aug with tests |
 | Parked | `B-01` – `B-04` | Two provisioning items + the name work — owner decision, not capacity |
-| Track A — deterministic, no dial time | `B-13` `B-14` `B-15` `B-17`, then `B-09` | Next up |
+| Track A — deterministic, no dial time | `B-15` `B-17` (need anchors), then `B-09` | Next up |
 | Track B — needs an owner decision | `B-19` / `B-07` | Blocked on filler cadence |
 | Track C — prompt-side, needs dial time | `B-06` `B-08` `B-10` `B-11` `B-12` `B-16` | After Track A |
 | Track D — verification only | `U-02` – `U-05` | Needs a phone |
@@ -92,29 +92,58 @@ every other item on this register will be read through — which is why they com
 before the behavioural work rather than after it.
 
 #### `B-13` · a 401 from ElevenLabs is logged as "ready"
-**Anchored.** [tts_stream.py:348](../../app/media_streams/tts_stream.py) logs
-`"prewarm: connection ready in %.0fms (status=%d)"` at INFO **regardless of
-status**. The module already knows a 401 means credits exhausted
-(`tts_stream.py:241` sets a flag for exactly that). So the one condition that
-silences the assistant entirely reads, in the logs, as a healthy prewarm.
-Fix: branch on `resp.status_code`; anything ≥400 is a warning naming the status.
+**CLOSED — `a5e8415`, 2 Aug.** The prewarm interpolated `resp.status_code` into
+its log line but never branched on it, so an auth failure read as
+`prewarm: connection ready in 214ms (status=401)` at INFO. The socket really is
+warm on a 401 — that is why it looked like success — but the credential is dead,
+and the prewarm fires at webhook time, the earliest anything can know.
+`synthesise_chunk` already calls the same status an error and switches the
+process to the OpenAI fallback; it just does not run until a caller is on the line.
+
+Now: 401 → error naming the cause; other 4xx/5xx → warning naming the status;
+2xx → today's INFO line verbatim. That last branch is half the fix — a prewarm
+that warns on every healthy start drowns the line it exists to surface.
+Unchanged and asserted: the return value (latency accounting, not health) and
+`_ELEVENLABS_EXHAUSTED`, which stays unarmed here.
+Test: `tests/regression/test_prewarm_status_is_not_ready.py`, 12 cases;
+6 verified failing on the parent commit.
+
+> **Still open, deliberately:** should the prewarm arm `_ELEVENLABS_EXHAUSTED`?
+> Today a startup 401 still costs the first caller a failed synth before the flag
+> flips on the synth path. Arming it at startup moves the fallback decision onto a
+> probe — defensible, but a behaviour change needing its own evidence. Not yet
+> given an ID; give it one if it is scheduled.
 
 #### `B-14` · the pronunciation dictionary is inactive and the config is the wrong shape
-**Anchored.** `config/pronunciation_dict.json` contains:
+**CLOSED — turned off, 2 Aug.** Owner decision: off.
 
-```json
-{ "Alcester": "Awlstuh" }
-```
+`config/pronunciation_dict.json` contained `{"Alcester": "Awlstuh"}` — a
+word→alias map — while the loader wanted a `{pronunciation_dictionary_id,
+version_id}` locator pair. The lookup failed on every startup, `_PRON_DICT_LOCATOR`
+stayed `None`, and the request body was never touched. **The dictionary had never
+been active.**
 
-The loader at [tts_stream.py:274](../../app/media_streams/tts_stream.py) reads
-`pronunciation_dictionary_id` and `version_id`, finds neither, warns, and leaves
-`_PRON_DICT_LOCATOR` unset. **The dictionary has never been active.** The file is
-a word→phoneme map that no code path consumes; the loader wants ElevenLabs
-locator IDs produced by `scripts/setup_pronunciation_dictionary.py`.
-Note also that `Alcester` is Susie/JV vocabulary — the file may be stale as well
-as mis-shaped. Fix is to decide which of the two shapes is intended and make the
-other side match; do not "fix" the loader without checking whether anyone wants
-the dictionary on at all.
+Removed rather than repaired: the one word it demonstrably mattered for is
+already covered locally and deterministically by `_TTS_SUBSTITUTIONS_ELEVENLABS`,
+and enabling it would have put pronunciation in two places free to disagree — the
+§A4 pattern. It had never executed, so removal cannot change a call; *enabling*
+would have been the risky move three days before a demo.
+Test: `tests/regression/test_pronunciation_has_one_owner.py`, 6 cases — five of
+them pinning the local Alcester rule, since that is now the only line of defence.
+`scripts/setup_pronunciation_dictionary.py` is kept; re-enabling is documented in
+the tombstone comment at the removal site.
+
+#### `B-21` · "Redditch" has no pronunciation rule — NEW, opened by the B-14 removal
+**Lead, not a finding.** `scripts/setup_pronunciation_dictionary.py` states that
+`Redditch` synthesises with a doubled-d artefact and the dictionary carried an
+alias for it. `_TTS_SUBSTITUTIONS_ELEVENLABS` covers **only** `Alcester`, so with
+the dictionary gone nothing covers Redditch.
+
+Deliberately not fixed alongside `B-14`: adding a substitution changes spoken
+output on the strength of a claim in a script docstring of unknown age, and
+Redditch may not be live vocabulary on this branch at all (several
+`fix/*redditch*` branches redirect it to Alcester). **Confirm by ear before
+changing anything** — one call where Susie says the word settles it.
 
 #### `B-15` · `capture_phase` mislabelled
 **Not anchored.** Carried from the sweep as described. `capture_phase` is
