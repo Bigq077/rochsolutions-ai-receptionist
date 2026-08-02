@@ -362,27 +362,64 @@ def _clinical_depth(clinic: Dict[str, Any]) -> str:
 
 
 def _render_clinical_screening(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
-    """Proactive red-flag SCREENING protocol, rendered from the clinic's
+    """CONDITIONAL red-flag SCREENING protocol, rendered from the clinic's
     `clinical_screening` config. Screening is safety-positive and NON-diagnostic:
     it asks the standard MSK safety question for a presentation BEFORE booking and
     routes red flags to urgent care. Rendered only when the clinic enables it, so
     clinics without the block are unaffected. The per-turn enforcement (which
     specific screen to run now) is injected by _b7_call_state via
     session['pending_screen']; the deterministic detector lives in
-    app/media_streams/clinical_screening.py."""
+    app/media_streams/clinical_screening.py.
+
+    "Conditional", not "proactive" — B-20, 2026-08-03. A screen is asked only
+    when the caller's described complaint IS a row's presentation. See the
+    comment on the SCREENS line below for the evidence and for why the model
+    keeps this authority rather than losing it."""
     cs = clinic.get("clinical_screening") or {}
     if not cs.get("enabled"):
         return ""
     screens = cs.get("screens") or []
     if not screens:
         return ""
-    out = ["CLINICAL SAFETY SCREENING — PROACTIVE RED-FLAG CHECKS (run BEFORE booking)"]
+    out = [
+        "CLINICAL SAFETY SCREENING — CONDITIONAL RED-FLAG CHECKS "
+        "(only when the caller's complaint matches a row below)"
+    ]
     if cs.get("how_to_use"):
         out.append(cs["how_to_use"])
     out.append("")
+    # B-20, 2026-08-03. This line used to read "match the caller's presentation
+    # to a row, then ask that screen's question" under a header that said
+    # PROACTIVE ... run BEFORE booking. Together they read as a checklist, and
+    # the model worked through it: of 18 calls in obs where it screened and the
+    # deterministic Layer 1 did not, 8 were complaints that matched no row at
+    # all (a knee sent to the back screen, a shoulder to the neck screen) and 8
+    # more were the right region with nothing indicating the screen. One caller
+    # said so out loud mid-call — "i'm kind of confused ... i don't know why
+    # you're asking me this question" (CA2ada6263).
+    #
+    # The authority itself is kept deliberately. On 2 of those 18 the model was
+    # the ONLY layer that worked: STT wrote "call's" for "calf" and "back pin"
+    # for "back pain", so Layer 1's exact-phrase triggers missed a genuine DVT
+    # with recent surgery and a genuine back presentation (B-32). Removing the
+    # catalogue entirely would have lost both. So the grant is BOUNDED, not
+    # withdrawn — the caller's stated complaint must actually be the row's
+    # presentation.
+    #
+    # Deliberately clinic-agnostic: which complaints map to which screens is
+    # config (each row renders its own "when the caller describes ..." line
+    # below), never engine text.
     out.append(
-        "SCREENS — match the caller's presentation to a row, then ask that "
-        "screen's question, on its own, before moving to booking:"
+        "SCREENS — CONDITIONAL, not a checklist. Ask a screen's question ONLY "
+        "when the complaint the caller has actually described IS the "
+        "presentation named on that row. If what they have described matches "
+        "no row, ask NOTHING from this list and continue to booking. Never "
+        "reach for the nearest row — a screening question the caller's problem "
+        "does not call for is not a safety check, it is an alarming question "
+        "about a condition they have no reason to think they have. If they "
+        "have not described a complaint yet, ask what the appointment is for; "
+        "that is not a screen. When a row DOES match, ask its question on its "
+        "own, before moving to booking:"
     )
     for s in screens:
         label = s.get("label") or s.get("id", "")

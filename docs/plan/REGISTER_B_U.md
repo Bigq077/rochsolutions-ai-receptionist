@@ -35,7 +35,7 @@ implying more confidence than exists.
 | Track B — needs an owner decision | `B-19` / `B-07` | Blocked on filler cadence. **`B-07` now has a second arm — `B-30`** |
 | Track C — prompt-side, needs dial time | `B-06` `B-08` `B-10` `B-11` `B-12` `B-16` | **`B-10` and `B-16` confirmed live 2 Aug**, see the sweep section |
 | Track D — verification only | `U-02` – `U-05` | **Still entirely open.** Sweep call 2 exercised the keypad commit, C2 read-back and the overwrite guard — none of which are `U-nn` rows. `U-03` is the *reschedule* path (call 7) and was not touched |
-| **Decision open — highest severity on this register** | `B-20` (Layer 2 over-screening) | **Recommendation is B**, scored against all 18 orphan calls: 16 over-reach, **2 genuine Layer 1 saves** (`B-32`). C would remove the saves. Deploy the B prompt change **together with** `c69eb61`, not after it |
+| **DECIDED and shipped — needs dial time** | `B-20` (Layer 2 over-screening) | **Option B, owner decision 3 Aug.** Screening authority bounded to a matching presentation; the grant is kept, not withdrawn, because 2 of 18 orphans were Layer 1 saves (`B-32`). Prompt change ⇒ **the test pins wording, not behaviour** — the next sweep must count orphans against the 18/133 baseline |
 | Withdrawn | `B-24` (claimed Layer 1 coverage gap) | My claim, wrong. Widening those triggers would manufacture `B-20` |
 | **Deferred to last** | `B-17`, `B-22` (the SMS family) | Owner decision 2 Aug. **`B-17` is worse than recorded — it has a second consumer.** Revisit warranted |
 | New from the sweep | `B-27` `B-28` **`B-31`** `B-30` | See the sweep section. `B-28` is root-caused by `B-31` |
@@ -1164,7 +1164,67 @@ not in grading, not in the reply.
 > unwarranted escalation that would have followed, and the residue was a false
 > reassurance. Fixing one without the other changes the failure, not the risk.
 
-#### Owner decision — A / B / C. **Recommendation: B.**
+#### DECIDED — **B**, by the owner, 3 Aug. Shipped.
+
+The bound is in. Two lines changed, one engine and one config, because they were
+the two that contradicted each other:
+
+| Where | Was | Now |
+|---|---|---|
+| [clinic_template_prompt.py:385](../../app/prompts/clinic_template_prompt.py) | `PROACTIVE RED-FLAG CHECKS (run BEFORE booking)` | `CONDITIONAL RED-FLAG CHECKS (only when the caller's complaint matches a row below)` |
+| [:413](../../app/prompts/clinic_template_prompt.py) | *"match the caller's presentation to a row, then ask that screen's question"* | *"CONDITIONAL, not a checklist … ask ONLY when the complaint the caller has actually described IS the presentation named on that row. If what they have described matches no row, ask NOTHING from this list … Never reach for the nearest row … If they have not described a complaint yet, ask what the appointment is for; that is not a screen."* |
+| `jv_v1/clinic.json` `how_to_use` | *"SAFETY SCREENING runs BEFORE booking."* … *"never skip it to reach a booking faster"* | *"runs BEFORE booking WHEN IT APPLIES … Most callers match no screen at all"* … *"never skip a screen that DOES apply"* |
+
+**The safety half was deliberately preserved, not weakened.** A screen that *does*
+apply still must not be skipped to book faster; a positive answer still blocks
+booking; the emergency path is untouched. Those are pinned by tests that pass on
+the parent.
+
+**Engine text stays clinic-agnostic.** The tempting version of this bound spells
+out *"a knee is not the inflammatory row"* — true for `jv_v1`, wrong for a clinic
+that has a knee screen. Which complaint maps to which screen is config; each row
+already renders its own *"when the caller describes …"* line, which is what the
+new rule points at. `test_engine_text_names_no_body_part` renders a
+placeholder-only clinic and asserts no anatomy survives.
+
+**What was NOT changed, and why.** The grading authority — `how_to_use` and the
+per-screen `IF clearly NO → reassure briefly ('that's reassuring')` at
+[:434](../../app/prompts/clinic_template_prompt.py) — is left alone. `B-31`
+already closed that harm: a deterministic escalation is spoken and the turn
+`continue`s at [connection.py:7380](../../app/media_streams/connection.py), so
+**the LLM never runs** and cannot contradict the grader. The model only reassures
+on a turn the grader scored clean, which is correct. Changing it would have been
+a prompt edit with no defect behind it.
+
+> **Residual, noted not fixed:** `_resolve_screen_answer` can return
+> `action='none'` on an *unclear* answer while leaving `pending_screen` set. The
+> model then speaks and may reassure on an answer that resolved nothing. Booking
+> stays blocked and the SCREEN REQUIRED steer re-drives, so the outcome is safe.
+> No observed instance; not scheduled.
+
+##### This is a prompt change — the test pins wording, not behaviour
+
+`test_screening_is_conditional_not_a_checklist.py`, 14 cases; 8 verified failing
+on the parent `8c6b30a`, and the 6 that pass there are exactly the invariants.
+But **a passing suite does not show that the model stopped over-screening.**
+Track C rules apply: this needs dial time. The measurement already exists — the
+`ORPHAN` warning fires whenever the model screens unprompted, and `B-31` added
+the `NEAR MISS` line — so the next sweep can count orphans directly and compare
+against the 18/133 baseline below.
+
+**Verification:** baseline `8c6b30a` 95 failed / 2867 passed → 95 failed / 2881
+passed (2867 + exactly the 14 new). Failing set byte-identical, zero regressions,
+zero accidental fixes.
+
+**Success criterion for the next sweep:** the 8 "matched no screen" orphans
+should go to zero. The 8 "same region" ones are expected to remain — B does not
+address them, and call 2 is one of them.
+
+---
+
+#### The decision, as it was argued
+
+**Recommendation was B.**
 
 Recorded plainly because it has moved twice in a day and the reasoning matters
 more than the answer: **B on 2 Aug (morning) → C on 2 Aug (after call 2) → back

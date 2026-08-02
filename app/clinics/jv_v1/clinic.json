@@ -197,9 +197,9 @@
     ]
   },
   "clinical_screening": {
-    "_note": "MARK_REVIEW: Proactive UK MSK red-flag screening. Consumed by (a) _render_clinical_screening for the prompt and (b) app/media_streams/clinical_screening.py for the deterministic pre-LLM classifier + the book_appointment gate. Screening is safety-positive and non-diagnostic. Wording reviewed by Marcus before go-live.",
+    "_note": "MARK_REVIEW: CONDITIONAL UK MSK red-flag screening — a screen is asked only when the caller's described complaint IS that row's presentation (B-20, owner decision 2026-08-03; was 'proactive', which the model read as a checklist). Consumed by (a) _render_clinical_screening for the prompt and (b) app/media_streams/clinical_screening.py for the deterministic pre-LLM classifier + the book_appointment gate. Screening is safety-positive and non-diagnostic. Wording reviewed by Marcus before go-live.",
     "enabled": true,
-    "how_to_use": "SAFETY SCREENING runs BEFORE booking. When a caller's problem matches one of the screens below (CALL STATE flags the active screen as SCREEN REQUIRED), acknowledge warmly, then ask that screen's question on its own as your single question that turn, and wait. If the answer is clearly no / none of those, reassure briefly ('that's reassuring') and carry on to booking as normal. If they answer yes to any part, do NOT book: give the screen's escalation calmly and offer to help once they've been seen. Ask a given screen only once per call, and never skip it to reach a booking faster.",
+    "how_to_use": "SAFETY SCREENING runs BEFORE booking WHEN IT APPLIES, and it applies ONLY when the caller's problem matches one of the screens below (CALL STATE flags the active screen as SCREEN REQUIRED). Most callers match no screen at all — for them there is nothing to ask and you go straight to booking. When one DOES match, acknowledge warmly, then ask that screen's question on its own as your single question that turn, and wait. If the answer is clearly no / none of those, reassure briefly ('that's reassuring') and carry on to booking as normal. If they answer yes to any part, do NOT book: give the screen's escalation calmly and offer to help once they've been seen. Ask a given screen only once per call, and never skip a screen that DOES apply in order to reach a booking faster.",
     "screens": [
       {
         "id": "cauda_equina",
