@@ -654,6 +654,82 @@ def _book_verdict_deterministic(text: str) -> str:
     return "unsure"
 
 
+# Affirmatives for "is that the best number for the booking?" — deliberately
+# NOT fast_path._YES_PATTERNS, which is tuned for "shall I book that in?".
+# Replaying both over the 950 stored caller turns, reusing that set accepted
+# 209 extra utterances including '11 in the morning please' and '28 please at
+# 5', because "please" is an affirmative for the BOOKING question and simply a
+# politeness marker everywhere else. Its members are also bare substrings, so
+# 'ok' matches inside 'looking'.
+#
+# Word-boundary matched for that reason. Safe to enumerate ONLY because the
+# negation and correction checks run first — "don't use that one" is settled as
+# a refusal before any of these is consulted, which is the property a plain
+# phrase list can never have.
+_PHONE_YES_RE = re.compile(
+    r"\b("
+    r"yes|yeah|yep|yup|aye|correct|perfect|grand"
+    r"|ok|okay|sure|fine|great|lovely|spot on|go ahead"
+    r"|that(?:'s| is|s) (?:right|correct|fine|it|the one|the number"
+    r"|the best number|the best one)"
+    r"|that(?:'ll| will|ll) do"
+    r"|it is"
+    r"|the best number"
+    r"|use (?:this|that) (?:number|one)"
+    r"|keep (?:this|that) (?:number|one)"
+    r"|(?:this|that) (?:number|one) is fine"
+    r"|(?:this|that) number"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _phone_confirm_verdict(text: str) -> str:
+    """L1 — 'yes' | 'no' | 'unsure' for the caller-ID confirmation step.
+
+    CAcb4a11b90 (2 Aug 2026). The caller answered "yeah that's the one" to
+    "I've got you on … is that the best number for the booking?".
+    `_is_use_this_number` returned False, phone_confirmed was never set,
+    book_appointment's A1 gate refused the write, the model re-asked, the
+    caller said the same words again, and the call was abandoned after two
+    full cycles with name, slot and number all collected.
+
+    Worse, and found while fixing it: `_is_use_this_number("don't use that
+    one")` returns TRUE. A caller explicitly refusing the caller ID would have
+    it stored as confirmed and BOOKED ON. That is a wrong booking rather than
+    a missed one, and it is the identical defect `_book_verdict_deterministic`
+    was written to close on the booking path ("don't book it" -> BOOK=True):
+
+        "Substring matching cannot be repaired by adding more substrings:
+         adding 'go for it' to the yes list also makes 'don't go for it' book."
+
+    Same fix, same ordering, applied to the path that never got it. Negation
+    and correction are checked BEFORE the affirmative, so a refusal can never
+    reach the yes branch no matter what is added to the affirmative sets.
+
+    Returns 'unsure' rather than guessing; the caller of this decides what an
+    unsettled reply does. It must NOT be "re-ask the same question" — that is
+    the loop above. The keypad is deterministic and its ladder terminates.
+    """
+    from app.media_streams.fast_path import _YES_PATTERNS, _NO_PATTERNS
+    t = " " + (text or "").strip().lower() + " "
+    if not t.strip():
+        return "no"                     # an absent reply is not a confirmation
+    if any(c in t for c in _NEGATION_CUES):
+        return "no"
+    if any(p in t for p in _NO_PATTERNS):
+        return "no"
+    _is_yes = bool(_PHONE_YES_RE.search(t))
+    if _is_yes and any(c in t for c in _CORRECTION_CUES):
+        # "yes but can I give you a different number" — an affirmative the
+        # caller is retracting. Deliberately 'no' (which routes to the keypad),
+        # not 'unsure': storing the caller ID here is the wrong-number outcome.
+        return "no"
+    if _is_yes:
+        return "yes"
+    return "unsure"
+
+
 _classifier_client_cached = None
 
 

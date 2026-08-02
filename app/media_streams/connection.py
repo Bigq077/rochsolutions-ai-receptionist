@@ -1273,6 +1273,29 @@ _PHONE_READBACK_REJECT_WORDS: frozenset = frozenset({
 })
 
 
+def _phone_confirm_is_yes(text: str) -> bool:
+    """True only when the caller clearly accepted the number read back to them.
+
+    Replaces _is_use_this_number at the BOOKING phone-confirm sites (CAcb4a11b90,
+    2 Aug 2026). That predicate is a bare substring list, which failed in both
+    directions on the same call path:
+
+      "yeah that's the one"  -> False  the caller was never confirmed, A1
+                                       refused the write, the model re-asked,
+                                       the caller repeated it, and the call was
+                                       abandoned after two full cycles.
+      "don't use that one"   -> True   a refusal accepted as consent — the
+                                       caller ID stored and BOOKED ON.
+
+    _phone_confirm_verdict applies the ordering _book_verdict_deterministic uses:
+    negation and correction first, affirmative last, so a refusal can never reach
+    the yes branch. Left in place at the reschedule/cancel lookup site (~7571),
+    which is a different question with its own keypad fallback.
+    """
+    from .llm_stream import _phone_confirm_verdict
+    return _phone_confirm_verdict(text) == "yes"
+
+
 def _is_phone_readback_rejection(transcript: str) -> bool:
     """True when the caller is telling us the number we just read back is wrong."""
     lowered = (transcript or "").strip().lower().rstrip(".!?")
@@ -6763,7 +6786,7 @@ class WebSocketCallHandler:
                         not self.session.get("v3_phone_dtmf_active")
                         and not self.session.get("v3_awaiting_phone_confirm")
                         and self.session.get("booking_flow_active")
-                        and _is_use_this_number(utterance)
+                        and _phone_confirm_is_yes(utterance)
                     ):
                         _bk_caller_num = _confirm_caller_number(self.session)
                         _bk_lastq = (
@@ -6909,7 +6932,7 @@ class WebSocketCallHandler:
                             # overwritten by it.
                             if (
                                 _caller_num
-                                and _is_use_this_number(utterance)
+                                and _phone_confirm_is_yes(utterance)
                                 and not self.session.get("phone_entered_by_keypad")
                             ):
                                 self.session.setdefault("collected", {})
