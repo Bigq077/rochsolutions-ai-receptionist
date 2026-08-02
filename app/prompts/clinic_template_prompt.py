@@ -2116,6 +2116,27 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "and we'll get it sorted for you.'"
     )
 
+    # ── Only promise a text if a text is actually going to be sent ──────────
+    # booking_success above was gated on SMS_ENABLED on 2026-07-26, but the
+    # reschedule and cancel confirmations were left promising "Confirmation
+    # text on its way" unconditionally. SMS_ENABLED defaults OFF on this
+    # branch (app/notifications/sms.py — deliberate, so an eval service can
+    # never text a real caller), so both closings were telling callers about
+    # a text that is never sent.
+    #
+    # Computed independently of booking_success's _text_promise: that name is
+    # only bound on the non-provisional branch above, so reusing it here would
+    # NameError for any clinic on the provisional path.
+    _sms_on_rc = os.getenv("SMS_ENABLED", "false").strip().lower() in (
+        "true", "1", "yes", "on"
+    )
+    _rc_text = " Confirmation text on its way." if _sms_on_rc else ""
+    _rc_no_text_rule = (
+        "" if _sms_on_rc else
+        "NEVER tell the caller a confirmation text has been sent, or that one "
+        "is coming — no text will be sent on this service. "
+    )
+
     reschedule_cancel = (
         "RESCHEDULE / CANCEL FLOW\n"
         f"{cn} is a single site — there is NO clinic-selection step, never ask "
@@ -2222,8 +2243,21 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "have patient_name (from the lookup), location, and new_slot_iso (the "
         "slot the caller chose). Call reschedule_appointment IMMEDIATELY with "
         "the data you already have — no filler, no intermediate step. Sequence: "
-        "(1) caller says yes → (2) call reschedule_appointment → (3) say: 'I've "
-        "rescheduled to [date/time]. Confirmation text on its way.'\n\n"
+        "(1) caller says yes → (2) call reschedule_appointment → (3) CLOSE THE "
+        "CALL with the confirmation below.\n"
+        "RESCHEDULE CLOSING — say this EXACT line, word for word, changing "
+        "ONLY the day, date and time: 'That's you rescheduled — you're now in "
+        f"for Monday the 1st of June at three in the afternoon.{_rc_text} "
+        "We'll see you then — take care.'\n"
+        "The closing MUST contain the day and date, the time, and the warm "
+        "close. It is a STATEMENT, not a question: do NOT end with 'Is there "
+        "anything else I can help with?', do NOT ask any question, and add "
+        "nothing after 'take care.' A bare 'I've rescheduled to [date]' with "
+        "no close leaves the caller unsure whether the move actually "
+        "happened — always give the full line. "
+        + _rc_no_text_rule
+        + "Do NOT re-state the old appointment, and do NOT mention the "
+        "location.\n\n"
         "CANCEL → by this point the caller has already (a) confirmed this is "
         "the right appointment ('is that the right one?' → yes) and (b) chosen "
         "to cancel rather than reschedule at the retention question. That is "
@@ -2240,9 +2274,8 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "Pass the appointment_id from lookup_patient directly to "
         "cancel_appointment and call it IMMEDIATELY — no readback, no filler. "
         "Sequence: (1) caller chooses cancel → (2) call cancel_appointment → "
-        "(3) say: 'That's all done — your appointment has been cancelled. "
-        "Confirmation text on its way. Is there anything else I can help "
-        "with?'\n\n"
+        "(3) say: 'That's all done — your appointment has been "
+        f"cancelled.{_rc_text} Is there anything else I can help with?'\n\n"
         "Lookup not found (general): never dead-end on a transfer. Offer to "
         "check another number, book a new appointment, or take a message for "
         "the team. Use transfer_to_human ONLY when the caller explicitly asks "
