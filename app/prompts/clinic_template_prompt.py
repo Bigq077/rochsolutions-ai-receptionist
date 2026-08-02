@@ -2500,6 +2500,41 @@ def _b7_call_state(session: Dict[str, Any], clinic: Dict[str, Any], tk: Dict[str
             "'shall I go ahead and book that in' until the phone is confirmed."
         )
 
+    # SLOT ALREADY AGREED assertion (U-01, CA6e1024db 2 Aug 2026).
+    #
+    # Nothing in CALL STATE ever told the model WHICH slot was agreed.
+    # v3_confirmed_slot_phrase is read above only as a boolean for the phone
+    # steer — its CONTENT was never asserted anywhere, so the model's sole
+    # anchor was conversation history and the engine had no way to correct it.
+    #
+    # On CA6e1024db that history was corrupted by the keypad-rejection defect
+    # (b922675): the read-back went into history, the rejection was never
+    # handled deterministically so _reject_keypad_number never ran and never
+    # appended its canonical reply, nine typed digits were discarded, the
+    # dead-air net injected "Sorry — I can't quite hear you", and a spoken
+    # number went unacknowledged. The model lost the thread and restarted the
+    # booking from the timing question — "Wait, I don't actually have a slot
+    # confirmed yet" — with name, phone AND slot already collected. The caller
+    # hung up. The engine held the slot the entire time and could not say so.
+    #
+    # b922675 fixes that particular history corruption; this closes the gap it
+    # exposed, which is independent of it.
+    #
+    # Suppressed while superseded: there the caller has asked for a different
+    # day and the phrase names the day they are LEAVING, so asserting it would
+    # push the model back onto an abandoned day — CAb81fe651. Same signal the
+    # Gate-5 date guard uses, so the two cannot disagree.
+    _conf_slot = (session.get("v3_confirmed_slot_phrase") or "").strip()
+    if _conf_slot and not session.get("v3_slot_phrase_superseded"):
+        state.append(
+            "SLOT ALREADY AGREED — the caller has agreed to "
+            + _conf_slot
+            + ". That slot is on record. Do NOT ask for a day or time again, "
+            "and NEVER say you have no slot confirmed. If the caller asks to "
+            "change it, treat that as a new request and re-check availability; "
+            "otherwise continue from the step you are on."
+        )
+
     return ("CALL STATE: " + "; ".join(state)) if state else ""
 
 
