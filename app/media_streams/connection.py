@@ -5846,6 +5846,47 @@ class WebSocketCallHandler:
             self.session["phone_dtmf_reask_count"],
         )
 
+    async def _arm_keypad_after_unsettled_phone_confirm(self) -> None:
+        """Second unsettled answer to "is that the best number?" — stop asking.
+
+        CAcb4a11b90 (2 Aug 2026): the verbal phone confirm has no ladder. When
+        the answer is not recognised the turn falls through to the LLM, which
+        re-asks the same question, and nothing bounds that. The caller answered
+        twice, was refused twice by A1, and hung up with name, slot and number
+        all collected.
+
+        8d152f0 makes the recognised set much wider, so this fires rarely — but
+        "rarely" is not "never", and the failure mode is an unbounded loop that
+        loses the caller silently. The keypad is the deterministic path and its
+        re-ask ladder already terminates in three rungs, so handing off to it
+        converts an unbounded loop into a bounded one.
+
+        Deliberately NOT triggered on a 'no' verdict: a decline is a different
+        thing, the LLM handles it correctly today (three calls in the 2 Aug
+        sweep), and re-routing it here would be scope this defect does not need.
+
+        The wording carries "keypad", "type" and "star key" so Spec M's sticky
+        re-arm (~9938) agrees with the flags set here rather than fighting them.
+        """
+        self.session["phone_awaiting_dtmf"]  = True
+        self.session["v3_phone_dtmf_active"] = True
+        self.session["phone_dtmf_buffer"]    = ""
+        _line = (
+            "Sorry — let's do this the quick way. Go ahead and type the number "
+            "on your keypad. You can press the star key to reset at any time."
+        )
+        self.session.setdefault("conversation_history", []).append(
+            {"role": "assistant", "content": _line}
+        )
+        await self.tts_text_queue.put(_line)
+        self.session["last_bot_prompt"] = _line
+        self.session["last_question"]   = _line
+        await save_session(self.call_sid, self.session)
+        logger.warning(
+            "[ms_conn v3] phone confirm unsettled twice — handing off to the "
+            "keypad (bounded ladder) instead of re-asking"
+        )
+
     def _commit_dtmf_phone_for_booking(self, phone: str) -> None:
         """A keypad-entered number IS the confirmation — record it as one.
 
@@ -6847,6 +6888,50 @@ class WebSocketCallHandler:
                                 _bk_caller_num, utterance[:60],
                             )
                             # Fall through to run_turn — phone now in CALL STATE.
+
+                    # Bound the verbal phone confirm (CAcb4a11b90, 2 Aug 2026).
+                    #
+                    # The block above handles a recognised YES. A recognised NO
+                    # is a decline and the LLM handles it correctly today. What
+                    # had no bound at all was UNSURE: the turn fell through, the
+                    # model re-asked the same question, and nothing counted. The
+                    # caller answered twice, A1 refused twice, and the call was
+                    # abandoned with name, slot and number all collected.
+                    #
+                    # One re-ask is reasonable — a caller can mishear. Two means
+                    # the words are not landing, so stop asking and hand off to
+                    # the keypad, whose ladder terminates in three rungs.
+                    if (
+                        not self.session.get("v3_phone_dtmf_active")
+                        and not self.session.get("v3_awaiting_phone_confirm")
+                        and self.session.get("booking_flow_active")
+                        and not self.session.get("phone_confirmed")
+                        and not self.session.get("phone_entered_by_keypad")
+                    ):
+                        from .llm_stream import (
+                            _PHONE_STEP_MARKERS as _psm,
+                            _phone_confirm_verdict as _pcv,
+                        )
+                        _pc_lastq = (
+                            self.session.get("last_question", "")
+                            or self.session.get("last_bot_prompt", "")
+                            or ""
+                        ).lower()
+                        if (
+                            any(_mk in _pc_lastq for _mk in _psm)
+                            and _pcv(utterance) == "unsure"
+                        ):
+                            _pc_n = int(
+                                self.session.get("v3_phone_confirm_unsettled", 0)
+                            ) + 1
+                            self.session["v3_phone_confirm_unsettled"] = _pc_n
+                            logger.info(
+                                "[ms_conn v3] phone confirm unsettled (%d): %r",
+                                _pc_n, utterance[:60],
+                            )
+                            if _pc_n >= 2:
+                                await self._arm_keypad_after_unsettled_phone_confirm()
+                                continue
 
                     # A2: verbal reset + DTMF mode management (Spec R).
                     # Intercept BEFORE _llm_busy is set.

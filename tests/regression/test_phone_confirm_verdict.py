@@ -137,6 +137,90 @@ class TestTheThirdState:
         assert conn._phone_confirm_is_yes("hmm") is False
 
 
+class _Q:
+    def __init__(self): self.items = []
+    async def put(self, item): self.items.append(item)
+
+
+class _H:
+    def __init__(self, session):
+        self.session = session
+        self.call_sid = "CAtest"
+        self.tts_text_queue = _Q()
+    _arm_keypad_after_unsettled_phone_confirm = (
+        conn.WebSocketCallHandler._arm_keypad_after_unsettled_phone_confirm
+    )
+
+
+@pytest.fixture()
+def no_redis(monkeypatch):
+    async def _noop(*a, **k): return None
+    monkeypatch.setattr(conn, "save_session", _noop)
+
+
+class TestTheLoopIsBounded:
+    """The verbal phone confirm had no ladder. An unrecognised answer fell
+    through to the LLM, which re-asked, and nothing counted — CAcb4a11b90 died
+    that way. The keypad's ladder terminates in three rungs, so handing off to
+    it converts an unbounded loop into a bounded one."""
+
+    def test_the_handoff_arms_the_keypad(self, no_redis):
+        import asyncio
+        h = _H({})
+        asyncio.run(h._arm_keypad_after_unsettled_phone_confirm())
+        assert h.session["v3_phone_dtmf_active"] is True
+        assert h.session["phone_awaiting_dtmf"] is True
+        assert h.session["phone_dtmf_buffer"] == ""
+
+    def test_the_wording_is_one_spec_M_will_agree_with(self, no_redis):
+        """If the spoken line did not read as a keypad prompt, Spec M's sticky
+        re-arm (~9938) would fight the flags set here — the desync that made
+        b922675 necessary in the first place."""
+        import asyncio
+        h = _H({})
+        asyncio.run(h._arm_keypad_after_unsettled_phone_confirm())
+        said = h.tts_text_queue.items[-1]
+        assert conn._is_keypad_arming_line(said) is True
+
+    def test_the_line_reaches_the_model_history(self, no_redis):
+        """The caller's next input is digits, which are never queued as a
+        transcript. Without this the model's history has a gap where its own
+        question should be."""
+        import asyncio
+        h = _H({})
+        asyncio.run(h._arm_keypad_after_unsettled_phone_confirm())
+        assert h.session["conversation_history"][-1]["role"] == "assistant"
+        assert "keypad" in h.session["conversation_history"][-1]["content"]
+
+    def test_only_unsure_is_counted_never_a_decline(self):
+        """A 'no' is a decline, not an unsettled answer. The LLM handles those
+        correctly today (three calls in the 2 Aug sweep); routing them here
+        would be scope this defect does not need."""
+        src = inspect.getsource(conn.WebSocketCallHandler)
+        i = src.index("v3_phone_confirm_unsettled")
+        window = src[i - 700:i + 200]
+        assert '== "unsure"' in window
+
+    def test_the_threshold_allows_exactly_one_re_ask(self):
+        src = inspect.getsource(conn.WebSocketCallHandler)
+        i = src.index("v3_phone_confirm_unsettled")
+        assert "_pc_n >= 2" in src[i:i + 500]
+
+    def test_the_bound_is_gated_on_the_phone_step(self):
+        """Without the marker gate any unsettled utterance anywhere in the call
+        would count toward a phone-confirm ladder."""
+        src = inspect.getsource(conn.WebSocketCallHandler)
+        i = src.index("v3_phone_confirm_unsettled")
+        assert "_PHONE_STEP_MARKERS" in src[i - 900:i]
+
+    def test_it_cannot_fire_once_a_number_is_already_held(self):
+        src = inspect.getsource(conn.WebSocketCallHandler)
+        i = src.index("v3_phone_confirm_unsettled")
+        window = src[i - 900:i]
+        assert 'not self.session.get("phone_confirmed")' in window
+        assert 'not self.session.get("phone_entered_by_keypad")' in window
+
+
 class TestTheCallSitesActuallyUseIt:
     def test_both_booking_sites_are_wired(self):
         src = inspect.getsource(conn.WebSocketCallHandler)
