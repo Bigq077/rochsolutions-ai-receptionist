@@ -373,6 +373,16 @@ _ORPHAN_STOPWORDS: frozenset = frozenset(
 # vocabulary — see the brakes above.
 _ORPHAN_MIN_EVIDENCE = 2
 
+# B-31. llm_stream.py truncates session["last_bot_prompt"] to this many
+# characters before storing it. Held here so match_asked_screen can tell a
+# SHORT bot turn that genuinely asked nothing from a LONG one whose question
+# mark was cut off — those are the same string to a naive "?" test, and
+# treating them the same switched this whole layer off on a live call.
+#
+# test_orphan_survives_the_prompt_cap.py pins this against the literal in
+# llm_stream.py. If that test fails, the cap moved and this must follow it.
+_LAST_BOT_PROMPT_CAP = 200
+
 
 def _screen_evidence_words(clinic: Dict[str, Any]) -> Dict[str, set]:
     """Per-screen set of words that are evidence THAT screen's question was
@@ -415,14 +425,41 @@ def match_asked_screen(
     cleared screen is not re-graded while its question is still sitting in
     last_bot_prompt.
     """
-    raw = (session.get("last_bot_prompt") or "") or (session.get("last_question") or "")
+    _bot = session.get("last_bot_prompt") or ""
+    _q = session.get("last_question") or ""
+    raw = _bot or _q
     if not raw:
         return None
     # A screen is a QUESTION. This drops statement turns cheaply and costs
     # nothing: every configured screen_question ends in '?', and so does the
     # model's paraphrase of one.
     if "?" not in raw:
-        return None
+        # ...but last_bot_prompt is stored TRUNCATED (_LAST_BOT_PROMPT_CAP),
+        # and a paraphrase only has to run five characters long for the '?'
+        # to be the character that falls off the end. B-31, sweep call 2
+        # (CA2ada6263, 2 Aug 2026): the model asked a full DVT screen in 205
+        # characters, this test saw no '?' in the stored 200, returned None
+        # WITHOUT LOGGING, and the caller's "i had a long journey sitting
+        # still" — a red-flag keyword verbatim — was never graded. Replayed
+        # offline the layer escalates to NHS 111 and blocks the booking.
+        #
+        # last_question holds the extracted question sentence and is NOT
+        # truncated, so the text we need is already in the session; the old
+        # fallback just required last_bot_prompt to be EMPTY rather than
+        # UNUSABLE. Gated on the length so this cannot reach for a stale
+        # last_question after one of connection.py's ~20 short deterministic
+        # writers (fillers, keypad prompts) overwrites last_bot_prompt —
+        # those are nowhere near the cap. Only a truncated turn qualifies.
+        if len(_bot) >= _LAST_BOT_PROMPT_CAP and "?" in _q:
+            logger.warning(
+                "[clinical_screening] last_bot_prompt truncated at %d chars and "
+                "lost its '?' — falling back to last_question for orphan "
+                "matching (B-31). bot=%r question=%r",
+                _LAST_BOT_PROMPT_CAP, _bot[-40:], _q[:120],
+            )
+            raw = _q
+        else:
+            return None
     last = _norm(raw)
     if not last:
         return None
@@ -431,6 +468,12 @@ def match_asked_screen(
     evidence = _screen_evidence_words(clinic)
     best_id: Optional[str] = None
     best_hits = 0
+    # Best sub-threshold match, logged below. B-31's real cost was not that
+    # the detector was wrong — it was that "found nothing" and "never ran"
+    # are the same empty log. A near miss is the only cheap evidence that
+    # this layer is looking at all.
+    near_id: Optional[str] = None
+    near_hits = 0
     # Config order is the tie-break: _screens() order is stable, and > (not
     # >=) keeps the first-declared screen when two tie.
     for s in _screens(clinic):
@@ -438,8 +481,17 @@ def match_asked_screen(
         if not sid or sid in done:
             continue
         hits = sum(1 for w in evidence.get(sid) or () if _kw_in(w, last))
-        if hits >= _ORPHAN_MIN_EVIDENCE and hits > best_hits:
-            best_id, best_hits = sid, hits
+        if hits >= _ORPHAN_MIN_EVIDENCE:
+            if hits > best_hits:
+                best_id, best_hits = sid, hits
+        elif hits > near_hits:
+            near_id, near_hits = sid, hits
+    if best_id is None and near_id is not None:
+        logger.info(
+            "[clinical_screening] orphan NEAR MISS — %s matched %d of the %d "
+            "evidence words needed; NOT armed, nothing graded this turn: %r",
+            near_id, near_hits, _ORPHAN_MIN_EVIDENCE, raw[:120],
+        )
     return best_id
 
 

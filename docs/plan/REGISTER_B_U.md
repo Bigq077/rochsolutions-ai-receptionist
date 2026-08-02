@@ -28,9 +28,9 @@ implying more confidence than exists.
 
 | Track | Items | State |
 |---|---|---|
-| Closed | `U-06`, `B-18`, `B-13`, `B-14`, `B-15`, **`B-25`** | Shipped 2 Aug with tests. **`B-15` closed on a different defect than the one it was sold on** — see the honest verdict in its section |
+| Closed | `U-06`, `B-18`, `B-13`, `B-14`, `B-15`, `B-25`, **`B-31`** | Shipped 2–3 Aug with tests. **`B-15` closed on a different defect than the one it was sold on** — see the honest verdict in its section |
 | Parked | `B-01` – `B-04` | Two provisioning items + the name work — owner decision, not capacity. **`A3` now has a live instance, see the sweep section** |
-| **Track A — do this first** | **`B-31`** | **A 200-char cap silently disabled the clinical screening layer on a live call.** Deterministic, proven offline, no dial time. Schedule with `B-20` — fixing either alone changes the failure, not the risk |
+| **Behaviour change pending deploy** | **`B-31`** | **CLOSED 3 Aug.** A 200-char cap had silently disabled the clinical screening layer. Fixed — and a call shaped like sweep call 2 now **escalates to NHS 111 and blocks the booking** where it previously booked. That makes the `B-20` authority decision urgent, not merely open |
 | Track A — deterministic, no dial time | `B-09`, **`B-26`** | `B-26` is ~15 min and stops a false alarm on every call |
 | Track B — needs an owner decision | `B-19` / `B-07` | Blocked on filler cadence. **`B-07` now has a second arm — `B-30`** |
 | Track C — prompt-side, needs dial time | `B-06` `B-08` `B-10` `B-11` `B-12` `B-16` | **`B-10` and `B-16` confirmed live 2 Aug**, see the sweep section |
@@ -290,8 +290,10 @@ compounds the existing evidence caveat (only 2 of 13 trigger-armed calls have
 their arming utterance stored) — that one limits *arming* statistics, this one
 limits *orphan* statistics, which is the half `B-20` rests on.
 
-**Root-caused the same night — it is `B-31`, and it is worse than a counting
-problem.** The floor caveat above stands; the cause is not.
+**Root-caused and fixed the same night — it is `B-31`.** The floor caveat above
+stands and is now measured: replayed over 992 stored bot turns, the cap was
+eating **11 orphan detections**, against 26 the matcher caught. The count of ten
+was missing roughly as many again.
 
 ---
 
@@ -331,10 +333,10 @@ Cosmetic. Belongs with `B-07`/`B-19` as the same filler-cadence decision.
 
 ---
 
-## `B-31` · a 200-character cap silently switched off the clinical safety net — NEW
+## `B-31` · a 200-character cap silently switched off the clinical safety net
 
-**Track A — deterministic, proven offline, no dial time needed. This is the most
-serious deterministic defect on the register.** Root cause of `B-28`.
+**CLOSED — 3 Aug.** Root cause of `B-28`. Deterministic, proven offline, no dial
+time needed.
 
 `last_bot_prompt` is capped at 200 characters
 ([llm_stream.py:1281](../../app/media_streams/llm_stream.py)):
@@ -424,20 +426,109 @@ comment at [connection.py:9836](../../app/media_streams/connection.py) already
 records it hiding a booking CTA past char 200 — so this is the **second** defect
 from the same cap. Scope any fix against those readers before widening it.
 
-### Fix — three options, my recommendation is 1 + 2
+### Fix as shipped
 
-1. **Drop the `"?"` early-return**, or fall back to `last_question` (which holds
-   the extracted question sentence) when `last_bot_prompt` has no `"?"`. Smallest
-   diff, removes the silent-failure mode.
-2. **Log the near-miss.** When evidence hits are ≥1 but below threshold, or when
-   the field looks truncated, emit a line. The defect's whole cost was that a
-   suppressed check is invisible; a detector that can fail silently will do it
-   again for a different reason.
-3. Raise the cap. **Do not do this alone** — the other ~20 readers were written
-   against 200 and one of them (CTA-affirm) has already been tuned around it.
+Options 1 and 2 of the three considered. **Option 3 — raising the cap — was
+deliberately not taken**: ~20 other readers in `connection.py` were written
+against 200 and one (CTA-affirm) has already been tuned around it.
 
-Test must pin the 205-char call-2 question by length, not by paraphrase: the
-regression is *"a question one character over the cap is still detected"*.
+1. When `last_bot_prompt` carries no `"?"` **and is at or over the cap**, fall
+   back to `last_question`, which holds the extracted question sentence and is
+   **not** truncated. The text was in the session all along — the pre-existing
+   fallback just required `last_bot_prompt` to be *empty* rather than *unusable*.
+2. Two log lines, because the defect's whole cost was silence: a WARNING when the
+   fallback rescues a truncated question, and an INFO **NEAR MISS** when a screen
+   matches ≥1 but fewer than `_ORPHAN_MIN_EVIDENCE` evidence words.
+
+**The length gate is the load-bearing half.** `last_question` is only rewritten by
+`llm_stream`; `connection.py`'s ~20 short deterministic writers (fillers, keypad
+prompts) overwrite `last_bot_prompt` and leave `last_question` **stale**. An
+unconditional fallback would arm DVT off a filler and escalate a caller who was
+never asked anything. Every such writer is far below 200 chars, so the gate
+excludes them by construction.
+`test_the_fallback_does_not_reach_a_stale_last_question` is that case and passes
+on the parent — do not relax it.
+
+> **The sibling function was never exposed, and that is the tell.**
+> `_question_was_asked` ([clinical_screening.py:289](../../app/media_streams/clinical_screening.py))
+> reads `last_bot_prompt + " " + last_question` — **both**, concatenated — so
+> truncation could never blind it. `match_asked_screen` used `or`: either/or.
+> The orphan detector is a later copy of the same idea that diverged on one
+> operator. §A4 again, and the same shape as `B-25`. It was **not** fixed by
+> simply copying the concatenation: that would make the stale-`last_question`
+> path live on every turn, which the gate exists to prevent.
+
+### Measured against the stored corpus before shipping
+
+Replayed old vs new `match_asked_screen` over **992 assistant turns across 133
+calls** in obs:
+
+| | Count | Share of bot turns |
+|---|---|---|
+| Turns hitting the new fallback branch | 116 | 11.7% |
+| **Turns whose outcome actually changes** | **11** | **1.11%** |
+| — of those, `None` → a screen | 11 | all of them |
+| — of those, a screen → something else | **0** | — |
+| NEAR MISS lines emitted | 39 | 3.9% |
+
+Every one of the eleven is a genuine screening question the model asked and the
+cap was eating — `dvt` ×6, `trauma_fracture` ×3, `cauda_equina` ×2, on calls
+`CA2ada6263`, `CA3264ed4b`, `CAfd801441`, `CA782fff7c`, `CAdd3373ad`,
+`CA325372e5`. **Not one spurious match.** So the fix recovers real orphans rather
+than manufacturing them, and `B-28`'s "the ten is a floor" is now quantified: the
+detector was missing roughly as many orphans as it caught.
+
+The 3.9% near-miss rate is about one line every couple of calls — visible without
+being noise. `test_an_ordinary_booking_turn_logs_nothing` pins the quiet case.
+
+### What this changes on a live call — read before deploying
+
+**A call shaped like sweep call 2 now escalates to NHS 111 and blocks the
+booking.** That is a real behaviour change on the demo build and it is the
+opposite of what happened on 2 Aug.
+
+It is still the right way to fail, and the reasoning should not be relitigated
+later:
+
+- The escalation already fires today for any orphan whose question happens to be
+  **under** 200 characters. The cap was not a safety decision, it was a lottery
+  on sentence length. This makes behaviour length-independent, not more
+  aggressive in principle.
+- Of the two failure directions, an over-cautious *"please get that checked"* is
+  survivable; *"that's reassuring"* to someone who just confirmed a risk factor
+  is not.
+
+**But the friction is real and it is commercial**, three days before the demo: a
+caller who wanted an ankle appointment is told to ring NHS 111 and is not booked.
+That cost is `B-20`'s, not this fix's — the question should never have been asked
+— which is exactly why the two are scheduled together and why the authority
+decision is now urgent rather than merely open.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| Parent baseline (`1fe8f7f`, clean worktree) | 93 failed / 2848 passed |
+| With the fix, **same worktree** | 93 failed / 2865 passed (2848 + exactly the 17 new tests) |
+| Failing-set diff | **Byte-identical.** Zero regressions, zero accidental fixes |
+| Main tree, corroboration | 95 failed / 2867 passed — failure count unchanged from the recorded 95, and 2850 + exactly 17 |
+| Fails-before | 6 of 17 fail on the parent |
+| Load-bearing failure reasons | `assert None == 'dvt'` and `assert 'none' == 'escalate'` — the defect itself, not an import error |
+| Invariants | 11 of 17 **pass** on the parent, including the stale-`last_question` safety case |
+
+Test: `tests/regression/test_orphan_survives_the_prompt_cap.py`, 17 cases.
+
+> **The 93 is not the 95 you may be expecting.** The main tree fails 95; a clean
+> worktree of the same commit fails 93 and skips 8 rather than 4. The difference
+> is untracked files the worktree does not have (`.env` and friends), not code.
+> Both numbers are stable; what matters is that baseline and post-fix were run in
+> the **same** tree. A cross-tree comparison here would have invented two
+> regressions that do not exist.
+>
+> Also worth keeping: the first baseline of the night was captured while an edit
+> landed mid-run, and the second was read from a **tail-truncated** background
+> log that yielded 14 of 95 `FAILED` lines. Both were discarded. Capture failing
+> sets to a file you redirect yourself, and never diff across trees.
 
 ## Closed
 
