@@ -146,7 +146,7 @@ Redditch may not be live vocabulary on this branch at all (several
 changing anything** — one call where Susie says the word settles it.
 
 #### `B-15` · `capture_phase` mislabelled
-**CLOSED — `f0f7de1`, 2 Aug.** Fixed as planned below, plus one adjacent defect
+**CLOSED — `779ceda`, 2 Aug.** Fixed as planned below, plus one adjacent defect
 found while writing the diff: the phone branch had only hard flags where the name
 branch had a prompt fallback, and `v3_awaiting_phone_confirm` is set in exactly
 one place (connection.py:5292, the reschedule/cancel DTMF path). On an ordinary
