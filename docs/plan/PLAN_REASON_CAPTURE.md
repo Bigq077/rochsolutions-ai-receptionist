@@ -123,7 +123,23 @@ distinguishes `booking` from `reschedule`/`cancel` (read at
 capture on the cancel/reschedule path. **Residual: low once gated — but the gate
 is mandatory, not optional.**
 
-### F3 · Real part, real booking, wrong attribution
+### F3 · Real part, real booking, wrong attribution — **CORRECTED 2 Aug, this was wrong**
+
+> The mitigation proposed below (fail open on a third-party complaint) was
+> implemented and immediately broke two long-standing tests —
+> `test_ankle_body_part` and `test_booking_plus_child` — both of which assert
+> that *"my son hurt his ankle"* DOES capture a reason.
+>
+> They are right. `extract_first_turn_signals` already answers "whose complaint
+> is this?" with a dedicated signal, `first_turn_patient_is_caller`, which reads
+> `False` on exactly those utterances, and the child policy gate needs the reason
+> for a paediatric booking. **Attribution is a consumer question, not an
+> extraction one.** The guard was removed; whatever wires this into the v3 path
+> must read `first_turn_patient_is_caller` alongside the reason.
+>
+> Historical mention, negation and multi-part (below) were correct and shipped.
+
+### F3 (original text) · Real part, real booking, wrong attribution
 *"book for my daughter's knee"* (third party), *"I did my knee last year but this
 is my shoulder"* (historical), *"not my knee — my hip"* (correction), two parts in
 one turn.

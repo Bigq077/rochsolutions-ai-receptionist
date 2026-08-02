@@ -116,24 +116,112 @@ _INJURY_VERBS = frozenset({
 _TRAILING_JUNK = re.compile(r"[\s.,!?;:]+$")
 
 
+# ── Hardening (2026-08-02, B-23) ───────────────────────────────────────────────
+# Pass 1 matched BARE body-part words, which is unsafe for the two entries that
+# are also ordinary English. Measured against 967 stored caller turns, "back"
+# collided once — "hi can you call me back later" captured
+# reason='you call me back later'.
+#
+# The clinical screening config solved this same problem and did not use bare
+# words: cauda_equina keys on "my back" / "back pain" / "sore back", never
+# "back". These rules inherit that discipline for the ambiguous words only.
+# "knee", "shoulder", "ankle" and the rest are unambiguous nouns and are left
+# exactly as they were — narrowing them would cost true positives for nothing.
+#
+# The other three rules are fail-OPEN: on any signal that the captured part is
+# not the caller's own single presenting complaint, capture nothing and let the
+# question be asked. An extra question costs a turn; a wrong reason picks the
+# wrong service (jv_v1 has ten, 30-60 min) and can satisfy book_appointment's
+# reason guard by accident.
+_AMBIGUOUS_PARTS = {"back", "arm"}
+
+_BACK_ANATOMICAL = tuple(re.compile(p) for p in (
+    r"\b(?:my|his|her|their|the)\s+(?:lower\s+|low\s+|upper\s+)?back\b",
+    r"\b(?:lower|low|upper)\s+back\b",
+    r"\bback\s+(?:pain|ache|is|was|'s|s)\b",
+    r"\b(?:sore|bad|stiff|aching|dodgy)\s+back\b",
+))
+# "the back of my legs" is POSITIONAL — the anatomy is the legs. Treating it as
+# the anatomical back cost a real capture in the corpus: "the back of my legs
+# kind of warm" windowed onto 'the back of my' and lost the leg entirely. That
+# phrasing is also the DVT screen's presentation, so it is the last one to lose.
+_BACK_POSITIONAL = re.compile(r"\bback\s+of\s+(?:my|his|her|the)\b")
+
+_ARM_ANATOMICAL = tuple(re.compile(p) for p in (
+    r"\b(?:my|his|her|their|the)\s+(?:upper\s+|left\s+|right\s+)?arm\b",
+    r"\barm\s+(?:pain|ache|is|was|'s|s)\b",
+    r"\b(?:sore|bad|stiff|aching)\s+arm\b",
+))
+
+# NOT guarded here: a third-party complaint ("my son hurt his ankle"). The
+# planning note for B-23 proposed failing open on it, and that was wrong —
+# extract_first_turn_signals already answers "whose complaint is this?" with a
+# dedicated signal, first_turn_patient_is_caller, which reads False on exactly
+# those utterances. Capturing "ankle" there is correct and intended: the child
+# policy gate needs the reason for a paediatric booking, and two existing tests
+# (test_ankle_body_part, test_booking_plus_child) assert it.
+#
+# Attribution is a CONSUMER question, not an extraction one. Whatever wires this
+# into the v3 path must read first_turn_patient_is_caller alongside the reason
+# rather than expecting the reason to be absent.
+
+
+def _part_stem(word: str) -> str:
+    """Lowercase and strip trailing punctuation/possessive. Unchanged semantics."""
+    return word.rstrip(".,!?;:'s").lower()
+
+
+def _usable_body_parts(text_low: str, words: list) -> set:
+    """Body-part words in `words` that are actually being used anatomically."""
+    found = {w for w in (_part_stem(x) for x in words) if w in _BODY_PARTS}
+    if "back" in found:
+        anatomical = (
+            any(p.search(text_low) for p in _BACK_ANATOMICAL)
+            and not _BACK_POSITIONAL.search(text_low)
+        )
+        if not anatomical:
+            found.discard("back")
+    if "arm" in found and not any(p.search(text_low) for p in _ARM_ANATOMICAL):
+        found.discard("arm")
+    return found
+
+
 def _extract_reason(t: str) -> Optional[str]:
     """
     Extract a short, usable reason/injury phrase.
     Returns None when nothing reliable is found — never hallucinates.
     """
     words = t.split()
+    text_low = t.lower()
 
-    # Pass 1: find a body-part word → take ±3/+2 word window
-    for i, w in enumerate(words):
-        stem = w.rstrip(".,!?;:'s").lower()
-        if stem in _BODY_PARTS:
-            start = max(0, i - 3)
-            end   = min(len(words), i + 3)
-            snippet = _TRAILING_JUNK.sub("", " ".join(words[start:end]))
-            if len(snippet) > 2:
-                return snippet
+    parts = _usable_body_parts(text_low, words)
 
-    # Pass 2: injury verb → short forward context
+    # ── Fail-open guards ──────────────────────────────────────────────────
+    # Two distinct complaints: we cannot tell which is THE reason, and picking
+    # the first-mentioned is a coin toss. ("back of my legs" is one locus, not
+    # two — _usable_body_parts has already dropped the positional "back".)
+    if len(parts) > 1:
+        return None
+    # An explicit correction: "not my knee, it's my hip".
+    for p in parts:
+        if re.search(r"\b(?:not|isn'?t)\s+(?:my\s+)?" + re.escape(p) + r"\b", text_low):
+            return None
+
+    # Pass 1: body-part word → take ±3/+2 word window. Restricted to the usable
+    # set, so a discarded "back" can no longer anchor the window.
+    if parts:
+        for i, w in enumerate(words):
+            if _part_stem(w) in parts:
+                start = max(0, i - 3)
+                end   = min(len(words), i + 3)
+                snippet = _TRAILING_JUNK.sub("", " ".join(words[start:end]))
+                if len(snippet) > 2:
+                    return snippet
+
+    # Pass 2: injury verb → short forward context. Deliberately unchanged: it
+    # is what still captures a complaint whose body part the STT mangled
+    # ("my call's been very sore" — calf), and it anchors on the symptom, not
+    # on a word that might not be anatomy.
     for i, w in enumerate(words):
         stem = w.rstrip(".,!?;:").lower()
         if stem in _INJURY_VERBS:
