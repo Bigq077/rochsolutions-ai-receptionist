@@ -33,7 +33,8 @@ implying more confidence than exists.
 | Track B — needs an owner decision | `B-19` / `B-07` | Blocked on filler cadence |
 | Track C — prompt-side, needs dial time | `B-06` `B-08` `B-10` `B-11` `B-12` `B-16` | After Track A |
 | Track D — verification only | `U-02` – `U-05` | Needs a phone |
-| Unclassified | `B-20` | 30-min read before it can be scheduled — **do this first, it is the only clinical row** |
+| Investigated, decision open | `B-20` (Layer 2 over-screening) | Root-caused 2 Aug — not a Layer 1 gap. Needs the A/B/C authority decision |
+| Withdrawn | `B-24` (claimed Layer 1 coverage gap) | My claim, wrong. Widening those triggers would manufacture `B-20` |
 | **Deferred to last** | `B-17`, `B-22` (the SMS family) | Owner decision 2 Aug — unprovable on this branch, see below |
 | **Unrecorded** | **`B-05`, `U-01`** | **See "Gaps" below** |
 | New — plan written | `B-23` (reason re-asked when already given) | `PLAN_REASON_CAPTURE.md`. Owner decision open on F5 |
@@ -401,17 +402,103 @@ caller. These belong in the call suite.
 
 ## Unclassified — needs a read before it can be scheduled
 
-### `B-20` · `clinical_screening` ORPHAN, twice
+### `B-20` · `clinical_screening` ORPHAN — **investigated 2 Aug, re-scoped**
 
-Logged twice. **Do not assume a model-side mistake.** Layer 1 was dormant for a
-long stretch behind a broken STT keyterm boost, and the arming path is the first
-thing to rule out — an orphan is exactly what a screen that armed and never
-matched would look like. ~30 minutes of reading
-`app/media_streams/clinical_screening.py` (1011 lines; note
-`FAILURE_MODE_REGISTER.md` FM-04 still says 299) before it can be sized.
+**It is ten, not two, and it is not a Layer 1 gap.**
 
-This is the only row on the register that touches a clinical path. It outranks
-everything in Track C on impact if the arming path turns out to be the cause.
+`arm_paths` across 104 stored calls carrying screening state:
+
+| Screen | trigger | orphan | other |
+|---|---|---|---|
+| `cauda_equina` | **11** | 3 | — |
+| `dvt` | 2 | 2 | 3 arming_utterance, 1 model_asked |
+| `inflammatory` | **0** | 2 | 1 model_asked |
+| `vbi_neck` | **0** | 3 | — |
+
+Ten orphans across four screens, 27 Jul → 2 Aug, **two on today's builds**
+(`d0a0d8a`, `dc5c89d`).
+
+**Layer 1 was right every time.** Replaying every orphan call's caller turns
+through `match_screen_trigger` arms nothing — correctly, because the callers'
+presentations did not warrant those screens:
+
+| Screen the model asked | What the caller actually said |
+|---|---|
+| `cauda_equina` ×2 | *"i'd like to book for shoulder pain"* |
+| `vbi_neck` ×3 | *"i'd like to book an appointment please"* |
+| `dvt` ×2 | *"i'd like to book an appointment please"* / *"okay"* |
+| `inflammatory` ×2 | *"book an appointment for my knee"* |
+
+`cauda_equina` armed correctly 11 times on real back presentations, so Layer 1
+demonstrably runs and works. **The defect is Layer 2 over-screening:** the model
+asks red-flag questions unprompted, on presentations that don't warrant them or
+on no presentation at all (6 of 10 had no complaint stated).
+
+Root cause is prompt-side. `clinic.json`'s `how_to_use` is correct — it ties
+screening to *"CALL STATE flags the active screen as SCREEN REQUIRED"* — but
+[clinic_template_prompt.py:379](../../app/prompts/clinic_template_prompt.py)
+renders the header as **"PROACTIVE RED-FLAG CHECKS (run BEFORE booking)"**, lists
+all six questions beneath it, and closes with *"never skip it to reach a booking
+faster."* The model self-serves from the catalogue and, when nothing fits, asks
+the nearest one anyway. There is no knee screen; an aching knee warrants none.
+
+**Amplifier:** [clinical_screening.py:975](../../app/media_streams/clinical_screening.py)
+does not merely log the orphan — it arms the screen and **grades the answer**. A
+shoulder caller's reply is then scored against DVT's red-flag words
+(`swollen / warm / hot / red`). Negation scoping (24 Jul) covers *"no, it's not
+swollen"*, but an incidental affirmative would produce a deterministic NHS 111
+escalation for a complaint that never warranted one. No call has hit this —
+`red_flag=None` on all ten — so it is live risk, not live damage.
+
+**Why the row said "Layer 1 gap":** the taxonomy at
+[clinical_screening.py:51](../../app/media_streams/clinical_screening.py) defines
+`orphan` as *"the model asked it; Layer 1 never armed. Layer 1 gap."* It imagined
+two causes. The third — Layer 2 asking something it never should have — has an
+identical signature and is not in the enum. **Correcting that comment is part of
+the fix**, or this mis-scopes again.
+
+**Owner decision still open:** A / B / C on screening authority, see the session
+notes. Recommendation is B — the model may screen on a real presentation but
+never when the complaint matches no screen.
+
+### `B-24` · ~~Layer 1 coverage gap~~ — **WITHDRAWN 2 Aug, the claim was mine and it was wrong**
+
+I asserted that `vbi_neck` and `inflammatory` having **zero** trigger arms in 104
+calls was "the real Layer 1 gap". Checked against the corpus, it is correct
+behaviour and there is nothing to fix:
+
+| Vocabulary | Occurrences in 967 caller turns |
+|---|---|
+| VBI group 2 — dizzy / light-headed / blackout / double vision / unsteady / wobbly | **0** |
+| Inflammatory — morning stiffness / stiff for an hour / both hands / several joints | **0** |
+| VBI group 1 — neck / whiplash | 2 (both plain neck pain, no neuro signal) |
+
+`vbi_neck` uses `trigger_all_groups` — neck **AND** a dizziness signal — precisely
+so *"a plain neck-pain caller is not over-screened"*, which the code says in as
+many words. No caller ever supplied the second group, so the compound was never
+satisfiable and zero arms is the config working as designed.
+
+The six turns containing *"stiff"* are **answers to Susie's screening question**
+(*"stiffness"*, *"i think stiffness i guess yeah"*), not presentations.
+
+> **Widening either trigger would manufacture `B-20`.** Over-screening is the
+> defect we already have; loosening the triggers is how you get more of it. Do
+> not "fix" this row.
+
+**Consequence for `B-23`:** the F6 sequencing argument — *wire the extractor only
+after Layer 1 coverage is fixed* — loses its basis. There is no coverage work.
+See `PLAN_REASON_CAPTURE.md` §7.
+
+### Evidence caveat — stored transcripts are incomplete for screening analysis
+Of the 13 calls that armed a screen via `trigger`, only **2** contain the arming
+utterance in the stored transcript. In several the first stored caller turn is
+already an answer to the screening question (*"no i don't"*, *"no none of those"*,
+*"no not at all"*), i.e. the opening turns are missing.
+
+Any future "replay the corpus" analysis of screening has this blind spot. It does
+not affect the `B-20` finding — that rests on the orphan calls, whose openings
+**are** present — but it does mean arming-rate statistics from obs are a floor,
+not a measurement.
 
 ---
 

@@ -200,6 +200,22 @@ structurally the annoying question is also a trigger-harvesting opportunity, and
 **This does not argue against the fix. It argues that Layer 1's coverage work is
 a sibling of this change, not a follow-up to it.** See §7.
 
+> **SUPERSEDED 2 Aug — measured, and the premise was false.** There is no Layer 1
+> coverage work: `vbi_neck` and `inflammatory` have zero arms because their
+> vocabulary appears **zero** times in 967 caller turns, not because the triggers
+> are too narrow. See `REGISTER_B_U.md` `B-24` (withdrawn).
+>
+> The F6 *mechanism* still holds — less caller text is fewer trigger
+> opportunities — but it is largely self-protecting: if turn 1 carries no body
+> part there is no capture, so no suppression, so the question is still asked and
+> the elaboration still happens. Measurement is weak (only 2 of 13 trigger-armed
+> calls have their arming utterance stored), and one arm did land on a later turn
+> (*"for my back"*, turn 9), so this is "low risk, imperfectly measured" rather
+> than "no risk".
+>
+> **Net: §7's ordering constraint is lifted.** Wiring may proceed without waiting
+> on coverage work that does not exist.
+
 ---
 
 ## 5 · Scope
