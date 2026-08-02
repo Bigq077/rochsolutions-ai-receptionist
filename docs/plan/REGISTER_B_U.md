@@ -29,7 +29,7 @@ implying more confidence than exists.
 |---|---|---|
 | Closed | `U-06`, `B-18`, `B-13`, `B-14` | Shipped 2 Aug with tests |
 | Parked | `B-01` – `B-04` | Two provisioning items + the name work — owner decision, not capacity |
-| Track A — deterministic, no dial time | `B-15` `B-17` (need anchors), then `B-09` | Next up |
+| Track A — deterministic, no dial time | `B-15`, `B-17` (both anchored, plans written), then `B-09` | Next up |
 | Track B — needs an owner decision | `B-19` / `B-07` | Blocked on filler cadence |
 | Track C — prompt-side, needs dial time | `B-06` `B-08` `B-10` `B-11` `B-12` `B-16` | After Track A |
 | Track D — verification only | `U-02` – `U-05` | Needs a phone |
@@ -146,17 +146,100 @@ Redditch may not be live vocabulary on this branch at all (several
 changing anything** — one call where Susie says the word settles it.
 
 #### `B-15` · `capture_phase` mislabelled
-**Not anchored.** Carried from the sweep as described. `capture_phase` is
-computed via `_lat_capture_phase` at
-[connection.py:6828](../../app/media_streams/connection.py),
-`:12937` and `:13500`. Which of those sites carries the mislabel was not
-established before this file was written — **establish it before fixing**, or the
-diff will land in the wrong place.
+**ANCHORED 2 Aug. Root cause: a sticky flag outranks the live question.**
 
-#### `B-17` · a log line that is a no-op
-**Not anchored.** Carried as described; the specific line was not recorded.
-Identify it before scheduling — this is the cheapest row here and also the one
-most likely to be mis-attributed.
+Not one of the three call sites — the resolver itself.
+[`capture_phase()`](../../app/media_streams/latency_timing.py) (latency_timing.py:74-100)
+tests in this order: phone flags → `v3_awaiting_surname` → prompt keywords. The
+middle test is the defect, because that flag is never cleared by anything outside
+name capture.
+
+`v3_awaiting_surname` has **exactly three assignment sites**, all inside
+`_v3_try_capture_name` in connection.py — `:1826` and `:1881` set it `False`,
+`:1887` sets it `True`. Both `False` sites require a surname to have actually
+been found. The code says so itself at connection.py:1790: *"v3_awaiting_surname
+is sticky: nothing clears it when the conversation moves on."*
+
+So a caller who gives a first name only leaves the flag `True` **for the rest of
+the call**, and `capture_phase()` answers `"name"` on every subsequent turn —
+the slot choice, the phone step, the booking confirmation, the closing. The live
+question is ignored in favour of a stale flag.
+
+Three consumers, three very different costs:
+
+| # | Consumer | Cost | Live today? |
+|---|---|---|---|
+| 1 | Dead-air re-ask, [connection.py:13500](../../app/media_streams/connection.py) | **Caller-audible.** `_cap_phase == "name"` selects *"Sorry — could I take your first name and surname again?"* So a caller who goes quiet at the **booking-confirm** step is asked for their name again | **YES** — the site comments *"pure lookup, independent of LATENCY_TIMING"* |
+| 2 | `[LAT]` / `[LAT-EP]` lines (latency_timing.py:192; `_ep_prev_phase` at connection.py:6852 carries it into `emit_cutoff`) | Every turn after the stick is bucketed `name`. Phone-capture turns recorded as name turns; any per-phase latency or cutoff analysis is wrong for the whole tail of the call | No — `LATENCY_TIMING` defaults `false` |
+| 3 | `_ws_c_apply_endpoint_profile`, [connection.py:12937](../../app/media_streams/connection.py) | Early-returns when the phase is unchanged. Stuck at `name`, the **phone** profile is never pushed and the **conversation** profile is never restored — flatly contradicting its own docstring, *"Leaving capture restores the conversation profile"* | No — `WS_C_SEMANTIC_ENDPOINT` defaults `false` |
+
+> **Consumer 1 probably explains some of `B-08`** ("asks for information already
+> given"). Investigate `B-08` with this in mind before treating it as a prompt
+> problem — a dead-air re-ask that asks for the name again is exactly that
+> symptom, and it is deterministic, not model behaviour.
+
+**Fix plan** (~30 min + test):
+
+1. Reorder `capture_phase()` so the **live question** is judged before the sticky
+   flag: prompt keywords first, `v3_awaiting_surname` only as a tiebreaker when
+   the prompt says nothing either way. Phone flags stay first — they are set and
+   cleared tightly.
+2. **Do NOT clear `v3_awaiting_surname` instead.** Its stickiness is load-bearing:
+   branch 3 of `_v3_backfill_surname` depends on it to accept a bare straggler
+   word as the surname. Clearing it early re-breaks surname capture — the exact
+   defect `96417a9` and `aa0b3bd` were fixed to close.
+3. Test: parametrised sessions asserting a stuck `v3_awaiting_surname` no longer
+   turns a phone-step or booking-confirm turn into `"name"`, plus the
+   false-negative half — a genuine name turn must still resolve to `"name"` when
+   the prompt is the name question.
+4. `capture_phase()` is a pure function with three consumers and no other
+   callers, so blast radius is exactly the table above.
+
+**Verify before writing the diff:** that reordering cannot lose a real name turn
+whose `last_bot_prompt` has already moved on. That is the case the sticky flag
+was presumably added for, and it is the one thing the fix could regress.
+
+#### `B-17` · booking SMS reports success it never checked
+**ANCHORED 2 Aug — and larger than "a no-op log".**
+
+[`booking_sms.py`](../../app/notifications/booking_sms.py) calls `send_sms` at
+**eleven** sites across nine functions — lines 103, 174, 183, 191, 244, 290, 338,
+369, 395, 427, 455. **Not one captures the return value.** Every path then logs a
+success line and `return True`.
+
+`send_sms` returns `None` in three distinct cases: the kill switch is off
+([sms.py:76](../../app/notifications/sms.py)), the number fails E.164 validation,
+or Twilio raises. All three are reported as sent.
+
+The correct pattern already exists in this codebase, in the neighbouring module —
+[owner_alert.py:120-128](../../app/notifications/owner_alert.py) captures the sid,
+logs `"send returned no SID — not sent"`, and returns `False`. `booking_sms` is
+the copy that drifted.
+
+**Severity is branch-dependent, and that is the point:**
+
+- **On `latency-eval`:** log-only. `SMS_ENABLED` defaults `false`, so the line is
+  the known "SMS is lying on every call" noted in `CALL_SUITE_2026-08-02.md` §0.1.
+  The return is consumed by nothing on the call path — only a debug route
+  ([twilio.py:1312](../../app/routes/twilio.py)).
+- **On `jv-v1-onboarding` and `vitaledge-onboarding`, where `SMS_ENABLED`
+  defaults `true`:** a genuinely failed booking confirmation — bad number, Twilio
+  outage — is logged as sent and returns `True`. A patient silently gets no
+  confirmation and nothing anywhere says so. That is **FM-15 territory**, not P3.
+
+**Fix plan** (~45 min + test):
+
+1. Capture the sid at all eleven sites; mirror `owner_alert` exactly rather than
+   inventing a second shape.
+2. A function with multiple sends (`send_24hr_reminder`, sites 174/183/191) must
+   decide what a partial success returns. Suggest: the primary send governs the
+   return, extras are logged individually — but **make it explicit**, because
+   today it is an accident.
+3. Test: `send_sms` patched to return `None`, asserting every public function
+   returns `False` and logs no success line; and the mirror case with a sid.
+4. **Canonical-first applies and matters here.** Fix lands on `latency-eval`,
+   then cherry-picks to both onboarding branches — which is where it actually
+   pays, since this branch cannot send an SMS at all.
 
 ---
 
@@ -275,7 +358,14 @@ Recorded honestly rather than filled in:
   know what it was. Either it exists and is lost, or the numbering skipped. Do
   not reuse the ID until that is settled.
 - **`U-01` has no entry.** Same. The `U` series as carried runs `U-02`–`U-06`.
-- **`B-15` and `B-17` have no file:line anchor** — see their rows above.
+- ~~`B-15` and `B-17` have no file:line anchor~~ — **both anchored 2 Aug**, and
+  both turned out to be different from their one-line descriptions. `B-15` is not
+  a mislabel at any of the three call sites but a resolver that lets a sticky flag
+  outrank the live question, with one caller-audible consequence. `B-17` is not a
+  no-op log but eleven unchecked return values that, on the two live clinic
+  branches, report a failed booking SMS as sent.
+  **Worth noting as a pattern:** a one-line defect description carried across
+  sessions had, in both cases, the wrong scope. Anchor before scheduling.
 
 If you find the source these came from, fold it in here and delete this section.
 
