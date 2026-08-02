@@ -1384,6 +1384,24 @@ _CONTINUATION_TAIL_WORDS: frozenset = frozenset({
 # on a continuation word) adds only this much latency.
 _INCOMPLETE_HOLD_S: float = 2.5
 
+# How long after the previous FINAL a fragment can still be part of the same
+# breath. B-18 (2 Aug 2026): the same-breath guard had no such bound — it dropped
+# anything enqueued before the previous turn COMPLETED, which is a claim about
+# our latency, not about the caller's speech. On a turn with
+# llm_ttft_ms=13868 / content_ttfa_ms=16404 the caller said "hello" into 16s of
+# silence and it was discarded as a straggler, because 16s < 16.4s.
+#
+# The premise the guard was written on ("a genuine reply is always enqueued
+# AFTER the response audio plays") holds only while turns are fast, so the guard
+# failed hardest exactly when it mattered: the slower we are, the more reliably
+# we threw away the caller's reaction to our slowness.
+#
+# 2.0s is a bound on a breath, not on a turn. Measured stragglers: 696ms
+# ("…quaint in" -> "rock", 2026-07-24), ~700ms (the split-sentence stress test,
+# 2026-06-12). Raising this materially turns it back into a latency claim and
+# re-creates B-18 — see tests/regression/test_same_breath_window.py.
+_SAME_BREATH_WINDOW_S: float = 2.0
+
 
 def _ends_on_continuation_word(text: str) -> bool:
     """True when the transcript ends mid-clause (last word is a continuation
@@ -4907,6 +4925,12 @@ class WebSocketCallHandler:
         # block cleared _llm_busy).  Used by the tail-fragment guard to discard
         # tiny residual STT finals that arrive immediately after a successful turn.
         self._last_turn_done_at:      float = 0.0
+        # Monotonic enqueue stamp of the previous FINAL to reach the same-breath
+        # guard, dropped or not. The anchor the guard measures a breath from
+        # (B-18). Advanced even for fragments the guard discards: three fragments
+        # of one breath must each be measured against the one before, not
+        # against the head of the utterance.
+        self._last_final_enqueue_ts:  float = 0.0
         # Text of the TTS utterance currently in-flight through audio_out_queue.
         # Set in _tts_loop when synthesis completes; cleared in send_loop when
         # the _TTS_DONE_SENTINEL is drained — at that point on_tts_finished fires.
@@ -6635,9 +6659,19 @@ class WebSocketCallHandler:
                     # "...that i go down to physiotherapy clinic" → two
                     # overlapping "Would you like to book one?" responses, which
                     # also interleaved the TTS chunk sequence and triggered the
-                    # out-of-order stall).  A genuine reply is always enqueued
-                    # AFTER the response audio plays (well after _last_turn_done_at),
-                    # so this never drops a real answer.
+                    # out-of-order stall).
+                    #
+                    # This comment used to continue: "A genuine reply is always
+                    # enqueued AFTER the response audio plays (well after
+                    # _last_turn_done_at), so this never drops a real answer."
+                    # That was false and it was the whole of B-18.
+                    # _last_turn_done_at is stamped when GENERATION finishes, so
+                    # on a slow turn the entire window in which the caller can
+                    # hear silence lies before it, and everything they say
+                    # during that window satisfies the condition. The guard is
+                    # now additionally bounded by _SAME_BREATH_WINDOW_S, which
+                    # is a claim about how long a breath lasts rather than about
+                    # how long we took.
                     # P7 exemption: while collecting the caller's name, a short
                     # trailing word (e.g. the surname "Rock" said a beat after
                     # "…my surname is") arrives as a same-breath straggler and
@@ -6697,12 +6731,26 @@ class WebSocketCallHandler:
                         and not self.session.get("v3_phone_dtmf_active")
                     )
                     _short_fragment = 0 < len(utterance.split()) <= 2
+                    # B-18: anchor the breath. Snapshot the previous FINAL's
+                    # stamp, then advance BEFORE the guard runs, so a fragment
+                    # the guard drops still anchors the fragment after it.
+                    _prev_final_ts = self._last_final_enqueue_ts
+                    if _enqueue_ts > 0.0 and not _synthetic:
+                        self._last_final_enqueue_ts = _enqueue_ts
+                    # _prev_final_ts > 0.0 also makes the first FINAL of a call
+                    # ineligible: nothing precedes it, so it cannot be trailing
+                    # anything. Previously it was eligible on timing alone.
+                    _same_breath = (
+                        _prev_final_ts > 0.0
+                        and (_enqueue_ts - _prev_final_ts) <= _SAME_BREATH_WINDOW_S
+                    )
                     if (
                         not _synthetic
                         and not (_in_name_collection and _short_fragment)
                         and self._last_turn_done_at > 0.0
                         and _enqueue_ts > 0.0
                         and _enqueue_ts < self._last_turn_done_at
+                        and _same_breath
                     ):
                         logger.info(
                             "[ms_conn] same-breath straggler dropped — enqueued"
@@ -6721,6 +6769,12 @@ class WebSocketCallHandler:
                         and self._last_turn_done_at > 0.0
                         and _enqueue_ts > 0.0
                         and _enqueue_ts < self._last_turn_done_at
+                        # Same condition as the drop branch, so this only claims
+                        # a rescue the guard would actually have made. Without
+                        # it, every fragment released by the B-18 window would
+                        # be logged as saved by the name exemption, and the log
+                        # would credit the wrong mechanism.
+                        and _same_breath
                     ):
                         logger.info(
                             "[ms_conn] same-breath straggler KEPT (name collection,"
