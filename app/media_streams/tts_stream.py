@@ -345,10 +345,37 @@ async def prewarm() -> float:
             timeout=httpx.Timeout(4.0),
         )
         elapsed = time.monotonic() - started
-        logger.info(
-            "[ms_tts] prewarm: connection ready in %.0fms (status=%d)",
-            elapsed * 1000, resp.status_code,
-        )
+        # B-13 (2 Aug 2026): the status was interpolated but never branched on,
+        # so a 401 logged at INFO as "connection ready in 214ms (status=401)".
+        # The socket genuinely IS warm on a 401 — that is why this read as a
+        # success — but the credential behind it is dead, and this is the
+        # earliest moment anything in the process can know. synthesise_chunk()
+        # already treats the same 401 as logger.error + a switch to the OpenAI
+        # fallback for the rest of the process lifetime; it just does not run
+        # until a caller is on the line. Reporting it here costs nothing and
+        # moves the discovery off the first live call.
+        if resp.status_code == 401:
+            logger.error(
+                "[ms_tts] prewarm: ElevenLabs rejected the API key (401) after "
+                "%.0fms — credits exhausted or key invalid. The first call will "
+                "fall back to OpenAI TTS mid-sentence.",
+                elapsed * 1000,
+            )
+        elif resp.status_code >= 400:
+            logger.warning(
+                "[ms_tts] prewarm: ElevenLabs returned %d after %.0fms — socket "
+                "is warm but the API is not answering normally",
+                resp.status_code, elapsed * 1000,
+            )
+        else:
+            logger.info(
+                "[ms_tts] prewarm: connection ready in %.0fms (status=%d)",
+                elapsed * 1000, resp.status_code,
+            )
+        # Unchanged on every branch: a warm socket is a warm socket, and this
+        # return feeds latency accounting, not health. Deliberately NOT arming
+        # _ELEVENLABS_EXHAUSTED here — that is a behaviour change (it would move
+        # the fallback decision off the synth path) and belongs in its own row.
         return elapsed
     except Exception as exc:
         logger.warning(
