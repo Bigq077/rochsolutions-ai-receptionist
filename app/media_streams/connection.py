@@ -1314,6 +1314,49 @@ def _phone_confirm_is_yes(text: str) -> bool:
     return _phone_confirm_verdict(text) == "yes"
 
 
+def _phone_question_on_the_table(session: Dict[str, Any]) -> bool:
+    """True when the assistant's most recent question WAS the phone question.
+
+    B-25 (2 Aug 2026, call CAce42c36b). `_phone_confirm_is_yes` answers "did the
+    caller say yes?" — never "yes to WHAT?". The booking-flow site guarded that
+    with a _PHONE_STEP_MARKERS test. The DTMF-active site is a copy that never
+    got one, and fired on "just quentin's fine" — a caller DECLINING to give a
+    surname. The caller ID was stored and phone_confirmed=True set, satisfying
+    book_appointment's A1 gate, 24 seconds before the phone question was asked.
+
+    The window is wide, which is why this is not a corner case:
+    v3_phone_dtmf_active is set the moment a first name is captured ("name
+    confirmed — phone collection phase"), so the entire surname exchange sits
+    inside it. `_phone_confirm_verdict` returns "yes" for "just quentin's fine",
+    "that's ok", and "um yeah that'll be roch r-o-c-h" — the surname ANSWER
+    trips it too, and only missed on that call because the refusal had already
+    switched DTMF off.
+
+    One implementation, two call sites, deliberately. This defect IS a copy that
+    drifted from its original; a third private copy of the same test is exactly
+    how it recurs (DEFECT_REGISTER.md §A4 — one affirmative vocabulary
+    maintained in four places).
+
+    No carve-out for a self-identifying "use this number", and none is needed:
+    every prompt that legitimately invites it already contains a marker. Step 8
+    says "just say use this number", the keypad invitation says "type the number
+    … on your keypad", and the dead-air re-ask says "best number". A caller
+    cannot be coached to say the phrase without the marker being in the question
+    that coached them.
+
+    Fails CLOSED: an unrecognised phrasing of the phone question means the
+    utterance falls through to the LLM, which asks again. A missed intercept
+    costs a turn; a false one books an unconfirmed number.
+    """
+    from .llm_stream import _PHONE_STEP_MARKERS
+    last_q = (
+        session.get("last_question", "")
+        or session.get("last_bot_prompt", "")
+        or ""
+    ).lower()
+    return any(_mk in last_q for _mk in _PHONE_STEP_MARKERS)
+
+
 def _is_phone_readback_rejection(transcript: str) -> bool:
     """True when the caller is telling us the number we just read back is wrong."""
     lowered = (transcript or "").strip().lower().rstrip(".!?")
@@ -6906,11 +6949,6 @@ class WebSocketCallHandler:
                         and _phone_confirm_is_yes(utterance)
                     ):
                         _bk_caller_num = _confirm_caller_number(self.session)
-                        _bk_lastq = (
-                            self.session.get("last_question", "")
-                            or self.session.get("last_bot_prompt", "")
-                            or ""
-                        ).lower()
                         # The wording of Step 8 is NOT owned here — it lives in
                         # clinic_template_prompt, and it changed on 2026-07-26 to
                         # "I've got you on … — is that the best number for the
@@ -6927,13 +6965,14 @@ class WebSocketCallHandler:
                         # Reuse the marker set instead of a fourth private copy.
                         # There were already three (here, llm_stream, and
                         # clinic_template_prompt); the reword updated the other two
-                        # and missed this one, which is the whole defect.  Imported
-                        # locally, matching how this module already pulls LLMStream
-                        # from the same file.
-                        from .llm_stream import _PHONE_STEP_MARKERS
-                        _bk_phone_step = any(
-                            _mk in _bk_lastq for _mk in _PHONE_STEP_MARKERS
-                        )
+                        # and missed this one, which is the whole defect.
+                        #
+                        # B-25 (2 Aug 2026): the test itself now lives in
+                        # _phone_question_on_the_table, shared with the DTMF-active
+                        # site below. That site had no question gate at all and
+                        # confirmed the caller ID off a surname refusal. Two copies
+                        # of this check is what produced B-25; there is now one.
+                        _bk_phone_step = _phone_question_on_the_table(self.session)
                         # Never overwrite a number the caller TYPED with the one
                         # they are calling from.  A caller who declined the
                         # caller ID and keyed in a different number, then said
@@ -7091,10 +7130,35 @@ class WebSocketCallHandler:
                             # Same guard as the booking branch above: a typed
                             # number outranks the caller ID and must never be
                             # overwritten by it.
+                            #
+                            # B-25 (2 Aug 2026, CAce42c36b): and the SAME question
+                            # gate, which this site never had. v3_phone_dtmf_active
+                            # goes True the moment a first name is captured, so
+                            # without it every affirmative-sounding answer to the
+                            # SURNAME question confirmed the caller ID and set
+                            # phone_confirmed=True — satisfying book_appointment's
+                            # A1 gate before the phone question was ever asked.
+                            # Observed on "just quentin's fine" (a refusal to give
+                            # a surname). See _phone_question_on_the_table.
+                            #
+                            # Clause ORDER is load-bearing for a test, not for
+                            # behaviour: all four are pure reads, but
+                            # test_phone_confirm_verdict.py pins the verdict
+                            # call as immediately followed by the keypad guard.
+                            # The B-25 gate therefore goes LAST so that
+                            # assertion keeps holding. Do not "tidy" it back up
+                            # next to the verdict.
+                            #
+                            # Note for future comment-writers: the sibling tests
+                            # count call sites by substring over this module's
+                            # source, comments included. Spelling a call out
+                            # literally in a comment registers as a fourth site
+                            # and fails them. (It did, while writing B-25.)
                             if (
                                 _caller_num
                                 and _phone_confirm_is_yes(utterance)
                                 and not self.session.get("phone_entered_by_keypad")
+                                and _phone_question_on_the_table(self.session)
                             ):
                                 self.session.setdefault("collected", {})
                                 self.session["collected"]["phone"] = _caller_num
