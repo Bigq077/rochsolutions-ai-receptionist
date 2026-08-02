@@ -9893,6 +9893,20 @@ class WebSocketCallHandler:
                                             self.session[
                                                 "v3_confirmed_slot_phrase"
                                             ] = _slot_pre
+                                            # A freshly captured phrase names the
+                                            # day the caller has just agreed to,
+                                            # so it cannot be superseded. Backstop
+                                            # for _refresh_confirmed_slot_phrase,
+                                            # which early-returns (leaving the
+                                            # flag set) whenever the new day is
+                                            # not the payload's FIRST day — the
+                                            # multi-day case this whole change is
+                                            # about. Without this the guard would
+                                            # stand down permanently after any
+                                            # different-day request.
+                                            self.session.pop(
+                                                "v3_slot_phrase_superseded", None
+                                            )
                                             logger.info(
                                                 "[ms_conn] v3_confirmed_slot_phrase"
                                                 " captured: %r",

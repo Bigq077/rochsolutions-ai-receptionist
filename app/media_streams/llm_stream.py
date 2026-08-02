@@ -364,6 +364,9 @@ def _refresh_confirmed_slot_phrase(
         # January would disagree on the year alone and skip a valid refresh.
         return
     session["v3_confirmed_slot_phrase"] = phrase
+    # The phrase now names the day the caller has moved to, so it is no longer
+    # superseded — re-arm the date guard on the new day.
+    session.pop("v3_slot_phrase_superseded", None)
     logger.info(
         "[ms_llm] v3_confirmed_slot_phrase refreshed %r -> %r "
         "(caller moved to the day now on offer, %s)",
@@ -1599,6 +1602,14 @@ class LLMStream:
                 session["_different_day_steer_fired"] = (
                     int(session.get("_different_day_steer_fired") or 0) + 1
                 )
+                # The caller has asked for a different day, so any confirmed
+                # slot phrase now names a day they are leaving. Mark it, and the
+                # Gate-5 date guard stands down until a new phrase is captured
+                # or refreshed. This is the caller's own words — the one input
+                # to that decision Gate 5 cannot rewrite, which is what stops
+                # the guard confirming its own output. See
+                # _confirmed_slot_is_stale (turn_handler).
+                session["v3_slot_phrase_superseded"] = True
                 logger.info(
                     "[ms_llm] DIFFERENT DAY REQUESTED steer applied iter=%d "
                     "call_sid=%s", iteration, call_sid,

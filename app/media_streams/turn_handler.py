@@ -619,7 +619,60 @@ def _confirmed_slot_is_stale(conf_slot: str, session: Dict[str, Any]) -> bool:
         return False
     day = int(m.group(1))
 
-    # Primary: the day last offered, which outlives the slot cache.
+    # SUPERSEDED (CA6e1024db follow-up, 2 Aug 2026). The one thing the day-set
+    # below cannot see: a caller who moves between two days that are BOTH in the
+    # current payload. There the abandoned day is still "on offer", so the set
+    # test would call the stale phrase current and this gate would spend the
+    # rest of the call forcing the day the caller just left — CAb81fe651 exactly.
+    #
+    # The flag is set from the caller's OWN transcript (the DIFFERENT DAY
+    # REQUESTED steer in llm_stream), which is the only signal in this decision
+    # Gate 5 cannot rewrite. That matters: this gate edits the spoken text, so
+    # anything derived from spoken text feeds its own output back in and
+    # self-confirms. Cleared the moment a phrase is captured or refreshed, so it
+    # stands the gate down for exactly the turns between "I want a different
+    # day" and "so that's <new day>" — and re-arms after, which the old
+    # scalar-only behaviour never did.
+    if session.get("v3_slot_phrase_superseded"):
+        return True
+
+    # PRIMARY: every day currently on offer, not just the first one.
+    #
+    # v3_last_offered_day_iso is written as days[0] of the payload but was read
+    # here as "the day the caller is being offered". Those diverge the moment a
+    # payload is multi-day, which date_hint:"any" — i.e. "no preference", the
+    # commonest answer a caller gives — guarantees. CA6e1024db: the caller took
+    # the third day, the scalar still named the first, and this returned True on
+    # a phrase that had never been stale. Four NOT-corrected lines, the gate
+    # blind for the whole call.
+    #
+    # session["available_days"] is assigned the SAME filtered list that goes to
+    # the model in the tool result (_filter_same_day_slots, receptionist_tools
+    # ~3795), so it is exactly the model's offer surface — and it comes from the
+    # tool, so this gate cannot touch it either.
+    _days = session.get("available_days")
+    if isinstance(_days, (list, tuple)) and _days:
+        _seen_any_day = False
+        for _d in _days:
+            if not isinstance(_d, dict):
+                continue
+            _iso = str(_d.get("date") or "")
+            if len(_iso) < 10:
+                continue
+            try:
+                _md = (int(_iso[5:7]), int(_iso[8:10]))
+            except ValueError:
+                continue
+            _seen_any_day = True
+            if _md == (month, day):
+                return False      # still on the table — the phrase is current
+        # Only call it stale when we actually read some dates and none matched;
+        # an unparseable payload falls through to the older signals below.
+        if _seen_any_day:
+            return True
+
+    # Fallback: the day last offered, which outlives the slot cache. Retained
+    # verbatim for any path that never populates available_days.
     day_iso = str(session.get("v3_last_offered_day_iso") or "")
     if len(day_iso) >= 10:
         try:
