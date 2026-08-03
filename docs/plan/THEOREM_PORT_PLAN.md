@@ -27,6 +27,66 @@ booking that never reached Acuity — and the call sounds perfect. This is why
 
 ---
 
+## 0.5 Re-verified 2026-08-04 — read this before using any line number below
+
+Every claim in this plan was re-checked against the tree at **`a373f31`**. What
+follows is what changed. Anything not listed here still holds.
+
+### Base commit
+
+Port from **`a373f31`** or later. Thirteen engine commits landed on
+`latency-eval` on the night of 3–4 Aug; several matter to this port and are
+listed under §3a and §7 below.
+
+### Numbers that moved
+
+| Claim in this plan | Actual at `a373f31` |
+|---|---|
+| `main` 155 ahead / **384** behind | 155 ahead / **428** behind |
+| `jv-v1-onboarding` 16 / **265** | 16 / **309** |
+| `vitaledge-onboarding` 18 / **237** | 18 / **281** |
+| Item 4 anchor `latency-eval:2604` | **`2892`** — `llm_stream.py` was edited three times on 3 Aug |
+| £75 in `clinic_config.py` at **442, 451** | **428, 429** |
+| Suite baseline 95 failures | **95 failed / 3529 passed** |
+
+`main`'s anchor (`1756`) is unchanged, as is `THEOREM_LOCATIONS`
+(`clinic_config.py:1064`, redditch block `1072`) and the file sizes
+(latency-eval 3,759 / main 4,006).
+
+### Item 1 is DONE
+
+`f12c36a` — `canonical.py` and `caller_concerns.py` are both present on
+`latency-eval`. Items 2, 3 and 4 remain.
+
+### Two findings that are new since this plan was written
+
+Both are in §3a and §7. Neither was known when the port list was drawn up, and
+**one of them blocks cutover under §9.**
+
+### Things that got cheaper
+
+- **`B-50`** (wrong service booked) **cannot reach Theorem** — a hard whitelist
+  at [receptionist_tools.py:3877-3880](../../app/tools/receptionist_tools.py)
+  rejects any service not in `_VALID_SERVICES` for
+  `theorem`/`theorem_v2`/`theorem_v3`. Measured separately: zero informal
+  service strings in 155 obs calls. Do not build the fuzzy resolver.
+- **Item 4b is now a two-way reconcile, not three-way.** `B-46` (`80b545b`)
+  already merged main's `phone_confirmed` gate with `latency-eval`'s
+  `_caller_requests_new_day_or_time` escape and the BUG-14 injection, into
+  `_post_collect_readback_due`. Main's contribution to that guard is already in.
+
+### One live defect that reaches Theorem and is NOT fixed
+
+**`B-54`** — a real calendar event was cancelled that the caller did not mean
+(`CA156fa25`, 3 Aug). The steering half shipped (`c273475`); **the gate half is
+open**. `_note_lookup_name_spoken` satisfies the identity gate the moment a name
+reaches TTS, without the caller agreeing and without reference to which
+appointment. It is not screening-scoped or clinic-scoped — **Theorem inherits
+it**. See `REGISTER_B_U.md`. Consider telling Mark the cancel path is new, or
+routing first-week cancellations to the team.
+
+---
+
 ## 1. Why this direction, and not the other
 
 The instinct was to merge `latency-eval` into `main`. Don't.
@@ -183,22 +243,43 @@ Plus 2 imports (§2.2), plus these shared-prompt rules that `main` has and
 - pricing-objection brevity (max three sentences)
 - "don't end every answer with *is there anything else*"
 
-#### ⚠️ 3a. PRICE IS STALE — £75 vs £85
+#### 🔴 3a. PRICE IS STALE — £75 vs £85 · **RESOLVED 2026-08-04, and it is a CONFIRMED defect**
 
-`canonical.py:182` confirms **£85.00** is the canonical Theorem assessment price.
-`latency-eval` says seventy-five at:
+This was carried as "unverified — establish which sites Theorem reaches." It has
+now been traced end to end, and the answer is worse than the row assumed.
 
-| File | Line |
-|---|---|
-| `app/prompts/susie_system_prompt.py` | 470 |
-| `app/prompts/susie_system_prompt.py` | 1735 |
-| `app/clinic_config.py` (`service_prices`) | 442, 451 |
+**The prices are inside `_build_theorem_v3` itself**, which is the one place the
+plan assumed they were *not*:
 
-**Unverified:** lines 470/1735 are in the *generic* `build_system_prompt` path,
-not `_build_theorem_v3`, and 442/451 are in a `service_prices` block whose owning
-clinic I have not confirmed. **Establish which of these four Theorem actually
-reaches before any live call.** Shipped wrong, Susie undercharges by £10 on
-every pricing question.
+| | `latency-eval` | `main` | `canonical.py` |
+|---|---|---|---|
+| PRICING QUESTIONS line | **£75** new patient | £85 | — |
+| PRICES block, new patient assessment | **£75** / 50 min | £85 / 50 min | **£85.00** (`:182`) |
+| PRICES block, follow-up | **£75** / 40 min | £85 / 40 min | **£85.00** (`:196`) |
+
+**Ported as-is, Susie quotes £75 for an £85 appointment on every pricing
+question**, on a paying client's line. Not a risk — a certainty.
+
+**And the divergence is wider than the price.** `main`'s PRICES block carries
+entries `latency-eval`'s does not have at all: standalone shockwave / Class IV
+laser (£130), the shockwave-or-laser surcharge (£45), the four-session package
+(£468, six-month validity), acupuncture (£85), psychotherapy (£85), and the
+wellness massage with in-light therapy (£85). Port the **whole block**, not the
+two numbers.
+
+**The two generic-path sites are NOT reachable and need no action.** Traced:
+the live path is [llm_stream.py:1542](../../app/media_streams/llm_stream.py) →
+`build_system_prompt_parts()`, which branches to `_build_theorem_v3` at
+`susie_system_prompt.py:127` before anything else; `build_system_prompt()`
+branches at `:152`, ahead of site `470`. Site `1735` lives in
+`get_system_prompt()`, which is called only from `app/flows/conversation.py:219`
+and `app/routes/realtime.py:560` — the legacy pipelines, not `media_streams`.
+
+**`clinic_config.py:428-429` DOES sit inside the `"theorem"` block** (nearest
+preceding top-level key is `"theorem": {` at `:154`) and also says £75. Whether
+`theorem_v3` reaches it is doubtful — `get_clinic("theorem_v3")` falls back to
+`demo` — but Item 2 wires pricing to `canonical.get_price` anyway, so fix it
+there rather than leaving two contradictory numbers in Theorem's own config.
 
 #### ⚠️ 3b. Do NOT port the "Lovely" relaxation blindly
 
@@ -385,6 +466,60 @@ re-enable it casually.
 
 ## 7. The literal audit — the step that makes a one-day port safe
 
+> ## ✅ RUN 2026-08-04 — results below. One category-3 gap found.
+>
+> Every quoted utterance in the **built** prompt (84,695 chars, 514 quoted
+> strings) was extracted and run through the real `_false_write_claim` for all
+> three write families.
+>
+> | Family | Theorem's taught closing | Gate 5f |
+> |---|---|---|
+> | **Booking** | `All booked — you're in for…` | ✅ **CAUGHT** |
+> | **Reschedule** | `I've rescheduled to [date/time]…` | ❌ **MISSED** |
+> | **Cancel** | `That's all done — your appointment has been cancelled.` | ✅ caught |
+>
+> **The booking path is clean** — the highest-traffic path, and Mark's priority.
+>
+> ### 🔴 The reschedule gap — CATEGORY 3, blocks cutover per §9
+>
+> `_FALSE_RESCHEDULE_CLAIM_RE` **requires an object after the verb** — `moved
+> you/that/it to…`, never a bare `moved to…`. That is deliberate: it is what
+> keeps *"we've moved to a new building"* from being stripped as a false
+> confirmation.
+>
+> `clinic_template_prompt.py` was shaped to fit that gate. It mandates *"That's
+> you rescheduled — you're now in for…"* (**caught**) and at
+> [clinic_template_prompt.py:2321](../../app/prompts/clinic_template_prompt.py)
+> explicitly warns against *"A bare 'I've rescheduled to [date]'"*.
+>
+> **Theorem's prompt teaches exactly the form the template forbids.** A refused
+> reschedule, narrated in Theorem's own mandated wording, passes the guard
+> silently.
+>
+> **Fix = a prompt edit, folded into Item 3:** bring Theorem's reschedule
+> closing onto the template's wording. **Do NOT widen the regex** — that
+> re-opens the false positive the object requirement exists to prevent.
+>
+> ### Not a Theorem problem — a shared one, for the record
+>
+> Both prompts end the cancel closing with *"Is there anything else I can help
+> with?"*, and `_false_write_claim` stands down on any `?`. In the live pipeline
+> that sentence never reaches Gate 5f — Gate 5b strips it first as a banned
+> phrase (`is_there_anything_else`), confirmed on `CA156fa25`. So it is not the
+> exposure it first appeared to be. See the correction in `REGISTER_B_U.md`.
+>
+> ### ⚠️ A carry-over the port list does not have
+>
+> **The `A3` surname read-back does not reach Theorem.** `914cda3` fixed it in
+> `clinic_template_prompt.py`; `theorem_v3` runs `susie_system_prompt.py`. The
+> A3 commit says so in its own scope note: *"Does not reach theorem/demo … The
+> Theorem port must carry this by hand."*
+>
+> Ported as-is, Mark's clinic launches with the defect `jv_v1` fixed on 3 Aug:
+> the surname written to a real calendar, never spoken aloud, no chance for the
+> caller to correct it — three real events already carry a wrong surname. **Add
+> to Item 3.**
+
 **Do this at a desk, before touching a phone.** It catches the entire category-3
 class in about an hour.
 
@@ -486,9 +621,24 @@ out-of-hours.
 
 ## 11. Open questions — resolve before or during, not after
 
+> **Updated 2026-08-04.** Question 1 is **CLOSED** — and it turned out to be a
+> confirmed defect rather than an open risk, plus a whole diverged PRICES block.
+> Question 5 is **CLOSED**: the stale-`selected_location` bug cannot bite `jv_v1`
+> or `vital_edge`, because a lookup that could clobber the confirmed number was
+> hardened on 3 Aug (`2a146dd`) and the path is Theorem-only by construction
+> (`receptionist_tools.py:6148` returns early for every other clinic).
+> Questions 2, 3 and 4 remain open.
+>
+> **Two questions to add:**
+>
+> | # | Question | Impact if wrong |
+> |---|---|---|
+> | 6 | Does `_build_theorem_v3` need the `A3` surname read-back carried by hand? (§7) | **Yes — confirmed.** Mark launches with a wrong surname on real calendar events |
+> | 7 | Does Theorem's reschedule closing pass Gate 5f? (§7) | **No — confirmed.** A refused reschedule is narrated as done, silently |
+
 | # | Question | Impact if wrong |
 |---|---|---|
-| 1 | Which of the four £75 sites does Theorem actually reach? (§3a) | £10 undercharge on every pricing question |
+| 1 | ~~Which of the four £75 sites does Theorem actually reach?~~ **CLOSED — see §3a** | £10 undercharge on every pricing question |
 | 2 | Is `latency-eval`'s "Lovely" ban newer than main's relaxation? (§3b) | reintroduces a name-echo bug |
 | 3 | Do main's 74 unique engine commits have `latency-eval` equivalents? | unknown regressions; titles suggest yes but that is a **lead, not a finding** |
 | 4 | Specifically: `3da3a17` (dead-air backstop firing up to 10s late) and `07de912` (greeting watchdog 6s vs 4.5s) | dead air on live calls |
