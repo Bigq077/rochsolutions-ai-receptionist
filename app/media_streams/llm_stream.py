@@ -534,6 +534,45 @@ def _caller_requests_new_day_or_time(messages) -> bool:
     return bool(set(re.findall(r"[a-z']+", txt)) & _NEW_TIME_OF_DAY_WORDS)
 
 
+def _post_collect_readback_due(tool_name: str, session, messages) -> bool:
+    """True when check_availability must be blocked in favour of the booking
+    read-back: the caller's details are settled and nobody is trying to change
+    the slot.
+
+    B-46 (2026-08-03) — read `phone_confirmed`, NEVER `collected["phone"]`.
+
+    `collected["phone"]` is pre-loaded from the Twilio caller-ID at connect
+    (connection.py, "Populate collected.phone from Twilio caller-ID so Susie
+    never asks for it"), so on every inbound call carrying a number it is
+    truthy from turn one. Testing it collapsed this predicate to "a name has
+    been collected" — and under name-first the first name is stored at turn 1,
+    so the read-back was forced BEFORE any slot had been offered, skipping the
+    surname and phone-confirmation steps.
+
+    `phone_confirmed` is set only where the caller actively confirms a number
+    (the keypad commit and the two verbal-confirm sites in connection.py), and
+    book_appointment's A1 gate already requires it. So "the caller has confirmed
+    their number" and "the slot is already agreed" are the same moment, which is
+    the moment this guard was always meant to fire at.
+
+    Extracted from the inline condition so it can be tested without standing up
+    a connection — the same reason B-38 extracted `_cta_asked`. A guard that is
+    only reachable through a 15k-line method is a guard whose tests pass when it
+    is deleted.
+    """
+    if tool_name != "check_availability":
+        return False
+    if not session.get("phone_confirmed"):
+        return False
+    _col = session.get("collected") or {}
+    if not (_col.get("name") or _col.get("full_name")):
+        return False
+    # Bug B (2026-07-30): "the slot is already agreed" is only true while
+    # nobody is trying to change it. CAc6b971ad hung up unbooked after asking
+    # for Wednesday seven times behind this guard.
+    return not _caller_requests_new_day_or_time(messages or [])
+
+
 def _caller_wants_new_slot(messages) -> bool:
     """True if the caller's latest utterance signals they want a different slot
     (a new-date word or any digit) — i.e. a legitimate reason to re-search
@@ -2718,16 +2757,23 @@ class LLMStream:
                 # broader helper, which also matches any digit and "no"/"not" and
                 # would release this guard on ordinary turns — see the note on
                 # _DIFFERENT_DAY_WORDS.
+                # B-46 (2026-08-03): the whole condition lives in
+                # _post_collect_readback_due, which gates on phone_confirmed
+                # rather than collected["phone"] — the latter is pre-loaded from
+                # the Twilio caller-ID at connect and is therefore always
+                # present, which made this guard fire before any slot had been
+                # offered. See that predicate for the full reasoning.
+                #
+                # main fixed the same defect first; this keeps the two
+                # latency-eval-only protections main does not have — the
+                # _caller_requests_new_day_or_time escape (Bug B, 2026-07-30)
+                # and the BUG-14 name/location injection below.
                 _col = session.get("collected") or {}
-                if (
-                    tool_name == "check_availability"
-                    and _col.get("phone")
-                    and (_col.get("name") or _col.get("full_name"))
-                    and not _caller_requests_new_day_or_time(messages or [])
-                ):
+                if _post_collect_readback_due(tool_name, session, messages):
                     logger.warning(
-                        "[ms_llm] check_availability BLOCKED — name+phone already "
-                        "collected; forcing booking readback call_sid=%s", call_sid,
+                        "[ms_llm] check_availability BLOCKED — name collected + "
+                        "phone CONFIRMED; forcing booking readback call_sid=%s",
+                        call_sid,
                     )
                     # BUG-14: inject the KNOWN full name + location from session so
                     # the forced readback can't drop them. The old template left the
