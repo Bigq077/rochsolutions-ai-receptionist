@@ -1884,7 +1884,7 @@ def _build_theorem_v3(session: dict) -> str:
         "PRICING QUESTIONS. Any question about cost or price — "
         "\"how much is it\", \"what does it cost\", \"how much "
         "again\", \"what's the fee\" — always refers to the "
-        "appointment price (£75 new patient assessment, £75 "
+        "appointment price (£85 new patient assessment, £85 "
         "follow-up) unless the caller explicitly names something "
         "else (e.g. \"how much is parking\", \"how much is "
         "shockwave\"). Never infer they are asking about the most "
@@ -2248,19 +2248,20 @@ def _build_theorem_v3(session: dict) -> str:
     # PRICES (section 11)
     prices = (
         "PRICES\n"
-        "New patient assessment: £75 / 50 minutes\n"
-        "Follow-up: £75 / 40 minutes\n"
+        "New patient assessment: £85 / 50 minutes\n"
+        "Follow-up: £85 / 40 minutes\n"
         "Rehabilitation: £65 / 50 minutes\n"
         "Prescribing: £12.50\n"
-        "Standalone shockwave or Class IV Laser: £120 / 30 minutes\n"
+        "Standalone shockwave or Class IV Laser: £130 / 30 minutes\n"
         "Shockwave/laser added to standard session: £45 surcharge "
         "(told before applied)\n"
-        "Package of four shockwave: £420, six-month validity, "
+        "Package of four shockwave: £468, six-month validity, "
         "non-transferable, fourteen-day cooling-off\n"
-        "Acupuncture, Psychotherapy: £75 / 50 minutes each\n"
-        "Reiki/Energy Healing, Wellness Massage with In-light "
-        "Therapy, Auricular Acupuncture: one hour each, enquire for "
-        "pricing — never invent a price for these"
+        "Acupuncture, Psychotherapy: £85 / 50 minutes each\n"
+        "Wellness and Stress Relief Massage with In-light Therapy: "
+        "£85 / one hour\n"
+        "Reiki/Energy Healing, Auricular Acupuncture: one hour each, "
+        "enquire for pricing — never invent a price for these"
     )
 
     # POLICIES (section 12)
