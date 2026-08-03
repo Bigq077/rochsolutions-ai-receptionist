@@ -1,6 +1,14 @@
 # B/U register — sweep defects and unverified items
 
-**Opened 2026-08-02.** Branch `latency-eval`, statuses as of `13dd9f3`.
+**Opened 2026-08-02. Statuses reconciled against the code 2026-08-03 at
+`00ae6df`.** Branch `latency-eval`.
+
+> **Reconciliation note, 3 Aug.** Before this pass, four defects fixed in code
+> (`B-33`, `B-38`, `B-43`, `B-09`) still read **OPEN** here, and `B-45` did not
+> exist on paper at all. Every section heading below now carries its commit SHA,
+> and any row without one is genuinely open. **If this file and the code
+> disagree, the code wins** — that is `CLAUDE.md` §7, and this file has now been
+> on the wrong side of it once.
 
 This register was carried in conversation only until now. Everything below was
 re-checked against the code — originally at `e5a8ee9`, and re-anchored at
@@ -31,7 +39,7 @@ implying more confidence than exists.
 | Closed | `U-06`, `B-18`, `B-13`, `B-14`, `B-15`, `B-25`, `B-31`, **`B-20`**, **`B-26`**, **`B-34`** | Shipped 2–3 Aug with tests. **`B-15` closed on a different defect than the one it was sold on** — see the honest verdict in its section. `B-20` closed by dial time, not by code — see the 3 Aug sweep |
 | Parked | `B-01` – `B-04` | Two provisioning items + the name work — owner decision, not capacity. **`A3` now has a live instance, see the sweep section** |
 | **Behaviour change pending deploy** | **`B-31`** | **CLOSED 3 Aug.** A 200-char cap had silently disabled the clinical screening layer. Fixed — and a call shaped like sweep call 2 now **escalates to NHS 111 and blocks the booking** where it previously booked. That makes the `B-20` authority decision urgent, not merely open |
-| Track A — deterministic, no dial time | `B-09` | **`B-26` closed 3 Aug.** `B-09` is the last Track A item |
+| Track A — deterministic, no dial time | — | **EMPTY.** `B-26` closed 3 Aug, `B-09` closed 3 Aug (`00ae6df`) — it was our own off-by-one-week, not model arithmetic |
 | Track B — needs an owner decision | `B-19` / `B-07` | Blocked on filler cadence. **`B-07` now has a second arm — `B-30`** |
 | Track C — prompt-side, needs dial time | `B-06` `B-08` `B-10` `B-11` `B-12` `B-16` | **`B-10` and `B-16` confirmed live 2 Aug**, see the sweep section |
 | Track D — verification only | `U-02` – `U-05` | **Still entirely open.** Sweep call 2 exercised the keypad commit, C2 read-back and the overwrite guard — none of which are `U-nn` rows. `U-03` is the *reschedule* path (call 7) and was not touched |
@@ -39,7 +47,8 @@ implying more confidence than exists.
 | Withdrawn | `B-24` (claimed Layer 1 coverage gap) | My claim, wrong. Widening those triggers would manufacture `B-20` |
 | **Deferred to last** | `B-17`, `B-22` (the SMS family) | Owner decision 2 Aug. **`B-17` is worse than recorded — it has a second consumer.** Revisit warranted |
 | New from the 2 Aug sweep | `B-27` `B-28` `B-31` `B-30` | See the 2 Aug sweep section. `B-28` is root-caused by `B-31` |
-| **New from the 3 Aug sweep** | **`B-36`** **`B-33`** `B-34` `B-35` | **`B-36` was the P1: a reschedule write was BLOCKED and Susie announced success anyway — both causes now FIXED (`fe97b82`, `e387aac`, `d5b257c`), awaiting live-call verification.** `B-34` closed same night. **`B-33` — a name invented from Susie's own utterance, with DTMF phone collection armed behind it — is the most demo-audible thing open.** `B-35` is a Render env var |
+| **New from the 3 Aug sweep** | `B-36` `B-33` `B-34` `B-35` | **`B-36` was the P1: a reschedule write was BLOCKED and Susie announced success anyway — both causes FIXED (`fe97b82`, `e387aac`, `d5b257c`) and the steering half now production-verified on `CA9cc1a23e`.** `B-34` closed same night. **`B-33` FIXED `c5210a2`** — and the row's inferred mechanism was wrong in every detail. **`B-35` is the only one still open, and it is a Render env var, not code** |
+| **FIXED 3 Aug, all test-proven, NONE heard on a live call** | `B-41` `B-42` `B-44` `B-43` `B-38` `B-45` `B-33` `B-09` | `6901c27` · `0dc510d` · `6b34745` · `91524c4` (two rows) · `e108e44` · `c5210a2` · `00ae6df`. **`B-42` and `B-44` are the exceptions — both verified live** (`CAdbc84848`, `CA368775`). The other six are the standing dial-time debt. `B-09` is deliberately unverifiable by phone: it reproduces on **Sundays only** |
 | New — blocks nothing, decides `B-20` | **`B-32`** (STT noise defeats Layer 1 triggers) | Two observed misses, both rescued by Layer 2. **Do not fix by adding keywords.** One safe 15-min config addition (`calves`) is separable |
 | Withdrawn same night | `B-29` (claimed the DVT grader knew half its question) | My claim, wrong — written from a truncated keyword list quoted in `B-20` rather than from `clinic.json`. **That quotation is now corrected too** |
 | **Unrecorded** | **`B-05`, `U-01`** | **See "Gaps" below** |
@@ -99,7 +108,7 @@ to last_question for orphan matching (B-31).
 That is `c69eb61` catching precisely the failure it was written for and
 recovering. Pre-fix that turn reads as question-less and switches the layer off.
 
-### `B-33` · a name was invented from Susie's own utterance — NEW, **demo-audible**
+### `B-33` · a name was invented from Susie's own utterance — **FIXED `c5210a2`**
 
 Call 5, `CAc3c4e6619660fa69416e8545c9d5674a`, 00:20:05.660. The caller had said
 exactly one thing — *"i've hurt my ankle"* — and had given no name:
@@ -123,6 +132,47 @@ Why it outranks its family (`A3` is a *mangled* surname): this is a name with no
 caller origin at all, and it armed DTMF phone collection behind it. Type a
 number at that moment and the appointment is written under "Rehab". It
 self-cleared here only because the next utterance was conversational.
+
+> **FIXED `c5210a2`. The inferred mechanism above was wrong in its specifics,
+> and the capitalisation is ours.** Reproducing it end to end found **three**
+> faults, not the "capitalised word inside a long clinical explanation" this row
+> guessed at. This is the "anchor before scheduling" rule paying for itself
+> again — the row was right that something invented a name, and wrong about
+> every detail of how.
+>
+> 1. **Gate 5 manufactures the shape.** It strips a banned opener (*"Of course —
+>    "*) and then **re-capitalises the next word** (`turn_handler`, "Fix A"),
+>    turning an ordinary mid-sentence noun into a sentence-initial title-case
+>    word — exactly what the readback patterns hunt for. Pinned by its own test,
+>    because the name layer must stay safe against **our own pipeline** rather
+>    than a hypothetical model quirk.
+> 2. **Pattern 1d sat in the `ANCHORED` list and did not belong there.** That
+>    list's stated criterion is that an acknowledgement verb or readback opener
+>    *precedes* the captured word, and `ANCHORED` bypasses the phase gate on
+>    every turn. 1d has no leading lexeme at all — only a trailing hint — so
+>    *"Massage — if you'd prefer something gentler…"* was read as a name. Moved
+>    to `BARE`, where the gate applies.
+> 3. **Pattern 1c matched `"right"` as an ordinary mid-sentence adjective** and
+>    captured whatever followed: *"doesn't feel right Marcus can take a look"* →
+>    `'Marcus'`; *"that's right Bolton is our only site"* → `'Bolton'`. None are
+>    in any false-positive list, so **a practitioner's name or the clinic's town
+>    could become the patient's name.** Anchored to a sentence boundary.
+>
+> The fault that closes the observed call is the **phase gate**: a reply that
+> *asks* for the name cannot also read one back, because the caller has not
+> answered yet. `BARE` now requires `post_slot_pending` alone. The
+> same-response ask-and-acknowledge case the gate was widened for is untouched —
+> *"Thanks Sarah — and your surname?"* is `ANCHORED`, and `ANCHORED` still runs
+> every turn; `CA8f9c5578`'s ungated readback is pinned to prove it.
+>
+> `test_pattern_split_preserves_the_full_ordered_list` failed on the `BARE` count
+> and **was right to** — it demands that any addition be a deliberate
+> classification, not an accident. Answered rather than weakened: the count moves
+> to 2 with the reason recorded beside it, and assertions on *which* patterns are
+> in the list so it cannot be bumped to go green.
+>
+> 17 new tests. Suite verified by diffing failing node IDs — identical.
+> **Not yet heard on a live call.**
 
 ### `B-34` · the orphan detector scored a booking CTA as clinical evidence — NEW, **CLOSED same night**
 
@@ -575,7 +625,63 @@ growth — each blocked write appends a long `tool_result`, and this call had th
 `llm_ttft_ms` has been read across a dozen calls; the honest reading today is
 "observed, unexplained, not reproduced on demand".
 
-### `B-43` · another first-person reasoning leak — *"I need to action the cancellation now."*
+### `B-45` · the degraded LLM path could write to the calendar with **no gates at all** — **FIXED `e108e44`**
+
+Promoted from `B-36`'s residual 2, which recorded it as "wants its own row". It
+does, and it is worse than the residual made it sound.
+
+`_gpt_fallback` runs when Claude is overloaded and the retries are spent. It
+calls `TOOL_EXECUTORS` **directly** and never reaches `_execute_tools`, so
+**none** of the write gates applied there:
+
+- not FM-01, not the surname or phone backstops;
+- not FM-23's move and cancel consent;
+- not `B-42`'s identity check — **a cancellation on that path could not tell
+  whose appointment it was destroying**;
+- not `_note_write_result`, so Gate 5f never armed and a phantom could not be
+  caught either.
+
+All three write tools were advertised to that model. **The path activates under
+load, which is when a busy clinic can least afford it.**
+
+**Deliberately NOT replicating the gate chain.** Extracting a 350-line `elif`
+chain out of the most dangerous file in the repo, for a degraded path, is exactly
+the refactor `CLAUDE.md` §4 tells us not to attempt right now. And the correct
+degraded behaviour is already written down in §6 bar 3: when the LLM is down,
+produce a controlled outcome — take a message, promise a callback, transfer —
+never a hallucinated confirmation. **A missed booking is recoverable by a
+callback; a wrong cancellation is not.**
+
+Three layers, and the redundancy is the point:
+
+1. the write tools are **withheld from the fallback schema**, derived from
+   `_WRITE_TOOL_FAMILIES` rather than a second hand-kept list;
+2. the dispatch **refuses them anyway**, ordered before `TOOL_EXECUTORS`, so the
+   guarantee does not rest on a tool list a later edit could widen;
+3. the refusal routes through `_note_write_result`, which **arms Gate 5f** and
+   attaches the do-not-claim rule — and this path *does* sanitise its reply
+   through Gate 5, so a narrated booking is still caught. Verified end to end: a
+   phantom *"your appointment has been cancelled"* after a degraded refusal is
+   re-steered.
+
+Plus the steering half in `_GPT_CONSTRAINT_PREFIX`, so the caller does not have
+to hit the wall for the model to discover it cannot book.
+
+> **One near-miss caught in review and pinned by its own test.** The refusal log
+> line was written as `self.call_sid`; `LLMStream` has no such attribute. It
+> would have raised inside the `try`, been swallowed by the broad
+> `except Exception`, and **silently downgraded a clean refusal into a generic
+> error** — losing the steering message *and* the Gate 5f arming, at precisely
+> the moment both matter. That is the broad-exception hazard `CLAUDE.md` §4
+> warns about, biting inside a safety fix.
+
+18 new tests. Suite verified by diffing failing node IDs — identical.
+**Not yet exercised on a live call, and it is the hardest of today's fixes to
+dial** — reaching it requires Claude to be overloaded with its retries spent.
+
+---
+
+### `B-43` · another first-person reasoning leak — *"I need to action the cancellation now."* — **FIXED `91524c4`**
 
 Same call, 10:39:23.738, spoken aloud. Gate 5g's `_SELF_NARRATION_RE` carries
 `I need to book (?:this|it) in now` — a **booking-specific literal** — and nothing
@@ -591,6 +697,19 @@ th.sanitise_response("I need to process the cancellation now.", s)-> unchanged
 of the gap is exactly `B-36` cause 2 again: a guard scoped to *booking* while the
 same failure exists verbatim on the cancel and reschedule paths. Generalise the
 verb rather than adding two more literals.
+
+> **FIXED `91524c4`. The family was nine phrasings wide and one was caught.**
+> Gate 5g carried a single arm — `I need to book (this|it) in now` — so nine
+> plausible phrasings of the same internal sentence went to TTS. Generalised the
+> verb rather than adding two more literals, which would have been the same bug
+> waiting for a third path.
+>
+> **Safe to widen because Gate 5g is structural**, not a flat phrase list: a
+> sentence counts only if it *also* carries no second person and is not a
+> question. Those two guards, not the verb list, are what spare the sentences a
+> caller may legitimately hear — *"I need to book **you** in now"* and *"I need
+> to book this in now — shall I go ahead?"* both survive, with a test asserting
+> the flip. Same argument that made `B-41`'s widening safe.
 
 ### `B-39` · the retention question is asked three times — NEW, **OPEN**, demo-audible
 
@@ -673,7 +792,7 @@ a P1.
 
 ---
 
-### `B-38` · the write CTA can be truncated out of `last_bot_prompt` — NEW, **OPEN**
+### `B-38` · the write CTA can be truncated out of `last_bot_prompt` — **FIXED `91524c4`**
 
 Found by reading the passing call, not from a failure. All three write gates and
 `B-37`'s new `_write_cta_outstanding` read **`last_bot_prompt`, which is capped
@@ -697,8 +816,39 @@ exact cap and fixed it *for the clinical layer* by falling back to
 the CTA sentence. The write gates never got that fallback.
 
 **Fix is small and well-anchored:** have the three CTA predicates read
-`last_bot_prompt` OR `last_question`. **Anchored, not yet reproduced** — the
-observed calls had headroom. Reproduce first by forcing a longer readback.
+`last_bot_prompt` OR `last_question`. ~~**Anchored, not yet reproduced**~~
+
+> **FIXED `91524c4` — and it is no longer a lead. REPRODUCED offline on ordinary
+> wording.** Name the service, the practitioner and the site and the read-back
+> runs **251 chars on a reschedule and 207 on a cancel**, against the 200-char
+> cap. Seven characters over on the *cancel* path. The calls already dialled ran
+> 148, so the headroom is tens of characters, not hundreds.
+>
+> When it fires, **three things break together**: the write is BLOCKED (`B-36`
+> cause 1, arriving by truncation instead of by rewording), the caller's *"go
+> ahead"* is DROPPED by the slot guard (`B-37` by another route), and Gate 5f
+> arms. **One truncation re-opens two defects that were fixed and verified the
+> same day.**
+>
+> All four consumers now read through `_cta_asked` — the three gates plus
+> `B-37`'s `_write_cta_outstanding` — with a test asserting **no gate reads the
+> capped prompt directly any more**. A fallback applied to three and forgotten on
+> the fourth is the failure mode; that is the `B-31` shape, which fixed this same
+> cap for the clinical layer and left the write gates behind.
+>
+> **Each source is judged whole and deliberately NOT concatenated.** A prompt
+> ending *"I'll book that"* beside a question *"in June?"* joins into the booking
+> CTA `"book that in"` and would open the gate on a sentence nobody said. Pinned
+> both ways: that the join produces the false match, and that judging
+> independently does not.
+>
+> **Staleness was the one way this fallback could turn unsafe. It cannot:**
+> `F_LAST_QUESTION` is assigned unconditionally every turn, so a turn that asks
+> nothing sets it to `""` rather than leaving an older CTA standing. Pinned from
+> both the source and the behaviour side.
+>
+> 50 new tests across `B-38` and `B-43`. Suite verified by diffing failing node
+> IDs — identical. **Not yet verified on a live call.**
 
 ### Leads from the same two calls — **anchored, NOT findings**
 
@@ -872,12 +1022,13 @@ verbatim line and the read-back statement that must NOT count as asking.
 >    the `tool_use` block is spoken before the refusal is known and escapes.
 >    `CA23199d089` spoke on a later iteration, which is the shape in scope. Noted
 >    in the gate itself.
-> 2. **The GPT fallback path has no write gates at all** — [llm_stream.py
->    `_gpt_tool_loop`](../../app/media_streams/llm_stream.py) calls executors
->    directly and never reaches `_note_write_result`, so none of FM-01, FM-23,
->    2d or Gate 5f's refusal arm apply there. Pre-existing and out of scope for
->    B-36; it wants its own row. **Note it is not dead code** — it is the
->    fallback when Claude fails.
+> 2. ~~**The GPT fallback path has no write gates at all**~~ — **promoted to
+>    `B-45` and FIXED `e108e44`.** [llm_stream.py
+>    `_gpt_tool_loop`](../../app/media_streams/llm_stream.py) called executors
+>    directly and never reached `_note_write_result`, so none of FM-01, FM-23,
+>    2d or Gate 5f's refusal arm applied there. **Note it is not dead code** — it
+>    is the fallback when Claude fails, which is why it mattered. See the `B-45`
+>    section.
 >
 > **Still unverified on a live call — this is the outstanding debt.** Everything
 > above is proven in tests only. The verification is three dialled calls on the
@@ -1829,6 +1980,16 @@ getting no confirmation with nothing in the record to say so. It is the right
 trade against a demo three days out, and it stops being the right trade the
 moment the demo is behind us.
 
+> **One leg of that argument has since gone, 3 Aug.** The "unverifiable SMS work
+> versus `B-09` silently booking wrong days" comparison no longer holds — `B-09`
+> is closed (`00ae6df`) and Track A is empty. The deferral may still be right,
+> but it now rests only on the unverifiability point, not on a more urgent
+> defect competing for the same hours. Worth re-putting to the owner rather than
+> letting it stand by inertia — especially as `B-17`'s failure mode (a booking
+> SMS that fails silently on a live clinic branch) is a bar-1 correctness
+> problem, and `B-45` has just demonstrated that "inert on this branch" is
+> exactly how a gap survives review.
+
 **Do them as one batch when they come up.** `B-17` and `B-22` are the same
 subsystem, they want the same test scaffolding, and they cherry-pick to the same
 two branches in the same operation.
@@ -1856,9 +2017,54 @@ where SMS is live, which is the same place `B-17` matters — hence one batch.
 
 ---
 
-### `B-09` · "next Friday" resolves +12 days
+### `B-09` · "next Friday" resolves +12 days — **FIXED `00ae6df`**
 
-**Re-scoped 2 Aug — the original estimate was wrong, and the reason matters.**
+> **RE-SCOPED A SECOND TIME, 3 Aug, and the verdict below is wrong.** Mapped in
+> `bff8b9c`, fixed in `00ae6df`. It is **not** model-side arithmetic: it is our
+> own off-by-one-week, in three duplicated copies.
+>
+> ```python
+> days_until_sunday = (6 - weekday) % 7      # == 0 on a Sunday
+> this_sunday = now + (days_until_sunday if days_until_sunday > 0 else 7)
+> ```
+>
+> On a Sunday the `else 7` fires, so "this Sunday" becomes *next* Sunday and
+> `next_monday` — literally tomorrow — is handed to the model as **eight** days
+> away. A model counting Friday from that anchor lands on **+12**, which is the
+> number this row is filed under. **The model's arithmetic was never at fault;
+> the anchor was seven days late.** Wrong on Sunday only, which is how it
+> survived two months.
+>
+> A fourth implementation, `_extract_week_range._next_monday` in
+> `receptionist_tools`, was **correct all along** (`7 - weekday`) — so on Sundays
+> the two halves of the system disagreed by exactly seven days, and the
+> `check_availability` schema instructs the model to use the wrong one. Observed
+> live: `after_date` arrives as a literal while `date_hint` carries `"any"`, so
+> the correct resolver is bypassed on the path that matters.
+>
+> Now **one** implementation, `app/date_context.py`, dependency-free for the same
+> reason `app/name_capture.py` is. Each call site keeps its own formatting, so no
+> model-visible text changes except the corrected dates. Second defect fixed in
+> the same line: `_build_date_prefix` used a bare `date.today()`, server-local
+> rather than Europe/London — a day behind between 23:00 and midnight on a UTC
+> container under BST. The zone is now explicit.
+>
+> 58 tests, and **they are the verification rather than a call** — this
+> reproduces on Sundays only, so a dial-time check on any other weekday proves
+> nothing. Seven weekdays swept in both BST and GMT, the old arithmetic pinned as
+> still producing 8 and 12 so it cannot be quietly reverted, and source
+> assertions that no call site has grown its own `% 7` or `else 7` again.
+>
+> **Scope held, and the residual is stated rather than swept:** the tool-side
+> resolver *also* uses server-local time. Its weekday arithmetic is correct so it
+> is not part of this defect, but under BST near midnight it would resolve
+> "tomorrow" to today. Recorded here, deliberately not widened into.
+>
+> `_DOW_RE` / `_DOW_INDEX` remain defined and referenced nowhere. Wire them in or
+> delete them — they look exactly like the machinery a weekday resolver would
+> use, so the next reader will assume it exists and is broken.
+
+**Superseded — the 2 Aug re-scope, kept for the reasoning it records.**
 
 It was queued as "pure date arithmetic, ~1 h, fully testable." That assumes there
 is arithmetic to fix. There is not:

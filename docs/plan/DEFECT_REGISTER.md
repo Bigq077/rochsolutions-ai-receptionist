@@ -47,6 +47,30 @@ absent from the record. **Withdrawn pending audio.**
 
 ---
 
+## Cross-reference to `REGISTER_B_U.md` — added 3 Aug 2026
+
+**Read the ID-collision warning at the top of `REGISTER_B_U.md` first.** `B1`/`B2`
+here are **not** `B-01`/`B-02` there. Nothing below merges the two tables; this
+records only where 3 Aug work on the `B-nn` side touches a row on this side.
+
+| Row here | Touched by | Effect on this row |
+|---|---|---|
+| **A1** — reasoning spoken aloud | `B-41` (`6901c27`), `B-43` (`91524c4`) | **Narrowed, not closed.** `B-41` closed third-person narration (*"Their choice is to cancel."*); `B-43` closed the first-person write-path family across all nine phrasings, on cancel and reschedule as well as booking. A1 as scoped here is broader than both — the 200-word monologue and the markdown-read-aloud instances are untouched. **Leave OPEN** |
+| **A2** — day-name ≠ date | `B-09` (`00ae6df`) | **One source removed.** The Sunday off-by-one-week that fed the model a seven-day-late anchor is fixed. A2's own mechanism is unchanged and still open: `v3_confirmed_slot_phrase` is scraped from the model's spoken text and Gate 5 forces later readbacks to **agree** with it, so a wrong date is made *consistent* rather than corrected — which makes it **less** likely a caller notices. **Leave OPEN** |
+| **A3** — wrong identity written | `B-33` (`c5210a2`), `B-42` (`0dc510d`) | **Partly addressed from an unexpected direction.** `B-42` added a name read-back before destructive writes — which is precisely the read-back this file's closing note says A3 needs *before it can be regression-tested at all*. That read-back now exists on the cancel/reschedule path, though not on booking. `B-33` removed three ways a name could be invented outright. **Leave OPEN, but the detector blocker is half-lifted** |
+| **B1**, **B2**, **C2b**, **C5** | — | **Untouched.** No 3 Aug work went near them |
+
+> **Standing caveat on the four untouched rows.** `B1`, `B2`, `C2b`, `C5` are
+> one-line rows with a symptom and a call ID, and **none has been re-anchored to
+> a file and line since it was written on 29 Jul.** Every `B-nn` row investigated
+> on 2–3 Aug turned out to be materially different from its one-line description
+> — `B-09` twice, `B-33` in every detail, `B-38` from "lead" to reproduced,
+> `B-24`/`B-29` withdrawn as my own errors. Treat these four as **leads with a
+> symptom, not findings with a mechanism**, until someone reads the code.
+> `C2b` says "code-confirmed" and is the one most likely to survive that read.
+
+---
+
 ## A4 · confirmation loop — root cause, 31 Jul 2026
 
 Nineteen calls of evidence, and the register carried only the symptom. This is
