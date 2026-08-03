@@ -74,9 +74,18 @@ get a chance to hear it. Proven live twice — `Way` by the parser, `Rook` by ST
 | 2 | *"My left ankle's been a bit stiff"* |
 | 3 | *"Anytime next Saturday if you've got it"* |
 | 4 | *(pick a slot she offers)* — *"Yeah, the second one works"* |
-| 5 | *"Roch"* — **spoken plain, not spelled** |
+| 5 | *"Quentin Roch"* — **both names, spoken plain, not spelled** |
 | 6 | *"Yes, use this number"* |
 | 7 | **Listen to the read-back. Do not speak over it.** Then: *"Yes, go ahead"* |
+
+> **Turn 5 must carry BOTH names.** No first name is given at turn 1, so Step 7
+> asks *"could I take your first name and surname?"* — and a bare *"Roch"*
+> answers that with a single token, which is captured as the **first** name.
+> `book_appointment` then blocks on `surname_required` and you end up testing
+> the surname backstop instead of the read-back.
+>
+> If she asks for the surname on its own anyway, answer it plainly — *"Roch"* —
+> and carry on; that path arms the test too.
 
 ### ✅ PASS
 
@@ -145,7 +154,7 @@ surname loop twice on a live call. A3 must not reintroduce that.
 | 2 | *"Knee's been sore, want it looked at"* |
 | 3 | *"Whenever you've got"* |
 | 4 | *"That first one's good"* |
-| 5 | *"Roch. R-O-C-H."* |
+| 5 | *"Quentin Roch. R-O-C-H."* — both names, then spell the surname |
 | 6 | *"Yes, use this number"* |
 | 7 | *"Yes, book it please"* |
 
@@ -198,7 +207,7 @@ slot they already chose.
 | 2 | *"It's my shoulder, aching a few weeks"* |
 | 3 | *"Something later this week"* |
 | 4 | *(pick a slot)* — *"That one's fine"* |
-| 5 | *"Roch"* — **plain, expect the mis-hear** |
+| 5 | *"Quentin Roch"* — both names, plain, expect the mis-hear |
 | 6 | *"Yes, use this number"* |
 | 7 | **At the read-back:** *"No — the surname's wrong. It's Roch, R-O-C-H."* |
 | 8 | *"Yes, that's right — go ahead"* |
