@@ -951,6 +951,74 @@ def _classifier_client():
     return _classifier_client_cached
 
 
+async def prewarm_classifier() -> float:
+    """Make the L2 classifier's TLS pool live at boot. Returns elapsed seconds,
+    or 0.0 if nothing was warmed. NEVER raises — a failed prewarm must not
+    block startup.
+
+    Why this exists (CA3a6cfb84, 2026-08-03, build 8e12aafe8b39). A caller said
+    "uh go for it", L2 timed out, `_book_reply_verdict` failed closed, and
+    `book_appointment` was blocked. The caller had to say "i said go for it"
+    before the booking went through — an extra turn on the single most
+    important question in the call.
+
+    `_classifier_client()` builds the client ONCE, which was meant to fix
+    exactly this (see its docstring: "a fail-closed timeout on the caller's
+    first 'go for it'"). But it builds it LAZILY, on first use. So the cost
+    moved off calls 2..n and stayed on call 1 after every deploy or cold start,
+    where it is paid inside the `BOOK_CLASSIFIER_TIMEOUT_S` budget.
+
+    Constructing the client is NOT enough — the object is cheap; the expense is
+    the first request's DNS + TCP + TLS + auth. So this issues one real,
+    minimal request, exactly as the Acuity and ElevenLabs prewarms do for the
+    same reason.
+
+    It must use `_classifier_client()` itself, not any other AsyncAnthropic
+    instance: each client owns its own httpx pool, so warming a different one
+    warms a different connection. `app/main.py` already prewarms
+    `app.flows.conversation._get_client()`, and that did nothing for this path.
+    """
+    if not BOOK_CLASSIFIER_ENABLED:
+        logger.info("[ms_llm] classifier prewarm skipped — BOOK_CLASSIFIER_ENABLED is off")
+        return 0.0
+    if not ANTHROPIC_API_KEY:
+        logger.info("[ms_llm] classifier prewarm skipped — no ANTHROPIC_API_KEY")
+        return 0.0
+
+    _t0 = time.monotonic()
+    try:
+        # Deliberately NOT _classify_book_reply(): that carries the per-turn
+        # BOOK_CLASSIFIER_TIMEOUT_S budget, which is the very thing too tight to
+        # absorb a cold connection. At boot there is no caller waiting, so allow
+        # a real one.
+        await asyncio.wait_for(
+            _classifier_client().messages.create(
+                model=HAIKU,
+                max_tokens=1,
+                temperature=0,
+                messages=[{"role": "user", "content": "ok"}],
+            ),
+            timeout=10.0,
+        )
+        _elapsed = time.monotonic() - _t0
+        logger.info(
+            "[ms_llm] L2 classifier TLS pool pre-warmed (%.0fms) — the first "
+            "booking confirmation no longer pays connection setup",
+            _elapsed * 1000,
+        )
+        return _elapsed
+    except Exception as exc:
+        # Non-fatal by design. A failed prewarm leaves behaviour exactly as it
+        # is today: the first classifier call pays setup and may fail closed to
+        # a re-ask. That is worse than warm and better than a boot failure.
+        logger.warning(
+            "[ms_llm] classifier prewarm failed after %.0fms (non-fatal — first "
+            "booking confirmation may still fail closed): %r",
+            (time.monotonic() - _t0) * 1000, exc,
+        )
+        return 0.0
+
+
 async def _classify_book_reply(text: str) -> str:
     """L2 — Haiku on the utterances L1 could not settle. 'yes' | 'no'.
 

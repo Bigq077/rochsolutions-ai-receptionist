@@ -324,6 +324,25 @@ async def _prewarm_singletons() -> None:
     except Exception as e:
         logger.warning("⚠️  ElevenLabs pre-warm skipped: %r", e)
 
+    # 5. L2 booking-confirmation classifier — its own AsyncAnthropic client, so
+    # step 1 above does NOT warm it: each client owns a separate httpx pool.
+    # It decides whether the caller's reply to "shall I go ahead and book that
+    # in?" was a yes, on a ~1s budget, and fails CLOSED to a re-ask. On
+    # CA3a6cfb84 (2026-08-03) the first such call after a deploy timed out and
+    # the caller had to say "go for it" twice. Warming it here puts the
+    # DNS+TCP+TLS+auth cost at boot instead of in front of that question.
+    try:
+        from app.media_streams.llm_stream import prewarm_classifier
+        _cls_elapsed = await prewarm_classifier()
+        if _cls_elapsed:
+            logger.info(
+                "✅ L2 booking classifier pre-warmed (%.0fms)", _cls_elapsed * 1000
+            )
+        else:
+            logger.info("ℹ️  L2 booking classifier not pre-warmed (disabled, no key, or request failed)")
+    except Exception as e:
+        logger.warning("⚠️  L2 classifier pre-warm skipped: %r", e)
+
 
 @app.on_event("startup")
 async def startup():
