@@ -346,6 +346,25 @@ _SELF_NARRATION_RE = re.compile(
     # stating a precondition it must satisfy before acting — CA198906b4:
     # "Now I need a timing preference before checking availability."
     r"|I need (?:a|an|the)\s+[a-z ]{0,30}?before\s+(?:check|book|confirm|look)\w*"
+    # B-41 — narrating the caller's DECISION in the third person. CA12db707b
+    # (3 Aug 2026, 10:16:19): the caller heard "Their choice is to cancel."
+    # aloud. Two reasoning sentences were generated; `lookup_reasoning_leak` is
+    # a sentence-level strip and removed only the one carrying "look up the
+    # patient details", leaving its sibling to reach TTS.
+    #
+    # Internal by construction: Susie addresses the caller as "you", so a
+    # sentence attributing a choice to them in the third person is the model
+    # describing the conversation rather than having it. Same argument the
+    # `lookup_reasoning_leak` comment already makes for "the patient", and the
+    # `reasoning_the_caller` pattern for "The caller ...".
+    #
+    # Scoped to DECISION nouns, and deliberately NOT a bare "they/their" arm:
+    # the clinic is also "they", and "They close at six." / "They're fully
+    # booked that day." are legitimate sentences with no second person and no
+    # question mark, so a bare arm would strip them. Under-firing is the right
+    # bias — an over-fire here deletes real speech, which is the Gate 5c
+    # failure of 2026-06-12.
+    r"|their\s+(?:choice|preference|decision|intent|intention|selection|wish)\b"
     r")\b",
     re.IGNORECASE,
 )
