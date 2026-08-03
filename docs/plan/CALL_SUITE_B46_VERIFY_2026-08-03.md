@@ -39,8 +39,34 @@ itself; if it fails, stop and do not spend calls 3 and 4.
 **The defect:** you give a first name, and Susie reads back a booking for an
 appointment nobody has offered you — skipping the surname and the phone step.
 
-**Say, in this order.** Give the name *early* and unprompted; that is what
-triggered it.
+**Say, in this order.**
+
+> ### Arming the test — read this before dialling
+>
+> **"Early and unprompted" means: say your name in your first sentence, before
+> Susie asks for it.** In the normal flow she asks for the name *late* — after
+> you have picked a slot (prompt step 7). Wait to be asked and the name arrives
+> after slots exist, so the defect cannot show. The test needs the name in the
+> session while no slot has been offered.
+>
+> **The name is captured when SUSIE acknowledges it, not when you say it.**
+> `_V3_NAME_CONFIRM_PATTERNS_ANCHORED` pattern 1a
+> ([connection.py:1787](../../app/media_streams/connection.py)) matches her own
+> words — `Thanks <Name> —` — and the `ANCHORED` list runs on **every** turn
+> (the `BARE` patterns are phase-gated; these are not).
+>
+> So the arming sequence is:
+>
+> ```
+> you    "Hi, my name's Quentin, I'd like to book an appointment please"
+> Susie  "Thanks Quentin — what brings you in today?"     <- name persisted HERE
+> ```
+>
+> **Your signal that the test is live is hearing her say your name back.** If she
+> replies without using it ("Of course — what can I help with?"), nothing was
+> captured and the call is not testing anything yet. Say it again plainly —
+> *"Sorry, my name is Quentin, by the way"* — and wait until you hear it back
+> before continuing.
 
 | # | You say |
 |---|---|
@@ -78,6 +104,17 @@ grep -nE "build_info|check_availability BLOCKED|forcing booking readback" render
 - **Must NOT appear before slots are offered:**
   `check_availability BLOCKED — name collected + phone CONFIRMED`
 - If that line appears at turn 2 or 3, **the fix is not deployed.**
+
+**Confirm the test was actually armed**, or a clean call proves nothing:
+
+```bash
+grep -nE "name persisted|collected.*name" render.log | head
+```
+
+There must be a name-persist line **before** the first `check_availability`. If
+there is not, Susie never acknowledged your name, the guard's name arm was never
+satisfied, and **the call is void — redial.** A pass on an unarmed call is the
+same false clean the 2 Aug suite produced twice.
 
 ---
 
