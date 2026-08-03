@@ -335,11 +335,24 @@ async def prewarm() -> float:
         # fallback for the rest of the process lifetime; it just does not run
         # until a caller is on the line. Reporting it here costs nothing and
         # moves the discovery off the first live call.
+        # B-26 (3 Aug 2026): the wording above was wrong on both counts and it
+        # fired at ERROR on every single call. `/v1/models` is NOT the endpoint
+        # synthesis uses — that is POST /v1/text-to-speech/{voice}/stream, which
+        # returned 200 roughly thirty-five times across the three sweep calls of
+        # 2 Aug and five more calls on 3 Aug, including seconds after a 401 here.
+        # Exhausted credits would fail the stream endpoint too, so this reads as
+        # a key scoped for TTS but not `models_read`. Naming a consequence that
+        # does not occur, at ERROR, on every call, is worse than saying nothing:
+        # it trains an operator to ignore the one channel that would carry a real
+        # outage. Demoted to WARNING and reworded to state only what is known.
         if resp.status_code == 401:
-            logger.error(
-                "[ms_tts] prewarm: ElevenLabs rejected the API key (401) after "
-                "%.0fms — credits exhausted or key invalid. The first call will "
-                "fall back to OpenAI TTS mid-sentence.",
+            logger.warning(
+                "[ms_tts] prewarm: ElevenLabs returned 401 on /v1/models after "
+                "%.0fms. This does NOT predict a synthesis failure — synthesis "
+                "uses POST /v1/text-to-speech/{voice}/stream and is unaffected "
+                "by a key that lacks `models_read`. If TTS is genuinely failing "
+                "you will see a 401 from synthesise_chunk; check for that before "
+                "touching credits or rotating the key.",
                 elapsed * 1000,
             )
         elif resp.status_code >= 400:

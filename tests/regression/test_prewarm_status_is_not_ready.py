@@ -69,12 +69,28 @@ async def test_a_401_does_not_log_as_ready(prewarm_with, caplog):
     )
 
 
-async def test_a_401_is_logged_at_error(prewarm_with, caplog):
+async def test_a_401_is_logged_loudly_enough_to_see(prewarm_with, caplog):
+    """B-26, 3 Aug 2026 — this test used to require ERROR. That requirement was
+    wrong and it is now inverted; the level assertion lives in
+    `test_prewarm_401_does_not_claim_tts_failure.py`.
+
+    The premise here was "a dead credential ... the one fault that silences the
+    assistant". True of a 401 from `synthesise_chunk`. **Not** true of a 401
+    from `GET /v1/models`, which is not the synthesis endpoint: eleven live
+    calls across 2–3 Aug 2026 logged this 401 while
+    `POST /v1/text-to-speech/{voice}/stream` returned 200 throughout, some of
+    them seconds apart. So the ERROR fired on every call for a consequence that
+    never arrived, which is how a channel stops being read.
+
+    What survives is the half that was always right: a 401 must not be silent
+    and must not read as success. That is asserted below and in
+    `test_a_401_does_not_log_as_ready`.
+    """
     _, records = await prewarm_with(401, caplog)
 
-    assert any(r.levelno >= logging.ERROR for r in records), (
-        "a dead credential logged below ERROR — this is the one fault that "
-        "silences the assistant, and synthesise_chunk already calls it an error"
+    assert any(r.levelno >= logging.WARNING for r in records), (
+        "a 401 on the prewarm probe logged below WARNING — it is a real "
+        "credential-scope signal even though it does not predict a TTS failure"
     )
 
 
