@@ -49,7 +49,7 @@ implying more confidence than exists.
 | Parked | `B-01` – `B-04` | Two provisioning items + the name work — owner decision, not capacity. **`A3` now has a live instance, see the sweep section** |
 | **Behaviour change pending deploy** | **`B-31`** | **CLOSED 3 Aug.** A 200-char cap had silently disabled the clinical screening layer. Fixed — and a call shaped like sweep call 2 now **escalates to NHS 111 and blocks the booking** where it previously booked. That makes the `B-20` authority decision urgent, not merely open |
 | Track A — deterministic, no dial time | — | **EMPTY.** `B-26` closed 3 Aug, `B-09` closed 3 Aug (`00ae6df`) — it was our own off-by-one-week, not model arithmetic |
-| Track B — needs an owner decision | `B-19` / `B-07` | Blocked on filler cadence. **`B-07` now has a second arm — `B-30`** |
+| ~~Track B — needs an owner decision~~ | `B-19` / `B-07` | **DECIDED AND SHIPPED `8b06879`, 3 Aug** — one re-arm at 5 s, then stop. **`B-30` is NOT closed by it** — different mechanism, see the row |
 | Track C — prompt-side, needs dial time | `B-06` `B-08` `B-10` `B-11` `B-12` `B-16` | **`B-10` and `B-16` confirmed live 2 Aug**, see the sweep section |
 | Track D — verification only | `U-02` – `U-05` | **Still entirely open.** Sweep call 2 exercised the keypad commit, C2 read-back and the overwrite guard — none of which are `U-nn` rows. `U-03` is the *reschedule* path (call 7) and was not touched |
 | **CLOSED — decided, shipped, dialled** | `B-20` (Layer 2 over-screening) | **Option B, owner decision 3 Aug**, then **verified on six live calls the same night** — see the 3 Aug sweep. Screening authority bounded to a matching presentation; the grant is kept, not withdrawn, because 2 of 18 orphans were Layer 1 saves (`B-32`) |
@@ -2261,9 +2261,48 @@ and it should follow the hygiene batch rather than precede it.
 
 ---
 
-## Track B — blocked on an owner decision
+## Track B — ~~blocked on an owner decision~~ — **DECIDED AND SHIPPED `8b06879`, 3 Aug**
 
-### `B-19` / `B-07` · the filler is one-shot, so an upstream spike becomes bare silence
+### `B-19` / `B-07` · the filler is one-shot, so an upstream spike becomes bare silence — **FIXED `8b06879`**
+
+> **CLOSED 2026-08-03.** Owner decision: **one re-arm at 5 s, then stop.** A
+> continuing "still with you" cadence was offered and rejected — three or four
+> phrases on one slow turn sounds anxious rather than attentive.
+>
+> Shipped as `LLM_FILLER_SECOND_DELAY_MS = 5000` plus a second sleep inside
+> `_delayed_filler` ([llm_stream.py](../../app/media_streams/llm_stream.py)).
+> Decision logic extracted to `_second_filler_text` so it is testable without a
+> connection — the `_post_collect_readback_due` pattern from `B-46`.
+> 10 regression tests; full suite 95/3468 → 95/3478, **failing sets diffed
+> identical**.
+>
+> **The trap, recorded because the obvious fix was wrong.** The natural
+> suppression check is `_ack_filler_cancelled`. It cannot be used: `_tts_loop`
+> **consumes** it — the "ack filler suppressed" branch in `connection.py` resets
+> it to `False` after dropping one chunk — so by the time the re-arm wakes it
+> reads `False` whether or not a tool filler won, and the second phrase would
+> have played **on top of** the tool filler. That is the `B-30` shape. The
+> durable signal is `_ack_filler_active`, cleared by
+> `filler_phrases.with_filler` and consumed by nothing.
+> `test_suppression_does_not_read_the_consumed_cancelled_flag` pins it.
+>
+> **Not the same mechanism as `FillerGuard`**, which already plays a second clip
+> at 2500 ms — that is the Acuity-availability path, gated on
+> `booking_flow_active`. Anyone re-reading this row should not "fix" that one.
+>
+> **`B-30` is NOT closed by this.** Its sighting was an ack filler and a tool
+> filler one second apart — a pre-existing race in the marker handoff, untouched
+> here. Do not mark it closed on the strength of this commit.
+>
+> **Live verification is a log grep, not a call.** The re-arm only speaks when
+> the LLM produces no token for 1.8 s and still nothing 5 s later — an upstream
+> stall, which cannot be summoned by dialling (see `B-40`, where two identical
+> cancel calls produced 9.9 s and 1.1 s). Proof is
+> `grep "second filler phrase" render.log` over real traffic. Zero hits means the
+> stall did not occur, **not** that the fix is broken. A clean-sounding test call
+> earns "no regression observed" and nothing stronger.
+>
+> Original text follows.
 
 `B-19` is the upstream LLM latency spike — not ours to fix. What makes it a dead
 call rather than a slow one is that the filler fires **once**. A 14 s spike
@@ -2814,7 +2853,35 @@ From the clinical campaign (F-017, cause 2). `vbi_neck` uses `trigger_all_groups
 > Fixing this means accumulating groups across turns within a screening window,
 > not loosening what matches. Widening is how `B-20` is manufactured.
 
-### `B-50` · the wrong service is booked — the semantic variant
+### `B-50` · the wrong service is booked — the semantic variant — **MEASURED 3 Aug, DOWNGRADED to a watch item**
+
+> **The measurement this row asked for has been taken, and it does not
+> reproduce.** Across **all 155 obs calls**, `collected.checked_service` took
+> exactly three values — `msk_initial_assessment` (67), `sports_massage` (2),
+> `msk_treatment_session` (1). **All three resolve in `clinic.json`. Zero
+> informal strings** — no "msk treatment", no "neuro", no "massage".
+>
+> **The trap that was checked before believing it:** `collected["service"]` is
+> written from the raw arg
+> ([receptionist_tools.py:4525](../../app/tools/receptionist_tools.py), `:4996`,
+> `:5124`), so an unresolvable string *would* surface — but the reconcile at
+> `:4889` rewrites book-service to `_checked_service` first, so absence at the
+> **book** end proves nothing. `checked_service` is the clean measurement, and
+> it is clean.
+>
+> **Do not build the bounded fuzzy resolver.** There is no measured failure to
+> size it against, and this row's own instruction was "do not build a
+> booking-path fix blind."
+>
+> **Cannot reach Theorem regardless** — `theorem`/`theorem_v2`/`theorem_v3` hit a
+> hard whitelist at
+> [receptionist_tools.py:3877-3880](../../app/tools/receptionist_tools.py)
+> (`_raw_service not in _VALID_SERVICES` → reject) before any of this.
+>
+> **What is NOT settled:** the four clinical-campaign calls (4/7/11/14) that
+> produced F-021 are not necessarily in this store. Absence here is absence in
+> the obs corpus, not proof the shape never existed. Re-open on a fresh sighting,
+> with the `service` argument attached.
 
 Was F-021. Four of four in the clinical campaign. The `book`→`check` bind at
 `_exec_book_appointment` already forces them to agree, so **every remaining
