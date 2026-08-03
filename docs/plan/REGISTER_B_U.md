@@ -253,6 +253,70 @@ patient.
 > breaks. `CALL_SUITE_2026-08-02.md` Call 7 turn 3 has been rewritten to make
 > that the explicit fail condition. **This needs a dial.**
 
+### Verification calls — 3 Aug 09:37 and 09:57, builds `e61c8f805d6e` / `9d9efddb9a22`
+
+| Call | Purpose | Result |
+|---|---|---|
+| **1** — reschedule that SUCCEEDS | `B-36` **over-fire** check | ✅ **PASS, twice** (`CA8d90deb2` on `e61c8f8`, `CA80f2d410` on `9d9efdd`). Move happened, *"That's you rescheduled…"* spoken **unaltered**, **no `[ms_gate5f]` line on either call**. This is the direction that abandoned a completed booking on 2026-06-12; it is clean |
+| **4** — `B-37`, "go for it" | slot-guard bypass | ✅ **PASS.** `[ms_conn] write CTA outstanding — bypassing slot guard for 'uh go for it'` at 09:59:12.040, `iteration=1` 5 ms later, then `L2 classifier: 'uh go for it' -> yes`. The L1-unsure → L2 path, exactly as predicted |
+| **2** — reschedule that stays REFUSED | phantom + the **R5 leak** | ⬜ **NOT DIALLED** |
+| **3** — cancel that stays REFUSED | destructive-write phantom | ⬜ **NOT DIALLED** |
+
+**`B-36` cause 2 is therefore only half-verified.** Both passing calls exercise
+the *success* path. Nothing has yet exercised a **refused** write on the live
+build — which is the entire point of the change. Gate 5f has not fired once in
+production, so its re-steer, its family attribution and the R5 isolation are all
+still test-only evidence.
+
+### `B-38` · the write CTA can be truncated out of `last_bot_prompt` — NEW, **OPEN**
+
+Found by reading the passing call, not from a failure. All three write gates and
+`B-37`'s new `_write_cta_outstanding` read **`last_bot_prompt`, which is capped
+at 200 characters** ([llm_stream.py:1434](../../app/media_streams/llm_stream.py)).
+On `CA80f2d410` the confirmation turn was two chunks — the readback (`len=110`)
+and the CTA (`len=37`) — about **148 chars, leaving ~52 of headroom**.
+
+A longer readback spends that headroom: a practitioner name, a location clause,
+a wordier date. When it does, *"Shall I go ahead and move it for you?"* falls off
+the end of `last_bot_prompt` and **two separate protections fail at once**:
+
+- `_move_confirmation_asked` → `False` → the write is **BLOCKED** — `B-36`
+  cause 1 again, arriving by truncation instead of by rewording;
+- `_write_cta_outstanding` → `False` → the caller's *"go ahead"* is **dropped**
+  by the slot guard — `B-37` again.
+
+The caller then hears a re-steer and loops. `B-31` (`c69eb61`) already hit this
+exact cap and fixed it *for the clinical layer* by falling back to
+`last_question` — **which is stored uncapped**
+([llm_stream.py:1441](../../app/media_streams/llm_stream.py)) and holds precisely
+the CTA sentence. The write gates never got that fallback.
+
+**Fix is small and well-anchored:** have the three CTA predicates read
+`last_bot_prompt` OR `last_question`. **Anchored, not yet reproduced** — the
+observed calls had headroom. Reproduce first by forcing a longer readback.
+
+### Leads from the same two calls — **anchored, NOT findings**
+
+1. **`reschedule_appointment` is called with `patient_name: "Unknown"`** on both
+   calls, though `lookup_patient` returned `'Quentin Rock'` immediately before.
+   The write succeeds because it matches on phone. Unknown whether the name is
+   used downstream (SMS, owner alert, calendar title). Read before scheduling.
+2. **The slot map is never cleared after selection.** `slot map active —
+   time_selection` is still logged after the write succeeds, and `'perfect'` was
+   dropped as a slot fragment at 09:59:27 after the call had effectively ended.
+   Harmless here; it is the root cause `B-37` works *around* rather than removes.
+3. **Service-type drift on reschedule.** The existing appointment was
+   `Initial Assessment (Musculoskeletal)`; `check_availability` was called with
+   `service: msk_treatment_session`, `duration_minutes: 40`. Whether a reschedule
+   is supposed to preserve appointment type is unverified — check before calling
+   it a defect.
+4. **The service restarted mid-call** at 09:58:15 (the deploy), surviving on
+   Anthropic retries. The shutdown banner reads *"Theorem Health AI
+   Receptionist"* on the JV service — cosmetic clinic-identity leak, consistent
+   with the hardcoded clinic names noted in `CLAUDE.md`.
+
+---
+
 ### `B-37` · "uh go ahead" was dropped before the LLM ever saw it — NEW, **FIXED** `38dd929`
 
 Found on the `B-36` verification call itself. `CA8d90deb26327b97d8b6f396e55b63272`,
