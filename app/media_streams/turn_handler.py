@@ -916,7 +916,7 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
 
     # ── Gate 5f: false-confirmation guard (P1 #5 / F-023) ────────────────────
     # While the caller is booking but NO booking has actually succeeded this call
-    # (booking_write_confirmed is set only by _note_book_write_result on a
+    # (booking_write_confirmed is set only by _note_write_result on a
     # success:True from book_appointment), a chunk that CLAIMS the booking is
     # done is a phantom. Runs AFTER Gate 5c so the re-steer question — which
     # contains "shall I book" — is not itself stripped as a redundant offer.

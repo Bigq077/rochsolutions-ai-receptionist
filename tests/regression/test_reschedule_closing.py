@@ -14,7 +14,7 @@ Two further hazards this pins down:
    was a promise of a text that is never sent. booking_success was gated on
    SMS_ENABLED on 2026-07-26; reschedule and cancel were missed.
 
-2. The closing must NOT borrow the booking phrase family. _note_book_write_result
+2. The closing must NOT borrow the booking phrase family. _note_write_result
    (llm_stream) never sets booking_write_confirmed on a reschedule — by design,
    "Reschedule is intentionally out of scope". So Gate 5f's false-confirmation
    guard has no success signal to stand it down, and any closing that matches

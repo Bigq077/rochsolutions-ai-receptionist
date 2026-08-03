@@ -541,34 +541,78 @@ def _caller_wants_new_slot(messages) -> bool:
     return bool(words & _NEW_SLOT_INTENT_WORDS)
 
 
-def _note_book_write_result(session: dict, tool_name: str, result):
-    """P1 #5 / F-023 — Layers 1 & 2 of the false-confirmation guard.
+# Every gated WRITE tool, mapped to the phrase family its confirmation belongs
+# to. A "write" here is a tool that mutates the clinic's calendar — the three
+# operations a caller can be told happened when it did not.
+_WRITE_TOOL_FAMILIES = {
+    "book_appointment":       "booking",
+    "reschedule_appointment": "reschedule",
+    "cancel_appointment":     "cancel",
+}
 
-    Layer 1: when book_appointment actually SUCCEEDS, record it deterministically
-    on the session. This is the "a real booking exists" signal the output guard
-    (turn_handler Gate 5f) checks — it did not exist before, so success language
-    could not previously be gated on a real result.
-
-    Layer 2: when book_appointment is blocked or fails, attach an explicit rule
-    to the tool_result the model reads, forbidding a success claim. Steering only
-    — it fires on the already-failed path, so it can never suppress a real
-    booking.
-
-    Reschedule is intentionally out of scope: its confirmation is a different
-    phrase family ("moved"), and Gate 5f targets booking phantoms.
-    """
-    if tool_name != "book_appointment" or not isinstance(result, dict):
-        return result
-    if result.get("success") is True:
-        session["booking_write_confirmed"] = True
-        return result
-    result = dict(result)
-    result.setdefault(
-        "caller_message_rule",
+# B-36 cause 2d — the model is told, per family, that the write did NOT happen.
+# Before 2026-08-03 only the booking rule existed, so on a blocked reschedule or
+# cancellation the model had an instruction to ask a question and no rule at all
+# against announcing success. On CA23199d089 it announced success: the caller was
+# told their appointment had moved and it had not.
+_WRITE_NO_CLAIM_RULE = {
+    "booking": (
         "The booking was NOT made. Do not tell the caller they are booked, "
         "confirmed, or all set. Ask the outstanding question, and only state a "
-        "booking once book_appointment returns success.",
-    )
+        "booking once book_appointment returns success."
+    ),
+    "reschedule": (
+        "The appointment was NOT moved. Do not tell the caller it has been "
+        "rescheduled, moved, changed or sorted, and do not state the new day or "
+        "time as if it were settled. Ask the outstanding question, and only "
+        "state a move once reschedule_appointment returns success."
+    ),
+    "cancel": (
+        "The appointment was NOT cancelled. Do not tell the caller it has been "
+        "cancelled and do not imply the slot has been given up. Their original "
+        "appointment still stands. Ask the outstanding question, and only state "
+        "a cancellation once cancel_appointment returns success."
+    ),
+}
+
+
+def _note_write_result(session: dict, tool_name: str, result):
+    """P1 #5 / F-023 / B-36 — Layers 1 & 2 of the false-confirmation guard.
+
+    Called once per tool result, for every write tool, from the single funnel in
+    `_run_tools` — which sees BOTH the gate-branch refusals constructed above it
+    (`*_required`, no `success` key at all) and the executor's own results.
+
+    Layer 1: when the write actually SUCCEEDS, record it. For booking that is
+    `booking_write_confirmed`, the call-scoped "a real booking exists" signal
+    Gate 5f reads.
+
+    Layer 2: when the write is blocked or fails, attach an explicit rule to the
+    tool_result the model reads, forbidding a success claim for THAT family.
+    Steering only — it fires on the already-failed path, so it can never suppress
+    a real write.
+
+    Polarity is deliberate: the refusal branch is `not (success is True)`, not
+    `success is False`. Every gate refusal in `_run_tools` returns
+    `{"status": "..._required", "message": ...}` with **no success key**, so a
+    `success is False` test would catch none of them. All three write executors
+    set `success: True` on their success path, so "not True" is a safe refusal
+    test and it fails closed.
+
+    Reschedule and cancel were out of scope until 2026-08-03 — the docstring here
+    said so, and said why ("a different phrase family"). CA23199d089 falsified it:
+    a refused reschedule was narrated as done. See docs/plan/REGISTER_B_U.md B-36
+    cause 2.
+    """
+    family = _WRITE_TOOL_FAMILIES.get(tool_name)
+    if family is None or not isinstance(result, dict):
+        return result
+    if result.get("success") is True:
+        if family == "booking":
+            session["booking_write_confirmed"] = True
+        return result
+    result = dict(result)
+    result.setdefault("caller_message_rule", _WRITE_NO_CLAIM_RULE[family])
     return result
 
 
@@ -3042,10 +3086,11 @@ class LLMStream:
                 # generic re-ask when the turn ends with no audible speech.
                 session["_check_av_ran_turn"] = True
 
-            # P1 #5 / F-023: record a successful booking write (Layer 1) and
+            # P1 #5 / F-023 / B-36: record a successful write (Layer 1) and
             # attach a do-not-claim-success rule to a blocked/failed one
-            # (Layer 2) before the model sees the result.
-            result = _note_book_write_result(session, tool_name, result)
+            # (Layer 2) before the model sees the result. Covers all three write
+            # families — booking, reschedule and cancel.
+            result = _note_write_result(session, tool_name, result)
 
             logger.info(
                 "[ms_llm] tool result: name=%s result=%s",

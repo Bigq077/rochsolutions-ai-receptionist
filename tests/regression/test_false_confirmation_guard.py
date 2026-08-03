@@ -14,7 +14,7 @@ response/gate layer, not prompt"):
 
   Layer 1  book_appointment returning success:True sets session
            ["booking_write_confirmed"] — the "a real booking exists" signal that
-           did not exist before. (_note_book_write_result)
+           did not exist before. (_note_write_result)
   Layer 2  a blocked/failed book result gets an explicit caller_message_rule
            forbidding a success claim, so the model is steered too.
   Layer 3  sanitise_response Gate 5f: while booking_flow_active AND no booking
@@ -142,17 +142,17 @@ def test_legitimate_confirmation_question_passes_through():
     assert "?" in out and out.strip() != ""
 
 
-# ── Layer 1 + 2: _note_book_write_result ──────────────────────────────────
+# ── Layer 1 + 2: _note_write_result ──────────────────────────────────
 def test_success_sets_the_confirmed_flag():
     session = {}
-    result = ls._note_book_write_result(session, "book_appointment", {"success": True, "booked_slot": "Tue 10am"})
+    result = ls._note_write_result(session, "book_appointment", {"success": True, "booked_slot": "Tue 10am"})
     assert session.get("booking_write_confirmed") is True
     assert result.get("success") is True
 
 
 def test_block_attaches_do_not_claim_rule_and_sets_no_flag():
     session = {}
-    result = ls._note_book_write_result(
+    result = ls._note_write_result(
         session, "book_appointment", {"success": False, "status": "confirmation_required"}
     )
     assert "booking_write_confirmed" not in session
@@ -162,6 +162,6 @@ def test_block_attaches_do_not_claim_rule_and_sets_no_flag():
 def test_non_booking_tool_untouched():
     session = {}
     r_in = {"available_days": []}
-    result = ls._note_book_write_result(session, "check_availability", r_in)
+    result = ls._note_write_result(session, "check_availability", r_in)
     assert result is r_in
     assert "booking_write_confirmed" not in session
