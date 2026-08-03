@@ -6414,6 +6414,34 @@ LOOKUP_AMBIGUOUS_KEY   = "_lookup_ambiguous"
 LOOKUP_NAME_SPOKEN_KEY = "_lookup_name_spoken"
 
 
+# B-44 — steering, attached to the ambiguous lookup result itself.
+#
+# The B-42 gate sits at the WRITE, which is right for safety: it is the last
+# point before something irreversible. But on CAdbc84848 that made the
+# conversation clumsy — the caller stated an intention to cancel FOUR times
+# across 89 s, because identity was settled AFTER the retention question and the
+# retention question then had to be asked again.
+#
+# The natural place to say the name is the read-back, where Susie already recites
+# the day and time. This rule is delivered on the tool result rather than in the
+# prompt for the same reason B-36's Layer 2 was: it arrives at the moment of use,
+# it cannot drift out of step with the gate, and it applies to every clinic
+# without touching a 24k-line prompt or any clinic.json.
+#
+# Steering only. If the model ignores it the B-42 gate still refuses the write —
+# which is exactly the division of labour that made B-36's cause 2d effective on
+# CA9cc1a23e, where the steering resolved the turn and the guard never fired.
+_LOOKUP_AMBIGUOUS_RULE = (
+    "There is more than one upcoming appointment on this phone number, so you do "
+    "not yet know which person you are speaking to. When you read this "
+    "appointment back, SAY THE NAME — for example \"I've got an appointment for "
+    "{name} on [day] at [time] — is that you?\" — and settle who they are before "
+    "asking anything else, including before asking whether they want to "
+    "reschedule or cancel. If they say it is not them, call lookup_patient again "
+    "with next=true to step to the following match."
+)
+
+
 def _note_lookup_ambiguity(session: Dict[str, Any], total: int) -> None:
     """Record whether the caller's identifier resolved to more than one person.
 
@@ -6424,6 +6452,23 @@ def _note_lookup_ambiguity(session: Dict[str, Any], total: int) -> None:
     """
     session[LOOKUP_AMBIGUOUS_KEY] = total > 1
     session[LOOKUP_NAME_SPOKEN_KEY] = False
+
+
+def _with_ambiguity_rule(
+    result: Dict[str, Any], name: str, total: int
+) -> Dict[str, Any]:
+    """B-44 — attach the read-back-the-name rule when, and only when, the
+    identifier resolved to more than one person.
+
+    Not attached on a single match: that is the overwhelmingly common case, and
+    naming the patient there would add a turn to every ordinary cancel for no
+    safety gain — the same reason `book_appointment` is outside the B-42 gate.
+    """
+    if total > 1:
+        result["caller_message_rule"] = _LOOKUP_AMBIGUOUS_RULE.format(
+            name=name or "that patient"
+        )
+    return result
 
 
 async def _lookup_patient_gcal(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
@@ -6449,7 +6494,7 @@ async def _lookup_patient_gcal(args: Dict[str, Any], session: Dict[str, Any]) ->
             idx + 1, total, nm, _id,
             " AMBIGUOUS — name must be read back (B-42)" if total > 1 else "",
         )
-        return {
+        return _with_ambiguity_rule({
             "found": True,
             "patient_name": nm,
             "appointment_type": svc,
@@ -6457,7 +6502,7 @@ async def _lookup_patient_gcal(args: Dict[str, Any], session: Dict[str, Any]) ->
             "appointment_id": _id,
             "match_count": total,
             "has_more": idx < total - 1,
-        }
+        }, nm, total)
 
     # Step to the next match (caller said the read-back wasn't theirs).
     if args.get("next"):
@@ -6540,7 +6585,7 @@ async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) ->
             "[ms_tools] lookup_patient: match %d/%d name=%r appointment_id=%r",
             idx + 1, total, _nm, _id,
         )
-        return {
+        return _with_ambiguity_rule({
             "found": True,
             "patient_name": _nm,
             "appointment_type": appt.get("type", ""),
@@ -6548,7 +6593,7 @@ async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) ->
             "appointment_id": _id,
             "match_count": total,
             "has_more": idx < total - 1,
-        }
+        }, _nm, total)
 
     # ── Advance to the NEXT match (caller said the readback wasn't the one) ──
     # Re-uses the stored match list from the first lookup — no name/phone or
