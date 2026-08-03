@@ -340,6 +340,46 @@ Without FM-23 this call would have rescheduled on *"um i guess so maybe"*.
   armed. That is cause 2c dissolving, verified for the cancel family on a
   destructive write.
 
+### `B-41` · Susie said *"Their choice is to cancel."* out loud — NEW, **OPEN**, demo-audible
+
+`CA12db707b1b887d38b7408aa36fc990d6`, 10:16:19. Third-person internal reasoning
+reached TTS and the caller heard it:
+
+```
+10:16:19.358  [ms_gate5] removed banned phrase (lookup_reasoning_leak)
+10:16:19.360  [ms_tts] synthesise_chunk: text='Their choice is to cancel.'
+10:16:19.984  [ms_gate5] turn complete: 0 chunk(s) dropped as reasoning
+```
+
+**Reproduced offline, deterministically** — this needs no further dial time:
+
+```python
+th.sanitise_response("The caller wants to cancel.", s)   -> ''        # stripped
+th.sanitise_response("Their choice is to cancel.", s)    -> unchanged # SPOKEN
+th.sanitise_response("Their preference is to reschedule.", s) -> unchanged
+th.sanitise_response("That is what they want.", s)       -> unchanged
+```
+
+**Cause.** `lookup_reasoning_leak`
+([turn_handler.py:101](../../app/media_streams/turn_handler.py)) is a
+**sentence-level** strip (Gate 5b): it removes only the sentence carrying
+*"look up the patient/details"*. The model generated **two** reasoning sentences;
+the sibling had none of that vocabulary and survived. Gate 5a's whole-chunk
+reasoning drop did not fire either — `_get_reasoning_drop_reason` returns `""`
+for it, and the log confirms `0 chunk(s) dropped as reasoning`.
+
+**The gap is grammatical, and that is what makes it fixable.** The detectors
+catch first person and *"the caller"*; they do not catch **third-person
+possessive** narration about the caller — *"Their choice…"*, *"Their
+preference…"*. Susie addresses the caller as *you*, so a sentence whose subject
+is *their/they* referring to the caller is internal by construction, exactly the
+argument the existing `lookup_reasoning_leak` comment already makes for *"the
+patient"*.
+
+Not a safety defect — the cancellation was correct and correctly confirmed. It is
+**demo-audible**, and it is the kind of thing a clinic owner on a webinar
+remembers.
+
 ### `B-39` · the retention question is asked three times — NEW, **OPEN**, demo-audible
 
 The caller said *"I'd like to cancel my appointment"*, then **"yes"**, then
@@ -350,8 +390,21 @@ reconsider **three separate times** across 27 seconds. The third ask
 
 Not a gate problem: no `cancel_appointment` call was attempted on those turns, so
 nothing blocked them. The model chose to re-ask. **Prompt-layer, in the template
-cancel flow** — the retention attempt has no "already asked / already answered"
-guard. *"I said…"* is the caller telling us so.
+cancel flow.**
+
+> **NARROWED by the second cancel** (`CA12db707b`, 10:15), where the caller
+> answered the retention question with *"uh I'd like to cancel it"* and it fired
+> **first time — one ask, no loop.** So this is not a general retention loop.
+>
+> Re-reading `CA66d6f1b4` with that in hand, ask #2 was **legitimate**: the
+> caller had said *"uh yes"* to an **or**-question, which is genuinely ambiguous,
+> and Susie disambiguated. The defect is only **ask #3** — after the caller had
+> answered that clarification with the bare token *"uh cancel"*.
+>
+> So the real shape is: **a bare `"cancel"` token does not satisfy the model,
+> while `"I'd like to cancel it"` does.** Much narrower than first written, and
+> it means the trigger is a short answer to the clarify, not the retention step
+> itself. Anchor that before touching the prompt.
 
 ### `B-40` · 9.9 s of dead air on the cancel turn, no filler — NEW, **OPEN**, P1-latency
 
@@ -372,10 +425,20 @@ This breaks **two** of the five production-ready bars in `CLAUDE.md` §6 at once
 p95 turn latency under 1.5 s, and no dead air over 3 s without a filler or
 acknowledgement. On a demo call an 11-second silence reads as a dropped line.
 
-**n=1** — one observation, and it is the turn immediately after a caller
-correction (`[LAT-EP] ep_cutoff turn_seq=19 reason=correction`). Reproduce before
-fixing: dial two more cancels and watch `chunk_gate_ms`. If the correction path
-is the trigger, that is a narrow and findable cause.
+**DID NOT REPRODUCE** on the second cancel (`CA12db707b`, 10:15). Four turns,
+`chunk_gate_ms` = 1134 / — / 360 / 872, against 9907. Max `ttfa_ms` 2333.
+
+That call also carried **no caller correction** — no `ep_cutoff … reason=correction`
+— so the correction-path hypothesis is **not refuted, and not confirmed**: the one
+call that spiked had a correction, the one that did not, did not. Still n=1 for the
+spike.
+
+**Do not fix on this evidence.** Next step is targeted, not more random cancels:
+dial a call that deliberately contains a mid-turn correction ("actually, no —
+cancel it") and watch `chunk_gate_ms` on the turn *after* it. If it spikes, the
+cause is the correction path and it is narrow. If it does not, this was a
+one-off and the row should be downgraded to a watch item rather than carried as
+a P1.
 
 ---
 
@@ -408,10 +471,15 @@ observed calls had headroom. Reproduce first by forcing a longer readback.
 
 ### Leads from the same two calls — **anchored, NOT findings**
 
-1. **`reschedule_appointment` is called with `patient_name: "Unknown"`** on both
-   calls, though `lookup_patient` returned `'Quentin Rock'` immediately before.
-   The write succeeds because it matches on phone. Unknown whether the name is
-   used downstream (SMS, owner alert, calendar title). Read before scheduling.
+1. **Write tools are called with `patient_name: "Unknown"`** — but only
+   sometimes. **Narrowed 10:16:** on `CA12db707b` `cancel_appointment` carried
+   `patient_name: "Quinton Rock"` correctly, and the difference is *when the
+   lookup ran*: on that call `lookup_patient` fired in the **same turn**, one
+   iteration earlier. On the calls that sent `"Unknown"`, the lookup had happened
+   on an **earlier turn**. So the name is not being carried across turns into the
+   write args. The write succeeds either way (it matches on phone); what is
+   unknown is whether the name is used downstream (SMS, owner alert, calendar
+   title). Read that before scheduling.
 2. **The slot map is never cleared after selection.** `slot map active —
    time_selection` is still logged after the write succeeds, and `'perfect'` was
    dropped as a slot fragment at 09:59:27 after the call had effectively ended.
