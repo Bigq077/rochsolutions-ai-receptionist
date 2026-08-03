@@ -65,6 +65,13 @@ SURNAME_STOPWORDS = frozenset({
     "mr", "mrs", "ms", "miss", "mister", "doctor", "dr", "there", "hi",
     "hello", "hey", "ok", "okay", "just", "spelt", "spelled", "spell",
     "like", "would", "to", "of", "as", "so", "well", "um", "uh", "er",
+    # B-52: the preposition class was half-present. "on", "with", "for",
+    # "from", "to", "of" and "as" were here; "by", "at", "in" and their
+    # siblings were not, for no stated reason — the same accident this list
+    # already records for "one" present / "six" absent.  CAb215dec5 (3 Aug
+    # 2026): "um my name is quentin by the way" was written to Google Calendar
+    # as patient "Quentin Way".  None of these is ever an English surname.
+    "by", "at", "in", "into", "onto", "via", "about",
     # Clock and calendar words. A caller answering "half past five or quarter
     # past six?" says one of these, and backfill_surname's bare-straggler branch
     # accepted any single token once awaiting_surname was set: CA6dce36c8 stored
@@ -210,6 +217,7 @@ def _walk_particles_back(tail, ok) -> str:
     ["smith", "please"]       -> "smith"           (trailing filler stripped)
     ["jenkins", "thanks"]     -> "jenkins"
     ["please"]                -> ""
+    ["by", "the", "way"]      -> ""              (B-52 — not a name sequence)
     """
     # Strip trailing filler/stopwords and dangling particles ("smith please",
     # "jenkins thanks", "de") so the surname is read from the last REAL name
@@ -229,6 +237,29 @@ def _walk_particles_back(tail, ok) -> str:
         and (len(tail) - j) < _MAX_SURNAME_TOKENS
     ):
         j -= 1
+    # B-52: everything before j is about to be DROPPED, and dropping is only
+    # legitimate when what is dropped is a MIDDLE NAME — "james rock" -> "rock".
+    # A stopword in that span means this was never a name sequence at all, and
+    # taking its last token produces a surname out of ordinary speech:
+    #
+    #   "my name is quentin by the way"  ->  tail ["by","the","way"]
+    #                                        drop "by the", keep "way"
+    #                                        -> patient "Quentin Way"
+    #
+    # "way" passes ok() on its own merits — it is not a stopword, not a
+    # contraction, not a false positive — so no word list reaches this. The
+    # signal is the *company it keeps*: "the" sits between the first name and
+    # the candidate, and a real surname group never has an interior stopword.
+    # Written to Google Calendar on CAb215dec5 (3 Aug 2026).
+    #
+    # Particles are exempt — the walk above drops them only when they bind
+    # forward onto the surname ("de silva", "van der berg").
+    if any(
+        t in SURNAME_STOPWORDS
+        for t in tail[:j]
+        if t not in SURNAME_PARTICLES
+    ):
+        return ""
     return " ".join(tail[j:])
 
 
