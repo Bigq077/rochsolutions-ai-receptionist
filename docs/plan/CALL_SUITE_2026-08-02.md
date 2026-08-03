@@ -238,7 +238,7 @@ Decline the caller ID with a bare *"no, a different number"* — no digits spoke
 |---|---|---|---|
 | 1 | *"I need to move an appointment"* | EXACTLY *"Of course, let's get that moved for you."* and **stop** — no question, no tool call | ❌ a question on the same turn |
 | 2 | — | *"Was your original appointment booked under the number you're calling from?…"* | |
-| 3 | *"no, it was a different one"* → type a valid mobile | she looks it up. **No** read-back, **no** `keypad number read back for confirmation` — the number is a search key here, not a booking field (`U-03`) | ❌ she reads it back before looking it up |
+| 3 | *"no, it was a different one"* → type a valid mobile, then confirm ("yes" / "go for it" / "that's the number") | **REVERSED 3 Aug 2026 — owner decision.** She **DOES** read it back, in the booking wording: *"Thanks — I've got 0 7…. Is that correct?"*, then looks it up on your confirmation. Log: `keypad number read back for confirmation`, then `lookup keypad number CONFIRMED by caller … queueing digits for lookup_patient` | ❌ no read-back; ❌ read-back but no `lookup_patient` afterwards — **that second one is the failure mode no unit test can catch** |
 | 4 | *"yeah that's right"* to any consent question | **`48d9e57` / `U-06`** — judged, not phrase-matched | ❌ a refusal is read as consent |
 | 5 | give a **common** first name only, no surname | **`e5a8ee9`** — `_match_gcal_event: refusing name fallback` when the name matches several | ❌ she moves someone else's appointment |
 | 6 | complete the move | **`ad938cf`** — the closing confirms the move and **does not promise a text** | ❌ *"I've sent you a confirmation text"* (see §0.1) |

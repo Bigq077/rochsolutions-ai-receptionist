@@ -175,6 +175,50 @@ of the message.
 > regression test can pin a wrong belief just as durably as it pins a fix.**
 > This one would have blocked `B-26` silently if the suite had not been run.
 
+### Call 7 — the reschedule, 00:34–00:36, `CA3f1d124905854919a9b0f3cc554ff80f`
+
+Passed the criteria it reached: acknowledge-and-stop on turn 1, `U-06` consent
+**judged** (`L2 classifier: 'uh go go for it' -> yes`), the write succeeded
+(`rescheduled_to: Saturday 08 August at 12:30`), and the closing did **not**
+promise a text — `ad938cf` holds.
+
+**`U-03` was not exercised.** The caller said *"use this number"*, so the keypad
+never opened — and `U-03` is the one row this call was dialled to settle. Moot
+now; see below.
+
+#### `U-03` REVERSED — owner decision, 3 Aug
+
+The lookup path now reads a keypad-typed number back exactly as booking does.
+The old scoping said a lookup number is a **search key**, not a contact field,
+so a wrong digit costs a failed search rather than an unreachable booking.
+Overruled because **the caller cannot tell those two apart**: a mistyped key
+surfaces as *"I can't find your appointment"*, which sounds like the clinic
+losing their booking, and the only party who can catch a digit Twilio mangled
+never hears the number.
+
+Implemented as a **second flag**, not a widened one.
+`phone_entered_by_keypad` still means "the booking commit accepted this", and
+`_commit_dtmf_phone_for_booking` still returns early for cancel/reschedule
+before setting `phone_confirmed` — a search key must never satisfy
+`book_appointment`'s A1 gate. The new
+`phone_entered_by_keypad_for_lookup` buys the read-back without the commit.
+Everything else is shared on purpose: wording, `_spell_phone`, the one-shot
+pending flag, `_is_phone_readback_rejection`, `_reject_keypad_number`'s
+teardown and mandated re-arm line, and the three-rung ladder counter.
+
+**The crumb that would have broken it silently:** on the lookup path the digits
+*are* the transcript that drives `lookup_patient`, and the read-back consumes
+that turn. On confirmation the digits are now queued, so the model sees exactly
+what it saw before, one turn later. Without that the read-back sounds perfect
+and the lookup never runs.
+
+> **Known coverage hole, stated not implied.** That queueing branch lives inline
+> in `handle_transcript` and is not reachable without standing up a whole
+> connection, so `test_lookup_keypad_number_is_read_back.py` (29 cases) does
+> **not** assert it. Delete the branch and all 29 still pass while the lookup
+> breaks. `CALL_SUITE_2026-08-02.md` Call 7 turn 3 has been rewritten to make
+> that the explicit fail condition. **This needs a dial.**
+
 ### Two observations recorded without a row
 
 - **The clinical barge-in guard armed on a plain empathy line.** `"sorry to
@@ -1147,7 +1191,7 @@ caller. These belong in the call suite.
 | ID | What needs proving |
 |---|---|
 | `U-02` | C5 rung-3 termination — the ladder cannot loop forever |
-| `U-03` | C6 lookup-key scope — no read-back where the number is a search key |
+| ~~`U-03`~~ | ~~C6 lookup-key scope — no read-back where the number is a search key~~ — **REVERSED 3 Aug by owner decision.** The lookup path now reads the number back exactly as booking does. See the 3 Aug sweep |
 | `U-04` | Rung-2 verbal fallback |
 | `U-05` | The `dc5c89d` bound — two unsettled answers go to the keypad |
 

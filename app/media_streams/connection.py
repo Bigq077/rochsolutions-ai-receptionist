@@ -5845,13 +5845,24 @@ class WebSocketCallHandler:
         must NOT also queue the digits as a synthetic transcript — the model
         would answer at the same time as this read-back.
 
-        Scoped by `phone_entered_by_keypad`, which the commit sets exactly when
-        it accepted the number, and only on the v3 booking path. So the
-        read-back fires iff the commit committed: cancel/reschedule lookups (the
-        number is a search key, and `_inject_phone_context_for_lookup` already
-        drives those) and the deterministic FlowEngine states (which have their
-        own CONFIRM_PHONE readback) are excluded for free, with no second copy
-        of that scoping to keep in sync.
+        Scoped by two flags, either of which arms it:
+
+        - `phone_entered_by_keypad` — set by the v3 BOOKING commit exactly when
+          it accepted the number.
+        - `phone_entered_by_keypad_for_lookup` — set by
+          `_inject_phone_context_for_lookup` on cancel / reschedule.
+
+        The second is new on 3 Aug 2026. **This block previously said lookups
+        were "excluded for free" because the number is a search key** — that was
+        true of the code and is no longer the policy: reversed by owner decision
+        so the caller hears the same read-back whichever path they are on. The
+        two flags stay separate because only the first may satisfy
+        book_appointment's A1 gate; see `_inject_phone_context_for_lookup`.
+
+        Still excluded, and still for free: the deterministic FlowEngine states
+        (`COLLECT_PHONE`, `COLLECT_PHONE_RESCHEDULE`, …), which have their own
+        CONFIRM_PHONE readback and would otherwise read the number back twice.
+        Neither flag is set on that path.
 
         What this catches, now that C3 and the A3 gate have closed fabrication:
         a digit Twilio drops or mangles in transit. The caller is the only party
@@ -5865,7 +5876,18 @@ class WebSocketCallHandler:
         sticky rule (~line 9727) re-arms DTMF on any bot line carrying those,
         and this turn wants the caller's VOICE, not more digits.
         """
-        if not self.session.get("phone_entered_by_keypad"):
+        # `phone_entered_by_keypad` is the booking commit's flag;
+        # `phone_entered_by_keypad_for_lookup` is the cancel/reschedule one,
+        # added 3 Aug 2026 when U-03 was reversed by owner decision. Two flags
+        # rather than one because only the first may satisfy the A1 booking
+        # gate — see _inject_phone_context_for_lookup for why. The read-back
+        # itself, the wording, the one-shot pending flag, the rejection matcher
+        # and the three-rung re-ask ladder are all shared, deliberately: the
+        # caller should not be able to tell which path they are on.
+        _lookup_readback = bool(
+            self.session.get("phone_entered_by_keypad_for_lookup")
+        )
+        if not (self.session.get("phone_entered_by_keypad") or _lookup_readback):
             return False
 
         _readback = f"Thanks — I've got {phone}. Is that correct?"
@@ -5879,6 +5901,15 @@ class WebSocketCallHandler:
         # turn, so an ambiguous answer cannot leave it armed for a later "no"
         # about something else to land on and wipe a good number.
         self.session["v3_keypad_readback_pending"] = True
+        # Which path armed it. On the booking path a "yes" needs nothing more —
+        # the number is already committed and the model carries on. On the
+        # lookup path the digits were NOT queued as a transcript (this method
+        # took the turn), so nothing would drive lookup_patient; the affirmation
+        # branch has to queue them. Recording it here keeps that decision with
+        # the arming site instead of re-deriving it from flags that a rejection
+        # will have torn down by then.
+        self.session["v3_keypad_readback_is_lookup"] = _lookup_readback
+        self.session["v3_keypad_readback_phone"] = phone
 
         # The model never saw the digits (they are not queued), so without this
         # the caller's "yes" would arrive answering a question absent from the
@@ -5907,6 +5938,13 @@ class WebSocketCallHandler:
         self.session.pop("phone_number", None)
         self.session["phone_confirmed"]         = False
         self.session["phone_entered_by_keypad"] = False
+        # The lookup twin (U-03 reversed, 3 Aug 2026). Cleared for the same
+        # reason as its sibling: a rejected number must leave nothing behind
+        # that a later step could read as "we have a number". The stashed digits
+        # go too — they are the rejected ones, and the next entry re-stashes.
+        self.session["phone_entered_by_keypad_for_lookup"] = False
+        self.session.pop("v3_keypad_readback_phone", None)
+        self.session.pop("v3_keypad_readback_is_lookup", None)
         self.session["phone_dtmf_buffer"]       = ""
         self.session["phone_awaiting_dtmf"]     = True
         self.session["v3_phone_dtmf_active"]    = True
@@ -6061,6 +6099,32 @@ class WebSocketCallHandler:
         intent = self.session.get("v3_caller_intent", "")
         if intent not in ("cancel", "reschedule"):
             return
+
+        # ── U-03 REVERSED, owner decision 3 Aug 2026 ─────────────────────────
+        # This path used to be excluded from the C2 read-back on the reasoning
+        # that a lookup number is a SEARCH KEY, not a booking field, so getting
+        # it wrong costs a failed search rather than an unreachable booking.
+        #
+        # Overruled deliberately: the caller cannot tell those two apart. A
+        # mistyped search key surfaces as "I can't find your appointment",
+        # which sounds like the clinic losing their booking — and the one party
+        # who could catch a digit Twilio mangled never hears the number. The
+        # booking path already solved this; there is no reason the same caller
+        # gets a different standard thirty seconds later in the same call.
+        #
+        # Set here rather than in `_commit_dtmf_phone_for_booking` on purpose.
+        # That helper returns early for cancel/reschedule *before* it sets
+        # `phone_confirmed` / `collected["phone"]` / `phone_entered_by_keypad`,
+        # and it must keep doing so — a lookup key is not a contact number and
+        # must not satisfy book_appointment's A1 gate. So this is a separate
+        # flag that buys the read-back WITHOUT buying the commit.
+        #
+        # Set before the early-return below: on a reschedule the last assistant
+        # turn almost always already mentions the number ("Was your original
+        # appointment booked under the number you're calling from?"), so that
+        # return is the common path, not the rare one.
+        self.session["phone_entered_by_keypad_for_lookup"] = True
+        self.session["v3_keypad_readback_phone"] = phone
 
         history = self.session.setdefault("conversation_history", [])
 
@@ -6912,6 +6976,9 @@ class WebSocketCallHandler:
                     # about anything — to land on and wipe a good number.
                     if self.session.get("v3_keypad_readback_pending"):
                         self.session["v3_keypad_readback_pending"] = False
+                        _rb_is_lookup = bool(
+                            self.session.pop("v3_keypad_readback_is_lookup", False)
+                        )
                         if _is_phone_readback_rejection(utterance):
                             logger.info(
                                 "[ms_conn v3] keypad read-back rejected: %r",
@@ -6924,6 +6991,41 @@ class WebSocketCallHandler:
                         # today's behaviour for every non-"no" answer, so an
                         # imperfect rejection matcher can only fail to catch a
                         # rejection, never invent one.
+                        #
+                        # The lookup path is the exception, and it is not a
+                        # different policy — it is the same "not a rejection ⇒
+                        # proceed" rule, reaching a different next step. There
+                        # the digits were never queued (this read-back took that
+                        # turn), so falling through would hand the model a bare
+                        # "yes" with no number and no reason to call
+                        # lookup_patient. Queue the digits now: the model then
+                        # sees exactly what it saw before U-03 was reversed,
+                        # one turn later. `continue` because the "yes" itself
+                        # carries no information the digits do not.
+                        if _rb_is_lookup:
+                            _rb_phone = self.session.pop(
+                                "v3_keypad_readback_phone", ""
+                            )
+                            self.session["phone_entered_by_keypad_for_lookup"] = False
+                            await save_session(self.call_sid, self.session)
+                            if _rb_phone:
+                                logger.info(
+                                    "[ms_conn v3] lookup keypad number CONFIRMED "
+                                    "by caller (%r) — queueing digits for "
+                                    "lookup_patient",
+                                    utterance[:40],
+                                )
+                                await self.transcript_queue.put(
+                                    (time.monotonic(), _rb_phone)
+                                )
+                                continue
+                            # No stashed number is not recoverable by guessing.
+                            # Fall through to the LLM rather than drop the turn
+                            # into silence — the caller still gets a response.
+                            logger.warning(
+                                "[ms_conn v3] lookup read-back confirmed but no "
+                                "number was stashed — falling through to the LLM"
+                            )
                         await save_session(self.call_sid, self.session)
 
                     # ── Booking-flow verbal phone confirm ────────────────────
