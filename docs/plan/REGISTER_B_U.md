@@ -340,7 +340,7 @@ Without FM-23 this call would have rescheduled on *"um i guess so maybe"*.
   armed. That is cause 2c dissolving, verified for the cancel family on a
   destructive write.
 
-### `B-41` · Susie said *"Their choice is to cancel."* out loud — NEW, **OPEN**, demo-audible
+### `B-41` · Susie said *"Their choice is to cancel."* out loud — **FIXED** `6901c27`
 
 `CA12db707b1b887d38b7408aa36fc990d6`, 10:16:19. Third-person internal reasoning
 reached TTS and the caller heard it:
@@ -379,6 +379,29 @@ patient"*.
 Not a safety defect — the cancellation was correct and correctly confirmed. It is
 **demo-audible**, and it is the kind of thing a clinic owner on a webinar
 remembers.
+
+**FIXED `6901c27`.** A decision-noun arm added to **Gate 5g**, not to the flat
+`_BANNED_SENTENCE_RE` list — 5g is structural, additionally requiring *no
+second-person reference* and *no question mark*, and those two guards are what
+make a broader pattern safe to add. Both are exercised: *"We'll confirm their
+preference with you"* survives on the second-person guard, *"Is their preference
+the afternoon?"* on the question guard.
+
+**Deliberately not a bare `they|their` arm, with a test asserting it stays that
+way.** The clinic is also *"they"* — *"They close at six."* and *"They're fully
+booked that day."* carry no second person and no question mark, so a bare arm
+would delete them from real caller audio. That direction is the Gate 5c failure
+of 2026-06-12 that abandoned a completed booking. **Under-firing is the correct
+bias here:** a missed leak is embarrassing, a deleted sentence is a broken call.
+*"That is what they want."* is knowingly uncovered and pinned as a deliberate
+trade rather than left silent.
+
+Test `tests/regression/test_b41_third_person_caller_narration.py`, 31 cases,
+including the verbatim two-sentence chunk from the call and eight legitimate
+third-party sentences that must survive. Suite verified by diffing failing node
+IDs: identical, no test moved. **Not yet heard on a live call** — the fix is
+proven offline against the exact recorded text, so dial time is confirmation, not
+evidence.
 
 ### `B-39` · the retention question is asked three times — NEW, **OPEN**, demo-audible
 
