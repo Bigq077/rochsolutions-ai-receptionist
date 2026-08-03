@@ -6520,6 +6520,7 @@ def _match_gcal_event(events: List[Dict[str, Any]], args: Dict[str, Any],
 # when the matched name actually reaches TTS. The write gate reads both.
 LOOKUP_AMBIGUOUS_KEY   = "_lookup_ambiguous"
 LOOKUP_NAME_SPOKEN_KEY = "_lookup_name_spoken"
+LOOKUP_MATCH_COUNT_KEY = "_lookup_match_count"
 
 
 # B-44 — steering, attached to the ambiguous lookup result itself.
@@ -6540,13 +6541,16 @@ LOOKUP_NAME_SPOKEN_KEY = "_lookup_name_spoken"
 # which is exactly the division of labour that made B-36's cause 2d effective on
 # CA9cc1a23e, where the steering resolved the turn and the guard never fired.
 _LOOKUP_AMBIGUOUS_RULE = (
-    "There is more than one upcoming appointment on this phone number, so you do "
-    "not yet know which person you are speaking to. When you read this "
-    "appointment back, SAY THE NAME — for example \"I've got an appointment for "
-    "{name} on [day] at [time] — is that you?\" — and settle who they are before "
-    "asking anything else, including before asking whether they want to "
-    "reschedule or cancel. If they say it is not them, call lookup_patient again "
-    "with next=true to step to the following match."
+    "There are {count} upcoming appointments on this phone number, so you know "
+    "neither which person you are speaking to NOR which of the appointments "
+    "they mean. SAY HOW MANY THERE ARE — a caller cannot ask for a different "
+    "one if they do not know others exist. When you read this appointment back, "
+    "SAY THE NAME and the day and time — for example \"I've got {count} "
+    "appointments on this number — this one's for {name} on [day] at [time], "
+    "is that you?\" — and settle who they are before asking anything else, "
+    "including before asking whether they want to reschedule or cancel. If they "
+    "say it is not them, OR that it is not the appointment they meant, call "
+    "lookup_patient again with next=true to step to the following match."
 )
 
 
@@ -6560,6 +6564,10 @@ def _note_lookup_ambiguity(session: Dict[str, Any], total: int) -> None:
     """
     session[LOOKUP_AMBIGUOUS_KEY] = total > 1
     session[LOOKUP_NAME_SPOKEN_KEY] = False
+    # The COUNT itself, not just the boolean. The write-gate refusal message in
+    # llm_stream has to be able to tell the caller how many there are, and it
+    # only has the session — B-54 turns on the caller knowing that others exist.
+    session[LOOKUP_MATCH_COUNT_KEY] = total
 
 
 def _with_ambiguity_rule(
@@ -6574,7 +6582,7 @@ def _with_ambiguity_rule(
     """
     if total > 1:
         result["caller_message_rule"] = _LOOKUP_AMBIGUOUS_RULE.format(
-            name=name or "that patient"
+            name=name or "that patient", count=total
         )
     return result
 

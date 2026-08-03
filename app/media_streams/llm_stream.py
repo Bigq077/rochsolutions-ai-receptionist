@@ -3340,19 +3340,28 @@ class LLMStream:
                         "back (B-42): name=%r matches>1",
                         tool_name, _lp_name,
                     )
+                    _lp_count = session.get("_lookup_match_count") or 0
+                    _lp_howmany = (
+                        f"{_lp_count} upcoming appointments"
+                        if _lp_count > 1 else "more than one upcoming appointment"
+                    )
                     result = {
                         "status": "identity_confirmation_required",
                         "message": (
-                            f"There is more than one upcoming appointment on "
-                            f"this phone number, so you do not yet know which "
-                            f"person you are talking to. The appointment you "
-                            f"have selected is under the name {_lp_name}. Do "
-                            f"NOT cancel or move anything yet. Say that name to "
-                            f"the caller and ask them to confirm it is theirs — "
-                            f"for example \"I've got an appointment under "
-                            f"{_lp_name} — is that you?\". If they say it is not "
-                            f"them, call lookup_patient again with next=true to "
-                            f"step to the following match."
+                            f"There are {_lp_howmany} on this phone number, so "
+                            f"you know neither which person you are talking to "
+                            f"nor which of the appointments they mean. The one "
+                            f"you have selected is under the name {_lp_name}. "
+                            f"Do NOT cancel or move anything yet. Tell the "
+                            f"caller HOW MANY there are — they cannot ask for a "
+                            f"different one if they do not know others exist — "
+                            f"then say that name and the day and time, and ask "
+                            f"them to confirm — for example \"I've got "
+                            f"{_lp_howmany} on this number; this one's under "
+                            f"{_lp_name} — is that you?\". If they say it is "
+                            f"not them, OR that it is not the appointment they "
+                            f"meant, call lookup_patient again with next=true "
+                            f"to step to the following match."
                         ),
                     }
                 elif tool_name == "reschedule_appointment" and not (
