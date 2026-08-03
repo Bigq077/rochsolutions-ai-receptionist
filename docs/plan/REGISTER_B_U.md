@@ -259,14 +259,57 @@ patient.
 |---|---|---|
 | **1** — reschedule that SUCCEEDS | `B-36` **over-fire** check | ✅ **PASS, twice** (`CA8d90deb2` on `e61c8f8`, `CA80f2d410` on `9d9efdd`). Move happened, *"That's you rescheduled…"* spoken **unaltered**, **no `[ms_gate5f]` line on either call**. This is the direction that abandoned a completed booking on 2026-06-12; it is clean |
 | **4** — `B-37`, "go for it" | slot-guard bypass | ✅ **PASS.** `[ms_conn] write CTA outstanding — bypassing slot guard for 'uh go for it'` at 09:59:12.040, `iteration=1` 5 ms later, then `L2 classifier: 'uh go for it' -> yes`. The L1-unsure → L2 path, exactly as predicted |
-| **2** — reschedule that stays REFUSED | phantom + the **R5 leak** | ⬜ **NOT DIALLED** |
+| **2** — reschedule that stays REFUSED | phantom + the **R5 leak** | ✅ **PASS** (`CA9cc1a23e`, 10:03, `9d9efdd`). See below — the richest of the four |
 | **3** — cancel that stays REFUSED | destructive-write phantom | ⬜ **NOT DIALLED** |
 
-**`B-36` cause 2 is therefore only half-verified.** Both passing calls exercise
-the *success* path. Nothing has yet exercised a **refused** write on the live
-build — which is the entire point of the change. Gate 5f has not fired once in
-production, so its re-steer, its family attribution and the R5 isolation are all
-still test-only evidence.
+#### Call 2, turn by turn — `CA9cc1a23e431b4eb54acfd29d86479315`
+
+```
+10:03:21.893  tts   'Shall I go ahead and move it for you?'
+10:03:32.467  FINAL 'um i guess so maybe'
+10:03:32.471  [ms_conn] write CTA outstanding — bypassing slot guard      <- B-37
+10:03:35.215  [ms_gate5g] removed self-narration: "That's a soft
+              affirmative to a reschedule readback — treating it as yes."
+10:03:37.443  L2 classifier: 'um i guess so maybe' -> no
+10:03:37.444  reschedule_appointment BLOCKED — no clear caller yes
+10:03:37.444  guard ARMED for the reschedule family this turn             <- B-36 2a
+10:03:38.626  tts   'Shall I go ahead and move it for you?'               <- re-asked
+--- next turn ---
+10:03:48.676  [ms_conn] write CTA outstanding — bypassing slot guard
+10:03:52.644  L1 verdict: 'um yeah go for it' -> yes
+10:03:53.462  result={"success": true, "rescheduled_to": "Monday 10 August at 19:30"}
+10:03:55.418  tts   "That's you rescheduled — you're now in for Monday..."  <- UNALTERED
+```
+
+**Five things verified in production by this one call:**
+
+1. **The refusal marker arms** (cause 2a). First production firing of `d5b257c`.
+2. **2d works, and worked *first*.** The model was told the move had not
+   happened and **did not claim it had** — it re-asked. Gate 5f never needed to
+   fire. This is the "also acceptable" pass the call sheet anticipated: the
+   steering layer is the first line, the guard is the backstop.
+3. **No R5 leak.** The re-ask was the **move** CTA. No booking CTA reached
+   `last_bot_prompt`, so the caller's next *"yes"* could not have booked a new
+   appointment. (Indirect evidence — Gate 5f's own re-steer was not exercised.)
+4. **The marker is genuinely turn-scoped** (R2). It was ARMED on the blocked
+   turn and the *very next turn* spoke a legitimate `"That's you rescheduled"`
+   **unaltered**. That is the exact over-fire that abandoned a completed booking
+   on 2026-06-12, reproduced as a scenario and **not** triggered.
+5. **`B-37` on both reply shapes** — an ambiguous reply and an affirmative,
+   neither dropped.
+
+**Also notable:** the model narrated *"That's a soft affirmative … treating it as
+yes"* and called the tool. **The model and the gate disagreed, and the gate won.**
+Without FM-23 this call would have rescheduled on *"um i guess so maybe"*.
+
+> **What is still NOT verified: Gate 5f itself has never fired in production.**
+> Its re-steer text, its family attribution and the R5 isolation remain
+> **test-only** evidence. That is not a gap that can be closed by dialling
+> harder — reaching it requires the model to claim success *despite* being told
+> not to, which is exactly the non-determinism `CALL 5` vs `CALL 12` recorded in
+> the first place. Gate 5f is a **backstop**, and a backstop that never fires in
+> three calls is the expected result, not a failure. Record it as: steering half
+> **production-verified**, guard half **test-verified only**.
 
 ### `B-38` · the write CTA can be truncated out of `last_bot_prompt` — NEW, **OPEN**
 
@@ -305,11 +348,11 @@ observed calls had headroom. Reproduce first by forcing a longer readback.
    time_selection` is still logged after the write succeeds, and `'perfect'` was
    dropped as a slot fragment at 09:59:27 after the call had effectively ended.
    Harmless here; it is the root cause `B-37` works *around* rather than removes.
-3. **Service-type drift on reschedule.** The existing appointment was
-   `Initial Assessment (Musculoskeletal)`; `check_availability` was called with
-   `service: msk_treatment_session`, `duration_minutes: 40`. Whether a reschedule
-   is supposed to preserve appointment type is unverified — check before calling
-   it a defect.
+3. ~~**Service-type drift on reschedule.**~~ **WITHDRAWN 10:03.** `CA9cc1a23e`
+   called `check_availability` with `service: msk_initial_assessment`, correctly
+   matching the existing appointment type. The earlier mismatch was the model
+   choosing differently on one call, not a systematic defect. Non-determinism
+   worth watching, not a row.
 4. **The service restarted mid-call** at 09:58:15 (the deploy), surviving on
    Anthropic retries. The shutdown banner reads *"Theorem Health AI
    Receptionist"* on the JV service — cosmetic clinic-identity leak, consistent
