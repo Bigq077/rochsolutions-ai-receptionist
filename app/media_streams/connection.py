@@ -411,6 +411,66 @@ _COMMUNICATIVE_WORDS: frozenset = frozenset({
 _PHONE_NUMBER_RE = re.compile(r"^\d{5,}$")
 
 
+# B-37 — pure disfluency tokens: noises, not words. The ONLY thing still
+# dropped while a write confirmation is outstanding. Deliberately a list of
+# *noises* rather than of meanings: the repeated failure in this codebase is a
+# hand-maintained vocabulary sitting between the caller and what they asked for
+# (B-25, the step-8 reword, the timing singles, B-36 cause 1), and that failure
+# mode needs the list to enumerate INTENTS. This one cannot go stale that way —
+# a caller inventing a new way to say yes is covered, because anything that is
+# not one of these noises gets through.
+_PURE_FILLER_TOKENS: frozenset = frozenset({
+    "um", "umm", "uh", "uhh", "erm", "er", "err", "ah", "aah",
+    "mm", "mmm", "hmm", "hm", "eh", "oh", "so", "well",
+})
+
+
+def _is_pure_filler(transcript: str) -> bool:
+    """True when the transcript is nothing but disfluency noise."""
+    words = [w.strip(".,!?-").lower() for w in (transcript or "").split()]
+    words = [w for w in words if w]
+    return bool(words) and all(w in _PURE_FILLER_TOKENS for w in words)
+
+
+def _write_cta_outstanding(session: dict) -> bool:
+    """True when the bot's last turn asked a booking / move / cancel confirmation.
+
+    Reuses the write gates' own predicates rather than re-typing their literals,
+    so this can never drift out of step with what the gate will accept — the
+    exact drift that caused B-36 cause 1.
+
+    Function-scope import: connection -> llm_stream is a new edge, and llm_stream
+    does not import connection, so there is no cycle. Matches the idiom
+    llm_stream already uses for fast_path.
+    """
+    try:
+        from app.media_streams.llm_stream import (
+            _booking_confirmation_asked,
+            _cancel_retention_asked,
+            _move_confirmation_asked,
+        )
+    except Exception:          # pragma: no cover - import guard only
+        return False
+    lbp = (session or {}).get("last_bot_prompt") or ""
+    if not lbp:
+        return False
+    return bool(
+        _booking_confirmation_asked(lbp)
+        or _move_confirmation_asked(lbp)
+        or _cancel_retention_asked(lbp)
+    )
+
+
+def _slot_guard_bypass_for_write_cta(session: dict, utterance: str) -> bool:
+    """B-37 — should the slot guard let this utterance reach the LLM?
+
+    True when a write confirmation is outstanding and the caller said anything
+    at all beyond disfluency. Named and module-scope so the regression test
+    asserts THIS function, not a re-typed copy of the branch condition.
+    """
+    return _write_cta_outstanding(session) and not _is_pure_filler(utterance)
+
+
 def _is_short_meaningless_fragment(transcript: str) -> bool:
     """Return True only when the transcript is safe to re-arm and discard.
 
@@ -7526,6 +7586,48 @@ class WebSocketCallHandler:
                                 utterance,
                             )
                             self.post_slot_confirmation_pending = False
+                            # Fall through to normal LLM dispatch below.
+                        elif _slot_guard_bypass_for_write_cta(
+                            self.session, utterance
+                        ):
+                            # ── B-37: a write confirmation is outstanding ─────
+                            # CA8d90deb2 (3 Aug 2026, 09:38:53): the caller
+                            # answered "Shall I go ahead and move it for you?"
+                            # with "uh go ahead" and it was DROPPED here as a
+                            # meaningless fragment — 3 words, none of them in
+                            # _COMMUNICATIVE_WORDS. The watchdog then re-asked
+                            # the wrong question ("which of those would you
+                            # like?", a SLOT re-ask), and the caller had to
+                            # repeat themselves. ~18s lost.
+                            #
+                            # Why booking never hit this: Spec J above is armed
+                            # by _NAME_REQUEST_PHRASES, and booking asks for a
+                            # name after slot selection. A RESCHEDULE already
+                            # knows the patient from lookup_patient, never asks
+                            # for a name, so the bypass never armed and the slot
+                            # map stayed live straight through the move CTA.
+                            #
+                            # This is a ROUTING decision, not a safety one.
+                            # Dropping is the dangerous act; passing to the LLM
+                            # is safe because the write gate still adjudicates —
+                            # _book_reply_verdict blocks a negative, ambiguous or
+                            # absent reply, and B-36's Gate 5f catches a claim
+                            # made after a refusal. So the bypass is deliberately
+                            # broad: everything except pure disfluency gets heard.
+                            #
+                            # It does NOT need to recognise "go for it" or "I
+                            # accept" itself, and must not try — L1 returns
+                            # 'unsure' for those and hands them to the L2
+                            # classifier, which is the layer built for exactly
+                            # that (see _book_verdict_deterministic). Adding them
+                            # to a phrase list here would rebuild the failure
+                            # mode the hybrid verdict replaced.
+                            logger.info(
+                                "[ms_conn] write CTA outstanding — bypassing "
+                                "slot guard for %r (last_bot_prompt=%r)",
+                                utterance,
+                                (self.session.get("last_bot_prompt") or "")[:60],
+                            )
                             # Fall through to normal LLM dispatch below.
                         elif (
                             self.slot_map_stage in (
