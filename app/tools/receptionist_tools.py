@@ -6228,11 +6228,39 @@ async def _exec_lookup_recent_appointment(
     # Store in session so the booking step can use canonical values without
     # asking the caller for their name or phone again.
     session["full_name"]     = full_name
-    session["phone_number"]  = phone_raw
     session["returning_plan_lookup_name"] = full_name
     session["returning_plan_lookup_type"] = most_recent_type
     session.setdefault("collected", {})["full_name"] = full_name
-    session.setdefault("collected", {})["phone"]     = phone_raw
+
+    # Never overwrite a number the caller confirmed on THIS call with the one
+    # on file at the booking provider.
+    #
+    # collected["phone"] is the reference _reconcile_booking_phone (the A3 gate)
+    # compares the model's `phone` argument against. Overwriting it here means a
+    # caller who typed a new number and then hit a lookup would have the gate
+    # "correct" their booking back to the stale number — the gate that exists to
+    # protect the confirmed number would be the thing discarding it.
+    #
+    # Mirrors the same refusal on the caller-ID path (connection.py, "verbal
+    # phone confirm SKIPPED — keypad number already on record"). Gated on
+    # phone_confirmed rather than phone_entered_by_keypad so a verbally
+    # confirmed caller-ID number is protected too — A1/A3 already treat that
+    # flag as the authority on which number is real.
+    #
+    # Reachability was measured, not assumed: 0 of 155 obs calls had both a
+    # caller-supplied number and the lookup path (10 had one, 4 the other,
+    # none both). This is hardening against a mechanism, not a reproduced
+    # defect — see B-47 in docs/plan/REGISTER_B_U.md.
+    if session.get("phone_confirmed") is True:
+        logger.info(
+            "lookup_recent_appointment: keeping the number confirmed on this "
+            "call (***%s) — NOT overwriting with the number on file (***%s)",
+            str((session.get("collected") or {}).get("phone") or "")[-4:],
+            str(phone_raw or "")[-4:],
+        )
+    else:
+        session["phone_number"] = phone_raw
+        session.setdefault("collected", {})["phone"] = phone_raw
 
     logger.info(
         "_exec_lookup_recent_appointment: found %r type=%r (phone ***%s)",
