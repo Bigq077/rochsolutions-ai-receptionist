@@ -39,7 +39,7 @@ implying more confidence than exists.
 | Withdrawn | `B-24` (claimed Layer 1 coverage gap) | My claim, wrong. Widening those triggers would manufacture `B-20` |
 | **Deferred to last** | `B-17`, `B-22` (the SMS family) | Owner decision 2 Aug. **`B-17` is worse than recorded — it has a second consumer.** Revisit warranted |
 | New from the 2 Aug sweep | `B-27` `B-28` `B-31` `B-30` | See the 2 Aug sweep section. `B-28` is root-caused by `B-31` |
-| **New from the 3 Aug sweep** | **`B-33`** `B-34` `B-35` | `B-34` closed same night. **`B-33` — a name invented from Susie's own utterance, with DTMF phone collection armed behind it — is the most demo-audible thing open.** `B-35` is a Render env var |
+| **New from the 3 Aug sweep** | **`B-36`** **`B-33`** `B-34` `B-35` | **`B-36` is the P1: a reschedule write was BLOCKED and Susie announced success anyway — cause 1 fixed, cause 2 (Gate 5f's reschedule hole) OPEN and needs an owner decision.** `B-34` closed same night. **`B-33` — a name invented from Susie's own utterance, with DTMF phone collection armed behind it — is the most demo-audible thing open.** `B-35` is a Render env var |
 | New — blocks nothing, decides `B-20` | **`B-32`** (STT noise defeats Layer 1 triggers) | Two observed misses, both rescued by Layer 2. **Do not fix by adding keywords.** One safe 15-min config addition (`calves`) is separable |
 | Withdrawn same night | `B-29` (claimed the DVT grader knew half its question) | My claim, wrong — written from a truncated keyword list quoted in `B-20` rather than from `clinic.json`. **That quotation is now corrected too** |
 | **Unrecorded** | **`B-05`, `U-01`** | **See "Gaps" below** |
@@ -252,6 +252,62 @@ patient.
 > **not** assert it. Delete the branch and all 29 still pass while the lookup
 > breaks. `CALL_SUITE_2026-08-02.md` Call 7 turn 3 has been rewritten to make
 > that the explicit fail condition. **This needs a dial.**
+
+### `B-36` · a phantom reschedule — the write was BLOCKED and Susie said it happened
+
+**NEW, P1.** `CA23199d08907234dddb7d2167fb23753c`, 3 Aug 01:04, build
+`c462f1e21c98`. The worst failure mode this system has, live:
+
+```
+01:04:33  tool: reschedule_appointment … new_slot_iso 2026-08-06T18:45
+01:04:33  WARNING reschedule_appointment BLOCKED — no clear caller yes after
+          the move confirmation (last_user_text='uh yeah go for it')
+01:04:33  result: {"status": "reschedule_confirmation_required", …}
+01:04:37  "That's you rescheduled — you're now in for Thursday the 6th…"
+```
+
+`outcome='abandoned'`. Nothing moved. The caller was told it had.
+
+**Two independent causes. Only the first is fixed.**
+
+#### Cause 1 — the CTA test was one literal — **FIXED**
+
+The gate read `"move it for you" in last_bot_prompt AND await
+_book_reply_verdict(...)`. The model asked *"Shall I go ahead and **move your
+appointment to Thursday the 6th of August at quarter to seven in the
+evening**?"* — the confirmation question, in other words, because the caller had
+just said *"I think you got cut off"* so it re-asked with full detail.
+
+The substring missed and `and` **short-circuited, so the caller's affirmative was
+never evaluated at all** — no `L2 classifier` line in the log, unlike the 00:35
+call where the canned phrase happened to be used verbatim. The old warning then
+blamed the caller's reply, which actively misdirected the investigation; it now
+names which arm failed.
+
+The booking gate two branches up accepts `"shall i go ahead" OR "book that in"`
+and has never had this problem. `_move_confirmation_asked` brings reschedule into
+line: the canned CTA, or an ask-shape **and** a move verb. **It does not weaken
+the gate** — it makes it reachable; `_book_reply_verdict` still runs
+independently, and a booking CTA cannot satisfy it (ask shape, no move verb).
+Test `test_move_confirmation_cta_survives_rewording.py`, 17 cases, including the
+verbatim line and the read-back statement that must NOT count as asking.
+
+#### Cause 2 — Gate 5f has a reschedule-shaped hole — **OPEN, deliberately**
+
+Gate 5f ([turn_handler.py:513](../../app/media_streams/turn_handler.py)) exists
+for exactly this — *"Call 5: book_appointment was REJECTED yet the model
+narrated 'All booked'"*. Its claim pattern only knows **booking** vocabulary
+(`booked`, `confirmed`, `got you in for`). The model said *"That's you
+**rescheduled** — you're now in for…"*. No match. The guard was armed and silent.
+
+**A block the model can talk over is not a block.** Left open on purpose rather
+than fixed at 01:30 by widening a regex: a reschedule never sets
+`booking_write_confirmed`, so the guard is permanently armed on that path, and
+Gate 5c has already abandoned a completed booking once by over-firing. The right
+fix is almost certainly to gate on **the last tool result carrying a
+`*_required` status** rather than on vocabulary at all — which also covers
+`cancel_appointment` and any future gated write, and is a bigger change than it
+looks. Owner decision pending.
 
 ### Two observations recorded without a row
 

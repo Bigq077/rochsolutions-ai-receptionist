@@ -838,6 +838,59 @@ async def _book_reply_verdict(messages, session) -> bool:
     return _result
 
 
+def _move_confirmation_asked(last_bot_prompt: str) -> bool:
+    """True when the bot's last turn asked the reschedule confirmation question.
+
+    FM-23's gate used a single literal, `"move it for you" in last_bot_prompt`.
+    That is one phrasing of a question the model composes, and on
+    `CA23199d08907234dddb7d2167fb23753c` (3 Aug 2026, 01:04) it composed a
+    different one:
+
+        "Shall I go ahead and move your appointment to Thursday the 6th of
+         August at quarter to seven in the evening?"
+
+    Unmistakably the confirmation question, and it did not contain the literal.
+    Worse, the gate reads
+    `"move it for you" in ... AND await _book_reply_verdict(...)` — so the
+    substring miss short-circuited, the caller's "yeah go for it" was **never
+    evaluated**, the write was blocked, and the model announced success anyway.
+    The caller was told their appointment had moved and it had not.
+
+    Why it varied: the caller had just said "I think you got cut off", so the
+    model re-asked with the full detail instead of the canned short form.
+    Reasonable behaviour that a literal cannot survive. Same class as `B-25`
+    and the step-8 reword — a hard-coded literal drifting from the prompt.
+
+    The booking gate two branches up never had this problem because it accepts
+    `"shall i go ahead" OR "book that in"`; the ask-shape arm carries any
+    rewording. This brings reschedule into line.
+
+    **This does not weaken the gate.** It only makes it *reachable*: the caller's
+    affirmative still has to pass `_book_reply_verdict` independently, and that
+    is the condition doing the safety work. A booking CTA cannot satisfy it
+    either — "Shall I go ahead and book that in?" has the ask shape but no move
+    verb, so both arms are required.
+    """
+    lbp = (last_bot_prompt or "").lower()
+    if not lbp:
+        return False
+    # The canned template CTA, kept as its own arm so the exact wording the
+    # prompt mandates can never stop matching.
+    if "move it for you" in lbp:
+        return True
+    # Otherwise: an explicit ask shape AND a move/reschedule verb. Both, so a
+    # statement about moving ("I'm moving your appointment to Thursday") does
+    # not count as having ASKED — that sentence is the read-back, not the
+    # question, and it is spoken on the turn before.
+    _ask_shapes = (
+        "shall i go ahead", "shall i move", "shall i reschedule",
+        "would you like me to move", "want me to move", "happy for me to move",
+        "ok to move", "okay to move", "would you like me to reschedule",
+    )
+    _move_verbs = ("move", "moving", "reschedul")
+    return any(a in lbp for a in _ask_shapes) and any(v in lbp for v in _move_verbs)
+
+
 def _cancel_reply_consents(messages) -> bool:
     """FM-23: cancel_appointment is DESTRUCTIVE — it may fire only on an EXPLICIT
     cancel instruction, in the template cancel-retention context. The confirm is
@@ -2870,17 +2923,32 @@ class LLMStream:
                         ),
                     }
                 elif tool_name == "reschedule_appointment" and not (
-                    "move it for you" in (session.get("last_bot_prompt") or "").lower()
+                    _move_confirmation_asked(session.get("last_bot_prompt"))
                     and await _book_reply_verdict(messages, session)
                 ):
-                    # FM-23: reschedule gate — mirrors FM-01. The template reschedule
-                    # CTA is the enforced "Shall I go ahead and move it for you?".
-                    # Require that CTA in last_bot_prompt AND a clear caller yes.
+                    # FM-23: reschedule gate — mirrors FM-01. Require the move
+                    # confirmation question in last_bot_prompt AND a clear caller
+                    # yes. The CTA test was a single literal ("move it for you")
+                    # until 3 Aug 2026; see _move_confirmation_asked for the live
+                    # call where the model asked the question in other words, the
+                    # gate short-circuited before ever reading the caller's yes,
+                    # and the reschedule silently did not happen.
                     _lut_preview = _last_user_text(messages or [])[:80]
+                    _lbp_preview = (session.get("last_bot_prompt") or "")[:80]
+                    # Log WHICH arm failed. The old line always blamed the
+                    # caller's reply — on the call above the reply was fine and
+                    # the CTA test was at fault, and the message actively
+                    # misdirected the investigation.
+                    _cta_ok = _move_confirmation_asked(session.get("last_bot_prompt"))
                     logger.warning(
-                        "[ms_llm] reschedule_appointment BLOCKED — no clear caller "
-                        "yes after the move confirmation (last_user_text=%r)",
-                        _lut_preview,
+                        "[ms_llm] reschedule_appointment BLOCKED — %s "
+                        "(last_bot_prompt=%r last_user_text=%r)",
+                        (
+                            "no clear caller yes after the move confirmation"
+                            if _cta_ok else
+                            "the move confirmation question was never asked"
+                        ),
+                        _lbp_preview, _lut_preview,
                     )
                     result = {
                         "status": "reschedule_confirmation_required",
