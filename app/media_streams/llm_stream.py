@@ -648,6 +648,52 @@ def _note_write_result(session: dict, tool_name: str, result):
     return result
 
 
+def _note_lookup_name_spoken(session: dict, spoken: str) -> None:
+    """B-42 — record that the looked-up patient's NAME actually reached the caller.
+
+    Called with the text released to TTS for the turn, so this is what was
+    *heard*, not what was generated — the distinction that mattered on
+    CA7e389a47 and again here. Latches: once true it stays true until the next
+    lookup match resets it.
+
+    Matching is per name token, word-bounded, minimum three characters. A first
+    name alone counts: among people sharing a phone number ("Sarah" vs "Quentin")
+    the first name is the discriminator, and requiring the surname would loop the
+    caller on a readback Susie composed naturally.
+
+    Bias note, because it runs the wrong way here: a FALSE POSITIVE opens the
+    write gate and restores exactly the B-42 failure, whereas a false negative
+    only re-asks. Hence word boundaries rather than substring — "rock" must not
+    be satisfied by "Brockley".
+    """
+    from app.tools.receptionist_tools import LOOKUP_NAME_SPOKEN_KEY
+    if session.get(LOOKUP_NAME_SPOKEN_KEY):
+        return
+    nm = (session.get("_lookup_patient_name") or "").strip()
+    if not nm or not spoken:
+        return
+    low = spoken.lower()
+    tokens = [tok for tok in re.split(r"[^a-z]+", nm.lower()) if len(tok) >= 3]
+    if any(re.search(r"\b" + re.escape(tok) + r"\b", low) for tok in tokens):
+        session[LOOKUP_NAME_SPOKEN_KEY] = True
+        logger.info(
+            "[ms_llm] B-42: looked-up name %r was spoken to the caller — "
+            "identity gate satisfied", nm,
+        )
+
+
+def _lookup_identity_unconfirmed(session: dict) -> bool:
+    """B-42 — True when the active lookup was ambiguous and the caller has not
+    been told WHOSE appointment it is."""
+    from app.tools.receptionist_tools import (
+        LOOKUP_AMBIGUOUS_KEY, LOOKUP_NAME_SPOKEN_KEY,
+    )
+    return bool(
+        session.get(LOOKUP_AMBIGUOUS_KEY)
+        and not session.get(LOOKUP_NAME_SPOKEN_KEY)
+    )
+
+
 def _book_reply_is_affirmative(messages) -> bool:
     """FM-01: book_appointment may fire only on a clear caller YES to the
     "Shall I go ahead and book that in?" confirmation. The question-asked guard
@@ -1434,6 +1480,12 @@ class LLMStream:
             session[F_LAST_BOT_PROMPT] = _apply_tts_subs(
                 _display_reply
             )[:200]
+            # B-42: was the looked-up patient's NAME actually said out loud this
+            # turn? Read from _display_reply (what was HEARD) and not from
+            # full_reply, and deliberately NOT from last_bot_prompt, which is
+            # capped at 200 chars — a readback long enough to lose the name to
+            # that cap is exactly the turn where the caller most needs it.
+            _note_lookup_name_spoken(session, _display_reply)
             # Store only the question portion in F_LAST_QUESTION.
             # F_LAST_BOT_PROMPT keeps the full response for fast-path trigger
             # matching; F_LAST_QUESTION is narrowed to the actual question
@@ -3026,6 +3078,49 @@ class LLMStream:
                             "given a clear yes. Wait for an explicit affirmative "
                             "(\"yes\", \"go ahead\") before calling book_appointment. "
                             "Do not book on an ambiguous, negative, or absent reply."
+                        ),
+                    }
+                elif (
+                    tool_name in ("reschedule_appointment", "cancel_appointment")
+                    and _lookup_identity_unconfirmed(session)
+                ):
+                    # ── B-42: identity backstop ──────────────────────────────
+                    # CAe74ceae7 (3 Aug 2026): lookup returned "match 1/13
+                    # name='Sarah Jenkins'", Susie read back a day and a time and
+                    # asked "is that the right one?" WITHOUT the name, the caller
+                    # said yes, and Sarah Jenkins's appointment was cancelled.
+                    # The caller confirmed a DATE, never a PERSON.
+                    #
+                    # A shared phone number is ordinary in physiotherapy — a
+                    # couple, a parent booking for a child, a carer — so the
+                    # same path cancels the wrong family member's appointment
+                    # with nobody aware. Placed BEFORE the reschedule and cancel
+                    # confirmation gates on purpose: there is no point asking
+                    # "shall I move it?" while we do not know whose "it" is.
+                    #
+                    # A gate rather than prompt wording because the write is
+                    # destructive and invisible to the caller. B-36 cause 1 is
+                    # the standing evidence that prompt wording alone does not
+                    # hold: the model rewords, and the guarantee evaporates.
+                    _lp_name = session.get("_lookup_patient_name") or "the patient"
+                    logger.warning(
+                        "[ms_llm] %s BLOCKED — ambiguous lookup, name not read "
+                        "back (B-42): name=%r matches>1",
+                        tool_name, _lp_name,
+                    )
+                    result = {
+                        "status": "identity_confirmation_required",
+                        "message": (
+                            f"There is more than one upcoming appointment on "
+                            f"this phone number, so you do not yet know which "
+                            f"person you are talking to. The appointment you "
+                            f"have selected is under the name {_lp_name}. Do "
+                            f"NOT cancel or move anything yet. Say that name to "
+                            f"the caller and ask them to confirm it is theirs — "
+                            f"for example \"I've got an appointment under "
+                            f"{_lp_name} — is that you?\". If they say it is not "
+                            f"them, call lookup_patient again with next=true to "
+                            f"step to the following match."
                         ),
                     }
                 elif tool_name == "reschedule_appointment" and not (

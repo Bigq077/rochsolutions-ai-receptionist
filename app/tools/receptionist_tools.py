@@ -6394,6 +6394,38 @@ def _match_gcal_event(events: List[Dict[str, Any]], args: Dict[str, Any],
     return None
 
 
+# ── B-42 — identity ambiguity on a phone-only lookup ────────────────────────
+# CAe74ceae7 (3 Aug 2026): the caller rang from +447502211207, the lookup
+# returned "match 1/13 name='Sarah Jenkins'", Susie read back only a day and a
+# time — "is that the right one?" — the caller said yes, and Sarah Jenkins's
+# appointment was cancelled. The caller confirmed a DATE, never a PERSON.
+#
+# On that call it was test data. The mechanism is not: a shared phone number is
+# ordinary in physiotherapy (a couple, a parent booking for a child, a carer),
+# and the same path cancels the wrong family member's appointment with nobody
+# aware. The lookup already reports `match_count` and `has_more` and supports
+# `next=true`; nothing was forcing them to be used.
+#
+# These two keys are the deterministic half of the fix. `_ambiguous` is set
+# whenever more than one upcoming appointment sits on the identifier, and
+# `_name_spoken` is cleared on every new match and re-set by llm_stream only
+# when the matched name actually reaches TTS. The write gate reads both.
+LOOKUP_AMBIGUOUS_KEY   = "_lookup_ambiguous"
+LOOKUP_NAME_SPOKEN_KEY = "_lookup_name_spoken"
+
+
+def _note_lookup_ambiguity(session: Dict[str, Any], total: int) -> None:
+    """Record whether the caller's identifier resolved to more than one person.
+
+    Called from BOTH lookup back-ends (Google Calendar and Acuity) so template
+    clinics and Theorem behave identically. `_name_spoken` resets here rather
+    than only on the first lookup: stepping to the next match with `next=true`
+    changes who we are talking about, so the name has to be spoken again.
+    """
+    session[LOOKUP_AMBIGUOUS_KEY] = total > 1
+    session[LOOKUP_NAME_SPOKEN_KEY] = False
+
+
 async def _lookup_patient_gcal(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     """Find an upcoming appointment on the clinic's Google Calendar by phone or
     name. Mirrors the Acuity lookup_patient contract (found / patient_name /
@@ -6411,7 +6443,12 @@ async def _lookup_patient_gcal(args: Dict[str, Any], session: Dict[str, Any]) ->
         session["_lookup_appointment_id"] = _id
         session["_lookup_appointment_datetime"] = start
         session["_lookup_appointment_type"] = svc
-        logger.info("[ms_tools] lookup_patient (gcal): match %d/%d name=%r id=%r", idx + 1, total, nm, _id)
+        _note_lookup_ambiguity(session, total)
+        logger.info(
+            "[ms_tools] lookup_patient (gcal): match %d/%d name=%r id=%r%s",
+            idx + 1, total, nm, _id,
+            " AMBIGUOUS — name must be read back (B-42)" if total > 1 else "",
+        )
         return {
             "found": True,
             "patient_name": nm,
@@ -6498,6 +6535,7 @@ async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) ->
         session["_lookup_appointment_id"] = _id
         session["_lookup_appointment_datetime"] = appt.get("datetime", "")
         session["_lookup_appointment_type"] = appt.get("type", "")
+        _note_lookup_ambiguity(session, total)
         logger.info(
             "[ms_tools] lookup_patient: match %d/%d name=%r appointment_id=%r",
             idx + 1, total, _nm, _id,
