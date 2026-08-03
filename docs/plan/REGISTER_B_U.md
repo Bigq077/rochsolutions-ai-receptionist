@@ -62,6 +62,7 @@ implying more confidence than exists.
 | Withdrawn same night | `B-29` (claimed the DVT grader knew half its question) | My claim, wrong — written from a truncated keyword list quoted in `B-20` rather than from `clinic.json`. **That quotation is now corrected too** |
 | **Unrecorded** | **`B-05`, `U-01`** | **See "Gaps" below** |
 | **FOLDED IN 3 Aug — were in NO register** | **`B-46`** `B-47` `B-48` `B-49` `B-50` `B-51` | Six live defects that existed only in `THEOREM_PORT_PLAN.md`, `FIX_QUEUE_PRE_DEMO.md`, a 25 Jul sweep note and the clinical-campaign status. **`B-46` is an open P1 on both live clinics and `main` already fixed it.** See the section above "Gaps" |
+| **FOUND BY DIALLING** | **`B-52`** | *"by the way"* booked as the surname **"Way"**. **Three weeks old, and eight test-only fixes shipped over it without finding it.** FIXED `dc974f6`. Read its closing note before shipping anything else untested |
 | New — plan written | `B-23` (reason re-asked when already given) | `PLAN_REASON_CAPTURE.md`. **Fired live in the F4 shape.** Owner decision open on F5 |
 
 ---
@@ -2690,6 +2691,81 @@ screen's vocabulary.
 The engine has **no negative-keyword support**, so this cannot be fixed in
 `clinic.json` today. Needs its own commit and its own measurement, and it pulls
 against F-032 — widening cauda's vocabulary is what made this reachable.
+
+### `B-52` · *"by the way"* was written to the calendar as the surname **"Way"** — **FIXED `dc974f6`**
+
+**Found by the first call placed after eight test-only fixes**, `CAb215dec5`,
+3 Aug, build `9032ee804f19`:
+
+```
+16:58:00  FINAL 'um my name is quentin by the way'
+16:58:02  [ms_conn v3] name persisted (normal path): 'Quentin Way'
+16:58:02  v3_phone_dtmf_active = True (name confirmed — phone collection phase)
+16:59:00  book_appointment patient_name: "Quentin Way"   -> ut7p0a17j71f…
+```
+
+**One fault, three symptoms — and the two downstream ones are the whole reason
+the call felt muddled:**
+
+| Symptom | Cause |
+|---|---|
+| The caller was **never asked their family name** | `Quentin Way` is a complete first+surname, so the surname step had nothing left to ask for |
+| The **phone was asked at a strange point** — before the reason was finished, before any slot | `name confirmed` armed the phone phase at turn 2, one log line later |
+| A real calendar event under a name never given | the write carried `patient_name: "Quentin Way"` |
+
+> **NOT a regression, and this was checked rather than assumed.** Reproduced
+> identically at `a1ef3dc` (12 Jul), `7dfc0c2` (18 Jul), `aa0b3bd` (31 Jul — the
+> last change to that file), `1fe8f7f` (2 Aug) and **`3af4bd8` (3 Aug 12:10, the
+> last commit verified on a live call)**. Three weeks old. Nobody had said *"by
+> the way"* to Susie before — **the call sheet's own fallback line supplied it.**
+
+#### Two independent faults — fixing either alone leaves a live hole
+
+1. **The preposition class was half-present.** `SURNAME_STOPWORDS` held `on`,
+   `with`, `for`, `from`, `to`, `of`, `as` — but not `by`, `at`, `in`. The same
+   accident the file already records for *"one present / six absent"*. This is
+   what produced **`'By'`** on the long-tail branch.
+2. **`_walk_particles_back` dropped leading tokens without checking them.**
+   Dropping is legitimate only for a **middle name** (`["james","rock"]` →
+   `"rock"`). Given `["by","the","way"]` it dropped `"by the"` and kept `"way"`
+   — and **`way` passes `ok()` on its own merits**: not a stopword, not a
+   contraction, not a false positive. **No word list reaches it.** The signal is
+   the company it keeps — `the` sits between the first name and the candidate,
+   and a real surname group never contains an interior stopword.
+
+**Deliberately not fixed by adding `way` to a list.** That is the §A4 pattern —
+an open-ended set of English words patched one live call at a time, already done
+four times for the phone affirmatives.
+
+**Wider than the call showed.** Measured against the pre-fix module:
+
+| Utterance | Before | After |
+|---|---|---|
+| *"um my name is quentin by the way"* | `'Way'` | `''` |
+| *"…by the way i've hurt my knee"* | `'By'` | `''` |
+| *"my name is quentin at the moment"* | `'Moment'` | `''` |
+| *"i'm sarah in a rush"* | `'In'` | `''` |
+
+**Not one control moved:** `Roch`, `De Silva`, `Van Der Berg`, `Bin Ahmed`,
+`O'Brien`, `Smith-Jones`, the dropped middle name, and trailing
+*"please"* / *"thanks"* are all unchanged. **Over-rejecting is the failure
+direction that matters here** — it sends the caller back round the surname loop,
+which `B-15` recorded being asked twice on a live call. Eleven controls pin it.
+
+29 tests. Suite 95 failed / 3440 passed against 95 / 3411 — failing node IDs
+diffed, identical; the 36 `NameCollector` reds did not move.
+
+> **What this row is really evidence for.** Eight fixes shipped on 3 Aug with a
+> green diff and no dial. The first call found a three-week-old defect that
+> broke the flow end to end, and none of the eight was implicated. **A diffed
+> failing set proves you broke nothing. It does not prove the call works.**
+> `B-52` is the cost of that distinction, and the reason the remaining fixes are
+> now blocked on dial time rather than on more code.
+
+**`A3` is the fix that generalises.** A surname read-back would have caught
+`Way` on this call, and catches the next mangling too — the register already has
+four on one caller's name. It remains an owner decision because the prompt
+forbids the read-back at two sites.
 
 ---
 
