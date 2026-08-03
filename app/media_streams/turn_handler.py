@@ -716,22 +716,79 @@ _FAMILY_RESTEER = {
 }
 
 
+def _norm_for_claim(text: str) -> str:
+    """Lower-case, DELETE apostrophes ("you're" -> "youre") so contractions
+    match, blank other punctuation, and pad so \\b patterns see word edges."""
+    norm = (text or "").lower().replace("'", "").replace("’", "")
+    return " " + re.sub(r"[^a-z0-9 ]+", " ", norm).strip() + " "
+
+
+def _declarative_part(text: str) -> str:
+    """The sentences of `text` that are NOT questions.
+
+    Gate 5f used to stand down on a `?` ANYWHERE in the text. That was correct
+    when the unit was assumed to be one sentence — but the unit is a
+    ResponseChunker chunk, and the chunker accumulates until MIN_WORDS (15).
+    A completion claim is shorter than that, so it is emitted in the SAME chunk
+    as the question that follows it, and the prompts *mandate* exactly that
+    shape:
+
+        "That's all done - your appointment has been cancelled.
+         Is there anything else I can help with?"   -> one chunk
+
+    Verified against the real chunker: both the cancel closing and a booking
+    claim followed by "Is there anything else..." emit as a single chunk, and
+    both were missed by every family. So the guard stood down on the one wording
+    the prompt guarantees. This is very likely why Gate 5f has never fired live
+    (see B-36 in docs/plan/REGISTER_B_U.md).
+
+    Dropping only the question sentences preserves the original intent — the
+    guard must never fire on a question — while letting the declarative claim
+    beside it be judged.
+
+    Reuses Gate 5g's `_SENTENCE_SPLIT_RE` deliberately, rather than declaring
+    another one. An earlier draft of this function defined its own with `\\s+`
+    instead of `\\s*`; at module scope that silently REBOUND the name for the
+    whole file, so Gate 5g stopped splitting the no-space-after-period form the
+    model produces ("...for you now.I need to book this in now...") and a
+    reasoning leak went unstripped. Caught by
+    tests/regression/test_reasoning_never_reaches_tts.py::CA2f0b0707. One
+    splitter, one definition.
+    """
+    parts = [p for p in _SENTENCE_SPLIT_RE.split(text or "") if p.strip()]
+    return " ".join(p for p in parts if "?" not in p).strip()
+
+
 def _false_write_claim(text: str, family: str) -> bool:
     """True if `text` CLAIMS a write of `family` is complete.
 
-    Normalisation mirrors the screening layer: lower-case and DELETE apostrophes
-    ("you're" -> "youre") so contractions match, then blank other punctuation.
-    A question (`?`) or any negation/offer/intent cue stands the guard down.
+    A question stands the guard down for that SENTENCE; any negation/offer/
+    intent cue anywhere in the text stands it down entirely.
+
+    The negation check deliberately still runs over the FULL text, including
+    question sentences, rather than only the declarative part. That is the
+    conservative direction: it preserves every stand-down this guard already
+    had, so no line that passes today can start being stripped. This gate's
+    documented failure mode is the over-fire — it stripped a real confirmation
+    and abandoned a completed booking once (Gate 5c, 2026-06-12) — and the bias
+    is stated in its own header: an over-fire deletes real speech.
+
+    The cost is that "Shall I book that in? That's all booked." still stands
+    down, because "shall i" appears in the chunk. That shape is not one the
+    prompts teach, and accepting it is what keeps this change incapable of
+    producing a new false positive.
     """
-    if not text or "?" in text:
+    if not text:
         return False
     patterns = _FAMILY_CLAIM_RES.get(family)
     if not patterns:
         return False
-    norm = text.lower().replace("'", "").replace("’", "")
-    norm = " " + re.sub(r"[^a-z0-9 ]+", " ", norm).strip() + " "
-    if _FALSE_CONFIRM_NEG_RE.search(norm):
+    if _FALSE_CONFIRM_NEG_RE.search(_norm_for_claim(text)):
         return False
+    declarative = _declarative_part(text)
+    if not declarative:
+        return False
+    norm = _norm_for_claim(declarative)
     return any(p.search(norm) for p in patterns)
 
 
