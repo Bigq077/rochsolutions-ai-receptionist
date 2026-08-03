@@ -1215,12 +1215,39 @@ def _build_claude_tools(session: Dict[str, Any] = None) -> list:
     return list(build_tool_schemas(cid))
 
 
-def _build_openai_tools(session: Dict[str, Any] = None) -> list:
-    """Return tool definitions in OpenAI function-calling format, per clinic."""
+_GPT_CONSTRAINT_PREFIX = (
+    "You are a voice receptionist. Keep responses under 2 sentences. "
+    "Never start with: Of course, Absolutely, Certainly, Sure, Great, "
+    "No problem, No worries. "
+    "Never say: take your time, no rush, bear with me, just a moment, "
+    "I'd be happy to, I'd be glad to, go ahead whenever you are ready. "
+    "Respond directly and naturally.\n\n"
+    # B-45 — steering half. The tools are withheld and the dispatch
+    # refuses, so this is not what makes the guarantee; it is what stops
+    # the caller hearing a dead end. Without it the model discovers it
+    # cannot book only by trying.
+    "IMPORTANT: you cannot make, move or cancel any appointment on this "
+    "call — the booking system is temporarily unreachable. Never say "
+    "anything has been booked, moved or cancelled. If the caller wants "
+    "any of those, take their name and number and tell them the clinic "
+    "will call straight back to confirm, or offer to put them through.\n\n"
+)
+
+
+def _build_openai_tools(
+    session: Dict[str, Any] = None, allow_writes: bool = True
+) -> list:
+    """Return tool definitions in OpenAI function-calling format, per clinic.
+
+    `allow_writes=False` withholds the three calendar-mutating tools. Used by the
+    GPT fallback — see `_gpt_fallback` for why a degraded path must not write.
+    """
     from app.tools.receptionist_tools import build_tool_schemas
     cid = (session or {}).get("clinic_id")
     tools = []
     for tool in build_tool_schemas(cid):
+        if not allow_writes and tool["name"] in _WRITE_TOOL_FAMILIES:
+            continue
         tools.append({
             "type": "function",
             "function": {
@@ -3384,19 +3411,12 @@ class LLMStream:
         # output at minimum respects the banned phrase rules even when Claude
         # is unavailable.  The prefix is invisible to the conversation history
         # — it only modifies the system message sent to OpenAI.
-        _GPT_CONSTRAINT_PREFIX = (
-            "You are a voice receptionist. Keep responses under 2 sentences. "
-            "Never start with: Of course, Absolutely, Certainly, Sure, Great, "
-            "No problem, No worries. "
-            "Never say: take your time, no rush, bear with me, just a moment, "
-            "I'd be happy to, I'd be glad to, go ahead whenever you are ready. "
-            "Respond directly and naturally.\n\n"
-        )
 
         try:
             from openai import AsyncOpenAI
             gpt_client   = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=15.0)
-            tools        = _build_openai_tools(session)
+            # B-45: the degraded path is not allowed to mutate the calendar.
+            tools        = _build_openai_tools(session, allow_writes=False)
             oai_messages = [
                 {"role": "system", "content": _GPT_CONSTRAINT_PREFIX + system_prompt},
             ] + list(messages)
@@ -3445,7 +3465,54 @@ class LLMStream:
                     except Exception:
                         args = {}
                     try:
-                        if tool_name == "escalate_to_claude":
+                        if tool_name in _WRITE_TOOL_FAMILIES:
+                            # ── B-45: no calendar writes on the degraded path ──
+                            # This loop calls TOOL_EXECUTORS directly. It never
+                            # reaches _execute_tools, so NONE of the write gates
+                            # apply here: not FM-01's booking confirmation, not
+                            # the surname or phone backstops, not FM-23's move
+                            # and cancel consent checks, and not B-42's identity
+                            # check. A cancellation on this path could not tell
+                            # whose appointment it was destroying.
+                            #
+                            # The right degraded behaviour is not "write without
+                            # gates" — it is the one CLAUDE.md §6 bar 3 already
+                            # specifies: when the LLM is down, produce a
+                            # controlled outcome (take a message, promise a
+                            # callback, transfer), never a hallucinated
+                            # confirmation. A missed booking is recoverable by a
+                            # callback; a wrong cancellation is not.
+                            #
+                            # Belt and braces: these tools are also withheld from
+                            # the schema (`allow_writes=False`), so a well-behaved
+                            # model never asks. This branch is what holds if the
+                            # schema is ever widened again, and it is the reason
+                            # the guarantee does not rest on a tool list.
+                            #
+                            # Routed through _note_write_result on purpose: that
+                            # arms Gate 5f for this family and attaches the
+                            # do-not-claim rule, and this path DOES sanitise its
+                            # reply through Gate 5 — so the model cannot narrate
+                            # a booking it was just refused.
+                            logger.error(
+                                "[ms_llm] %s REFUSED on the GPT fallback path — "
+                                "no write gates exist here (B-45) call_sid=%s",
+                                tool_name, session.get("call_sid"),
+                            )
+                            result = _note_write_result(session, tool_name, {
+                                "status": "unavailable_degraded_mode",
+                                "message": (
+                                    "The booking system cannot be changed on "
+                                    "this call. Do NOT say anything has been "
+                                    "booked, moved or cancelled. Tell the caller "
+                                    "you are having trouble reaching the diary, "
+                                    "take their name and number, and promise the "
+                                    "clinic will call them straight back to "
+                                    "confirm — or offer to put them through to "
+                                    "someone using transfer_to_human."
+                                ),
+                            })
+                        elif tool_name == "escalate_to_claude":
                             result = await self._exec_escalate(args, session)
                         else:
                             executor = TOOL_EXECUTORS.get(tool_name)
