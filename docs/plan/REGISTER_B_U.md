@@ -1285,7 +1285,98 @@ Three things this does **not** do, all deliberate:
    own read-backs at `:709`, `:958`, `:1094` using an ambiguous `[Name]`. The
    Theorem port must carry this by hand — a cherry-pick will not.
 
-Not verified on a call. `A3` stays open until Call 1 of the suite is dialled.
+#### VERIFIED LIVE — `CA74b20e5dff8d3b4734e5a0be016b537f`, build `914cda38cf9f`
+
+Call 1 of the suite, first dial, and the arming condition held: STT mangled the
+surname again, so the fix was tested against a real mis-hear rather than a clean
+one.
+
+```
+FINAL → queue: "i'm here to see quentin rook"          <- STT mangled it
+read-back:     "So that's Quentin Rook, Monday the 10th…"
+caller:        "it's not quentin rook it's quentin roch r-o-c-h"
+read-back:     "Thanks for that — so that's Quentin Roch, Monday the 10th…"
+book_appointment  patient_name: "Quentin Roch"  ->  am79qq8nl9v6rmbc10nnrdlq4s
+```
+
+The whole chain broke for the first time: mangled → **spoken** → caught by the
+caller → corrected → correct name on the calendar. On `CA451f16` the identical
+mangle reached the calendar unheard.
+
+Behaviour matched Step 9a exactly — correction taken silently, whole summary
+re-stated once, **no spelling loop and no standalone "is that right?"**. That is
+the B-15 direction the prohibition existed to protect, and it held.
+
+Two things this call did **not** show, stated so they are not assumed:
+
+- **The early-name path was never exercised.** No name was given at turn 1, so
+  the flow ran the canonical Step 7 order (slot → name → phone → read-back) with
+  **zero blocked tool calls** — no `surname_required`, no *"Just locking that in
+  now…"* before a question. Worst turn 3909 ms against 7585 ms on `CA451f16`.
+  Change **A** remains untested and unfixed.
+- **The correction never reached session state** — see `A3b` below.
+
+---
+
+### `A3b` · the corrected name reached the calendar and nothing else
+
+Same call. The row disagreed with the calendar:
+
+```
+book_appointment  patient_name: "Quentin Roch"   -> calendar  ✓
+📊 Row built —    name=Quentin Rook                           ✗
+```
+
+**Mechanism.** The name is kept in two places and the consumers disagree about
+which to read. [actionable_summary.py:229](../../app/tools/actionable_summary.py)
+checks `session["patient_name"]` **first**, falling back to `collected["name"]`.
+The booking executors updated only `collected["name"]`. And the read-back
+upgrade at [connection.py:10376](../../app/media_streams/connection.py) had
+already latched `session["patient_name"] = "Quentin Rook"`:
+
+```python
+" " in _rb_full and (not _cur_name
+                     or (" " not in _cur_name        # <- stored name must be FIRST-NAME-ONLY
+                         and _rb_full.lower().startswith(_cur_name.lower())))
+```
+
+A one-way ratchet: once a two-token name is stored, no later read-back can
+change it. The first surname spoken wins permanently. **That is deliberate** —
+*"only ever EXTEND the existing first name"* — and it is what stops a model
+paraphrase overwriting a surname captured from the caller's own clean
+transcript. **Left alone.** Relaxing it is a different change (Option A) with the
+risk running the wrong way, and `test_the_ratchet_is_deliberately_left_alone`
+pins it so a future relaxation forces a re-review of this fix.
+
+**Fixed** by aligning session with the name that actually reached the calendar,
+downstream of every write gate: `_sync_booked_patient_name()` writes both
+records together.
+
+**It was four executors, not one.** Scoping this to `_exec_book_appointment`
+would have fixed the Google Calendar clinic and left it live for the two the
+port plans are about:
+
+| Executor | Path |
+|---|---|
+| `_exec_book_appointment` (calendar branch) | JV / Google Calendar |
+| `_exec_book_appointment` (manual-followup branch) | no event exists — the row IS the record |
+| `_book_appointment_acuity` | Acuity clinics |
+| `_book_appointment_provisional` | Vital Edge — practitioner has not accepted yet, so the row is the ONLY record of who asked |
+
+**One earlier claim of mine was wrong and is withdrawn:** I said the confirmation
+SMS would also carry the mangled name. It would not —
+[sms_templates.py:107](../../app/sms_templates.py) reads `collected["name"]`,
+which the executors *did* update. The SMS was already correct; only the summary
+row (and Sheets, once `GOOGLE_SHEETS_ID` is set) carried the wrong name.
+
+Test `tests/regression/test_a3b_booked_name_reaches_every_record.py` — 14
+assertions, **7 fail pre-fix** across all three executors in both directions;
+the helper tests skip rather than error pre-fix, by lazy `getattr`, so nothing
+fails for the wrong reason. Suite A/B: 95 failed / 3454 passed before AND after,
+failing sets diffed and **identical**.
+
+Not separately dial-verifiable — it is invisible to the caller. It shows up on
+the next real booking's summary row.
 
 ### Verified working on a live call for the first time
 

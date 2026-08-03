@@ -2523,7 +2523,8 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
 
         # Update session
         session.setdefault("collected", {})
-        session["collected"]["name"] = patient_name
+        # Acuity path — same sync as the calendar path; see the helper.
+        _sync_booked_patient_name(session, patient_name)
         session["collected"]["phone"] = phone
         session["collected"]["service"] = service
         session["collected"]["slot"] = args["slot_iso"]
@@ -3478,6 +3479,51 @@ def _reconcile_booking_phone(
     if _phone_key(_gate_text(args.get("phone"))) == _ref_key:
         return None, "match"
     return _ref, "mismatch"
+
+
+def _sync_booked_patient_name(session: Dict[str, Any], patient_name: str) -> bool:
+    """Write the booked name to BOTH records session keeps of it.
+
+    The name lives in two places — `collected["name"]` and the top-level
+    `patient_name` — and consumers disagree about which to read.
+    `actionable_summary.py:229` checks `session["patient_name"]` FIRST and only
+    falls back to `collected["name"]`, so once the two drift the call-summary
+    row names the wrong patient.
+
+    They drifted on `CA74b20e5dff8d3b4734e5a0be016b537f` (3 Aug 2026, build
+    `914cda38cf9f`). STT heard "rook" for Roch; the A3 read-back said it aloud;
+    the caller corrected it; `book_appointment` wrote **Quentin Roch** to the
+    calendar. But the read-back upgrade at `connection.py:10376` had already
+    latched `session["patient_name"] = "Quentin Rook"` and, by design, refuses
+    to overwrite a name that already carries a surname. Calendar said Roch, the
+    row said Rook.
+
+    Aligning session with the name that actually reached the calendar closes
+    that divergence for **every** cause, and does it downstream of all the write
+    gates rather than adding another guess about which speaker to believe. It
+    does NOT unlatch the read-back ratchet — see `A3` in `REGISTER_B_U.md` for
+    why that guard is deliberately left alone.
+
+    Every booking executor must route through this. There are four, and all
+    four had the same bare assignment: `_exec_book_appointment` (two branches —
+    Google Calendar and manual-followup), `_book_appointment_acuity`, and
+    `_book_appointment_provisional`. The provisional path is Vital Edge's, where
+    the appointment is not confirmed until the practitioner accepts, so the
+    summary row is the only record of who asked.
+
+    The asymmetry is deliberate. `collected["name"]` is assigned
+    unconditionally because that is the pre-existing behaviour at all four call
+    sites and this fix is not authorised to change it. `patient_name` is guarded
+    on truthiness because writing an empty string there would be a NEW way to
+    lose a name that every reader preferring that key would then miss.
+
+    Returns True when the top-level key was written.
+    """
+    session.setdefault("collected", {})["name"] = patient_name
+    if patient_name:
+        session["patient_name"] = patient_name
+        return True
+    return False
 
 
 def _is_placeholder_name(n: str) -> bool:
@@ -4472,7 +4518,9 @@ async def _book_appointment_provisional(
 
     # Session state — mark provisional and SUPPRESS the caller confirmation SMS.
     session.setdefault("collected", {})
-    session["collected"]["name"] = patient_name
+    # Provisional (Vital Edge): the practitioner has not accepted yet, so the
+    # summary row is the ONLY record of who asked — a stale name loses them.
+    _sync_booked_patient_name(session, patient_name)
     session["collected"]["phone"] = phone
     session["collected"]["service"] = service
     session["collected"]["slot"] = start_dt.isoformat()
@@ -4941,7 +4989,9 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
             logger.warning("book_appointment (no calendar) Sheets log failed (non-fatal): %r", e)
 
         session.setdefault("collected", {})
-        session["collected"]["name"] = patient_name
+        # Manual-followup branch: no calendar event exists, so the summary row
+        # IS the record and a stale name here is worse, not better.
+        _sync_booked_patient_name(session, patient_name)
         session["collected"]["phone"] = phone
         session["collected"]["service"] = service
         session["collected"]["slot"] = start_dt.isoformat()
@@ -5068,7 +5118,8 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
 
     # Update session
     session.setdefault("collected", {})
-    session["collected"]["name"] = patient_name
+    # Both records of the name, written together so they cannot drift.
+    _sync_booked_patient_name(session, patient_name)
     session["collected"]["phone"] = phone
     session["collected"]["service"] = service
     # Record the booking modality ("bolton"/"remote"/"home_visit") so build_sms()
