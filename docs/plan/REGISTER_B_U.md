@@ -41,7 +41,86 @@ implying more confidence than exists.
 
 ---
 
-## `B-53` · the L2 classifier's first call was the caller's — **FIXED `80d7234`**
+## `B-54` · **a real calendar event was cancelled that the caller did not mean** — steering **FIXED `c273475`**, gate **STILL OPEN**
+
+**P1. Found live, 2026-08-03 22:46, `CA156fa25206ffa7b15cb3474b617c8672`, build
+`68077af59dd3`.** The caller rang to cancel the appointment they had booked four
+minutes earlier (15 Aug 11:45).
+
+```
+lookup_patient (gcal): match 1/15 name='Quentin Rock' AMBIGUOUS — name must be read back (B-42)
+tool result: appointment_time "2026-08-05T20:30:00+01:00"
+B-42: looked-up name 'Quentin Rock' was spoken to the caller — identity gate satisfied
+cancel_appointment → success
+cancelled_event: "Initial Assessment (Musculoskeletal) for Marcus — Quentin Rock"
+was_at: 2026-08-05T20:30:00+01:00
+```
+
+**`B-42` answers "is this the right PERSON".** All 15 matches were the *same*
+person, so saying the name settled nothing — the caller said *"yes it is"* to
+their own name and match #1 was cancelled. There was no path for **"that's me,
+but not that appointment"**, and nothing told the caller the other 14 existed.
+
+> **This is NOT `B-42` recurring.** `B-42` is the shared-phone /
+> different-person case (a couple, a parent, a carer) and its gate worked
+> exactly as designed. `B-54` is the same-person / multiple-appointments case,
+> which the gate does not model at all. A patient with an initial plus a
+> follow-up — entirely routine — hits it.
+
+### Fixed — the steering half (`c273475`)
+
+Both copies of the instruction (`_LOOKUP_AMBIGUOUS_RULE` and the
+`identity_confirmation_required` refusal in `llm_stream`) now:
+
+1. **state the count** — *"say how many there are; a caller cannot ask for a
+   different one if they do not know others exist"*;
+2. require the **day and time** alongside the name;
+3. extend the `next=true` escape from *"if they say it is not them"* to
+   **"…OR that it is not the appointment they meant"**.
+
+The match count is now on the session (`LOOKUP_MATCH_COUNT_KEY`) — the refusal
+message lives in `llm_stream` and only has the session, which carried the
+ambiguity *boolean* but not the *number*.
+
+Every `B-42`/`B-44` literal survives; all **34** existing tests pass unchanged.
+Weakening the shared-phone guarantee to make room would have been a worse defect
+than the one being fixed.
+
+### 🔴 STILL OPEN — the gate half
+
+`_note_lookup_name_spoken` ([llm_stream.py](../../app/media_streams/llm_stream.py))
+flips the `B-42` gate **the moment any name token reaches TTS** — it never checks
+that the caller *agreed*, and never considers which appointment. That is what
+actually let this cancel through, and steering only lowers the odds.
+
+Closing it is a behaviour change on the **destructive** path and needs its own
+measurement against the shared-phone case. `test_the_gate_half_is_still_open`
+asserts the current behaviour so the gap is not mistaken for closed.
+
+**Reaches every clinic, including Theorem.** Not screening-scoped, not
+clinic-scoped.
+
+---
+
+## `B-53` · the L2 classifier's first call was the caller's — **FIXED `80d7234`**, **VERIFIED LIVE**
+
+> **Production-verified 2026-08-03 22:39, `CA33ee0de5`, build `68077af59dd3`.**
+> Same phrase, same first-call-after-deploy conditions, opposite outcome:
+>
+> ```
+> FINAL: 'um go for it'
+> [ms_llm] L2 classifier: 'um go for it' -> yes
+> tool result: success=true, event_id=78cfm5a9e2mr72hr6k738m48fc
+> ```
+>
+> **Asked once.** No `L2 classifier failed`, no re-steer, booking landed on the
+> first answer.
+>
+> ⚠️ **Margin is thinner than it looks:** the warm round-trip measured **~0.92 s**
+> against a **1.5 s** budget (`BOOK_CLASSIFIER_TIMEOUT_S`). ~60% utilisation. If
+> `L2 classifier failed` is ever seen on a **warm** instance, raise the budget —
+> do not blame the prewarm.
+
 
 **Found on a live call, 2026-08-03 22:22, `CA3a6cfb84`, build `8e12aafe8b39`.**
 
@@ -2350,6 +2429,40 @@ and it should follow the hygiene batch rather than precede it.
 ---
 
 ## Track B — ~~blocked on an owner decision~~ — **DECIDED AND SHIPPED `8b06879`, 3 Aug**
+
+### ⚠️ CORRECTION — the Gate 5f `?` fix (`a4c267d`) was justified on an example that does not occur
+
+**Recorded 2026-08-04 against `CA156fa25`.** The commit and the `B-47` write-up
+claimed the mandated cancel closing disabled Gate 5f, because
+`_false_write_claim` stood down on any `?` and the prompts require *"Is there
+anything else I can help with?"* after the cancellation claim.
+
+**In the live pipeline that sentence never reaches Gate 5f.** Gate 5b strips it
+first — `is_there_anything_else` is a banned-phrase pattern, and the call log
+shows it plainly:
+
+```
+[ms_gate5] removed banned phrase (is_there_anything_else)
+synthesise_chunk: "That's all done — your appointment has been cancelled."
+```
+
+**Why the analysis was wrong:** the reachability was tested by feeding raw
+chunker output straight into `_false_write_claim`, instead of through
+`sanitise_response`, where Gate 5b runs first. Wrong harness, so a stripped
+sentence was treated as if it survived.
+
+**What stands:** the fix itself is sound and measured — 224 guard tests, no
+over-fire across three live calls. It still closes the class for any
+claim-beside-a-question shape the banned-phrase list does **not** cover. Its
+real-world reachability is simply much lower than claimed, and the specific
+cancel-closing example was already handled upstream.
+
+**Generalises:** when measuring whether a gate sees some text, run the text
+through the whole pipeline, not the one predicate under test. See
+[[obs-transcripts-are-raw-not-spoken]] for the same error in the other
+direction.
+
+---
 
 ### `B-19` / `B-07` · the filler is one-shot, so an upstream spike becomes bare silence — **FIXED `8b06879`**
 
