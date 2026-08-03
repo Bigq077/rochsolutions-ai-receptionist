@@ -20,19 +20,22 @@ Just as a mathematical theorem combines principles for a proven solution, Theore
 - Booking window: up to 6 months in advance
 - Bank holidays: closed on all UK bank holidays
 - Some clients request a specific practitioner:
-  - Mark: Monday / Tuesday / Wednesday
-  - Leanne: Thursday
+  - Mark: Alcester Monday / Tuesday / Wednesday / Friday; Redditch Thursday
+  - Leanne: Alcester Thursday evenings only (not available at Redditch)
 - Where possible, book directly. If needed, collect a short narrative for the clinic.
 - Insurance referrals always require manual approval.
 - All appointments are 50 minutes.
 
 ## Pricing & policies
-- Physiotherapy assessment: £75 (50 minutes)
-- Physiotherapy follow-up: £75 (50 minutes)
+- Physiotherapy assessment: £85 (50 minutes)
+- Physiotherapy follow-up: £85 (40 minutes)
 - Remedial rehabilitation: £65 (50 minutes)
 - Prescribing consultation: £12.50
-- Acupuncture: £75 (50 minutes)
-- Psychotherapy: £75 (50 minutes)
+- Acupuncture: £85 (50 minutes)
+- Psychotherapy: £85 (50 minutes, Alcester only)
+- Standalone shockwave or Class IV Laser session: £130 (30 minutes)
+- Package of 4 combined shockwave and Class IV Laser sessions: £468
+- Wellness and Stress Relief Massage with In-light Therapy: £85 (60 minutes, Alcester only)
 - Laser therapy / shockwave therapy specialist equipment surcharge: £45 when used during a session
 - Cancellation policy: 24 hours notice required, otherwise full fee applies
 - Clients are sent a text message with fees.
@@ -112,7 +115,7 @@ At Theorem, acupuncture is offered as part of a broader treatment plan rather th
 ---
 
 ### Psychotherapy
-**For:** New and returning patients | **Length:** 50 minutes
+**For:** New and returning patients | **Length:** 50 minutes | **Price:** £85 | **Available:** Alcester only
 
 Our psychotherapy service provides a safe, confidential space for clients to explore their thoughts and emotions. Using techniques that can include hypnotherapy and spiritual healing, sessions focus on reducing stress, improving mental well-being, and building coping strategies — helping clients navigate life's challenges and find a healthier balance.
 

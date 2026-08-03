@@ -48,13 +48,16 @@
     "practitioners": [
       {
         "name": "Mark",
-        "days_available": ["Monday", "Tuesday", "Wednesday"],
-        "notes": "Some clients specifically want Mark."
+        "role": "Founder, Physiotherapist & Prescriber, injection therapy",
+        "days_available": ["Monday", "Tuesday", "Wednesday", "Friday"],
+        "redditch_days_available": ["Thursday"],
+        "notes": "Some clients specifically want Mark. Alcester Mon/Tue/Wed/Fri; Redditch Thursday."
       },
       {
         "name": "Leanne",
         "days_available": ["Thursday"],
-        "notes": "Some clients specifically want Leanne."
+        "redditch_days_available": [],
+        "notes": "Some clients specifically want Leanne. Alcester Thursday evenings only; not available at Redditch."
       }
     ],
     "booking_notes": [
@@ -83,7 +86,7 @@
       "description": "During our physiotherapy assessment (typically 50 minutes to an hour), we take a holistic approach. We evaluate mobility and strength and also consider emotional well-being through a psychotherapeutic lens. We identify the injury or issue and collaboratively formulate a tailored treatment plan, which may include rehabilitation exercises, manual therapy and soft tissue work. We can incorporate advanced interventions such as shockwave therapy, acupuncture, or Class IV Laser therapy for a personalised, comprehensive path to recovery or management.",
       "pre_booking_notes": "If you can, bring shorts or wear loose clothing — but don’t worry if you can’t.",
       "pricing": {
-        "base_price_gbp": 75,
+        "base_price_gbp": 85,
         "surcharges": {
           "laser_or_shockwave_if_used_gbp": 45
         }
@@ -92,12 +95,12 @@
     {
       "service_id": "physio_followup",
       "name": "Physiotherapy - Follow-up Session",
-      "typical_duration_minutes": 50,
+      "typical_duration_minutes": 40,
       "for_patients": ["New", "Returning", "Both"],
       "description": "In our physiotherapy follow-up sessions, we track progress and adjust your treatment plan as needed. We re-evaluate mobility, strength and overall well-being, ensuring interventions (exercises, manual therapy, or advanced techniques) are fine tuned for optimal recovery. Each follow-up is a collaborative checkpoint with continued support and refinement to keep you steadily on track. If we determine you need a specialist (such as a surgeon or GP), we facilitate referral and support onward care. If advanced imaging is needed (MRI or ultrasound), we help ensure a smooth path to the best possible treatment.",
       "pre_booking_notes": "If you can, bring shorts or wear loose clothing — but don’t worry if you can’t.",
       "pricing": {
-        "base_price_gbp": 75,
+        "base_price_gbp": 85,
         "surcharges": {
           "laser_or_shockwave_if_used_gbp": 45
         }
@@ -130,7 +133,7 @@
       "for_patients": ["Both"],
       "description": "Shockwave therapy uses targeted sound waves to stimulate healing in tissues, helping reduce pain and promote recovery — especially for chronic conditions like tendon issues.",
       "pricing": {
-        "base_price_gbp": 75,
+        "base_price_gbp": 85,
         "surcharges": {
           "shockwave_surcharge_gbp": 45
         }
@@ -143,7 +146,7 @@
       "for_patients": ["Both"],
       "description": "Class IV Laser Therapy is a cutting-edge technology that uses powerful laser light to alleviate pain, reduce inflammation, and speed up tissue repair — reaching deep into your body for advanced healing.",
       "pricing": {
-        "base_price_gbp": 75,
+        "base_price_gbp": 85,
         "surcharges": {
           "laser_surcharge_gbp": 45
         }
@@ -156,7 +159,7 @@
       "for_patients": ["Both"],
       "description": "Acupuncture is an ancient practice where fine needles are placed at specific points to help balance and stimulate the flow of energy (Qi) throughout the body. By restoring this natural flow, it can promote healing, reduce pain, and improve overall well-being.",
       "pricing": {
-        "base_price_gbp": 75
+        "base_price_gbp": 85
       }
     },
     {
@@ -164,9 +167,10 @@
       "name": "Psychotherapy",
       "typical_duration_minutes": 50,
       "for_patients": ["Both"],
-      "description": "Psychotherapy provides a safe space to explore thoughts and emotions. Using techniques such as hypnotherapy and spiritual healing, it aims to reduce stress, enhance mental well-being, and foster coping strategies — empowering clients to navigate challenges and achieve balance.",
+      "available_locations": ["alcester"],
+      "description": "Psychotherapy provides a safe space to explore thoughts and emotions. Using techniques such as hypnotherapy and spiritual healing, it aims to reduce stress, enhance mental well-being, and foster coping strategies — empowering clients to navigate challenges and achieve balance. Available at our Alcester clinic only.",
       "pricing": {
-        "base_price_gbp": 75
+        "base_price_gbp": 85
       }
     }
   ],
