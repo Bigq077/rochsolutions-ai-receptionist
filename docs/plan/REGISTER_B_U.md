@@ -253,6 +253,58 @@ patient.
 > breaks. `CALL_SUITE_2026-08-02.md` Call 7 turn 3 has been rewritten to make
 > that the explicit fail condition. **This needs a dial.**
 
+### `B-37` · "uh go ahead" was dropped before the LLM ever saw it — NEW, **FIXED** `38dd929`
+
+Found on the `B-36` verification call itself. `CA8d90deb26327b97d8b6f396e55b63272`,
+3 Aug 09:38:53, build `e61c8f805d6e`. Susie asked *"Shall I go ahead and move it
+for you?"*; the caller said **"uh go ahead"**:
+
+```
+09:38:43  tts: 'Shall I go ahead and move it for you?'
+09:38:53  FINAL → queue: 'uh go ahead'
+09:38:53  [ms_conn] slot fragment ignored — re-arming: 'uh go ahead'
+09:39:03  WATCHDOG_FIRE prompt='Still with you — which of those would you like?'
+09:39:11  FINAL → queue: 'um i said go ahead and move it for me'   <- caller repeats
+```
+
+Three words, none in `_COMMUNICATIVE_WORDS`, so `_is_short_meaningless_fragment`
+([connection.py:414](../../app/media_streams/connection.py)) discarded it inside
+the Spec H slot guard. It never reached the LLM — no `iteration=1`, no tool call.
+The watchdog then re-asked the **wrong question** (a SLOT re-ask, when the
+outstanding question was the move CTA). ~18 s, and the caller had to repeat
+themselves. It did complete on the retry, so it reads as clunky rather than
+broken — which is why it had not been caught.
+
+**Why booking never hit it.** The Spec J bypass one branch up is armed by
+`_NAME_REQUEST_PHRASES`, and booking asks for a name after slot selection. A
+reschedule already knows the patient from `lookup_patient`, never asks for a
+name, so `post_slot_confirmation_pending` was never set and the slot map stayed
+live straight through the move CTA (`slot map active — time_selection` is still
+being logged at 09:39:17).
+
+> **It is NOT the affirmation verdict, and the obvious fix is forbidden.** The
+> first diagnosis — widen the accepted affirmatives — was wrong twice. The write
+> gates use `_book_reply_verdict`, not `_book_reply_is_affirmative`; L1 already
+> settles *"go ahead"* as yes and returns `'unsure'` for *"go for it"*, handing it
+> to the L2 classifier built for that exact phrase (`_book_verdict_deterministic`
+> names it, and the booking it lost on `CA7e389a47`). And adding *"go for it"* to
+> `fast_path._YES_PATTERNS` would make *"don't go for it"* **book** —
+> `test_the_shared_yes_patterns_were_not_edited` forbids it by name. Nothing in
+> the verdict layer needed changing. **Anchor before scheduling: the symptom
+> pointed at the confirmation logic and the cause was two layers upstream.**
+
+**Fix:** a fourth arm on the slot guard — when a write confirmation is
+outstanding, read via the gates' own predicates so it cannot drift from what the
+gate accepts, anything that is not pure disfluency reaches the LLM. Ordered
+before both the fragment drop and Spec AJ's clarify, both pinned. A routing
+decision, not a safety one: dropping is the dangerous act, and passing to the LLM
+is safe because the write gate still adjudicates.
+
+Test `tests/regression/test_b37_write_cta_survives_slot_guard.py`, 45 cases.
+**Not yet verified on a live call.**
+
+---
+
 ### `B-36` · a phantom reschedule — the write was BLOCKED and Susie said it happened
 
 **NEW, P1.** `CA23199d08907234dddb7d2167fb23753c`, 3 Aug 01:04, build
