@@ -5,15 +5,27 @@ Verifies **both causes** of `B-36` on a live call. Everything in `e387aac` and
 
 | | |
 |---|---|
-| Build to expect | **`e61c8f805d6e`** |
 | Service | `low-latency-joint-venture` (the `latency-eval` branch) |
 | Number | `+447366263180` |
 | Clinic | `jv_v1` |
 
 **Read the SHA from the Render log, not `/health`.** `/health` returns a
 hardcoded `"version": "1.0.0"` and cannot report a commit. The only proof of what
-is running is `[build_info] running build e61c8f805d6e` at call cleanup. If it
-says anything else, the deploy has not landed — stop and wait.
+is running is `[build_info] running build <sha>` at call cleanup.
+
+**Do not hardcode the expected SHA here** — this sheet has already been through
+three builds, and a stale value tells you to stop when nothing is wrong. Get the
+expected value at dial time:
+
+```bash
+git rev-parse origin/latency-eval | cut -c1-12
+```
+
+If the log shows an older SHA the deploy has not landed yet — wait and re-dial.
+
+**As of the last push, that is `0577827d6837`** — which carries `B-36` cause 2
+(`e387aac`, `d5b257c`) *and* the `B-37` slot-guard fix (`38dd929`), so calls 1–3
+below and the `B-37` re-check can all be taken in one pass.
 
 This is the same service and clinic the original `CA23199d089` ran on, so these
 calls hit the exact configuration that produced the bug.
@@ -91,3 +103,27 @@ cherry-pick to `jv-v1-onboarding` and `vitaledge-onboarding`. Note **both**
 branches also lack cause 1 (`fe97b82`), so the port is three commits, onto files
 236–264 commits diverged — it is a conflict-resolution exercise with its own test
 run per branch, not a clean cherry-pick.
+
+---
+
+## Call 4 — `B-37`, added after call 1 exposed it
+
+Take this on any of calls 1–3, or on its own. At the move confirmation
+(*"Shall I go ahead and move it for you?"*) answer with **"go ahead"** — no
+"yes", no "yeah". Then try **"go for it"** on another call.
+
+**Expect:** the reply is heard first time. In the log you should see
+
+```
+[ms_conn] write CTA outstanding — bypassing slot guard for 'uh go ahead'
+```
+
+immediately followed by `[ms_llm] iteration=1` on the same utterance.
+
+**FAIL if:** `[ms_conn] slot fragment ignored — re-arming` appears for the reply,
+or the watchdog re-asks *"which of those would you like?"* — a slot re-ask when
+the outstanding question is the move CTA. That is B-37 unfixed.
+
+Note `"go for it"` takes a different path from `"go ahead"`: L1 returns
+`unsure` and the L2 classifier decides. Slightly slower, and worth hearing
+once — it is the phrase that lost a booking on `CA7e389a47`.
