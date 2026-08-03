@@ -1226,6 +1226,67 @@ verification → real record. It does not change `A3`'s scope. The parked
 `B-01`–`B-04` note stands — closing this is a **design reversal**, not an
 addition, and the reversal must name which of the two rules above it is undoing.
 
+#### Reversed 3 Aug — the read-back now carries the surname
+
+**Third instance, and the one that forced it.** `CA451f165085a33431137630a188ed871a`
+(build `8ac5ecf069e5`, 18:22–18:24) wrote `Quentin Rook` to Google Calendar event
+`94q9h39eo4n9qdm2o0eer81890` — the *same* mangling as call 1's
+`75rjjof4r3tfoldhu936cqei90`, eight hours after `B-52` fixed a different cause of
+the same outcome. Three wrong-surname calendar events now, from **three
+different causes**: the parser (`Way`), and STT twice (`Rook`, `Rook`). That is
+the argument the row was waiting for — the causes are unbounded, so no
+per-cause guard closes this. Only the read-back does.
+
+The proof that the surname was never spoken is in the chunk lengths, not the
+transcript: the turn-8 read-back TTS chunk is `len=83`, **byte-identical to the
+turn-6 chunk generated before any surname existed**, while `book_appointment`
+carried `patient_name="Quentin Rook"`.
+
+**The "both sites" count above was wrong — it was four mentions, three of which
+reach a booking.** Corrected inventory, and what was done to each:
+
+| Site | Was | Now |
+|---|---|---|
+| `NAME CONFIRMATION RULES` | *"NEVER plausibility-checked, confirmed, read back, or spelled"* | *"read back"* removed; **plausibility + spelling prohibitions kept verbatim** |
+| Step 7 | *"never read back, spell, or confirm the surname"* | narrowed to *"at this step"*; points forward to Step 9 |
+| Step 9 | *"State caller **first name**"*, example *"So that's James, …"* | full name; example *"So that's James Whitfield, …"* |
+| Step 9a | — | new: says the surname exactly once, bans a standalone *"is that right?"* and any spelling request, and names the correction path |
+| Waitlist/callback | *"read back the FIRST name only"* | **untouched** — different write family (§`B-36`), and it has no booking summary to carry a surname |
+
+Fixed in `clinic_template_prompt.py` only, with
+`tests/regression/test_a3_surname_is_read_back.py` (14 assertions; **8 fail on
+the pre-fix prompt**, 6 are invariants that must hold in both states).
+
+**Which rule is being reversed, named as the row demanded:** *"the surname is
+never read back"* — and **only** that one. *"Never plausibility-checked"* and
+*"never spelled"* survive intact, because they are what hold off the call-4
+surname loop this row's own point 2 warns about. Over-rejecting a surname costs
+more than mis-hearing one: it loops the caller (`B-15`, twice on a live call).
+
+Three things this does **not** do, all deliberate:
+
+1. **It does not change the collection order.** The surname is still discovered
+   by `book_appointment` returning `surname_required` *after* the caller has
+   said "go ahead" and heard *"Just locking that in now…"*. That is change **A**,
+   it is an engine change, and it carries a real regression — moving the surname
+   ahead of the phone step moves that turn **out from behind** the BUG-14 guard
+   at [llm_stream.py:2889](../../app/media_streams/llm_stream.py), which is the
+   only thing that stopped the model re-running `check_availability` on
+   `CA451f16` at 18:24:09. Split deliberately so a bad call names its own half.
+2. **The correction may not reach the stored name.** `_awaiting` at
+   [connection.py:1946](../../app/media_streams/connection.py) is true only when
+   Susie's **spoken** last turn contains `surname` / `last name` / `family name`
+   / `full name`. The read-back contains none of them, so at that turn a **bare**
+   corrected surname does not backfill — only an explicit cue (*"my surname is
+   Roch"*) does. The caller can now hear the error; whether the correction lands
+   is untested and is Call 3 of `CALL_SUITE_A3_VERIFY_2026-08-03.md`.
+3. **It does not reach `theorem` or `demo`.** Neither carries a `prompt_engine`
+   key, so both are served by the legacy `susie_system_prompt.py`, which has its
+   own read-backs at `:709`, `:958`, `:1094` using an ambiguous `[Name]`. The
+   Theorem port must carry this by hand — a cherry-pick will not.
+
+Not verified on a call. `A3` stays open until Call 1 of the suite is dialled.
+
 ### Verified working on a live call for the first time
 
 | What | Evidence |
