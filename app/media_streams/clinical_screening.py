@@ -359,6 +359,14 @@ _ORPHAN_STOPWORDS: frozenset = frozenset(
         "between", "anything", "something", "really", "sorry", "helps",
         "point", "right", "looking", "little", "sounds", "actually",
         "course", "please", "myself", "yourself", "better",
+        # "proper" — 3 Aug 2026, two live sightings in one call suite. The
+        # clinic's canned booking_offer is "…so Marcus can take a proper look?"
+        # and trauma_fracture's question opens "That sounds like a proper
+        # knock". So every booking CTA scored 1 of the 2 evidence words needed
+        # against a screen that was never asked. trauma_fracture has only four
+        # evidence words; one more generic collision and this logs a false
+        # ORPHAN — corrupting the exact metric B-20 is scored against.
+        "proper",
         # booking / scheduling vocabulary
         "morning", "mornings", "afternoon", "afternoons", "evening",
         "evenings", "tomorrow", "monday", "tuesday", "wednesday",
