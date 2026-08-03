@@ -39,7 +39,7 @@ implying more confidence than exists.
 | Withdrawn | `B-24` (claimed Layer 1 coverage gap) | My claim, wrong. Widening those triggers would manufacture `B-20` |
 | **Deferred to last** | `B-17`, `B-22` (the SMS family) | Owner decision 2 Aug. **`B-17` is worse than recorded — it has a second consumer.** Revisit warranted |
 | New from the 2 Aug sweep | `B-27` `B-28` `B-31` `B-30` | See the 2 Aug sweep section. `B-28` is root-caused by `B-31` |
-| **New from the 3 Aug sweep** | **`B-36`** **`B-33`** `B-34` `B-35` | **`B-36` is the P1: a reschedule write was BLOCKED and Susie announced success anyway — cause 1 fixed, cause 2 (Gate 5f's reschedule hole) OPEN and needs an owner decision.** `B-34` closed same night. **`B-33` — a name invented from Susie's own utterance, with DTMF phone collection armed behind it — is the most demo-audible thing open.** `B-35` is a Render env var |
+| **New from the 3 Aug sweep** | **`B-36`** **`B-33`** `B-34` `B-35` | **`B-36` was the P1: a reschedule write was BLOCKED and Susie announced success anyway — both causes now FIXED (`fe97b82`, `e387aac`, `d5b257c`), awaiting live-call verification.** `B-34` closed same night. **`B-33` — a name invented from Susie's own utterance, with DTMF phone collection armed behind it — is the most demo-audible thing open.** `B-35` is a Render env var |
 | New — blocks nothing, decides `B-20` | **`B-32`** (STT noise defeats Layer 1 triggers) | Two observed misses, both rescued by Layer 2. **Do not fix by adding keywords.** One safe 15-min config addition (`calves`) is separable |
 | Withdrawn same night | `B-29` (claimed the DVT grader knew half its question) | My claim, wrong — written from a truncated keyword list quoted in `B-20` rather than from `clinic.json`. **That quotation is now corrected too** |
 | **Unrecorded** | **`B-05`, `U-01`** | **See "Gaps" below** |
@@ -268,7 +268,8 @@ patient.
 
 `outcome='abandoned'`. Nothing moved. The caller was told it had.
 
-**Two independent causes. Only the first is fixed.**
+**Two independent causes. Both fixed 3 Aug — `fe97b82` (cause 1), `e387aac` +
+`d5b257c` (cause 2). Neither is verified on a live call yet.**
 
 #### Cause 1 — the CTA test was one literal — **FIXED**
 
@@ -292,7 +293,81 @@ independently, and a booking CTA cannot satisfy it (ask shape, no move verb).
 Test `test_move_confirmation_cta_survives_rewording.py`, 17 cases, including the
 verbatim line and the read-back statement that must NOT count as asking.
 
-#### Cause 2 — mapped 3 Aug. It is **five** faults, not one — **OPEN**
+#### Cause 2 — mapped 3 Aug, **FIXED 3 Aug** — `e387aac` (2d) + `d5b257c` (2a/2b/2c/2e)
+
+> **Shipped as mapped, in the order the map demanded.** The map below is left
+> intact because it is the reasoning, not the changelog. What changed:
+>
+> - **2d — `e387aac`, steering only.** `_note_book_write_result` →
+>   `_note_write_result`, keyed on a write-tool map, with a per-family
+>   `caller_message_rule`. Fires on the already-failed path, so it carries no
+>   over-fire risk — which is why it was separable and went first.
+> - **2a/2b/2c/2e — `d5b257c`, the guard.** Arm is now `refused this turn` **OR**
+>   the original `booking_flow_active AND NOT booking_write_confirmed`.
+>
+> **`OR`, not replace — the map's one substantive correction.** Arming *only* on
+> refusals would have dropped the case the guard already caught: a pure
+> hallucination, where the model claims a booking having called no tool at all.
+> That is arguably the commoner LLM failure, and replacing the arm would have
+> been a silent downgrade of something that works. It does not drag 2c back in:
+> the old arm is `booking_flow_active`-gated and a reschedule never sets it.
+>
+> **The fault the map did not contain, and it was the dangerous one.** The
+> guard's re-steer becomes `last_bot_prompt`, and `last_bot_prompt` is what every
+> write gate reads to decide whether its confirmation question was asked. The
+> booking re-steer contains **both** booking-gate literals. One shared re-steer
+> string fired on a reschedule phantom would leave a booking CTA on record, and
+> the caller's next *"yes"* would satisfy the **booking** gate — turning a phantom
+> reschedule into a **real booking of a new appointment**, which is worse than the
+> bug being fixed. Now one re-steer per family, each arming its own gate and no
+> other, pinned against the gates' real predicates in
+> `tests/regression/test_b36_gate5f_write_families.py`.
+>
+> **Also corrected from the map:** the marker cannot be detected by
+> `success: False`. All five gate refusals return `{"status": "..._required"}`
+> with **no `success` key at all**, so the test is `not (success is True)` and it
+> fails closed. And it is scoped by tool *name*, not result shape — the lookup
+> family reports `found`, and *"I can't find your appointment"* must not arm
+> anything.
+>
+> **Measurement.** 16 reschedule + 12 cancel phantoms caught; 25 legitimate lines
+> clean across all three families, including the FAQ trap *"we've moved to a new
+> building"* — which is why the pattern requires an object after the verb, never a
+> bare `moved to`. The 18/27 booking measurement is unchanged and re-run. 140 new
+> tests plus the 47 existing. Suite verified by **diffing failing node IDs**
+> against a detached worktree at `8b7b10d`: 93 before, 93 after, sets identical.
+>
+> **Two residuals, both recorded rather than fixed:**
+>
+> 1. **The guard is turn-level, not utterance-level.** The marker is set when the
+>    tool result returns, so a claim streamed in the *same* assistant message as
+>    the `tool_use` block is spoken before the refusal is known and escapes.
+>    `CA23199d089` spoke on a later iteration, which is the shape in scope. Noted
+>    in the gate itself.
+> 2. **The GPT fallback path has no write gates at all** — [llm_stream.py
+>    `_gpt_tool_loop`](../../app/media_streams/llm_stream.py) calls executors
+>    directly and never reaches `_note_write_result`, so none of FM-01, FM-23,
+>    2d or Gate 5f's refusal arm apply there. Pre-existing and out of scope for
+>    B-36; it wants its own row. **Note it is not dead code** — it is the
+>    fallback when Claude fails.
+>
+> **Still unverified on a live call — this is the outstanding debt.** Everything
+> above is proven in tests only. The verification is three dialled calls on the
+> deployed build, read from `[build_info] running build <sha>` in the Render log
+> (`/health` reports a hardcoded `1.0.0` and cannot confirm a deploy):
+>
+> 1. **Reschedule, refused then recovered** — ask to move an appointment, answer
+>    the move CTA with something the gate accepts. Expect the move to succeed and
+>    the confirmation to be spoken **unaltered**. This is the 2c over-fire check
+>    and it matters more than the phantom test: it is the direction that
+>    previously abandoned a completed booking.
+> 2. **Reschedule, refused and left refused** — answer the move CTA ambiguously.
+>    Expect `[ms_gate5f] false reschedule confirmation` in the log if the model
+>    claims success, the caller to hear *"…would you like me to move it for
+>    you?"*, and **no booking** to appear in Acuity.
+> 3. **Cancel** — same shape as 2 against the retention question.
+
+##### The map, as written 3 Aug — the reasoning behind the fix
 
 Traced end to end rather than patched. The order matters: **2a alone makes 2b
 irrelevant**, so anyone who "fixes" the vocabulary first will ship a change that
@@ -337,9 +412,11 @@ arm on **that** instead of `booking_flow_active`.
   but now it is only asked to judge a turn where a write is *known* to have been
   refused — a far weaker requirement than judging every turn of a booking call.
 
-**Not done tonight on purpose.** It touches the one guard with a recorded
-history of stripping a real confirmation, and the correct version is a
-restructure, not a regex. Owner decision, with a clear head.
+**Not done the night this was written, on purpose.** It touches the one guard
+with a recorded history of stripping a real confirmation, and the correct version
+is a restructure, not a regex. Owner decision, with a clear head. — *Decision
+taken and shipped the following day; see the block at the top of this section for
+what actually landed and where the map turned out to be incomplete.*
 
 #### Cause 2 — the original note, superseded by the map above
 
