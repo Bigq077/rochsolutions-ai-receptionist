@@ -55,6 +55,7 @@ from .config import (
     MAX_HISTORY_TURNS,
     LLM_FIRST_CHUNK_TIMEOUT_MS,
     LLM_FILLER_COOLDOWN_SEC,
+    LLM_FILLER_SECOND_DELAY_MS,
     FILLER_PHRASES,
     FILLER_PHRASE,
     ACK_FILLER_MARKER,
@@ -532,6 +533,36 @@ def _caller_requests_new_day_or_time(messages) -> bool:
     if not txt:
         return False
     return bool(set(re.findall(r"[a-z']+", txt)) & _NEW_TIME_OF_DAY_WORDS)
+
+
+def _second_filler_text(
+    session, first_text: str, got_first_chunk: bool
+) -> "str | None":
+    """Text for the re-armed (second) filler, or None if it must not play.
+
+    B-19: the background filler was one-shot — it fired once at
+    LLM_FIRST_CHUNK_TIMEOUT_MS and the task ended, so an upstream stall past
+    that point was bare silence (measured: a 14s spike gave one phrase at 1.8s
+    and ~12s of nothing).
+
+    Three reasons NOT to speak again, in order:
+
+    1. `got_first_chunk` — the LLM answered during the wait. Belt and braces:
+       the first token also cancels the whole task, so this is the race guard.
+    2. `_ack_filler_active` is False — a tool-call filler took over
+       (`filler_phrases.with_filler` clears it) and is already speaking.
+       Deliberately NOT `_ack_filler_cancelled`: `_tts_loop` *consumes* that
+       flag, so it reads False whether or not a tool filler won.
+    3. Never a verbatim repeat, and never a second write-ack — the first phrase
+       may have been "Just locking that in now…", and saying it twice claims
+       the write twice to a caller who has already confirmed.
+    """
+    if got_first_chunk:
+        return None
+    if not session.get("_ack_filler_active"):
+        return None
+    pool = [p for p in FILLER_PHRASES if p != first_text] or list(FILLER_PHRASES)
+    return random.choice(pool)
 
 
 def _post_collect_readback_due(tool_name: str, session, messages) -> bool:
@@ -2408,6 +2439,28 @@ class LLMStream:
                     )
                     await tts_text_queue.put(ACK_FILLER_MARKER + _ack_filler_text)
                     session["_ack_filler_active"] = True
+                    self._last_filler_at = time.monotonic()
+
+                    # ── B-19: re-arm ONCE ────────────────────────────────
+                    # Without this the task ends here, so an upstream stall
+                    # past this point is bare silence for as long as it lasts
+                    # (measured: 14s spike → ~12s of nothing).
+                    #
+                    # Cancellation is already handled: the first token sets
+                    # got_first_chunk and cancels this task, so this sleep is
+                    # torn down on any normal recovery.
+                    await asyncio.sleep(LLM_FILLER_SECOND_DELAY_MS / 1000.0)
+                    _second_text = _second_filler_text(
+                        session, _ack_filler_text, got_first_chunk
+                    )
+                    if _second_text is None:
+                        return
+                    logger.info(
+                        "[ms_llm] second filler phrase (no chunk %.1fs after "
+                        "the first): %r",
+                        LLM_FILLER_SECOND_DELAY_MS / 1000.0, _second_text,
+                    )
+                    await tts_text_queue.put(ACK_FILLER_MARKER + _second_text)
                     self._last_filler_at = time.monotonic()
             _filler_task = asyncio.create_task(_delayed_filler(), name="ms_llm_filler")
 

@@ -371,6 +371,20 @@ TTS_CHUNK_TIMEOUT_MS = 3000
 # Still long enough that a normal cadence never stacks fillers.
 LLM_FILLER_COOLDOWN_SEC = 8.0
 
+# How long after the first filler to play a SECOND one, if the LLM is still
+# silent. B-19: the filler was one-shot — the background task fired once at
+# LLM_FIRST_CHUNK_TIMEOUT_MS and then ended, so a 14s upstream spike produced
+# one phrase at 1.8s and ~12s of bare silence. That breaks the CLAUDE.md §6 bar
+# of "no dead air over 3s without a filler or acknowledgement" on exactly the
+# turns the filler exists to cover.
+#
+# One re-arm at 5s caps the audible gap at ~5s. Owner decision 2026-08-03 was
+# explicitly "a second filler at ~5s, then stop" — this is deliberately NOT a
+# loop. Do not turn it into one without asking: a continuing cadence was
+# considered and rejected because three or four phrases on a slow turn sounds
+# anxious. See docs/plan/REGISTER_B_U.md, B-19/B-07.
+LLM_FILLER_SECOND_DELAY_MS = 5000
+
 # Bad-line detection: minimum silence gap before playing bad-line phrase
 BAD_LINE_SILENCE_THRESHOLD_SEC = 10.0
 
