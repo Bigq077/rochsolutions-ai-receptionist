@@ -960,6 +960,40 @@ async def _book_reply_verdict(messages, session) -> bool:
     return _result
 
 
+def _cta_asked(session: dict, predicate) -> bool:
+    """B-38 — apply a CTA predicate to what was ASKED, not only to the capped prompt.
+
+    `last_bot_prompt` is truncated at 200 characters. Reproduced 3 Aug 2026: an
+    ordinary read-back naming the service, the practitioner and the site runs to
+    **207 characters on a cancel and 251 on a reschedule**, and the confirmation
+    question falls off the end. The observed calls ran 148, so the headroom is
+    tens of characters, not hundreds.
+
+    When it happens, three things break at once — the write is blocked (B-36
+    cause 1, arriving by truncation instead of by rewording), the caller's
+    "go ahead" is dropped by the slot guard (B-37), and Gate 5f arms. One
+    truncation re-opens two fixed defects.
+
+    `last_question` holds exactly the question sentence and is stored **uncapped**
+    (see the F_LAST_QUESTION assignment in `run_turn`), so it survives the cut.
+    B-31 established this same fallback for the clinical layer in
+    `clinical_screening.py`; the write gates never got it.
+
+    Each source is judged WHOLE and independently — deliberately not concatenated.
+    Joining them could span a false match: a prompt ending "...book that" beside a
+    question starting "in the morning?" would read as the booking CTA "book that
+    in" and open the gate on a sentence nobody said.
+
+    No staleness risk: F_LAST_QUESTION is assigned unconditionally every turn, so
+    a turn that asked nothing sets it to "" rather than leaving an older CTA
+    standing.
+    """
+    for text in (session.get(F_LAST_BOT_PROMPT), session.get(F_LAST_QUESTION)):
+        if text and predicate(text):
+            return True
+    return False
+
+
 def _booking_confirmation_asked(last_bot_prompt: str) -> bool:
     """True when the bot's last turn asked the BOOKING confirmation question.
 
@@ -3022,7 +3056,7 @@ class LLMStream:
                         ),
                     }
                 elif tool_name == "book_appointment" and not (
-                    _booking_confirmation_asked(session.get("last_bot_prompt"))
+                    _cta_asked(session, _booking_confirmation_asked)
                 ):
                     # Booking confirmation guard.
                     #
@@ -3124,7 +3158,7 @@ class LLMStream:
                         ),
                     }
                 elif tool_name == "reschedule_appointment" and not (
-                    _move_confirmation_asked(session.get("last_bot_prompt"))
+                    _cta_asked(session, _move_confirmation_asked)
                     and await _book_reply_verdict(messages, session)
                 ):
                     # FM-23: reschedule gate — mirrors FM-01. Require the move
@@ -3140,7 +3174,7 @@ class LLMStream:
                     # caller's reply — on the call above the reply was fine and
                     # the CTA test was at fault, and the message actively
                     # misdirected the investigation.
-                    _cta_ok = _move_confirmation_asked(session.get("last_bot_prompt"))
+                    _cta_ok = _cta_asked(session, _move_confirmation_asked)
                     logger.warning(
                         "[ms_llm] reschedule_appointment BLOCKED — %s "
                         "(last_bot_prompt=%r last_user_text=%r)",
@@ -3161,7 +3195,7 @@ class LLMStream:
                         ),
                     }
                 elif tool_name == "cancel_appointment" and not (
-                    _cancel_retention_asked(session.get("last_bot_prompt"))
+                    _cta_asked(session, _cancel_retention_asked)
                     and _cancel_reply_consents(messages)
                 ):
                     # FM-23: cancel is DESTRUCTIVE. The template cancel flow's confirm

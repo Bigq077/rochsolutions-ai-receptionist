@@ -447,17 +447,21 @@ def _write_cta_outstanding(session: dict) -> bool:
         from app.media_streams.llm_stream import (
             _booking_confirmation_asked,
             _cancel_retention_asked,
+            _cta_asked,
             _move_confirmation_asked,
         )
     except Exception:          # pragma: no cover - import guard only
         return False
-    lbp = (session or {}).get("last_bot_prompt") or ""
-    if not lbp:
-        return False
+    # B-38: read through _cta_asked, not from last_bot_prompt directly. That
+    # field is capped at 200 chars and an ordinary read-back naming the service,
+    # practitioner and site overruns it — at which point this bypass would close
+    # and the caller's "go ahead" would be dropped again, which is B-37
+    # returning by a different route.
+    _sess = session or {}
     return bool(
-        _booking_confirmation_asked(lbp)
-        or _move_confirmation_asked(lbp)
-        or _cancel_retention_asked(lbp)
+        _cta_asked(_sess, _booking_confirmation_asked)
+        or _cta_asked(_sess, _move_confirmation_asked)
+        or _cta_asked(_sess, _cancel_retention_asked)
     )
 
 

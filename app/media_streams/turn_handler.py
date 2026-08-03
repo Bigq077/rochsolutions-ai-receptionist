@@ -328,7 +328,23 @@ _SELF_NARRATION_RE = re.compile(
     r"\b(?:"
     # internal readiness / intent, stated about itself
     r"I have everything I need"
-    r"|I need to book (?:this|it) in now"
+    # B-43 — the same narration on the cancel and reschedule paths. The arm
+    # below used to read only `I need to book (?:this|it) in now`, and on
+    # CA12db707b (3 Aug 2026, 10:39:23) the caller heard "I need to action the
+    # cancellation now." Nine plausible phrasings of one internal sentence were
+    # spoken aloud and one was caught.
+    #
+    # Identical shape to B-36 cause 2: a guard scoped to BOOKING while the
+    # same failure sits verbatim on the destructive paths. Generalising the verb
+    # is the fix; adding two more literals would just be the same bug waiting.
+    #
+    # Safe to widen here specifically because Gate 5g's structural guards do the
+    # containment: "I need to book YOU in now" and "I need to get that sorted
+    # for YOU now" both carry a second-person reference and are exempt, so the
+    # sentences a caller may legitimately hear are protected by construction.
+    # The 40-char bounded gap keeps the match inside one clause.
+    r"|I need to\s+(?:book|action|process|cancel|move|reschedule|change"
+    r"|sort|complete|make|do|put)\b[^.!?]{0,40}?\bnow"
     r"|let me (?:review what I know|get back on track|start again)"
     # self-correction mid-turn — CAfe6a4162 ran the wrong clinical screen and
     # narrated the recovery instead of just recovering
