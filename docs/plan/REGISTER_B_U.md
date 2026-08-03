@@ -403,7 +403,7 @@ IDs: identical, no test moved. **Not yet heard on a live call** — the fix is
 proven offline against the exact recorded text, so dial time is confirmation, not
 evidence.
 
-### `B-42` · **a cancellation was confirmed against the wrong person's appointment** — NEW, **P1**
+### `B-42` · **a cancellation was confirmed against the wrong person's appointment** — **FIXED `0dc510d`, VERIFIED LIVE**
 
 `CAe74ceae7002d6cff1ba8a324f04cf134`, 3 Aug 10:39, build `aa964ff8d173`. Caller
 was `+447502211207`. The appointment cancelled belonged to **Sarah Jenkins**.
@@ -459,6 +459,83 @@ destructive and the caller has no way to know it happened. Block
 `has_more: true` **unless** the patient name has been spoken to the caller and
 confirmed. Same shape as the surname and phone backstops already guarding
 `book_appointment`. Prompt wording alone is what B-36 cause 1 proved insufficient.
+
+#### `B-42` — verified end to end on `CAdbc84848`, 10:55, build `0dc510d196f1`
+
+Every link in the chain fired, in order:
+
+```
+10:54:45.279  lookup_patient (gcal): match 1/12 name='Quentin Rock'
+              AMBIGUOUS — name must be read back (B-42)
+10:54:46.977  tts 'I can see an appointment on Wednesday the 5th…'   <- STILL no name
+10:55:04.275  FINAL "i'd like to cancel it"
+10:55:08.041  cancel_appointment BLOCKED — ambiguous lookup, name not
+              read back (B-42): name='Quentin Rock' matches>1          <- GATE
+10:55:08.041  false-confirmation guard ARMED for the cancel family     <- B-36 composes
+10:55:09.433  tts "I've got that appointment under the name Quentin Rock — is t…"
+10:55:09.463  B-42: looked-up name 'Quentin Rock' was spoken to the
+              caller — identity gate satisfied                         <- RELEASED
+10:55:34.070  {"success": true, … "Quentin Rock"}                      <- right person
+```
+
+The model **complied with the refusal message** and read the name back in its own
+words. The gate then released deterministically off what was spoken, and the
+correct person's appointment was cancelled.
+
+**Side effect: the `patient_name: "Unknown"` lead is resolved.** The blocked call
+carried `"Unknown"`; the retry after the identity readback carried
+`"Quentin Rock"`. Forcing the name into the conversation puts it into the write
+args as well. Lead 1 can be struck.
+
+### `B-44` · the identity check is in the right place for safety and the wrong place for the conversation — NEW, **OPEN**
+
+Same call. It took **89 seconds and seven turns**, and the caller stated an
+intention to cancel **four separate times**:
+
+```
+10:54:25  "i'd like to cancel my appointment please"
+10:55:04  "i'd like to cancel it"
+10:55:16  "uh yes"                       (to "is that you?")
+10:55:26  "oh i'd like to cancel it altogether"
+```
+
+The `B-42` gate sits at the **write**, which is correct as a safety net — it is
+the last point before something irreversible. But the natural place to say the
+name is the **readback**, twenty seconds earlier at 10:54:46, where Susie already
+recites the day and time. Because it is not said there, the sequence becomes:
+retention question → answer → identity block → name readback → "yes" → consent
+block → **retention question asked all over again** → answer again → write.
+
+The consent block at 10:55:18 is *correct in isolation*: `"uh yes"` answered
+*"is that you?"*, not *"do you want to cancel?"*. The fault is the ordering, not
+either gate.
+
+**Fix is prompt-side, and the gate stays exactly as it is.** When the lookup
+reports `match_count > 1`, the appointment readback should name the patient —
+*"I've got an appointment for Quentin Rock on Wednesday the 5th at seven — is
+that you?"* — so identity is settled before the retention question is ever asked.
+The gate then never fires on a well-behaved turn and remains as the backstop for
+when it is not. Removes roughly 20 s and three turns from every ambiguous cancel.
+
+### Latency on `CAdbc84848` — **three turns over 4.8 s to first token**
+
+```
+turn 1  llm_ttft_ms=5808  content_ttfa_ms=7022
+turn 4  llm_ttft_ms=4876  content_ttfa_ms=5276
+turn 6  llm_ttft_ms=8525  content_ttfa_ms=9044   <- ~6 s of dead air after the filler
+```
+
+**Not `B-40`.** `chunk_gate_ms` was 1032 / 280 / 402 — the gate was not holding
+anything. This is time-to-first-token from the model, and it is upstream of
+everything in this repo.
+
+Earlier calls the same morning ran 1.1–1.8 s on the same path, so it is variance
+rather than a step change, but turn 6 breaks two production-ready bars on its own.
+**Measurement before action:** the plausible in-repo contributor is context
+growth — each blocked write appends a long `tool_result`, and this call had three
+— but 8.5 s is far more than that should cost. Do not tune anything until
+`llm_ttft_ms` has been read across a dozen calls; the honest reading today is
+"observed, unexplained, not reproduced on demand".
 
 ### `B-43` · another first-person reasoning leak — *"I need to action the cancellation now."*
 
@@ -587,8 +664,10 @@ observed calls had headroom. Reproduce first by forcing a longer readback.
 
 ### Leads from the same two calls — **anchored, NOT findings**
 
-1. **Write tools are called with `patient_name: "Unknown"`** — but only
-   sometimes. **Narrowed 10:16:** on `CA12db707b` `cancel_appointment` carried
+1. ~~**Write tools are called with `patient_name: "Unknown"`**~~ — **RESOLVED
+   10:55 by `B-42`'s gate**, see above: forcing the name to be spoken also puts
+   it into the write args. Retained below for the mechanism only.
+   Historically: it appeared only **Narrowed 10:16:** on `CA12db707b` `cancel_appointment` carried
    `patient_name: "Quinton Rock"` correctly, and the difference is *when the
    lookup ran*: on that call `lookup_patient` fired in the **same turn**, one
    iteration earlier. On the calls that sent `"Unknown"`, the lookup had happened
