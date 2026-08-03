@@ -928,10 +928,12 @@ def get_system_prompt(session: dict) -> str:
     import platform as _platform
     _day_fmt = "%#d" if _platform.system() == "Windows" else "%-d"
     _today_date      = _now.strftime(f"{_day_fmt} %B %Y")
-    _weekday_num     = _now.weekday()
-    _days_to_sunday  = (6 - _weekday_num) % 7
-    _this_sunday     = _now + timedelta(days=(_days_to_sunday if _days_to_sunday > 0 else 7))
-    _next_monday     = _this_sunday + timedelta(days=1)
+    # B-09: shared anchors. Computed inline here until 3 Aug 2026 and seven days
+    # late on Sundays, in lockstep with two other copies.
+    from app.date_context import week_anchors as _week_anchors
+    _anchors         = _week_anchors(_now.date())
+    _this_sunday     = _anchors.this_sunday
+    _next_monday     = _anchors.next_monday
     _this_sunday_str = _this_sunday.strftime(f"{_day_fmt} %B %Y")
     _next_monday_str = _next_monday.strftime(f"{_day_fmt} %B %Y")
 

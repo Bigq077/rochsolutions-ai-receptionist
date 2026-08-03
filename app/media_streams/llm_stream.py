@@ -1282,13 +1282,17 @@ def _build_date_prefix() -> str:
     "Today is Thursday 12 June 2025. This week ends on Sunday 15 June.
     Next week starts Monday 16 June."
     """
-    today      = date.today()
+    # B-09, two defects in one line. `date.today()` was SERVER-local, not
+    # Europe/London — a day behind between 23:00 and midnight on a UTC container
+    # under BST — and the inline Sunday arithmetic was seven days late. Both now
+    # come from the one shared, explicitly-zoned implementation.
+    from app.date_context import clinic_today as _clinic_today, week_anchors as _week_anchors
+    today      = _clinic_today()
     weekday    = today.strftime("%A")
     date_str   = today.strftime("%d %B %Y")
-    # Find this coming Sunday
-    days_to_sun = (6 - today.weekday()) % 7   # weekday(): Mon=0 Sun=6
-    this_sunday = today + timedelta(days=days_to_sun if days_to_sun > 0 else 7)
-    next_monday = this_sunday + timedelta(days=1)
+    _a          = _week_anchors(today)
+    this_sunday = _a.this_sunday
+    next_monday = _a.next_monday
     return (
         f"Today is {weekday} {date_str}. "
         f"This week ends on Sunday {this_sunday.strftime('%d %B')}. "

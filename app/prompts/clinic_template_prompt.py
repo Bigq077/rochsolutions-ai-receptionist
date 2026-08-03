@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Tuple
 # Date context (clinic-agnostic) — injected fresh every call
 # ─────────────────────────────────────────────────────────────────────────
 def _date_context(timezone: str = "Europe/London") -> Dict[str, str]:
-    from datetime import datetime as _dt, timedelta as _td
+    from datetime import datetime as _dt
     try:
         from zoneinfo import ZoneInfo as _ZI
         _tz = _ZI(timezone)
@@ -44,11 +44,13 @@ def _date_context(timezone: str = "Europe/London") -> Dict[str, str]:
         _tz = pytz.timezone(timezone)
 
     now = _dt.now(_tz)
-    weekday_num = now.weekday()
-    days_until_sunday = (6 - weekday_num) % 7
-    this_sunday = now + _td(days=(days_until_sunday if days_until_sunday > 0 else 7))
-    next_monday = this_sunday + _td(days=1)
-    next_sunday = next_monday + _td(days=6)
+    # B-09: anchors come from the one shared implementation. This block used to
+    # compute them inline and was seven days late on Sundays.
+    from app.date_context import week_anchors as _week_anchors
+    _a = _week_anchors(now.date())
+    this_sunday = _a.this_sunday
+    next_monday = _a.next_monday
+    next_sunday = _a.next_sunday
     return {
         "today_weekday":   now.strftime("%A"),
         "today_date":      str(now.day) + now.strftime(" %B %Y"),
