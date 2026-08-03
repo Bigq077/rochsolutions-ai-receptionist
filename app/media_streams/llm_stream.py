@@ -71,7 +71,13 @@ from .chunker import ResponseChunker
 from .fast_path import try_fast_path
 from .session import save_session
 from .tts_stream import _apply_tts_substitutions_elevenlabs as _apply_tts_subs
-from .turn_handler import sanitise_response
+from .turn_handler import (
+    sanitise_response,
+    WRITE_FAMILY_BOOKING,
+    WRITE_FAMILY_CANCEL,
+    WRITE_FAMILY_RESCHEDULE,
+    WRITE_REFUSED_KEY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -545,9 +551,9 @@ def _caller_wants_new_slot(messages) -> bool:
 # to. A "write" here is a tool that mutates the clinic's calendar — the three
 # operations a caller can be told happened when it did not.
 _WRITE_TOOL_FAMILIES = {
-    "book_appointment":       "booking",
-    "reschedule_appointment": "reschedule",
-    "cancel_appointment":     "cancel",
+    "book_appointment":       WRITE_FAMILY_BOOKING,
+    "reschedule_appointment": WRITE_FAMILY_RESCHEDULE,
+    "cancel_appointment":     WRITE_FAMILY_CANCEL,
 }
 
 # B-36 cause 2d — the model is told, per family, that the write did NOT happen.
@@ -556,18 +562,18 @@ _WRITE_TOOL_FAMILIES = {
 # against announcing success. On CA23199d089 it announced success: the caller was
 # told their appointment had moved and it had not.
 _WRITE_NO_CLAIM_RULE = {
-    "booking": (
+    WRITE_FAMILY_BOOKING: (
         "The booking was NOT made. Do not tell the caller they are booked, "
         "confirmed, or all set. Ask the outstanding question, and only state a "
         "booking once book_appointment returns success."
     ),
-    "reschedule": (
+    WRITE_FAMILY_RESCHEDULE: (
         "The appointment was NOT moved. Do not tell the caller it has been "
         "rescheduled, moved, changed or sorted, and do not state the new day or "
         "time as if it were settled. Ask the outstanding question, and only "
         "state a move once reschedule_appointment returns success."
     ),
-    "cancel": (
+    WRITE_FAMILY_CANCEL: (
         "The appointment was NOT cancelled. Do not tell the caller it has been "
         "cancelled and do not imply the slot has been given up. Their original "
         "appointment still stands. Ask the outstanding question, and only state "
@@ -607,10 +613,36 @@ def _note_write_result(session: dict, tool_name: str, result):
     family = _WRITE_TOOL_FAMILIES.get(tool_name)
     if family is None or not isinstance(result, dict):
         return result
+    refused = session.get(WRITE_REFUSED_KEY)
+    if not isinstance(refused, dict):
+        refused = {}
     if result.get("success") is True:
-        if family == "booking":
+        # A retry SUCCEEDED later in the same turn. The tool loop can run a
+        # write up to MAX_TOOL_ITERATIONS times (CA7e389a47 did three), and the
+        # observed B-36 call ran lookup_patient -> reschedule_appointment ->
+        # speech all within one turn. Leaving the marker set here would arm
+        # Gate 5f against the turn's own LEGITIMATE confirmation — the exact
+        # over-fire that abandoned a completed booking on 2026-06-12.
+        if refused.pop(family, None):
+            logger.info(
+                "[ms_llm] %s succeeded after an earlier refusal this turn — "
+                "false-confirmation guard disarmed for the %s family",
+                tool_name, family,
+            )
+        session[WRITE_REFUSED_KEY] = refused
+        if family == WRITE_FAMILY_BOOKING:
             session["booking_write_confirmed"] = True
         return result
+    # Layer 3's arming signal (B-36 cause 2a): Gate 5f is scoped to the write
+    # that was actually refused, not to a conversation flow flag that a
+    # reschedule never sets.
+    refused[family] = True
+    session[WRITE_REFUSED_KEY] = refused
+    logger.warning(
+        "[ms_llm] %s did not succeed (status=%r) — false-confirmation guard "
+        "ARMED for the %s family this turn",
+        tool_name, result.get("status") or result.get("error"), family,
+    )
     result = dict(result)
     result.setdefault("caller_message_rule", _WRITE_NO_CLAIM_RULE[family])
     return result
@@ -880,6 +912,30 @@ async def _book_reply_verdict(messages, session) -> bool:
     _cache[text] = _result
     session["_book_verdict_cache"] = _cache
     return _result
+
+
+def _booking_confirmation_asked(last_bot_prompt: str) -> bool:
+    """True when the bot's last turn asked the BOOKING confirmation question.
+
+    Extracted verbatim from the book_appointment gate so that the predicate has
+    a name and can be asserted against directly — B-36 R5 turns on which
+    last_bot_prompt satisfies which gate, and a test that re-types the literals
+    would not have caught the leak it exists to prevent.
+    """
+    lbp = (last_bot_prompt or "").lower()
+    return "shall i go ahead" in lbp or "book that in" in lbp
+
+
+def _cancel_retention_asked(last_bot_prompt: str) -> bool:
+    """True when the bot's last turn asked the CANCEL retention question.
+
+    Extracted verbatim, second arm included: `"altogether"` alone already
+    subsumes `"cancel it altogether"`. Kept as written rather than simplified —
+    behaviour-preserving extraction only, and the redundancy is a record of what
+    the gate actually tests.
+    """
+    lbp = (last_bot_prompt or "").lower()
+    return "cancel it altogether" in lbp or "altogether" in lbp
 
 
 def _move_confirmation_asked(last_bot_prompt: str) -> bool:
@@ -1713,6 +1769,13 @@ class LLMStream:
         # call-scoped, so once one succeeds the guard stays off for the rest of
         # the call.
         session["_false_confirm_resteered"] = False
+        # B-36 / R2: the refusal marker is TURN-scoped and must be cleared here.
+        # Left set, it would keep Gate 5f armed for the rest of the call and
+        # strip every later confirmation — including a genuine one. This is the
+        # opposite lifetime to booking_write_confirmed directly above, and
+        # deliberately so: a refusal is a fact about one turn, a completed
+        # booking is a fact about the call.
+        session.pop(WRITE_REFUSED_KEY, None)
         # What the caller hears this turn, accumulated by _record_spoken as each
         # post-Gate-5 chunk is released. Cleared here so a turn can never inherit
         # the previous turn's speech.
@@ -2907,8 +2970,7 @@ class LLMStream:
                         ),
                     }
                 elif tool_name == "book_appointment" and not (
-                    "shall i go ahead" in (session.get("last_bot_prompt") or "").lower()
-                    or "book that in" in (session.get("last_bot_prompt") or "").lower()
+                    _booking_confirmation_asked(session.get("last_bot_prompt"))
                 ):
                     # Booking confirmation guard.
                     #
@@ -3004,10 +3066,7 @@ class LLMStream:
                         ),
                     }
                 elif tool_name == "cancel_appointment" and not (
-                    (
-                        "cancel it altogether" in (session.get("last_bot_prompt") or "").lower()
-                        or "altogether" in (session.get("last_bot_prompt") or "").lower()
-                    )
+                    _cancel_retention_asked(session.get("last_bot_prompt"))
                     and _cancel_reply_consents(messages)
                 ):
                     # FM-23: cancel is DESTRUCTIVE. The template cancel flow's confirm

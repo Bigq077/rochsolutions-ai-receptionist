@@ -511,7 +511,7 @@ def _get_reasoning_drop_reason(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Gate 5f — false-confirmation guard (P1 #5 / F-023)
+# Gate 5f — false-confirmation guard (P1 #5 / F-023 / B-36 cause 2)
 # ---------------------------------------------------------------------------
 # CALL 5: book_appointment was REJECTED (confirmation_required, no calendar
 # event) yet the model narrated "All booked" — a phantom appointment the clinic
@@ -519,11 +519,53 @@ def _get_reasoning_drop_reason(text: str) -> str:
 # complete, so it can be acted on while no booking has actually succeeded this
 # call (session["booking_write_confirmed"] unset).
 #
+# 2026-08-03 — ARM ON THE REFUSAL, NOT ONLY ON THE FLOW (B-36 cause 2).
+# The guard was scoped to booking in all five of its parts: the flow flag, the
+# vocabulary, the success signal, the steering rule and the tool name. On
+# CA23199d089 a REFUSED reschedule was narrated as done and nothing in this file
+# ran at all — `booking_flow_active` has exactly two assignment sites and neither
+# fires on a reschedule.
+#
+# The arm is now `write refused this turn` OR the original
+# `booking_flow_active AND NOT booking_write_confirmed`. **OR, not replace** —
+# the original arm is the only thing that catches a pure hallucination, where the
+# model claims a booking having called no tool at all, and that is arguably the
+# commoner failure. Dropping it to "fix" the reschedule hole would have been a
+# silent downgrade of a working guard.
+#
+# Why the refusal arm does not re-open the over-fire trap (cause 2c): a
+# SUCCESSFUL reschedule refuses nothing, so on that turn the guard is not armed
+# and the legitimate "that's you moved to Thursday" is never examined. The
+# original arm cannot reach it either — it is `booking_flow_active`-gated and a
+# reschedule never sets that flag. `booking_write_confirmed` therefore stops
+# being load-bearing for anything but booking.
+#
+# KNOWN LIMIT: this is turn-level, not utterance-level. The marker is set when
+# the tool result comes back, so a claim streamed in the SAME assistant message
+# as the tool_use block is spoken before the refusal is known and escapes. On
+# CA23199d089 the speech came in a later iteration, which is the shape in scope.
+#
 # It must never fire on an offer, a question, a negation, or an in-progress
 # statement — the over-fire failure mode stripped a real confirmation and
 # abandoned a completed booking once already (Gate 5c, 2026-06-12). Measured
 # against both classes in tests/regression/test_false_confirmation_guard.py:
 # 18/18 phantom claims caught, 0 false positives across 27 legitimate lines.
+
+# The three write families. Defined here rather than in llm_stream because the
+# import runs llm_stream -> turn_handler; llm_stream maps tool names onto these.
+WRITE_FAMILY_BOOKING    = "booking"
+WRITE_FAMILY_RESCHEDULE = "reschedule"
+WRITE_FAMILY_CANCEL     = "cancel"
+
+# Session key: which families had a gated write REFUSED on the current turn.
+# Written by llm_stream._note_write_result, read by _armed_write_families, and
+# cleared per turn alongside _false_confirm_resteered.
+#
+# A dict of family -> True, NEVER a set: the session is persisted to Redis with
+# json.dumps (app/storage/redis_store.py), and a set raises TypeError there —
+# which on a live call is an unhandled exception in the middle of a booking.
+WRITE_REFUSED_KEY = "_write_refused"
+
 _FALSE_CONFIRM_CLAIM_RE = re.compile(
     r"""\b(
         (youre|you\s+are|thats|that\s+is|its|it\s+is)\s+(all\s+|now\s+)?(booked|confirmed)(\s+in)?
@@ -536,24 +578,111 @@ _FALSE_CONFIRM_CLAIM_RE = re.compile(
     )""",
     re.X,
 )
+# B-36 cause 2b — the reschedule phrase family. Judged ONLY on a turn where a
+# reschedule write was actually refused, which is what makes this widening safe:
+# "we've moved to a new building" is a plausible clinic FAQ answer, and under
+# flow-arming it would have been a live false positive. Under refusal-arming that
+# sentence can only be reached from a turn where reschedule_appointment was
+# blocked, so an FAQ turn never sees this pattern at all.
+#
+# The object is REQUIRED after the verb — `moved you/that/it to ...`, never a
+# bare `moved to ...` — which is precisely what keeps the new-building sentence
+# out. Pinned in tests/regression/test_b36_gate5f_write_families.py.
+_FALSE_RESCHEDULE_CLAIM_RE = re.compile(
+    r"""\b(
+        (youre|you\s+are|thats|that\s+is|its|it\s+is)\s+(all\s+|now\s+)?(rescheduled|moved|changed|sorted)
+      | (thats|that\s+is)\s+you\s+(rescheduled|moved|changed)
+      | (ive|i\s+have|weve|we\s+have)\s+(now\s+)?(rescheduled|moved|changed|switched)\s+(you|that|it|your)
+      | your\s+(appointment|booking)\s+(has\s+been|is\s+now|is)\s+(rescheduled|moved|changed)
+      | youre\s+(all\s+|now\s+)?(set|in)\s+for
+      | (moved|rescheduled|changed|switched)\s+(you|that|it)\s+(over\s+)?to\s
+    )""",
+    re.X,
+)
+
+# B-36 cause 2e — the cancellation phrase family. Cancel is DESTRUCTIVE, so the
+# bias here is louder than for booking: a caller told their appointment is
+# cancelled when it is not will simply not turn up.
+_FALSE_CANCEL_CLAIM_RE = re.compile(
+    r"""\b(
+        (youre|you\s+are|thats|that\s+is|its|it\s+is)\s+(all\s+|now\s+|been\s+)?(cancelled|canceled)
+      | (ive|i\s+have|weve|we\s+have)\s+(now\s+)?(cancelled|canceled)\s+(you|that|it|your|the)
+      | your\s+(appointment|booking)\s+(has\s+been|is\s+now|is)\s+(cancelled|canceled)
+      | (appointment|booking|slot)\s+(has\s+been\s+|is\s+)?(cancelled|canceled)
+      | taken\s+(that|it|you)\s+(off|out\s+of)\s+the\s+(diary|calendar|system)
+    )""",
+    re.X,
+)
+
+# Which patterns judge a chunk for a given family. Every family also gets the
+# BOOKING pattern: "booked", "confirmed", "all set" is generic write-completion
+# language, and on a turn where a reschedule was refused, "you're all booked in
+# for Thursday" is exactly as much a phantom as "you're rescheduled". The
+# booking pattern is the well-measured one (18/18, 0/27) and costs nothing to
+# reuse, because it too is only reached on a turn with a refused write.
+_FAMILY_CLAIM_RES = {
+    WRITE_FAMILY_BOOKING:    (_FALSE_CONFIRM_CLAIM_RE,),
+    WRITE_FAMILY_RESCHEDULE: (_FALSE_CONFIRM_CLAIM_RE, _FALSE_RESCHEDULE_CLAIM_RE),
+    WRITE_FAMILY_CANCEL:     (_FALSE_CONFIRM_CLAIM_RE, _FALSE_CANCEL_CLAIM_RE),
+}
+
 # Any of these means the sentence is NOT a completion claim (offer / question /
 # negation / intent), so the guard stands down even if a claim token is present.
+# `to\s+(move|reschedule|cancel)` extends the original `to\s+book` to the two new
+# families ("to move that I'll need your date of birth"). Adding alternatives to
+# a STAND-DOWN pattern can only make more sentences stand down, never fewer, so
+# the 27 measured legitimate lines cannot regress; none of the 18 measured
+# phantoms contains a move/cancel verb, so they cannot start standing down
+# either. Both directions are re-run in the guard tests.
 _FALSE_CONFIRM_NEG_RE = re.compile(
     r"\b(not|havent|cannot|cant|wont|once|after|before|shall\s+i|would\s+you"
     r"|can\s+i|do\s+you\s+want|want\s+me\s+to|like\s+me\s+to|going\s+to|ill"
-    r"|i\s+will|let\s+me|need\s+to|to\s+book)\b"
+    r"|i\s+will|let\s+me|need\s+to|to\s+book|to\s+move|to\s+reschedule"
+    r"|to\s+cancel)\b"
 )
 
-# What the caller hears instead of a phantom "all booked": the same recovery
-# CALL 12 did correctly. A question, and free of any claim token, so it can
+# What the caller hears instead of a phantom: the recovery CALL 12 did correctly,
+# one per family. Each is a question, and free of any claim token, so it can
 # never re-trigger the guard.
+#
+# THEY MUST NOT BE SHARED ACROSS FAMILIES. This return value becomes
+# `last_bot_prompt`, and last_bot_prompt is what every write gate in llm_stream
+# tests to decide whether its confirmation question has been asked. The booking
+# re-steer contains BOTH booking gate literals ("shall i go ahead", "book that
+# in"), so firing it on a reschedule phantom would leave a booking CTA on record
+# — the caller's next "yes" would then satisfy the booking gate and a phantom
+# reschedule could become a REAL booking of a new appointment.
+#
+# Each string therefore arms its own gate and no other:
+#   booking    — "shall i go ahead" + "book that in"  -> booking gate only
+#                (no move verb, so _move_confirmation_asked stays False)
+#   reschedule — "move it for you"                    -> reschedule gate only
+#                (deliberately NOT "shall I go ahead and move it", which would
+#                 also match the booking gate's "shall i go ahead" arm)
+#   cancel     — "cancel it altogether"               -> cancel gate only
+#                (deliberately NOT the prompt's "would you like to reschedule
+#                 this appointment, or cancel it altogether", whose reschedule
+#                 wording sits one word away from the move gate's ask shapes)
+# Pinned in tests/regression/test_b36_gate5f_write_families.py.
 _FALSE_CONFIRM_RESTEER = (
     "Sorry — before I confirm anything, shall I go ahead and book that in for you?"
 )
+_FALSE_RESCHEDULE_RESTEER = (
+    "Sorry — before I confirm anything, would you like me to move it for you?"
+)
+_FALSE_CANCEL_RESTEER = (
+    "Sorry — before I confirm anything, would you like to keep this appointment, "
+    "or cancel it altogether?"
+)
+_FAMILY_RESTEER = {
+    WRITE_FAMILY_BOOKING:    _FALSE_CONFIRM_RESTEER,
+    WRITE_FAMILY_RESCHEDULE: _FALSE_RESCHEDULE_RESTEER,
+    WRITE_FAMILY_CANCEL:     _FALSE_CANCEL_RESTEER,
+}
 
 
-def _false_confirmation_claim(text: str) -> bool:
-    """True if `text` CLAIMS a booking is complete (not offers/asks/intends).
+def _false_write_claim(text: str, family: str) -> bool:
+    """True if `text` CLAIMS a write of `family` is complete.
 
     Normalisation mirrors the screening layer: lower-case and DELETE apostrophes
     ("you're" -> "youre") so contractions match, then blank other punctuation.
@@ -561,11 +690,46 @@ def _false_confirmation_claim(text: str) -> bool:
     """
     if not text or "?" in text:
         return False
+    patterns = _FAMILY_CLAIM_RES.get(family)
+    if not patterns:
+        return False
     norm = text.lower().replace("'", "").replace("’", "")
     norm = " " + re.sub(r"[^a-z0-9 ]+", " ", norm).strip() + " "
     if _FALSE_CONFIRM_NEG_RE.search(norm):
         return False
-    return _FALSE_CONFIRM_CLAIM_RE.search(norm) is not None
+    return any(p.search(norm) for p in patterns)
+
+
+def _false_confirmation_claim(text: str) -> bool:
+    """True if `text` CLAIMS a BOOKING is complete. The original public helper,
+    kept as the booking-family entry point (its 40 measured cases live in
+    tests/regression/test_false_confirmation_guard.py)."""
+    return _false_write_claim(text, WRITE_FAMILY_BOOKING)
+
+
+def _armed_write_families(session: Dict[str, Any]) -> list:
+    """Which write families Gate 5f is watching this turn, most specific first.
+
+    Refused families lead, so that when a reschedule was refused on a turn that
+    ALSO satisfies the legacy booking-flow arm, the claim is attributed to the
+    reschedule — and gets the reschedule re-steer rather than a booking CTA.
+    """
+    refused = session.get(WRITE_REFUSED_KEY)
+    if not isinstance(refused, dict):
+        refused = {}
+    armed = [
+        f for f in (WRITE_FAMILY_RESCHEDULE, WRITE_FAMILY_CANCEL, WRITE_FAMILY_BOOKING)
+        if refused.get(f)
+    ]
+    # R1 — OR, not replace. The original arm is the only one that catches a
+    # phantom the model produced having called no tool at all.
+    if (
+        WRITE_FAMILY_BOOKING not in armed
+        and session.get("booking_flow_active")
+        and not session.get("booking_write_confirmed")
+    ):
+        armed.append(WRITE_FAMILY_BOOKING)
+    return armed
 
 
 # ---------------------------------------------------------------------------
@@ -914,19 +1078,25 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
             logger.info("[ms_gate5] removed diagnostic assertion (standard tier)")
             result = _diag_cleaned
 
-    # ── Gate 5f: false-confirmation guard (P1 #5 / F-023) ────────────────────
-    # While the caller is booking but NO booking has actually succeeded this call
-    # (booking_write_confirmed is set only by _note_write_result on a
-    # success:True from book_appointment), a chunk that CLAIMS the booking is
-    # done is a phantom. Runs AFTER Gate 5c so the re-steer question — which
-    # contains "shall I book" — is not itself stripped as a redundant offer.
-    # First claim this turn is re-steered to the confirmation question; any
-    # further claim in the same turn is dropped so the caller never hears it.
-    if (
-        session.get("booking_flow_active")
-        and not session.get("booking_write_confirmed")
-        and _false_confirmation_claim(result)
-    ):
+    # ── Gate 5f: false-confirmation guard (P1 #5 / F-023 / B-36) ─────────────
+    # A chunk that CLAIMS a write is done, on a turn where that write was
+    # REFUSED — or, for booking only, while the caller is booking and no booking
+    # has succeeded this call — is a phantom. Runs AFTER Gate 5c so the re-steer
+    # question, which contains an offer to book/move/cancel, is not itself
+    # stripped as a redundant offer.
+    #
+    # First claim this turn is re-steered to that family's confirmation
+    # question; any further claim in the same turn is dropped so the caller
+    # never hears it. The once-per-turn latch is deliberately NOT per-family: a
+    # turn that refuses two different writes is already pathological, and one
+    # re-steer followed by silent drops is both safer and less confusing than
+    # two questions in one breath. Dead air is covered by the C8-5 silence
+    # guarantee in llm_stream.
+    _armed = _armed_write_families(session)
+    _claim_family = next(
+        (f for f in _armed if _false_write_claim(result, f)), ""
+    ) if _armed else ""
+    if _claim_family:
         session["_false_confirm_guard_fired"] = (
             int(session.get("_false_confirm_guard_fired") or 0) + 1
         )
@@ -937,15 +1107,20 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
             # history from it. Nothing needs stashing on the session — that was
             # the earlier patch, and it only papered over the second stateful
             # invocation of this gate at turn end.
+            #
+            # It is also what the write gates read to decide whether their
+            # confirmation question has been asked, which is why the re-steer is
+            # chosen per family. See _FAMILY_RESTEER.
             logger.error(
-                "[ms_gate5f] false booking confirmation with no successful "
-                "book_appointment — re-steering to the confirmation question: %r",
-                result[:80],
+                "[ms_gate5f] false %s confirmation with no successful write "
+                "(armed=%s) — re-steering to that family's confirmation "
+                "question: %r",
+                _claim_family, ",".join(_armed), result[:80],
             )
-            return _FALSE_CONFIRM_RESTEER
+            return _FAMILY_RESTEER[_claim_family]
         logger.error(
-            "[ms_gate5f] additional false-confirmation chunk dropped: %r",
-            result[:80],
+            "[ms_gate5f] additional false-confirmation chunk dropped (%s): %r",
+            _claim_family, result[:80],
         )
         return ""
 
