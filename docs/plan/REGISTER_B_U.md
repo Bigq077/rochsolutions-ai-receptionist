@@ -487,7 +487,7 @@ carried `"Unknown"`; the retry after the identity readback carried
 `"Quentin Rock"`. Forcing the name into the conversation puts it into the write
 args as well. Lead 1 can be struck.
 
-### `B-44` · the identity check is in the right place for safety and the wrong place for the conversation — NEW, **OPEN**
+### `B-44` · the identity check is in the right place for safety and the wrong place for the conversation — **FIXED `6b34745`, VERIFIED LIVE**
 
 Same call. It took **89 seconds and seven turns**, and the caller stated an
 intention to cancel **four separate times**:
@@ -510,12 +510,50 @@ The consent block at 10:55:18 is *correct in isolation*: `"uh yes"` answered
 *"is that you?"*, not *"do you want to cancel?"*. The fault is the ordering, not
 either gate.
 
-**Fix is prompt-side, and the gate stays exactly as it is.** When the lookup
-reports `match_count > 1`, the appointment readback should name the patient —
-*"I've got an appointment for Quentin Rock on Wednesday the 5th at seven — is
-that you?"* — so identity is settled before the retention question is ever asked.
-The gate then never fires on a well-behaved turn and remains as the backstop for
-when it is not. Removes roughly 20 s and three turns from every ambiguous cancel.
+**Fixed by steering, not by a prompt edit.** An ambiguous lookup result now
+carries a `caller_message_rule` telling the model to name the patient in the
+read-back and settle identity *before* asking anything else. Delivered on the
+tool result for the same reason B-36's Layer 2 was — it arrives at the moment of
+use, cannot drift out of step with the gate, and reaches every clinic without
+touching a 24k-line prompt or any `clinic.json`. **The gate is unchanged.**
+
+#### Verified end to end on `CA368775868983933e143bcfc1d8eb3899`, 11:09, build `6b3474555005`
+
+```
+11:09:11.104  lookup_patient (gcal): match 1/11 name='Quentin Rook'
+              AMBIGUOUS — name must be read back (B-42)
+11:09:13.575  tts "I've got an appointment for Quentin Rook on Wednesday the 5t…"
+11:09:13.579  B-42: looked-up name 'Quentin Rook' was spoken to the caller —
+              identity gate satisfied
+11:09:25.929  tts 'Would you like to reschedule this appointment, or cancel it…'
+11:09:35.335  cancel_appointment  patient_name="Quentin Rook"
+11:09:35.910  {"success": true, … "Quentin Rook"}
+```
+
+**There is no `cancel_appointment BLOCKED` line anywhere on this call.** That is
+the designed outcome, and it is the same division of labour that closed B-36
+cause 2 on `CA9cc1a23e`: the steering layer resolved the turn and the guard never
+had to fire. The guard remains, verified, for when it does not.
+
+| | `CAdbc84848` (B-42 only) | `CA368775` (B-42 + B-44) |
+|---|---|---|
+| Call duration | 86.7 s | **60.3 s** |
+| LLM turns | 6 | **4** |
+| Retention question asked | twice | **once** |
+| Caller stated "cancel" | 4 times | **2** |
+| Identity gate fired | yes | **no** |
+| `patient_name` on the write | `"Unknown"` then correct | **correct first time** |
+
+**26 seconds and two turns removed**, on the destructive path, with the safety
+property unchanged.
+
+> **`B-39` was NOT observed on this call** — the retention question was asked
+> once and *"I'd like to cancel it altogether"* was accepted first time. Do not
+> read that as closed. Of the three earlier sightings, only `CAdbc84848`'s was
+> caused by the identity block interrupting between question and answer; the
+> `CA66d6f1b4` and `CAe74ceae7` sightings pre-date `B-42` entirely and had some
+> other cause. So `B-44` has removed **one of `B-39`'s triggers**, not `B-39`.
+> One clean call is one observation.
 
 ### Latency on `CAdbc84848` — **three turns over 4.8 s to first token**
 
