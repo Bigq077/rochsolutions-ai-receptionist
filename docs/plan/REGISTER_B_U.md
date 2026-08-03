@@ -9,6 +9,15 @@
 > and any row without one is genuinely open. **If this file and the code
 > disagree, the code wins** — that is `CLAUDE.md` §7, and this file has now been
 > on the wrong side of it once.
+>
+> **Coverage pass, same day — the more important half.** The reconciliation above
+> made this file internally correct and left it **incomplete**, which is worse,
+> because an internally consistent register invites you to trust it as the whole
+> list. Six live defects were in no register at all and are now folded in as
+> `B-46`–`B-51`. One of them, `B-46`, is a P1 affecting both live clinics.
+> **This register is not the whole list until `ls docs/plan/` agrees it is** —
+> several plan documents are untracked, so git history searches will not find
+> them.
 
 This register was carried in conversation only until now. Everything below was
 re-checked against the code — originally at `e5a8ee9`, and re-anchored at
@@ -52,6 +61,7 @@ implying more confidence than exists.
 | New — blocks nothing, decides `B-20` | **`B-32`** (STT noise defeats Layer 1 triggers) | Two observed misses, both rescued by Layer 2. **Do not fix by adding keywords.** One safe 15-min config addition (`calves`) is separable |
 | Withdrawn same night | `B-29` (claimed the DVT grader knew half its question) | My claim, wrong — written from a truncated keyword list quoted in `B-20` rather than from `clinic.json`. **That quotation is now corrected too** |
 | **Unrecorded** | **`B-05`, `U-01`** | **See "Gaps" below** |
+| **FOLDED IN 3 Aug — were in NO register** | **`B-46`** `B-47` `B-48` `B-49` `B-50` `B-51` | Six live defects that existed only in `THEOREM_PORT_PLAN.md`, `FIX_QUEUE_PRE_DEMO.md`, a 25 Jul sweep note and the clinical-campaign status. **`B-46` is an open P1 on both live clinics and `main` already fixed it.** See the section above "Gaps" |
 | New — plan written | `B-23` (reason re-asked when already given) | `PLAN_REASON_CAPTURE.md`. **Fired live in the F4 shape.** Owner decision open on F5 |
 
 ---
@@ -2491,6 +2501,164 @@ Any future "replay the corpus" analysis of screening has this blind spot. It doe
 not affect the `B-20` finding — that rests on the orphan calls, whose openings
 **are** present — but it does mean arming-rate statistics from obs are a floor,
 not a measurement.
+
+---
+
+## Folded in 3 Aug — six live defects that were in no register
+
+**These were not new findings.** All six were already written down — in
+`THEOREM_PORT_PLAN.md`, `FIX_QUEUE_PRE_DEMO.md`, a 25 Jul sweep note and the
+clinical-campaign status — and **none of them was in this file or in
+`DEFECT_REGISTER.md`.** They surfaced only because the question *"what is open
+that is not SMS or Sheets?"* was asked directly and every plan document was read
+end to end.
+
+> **The lesson is about coverage, not accuracy.** The 3 Aug reconciliation pass
+> made this register internally correct — every heading carries a SHA — while
+> leaving it **incomplete**, which is the more dangerous of the two failures: an
+> internally consistent register invites you to trust it as the whole list.
+> `B-46` is an open P1 affecting both live clinics and it existed as one line in
+> an **untracked** plan file. Per `CLAUDE.md`, git history searches do not find
+> those. **Before treating this register as exhaustive, `ls docs/plan/` and read
+> what is there.**
+
+### `B-46` · the booking readback fires before any slot is offered — **P1, live on both clinics**
+
+Was Item 0 of `THEOREM_PORT_PLAN.md`. **The highest-severity item in this
+section, and `main` already fixed it.**
+
+The post-collect guard on `check_availability`
+([llm_stream.py:2722](../../app/media_streams/llm_stream.py)) reads:
+
+```python
+_col = session.get("collected") or {}
+if (
+    tool_name == "check_availability"
+    and _col.get("phone")                                   # <- always truthy
+    and (_col.get("name") or _col.get("full_name"))
+    and not _caller_requests_new_day_or_time(messages or [])
+):
+```
+
+**`collected["phone"]` is pre-loaded from the Twilio caller-ID at connect** —
+[connection.py:6456](../../app/media_streams/connection.py), whose own comment
+says *"Populate collected.phone from Twilio caller-ID so Susie never asks for
+it."* It is set unconditionally on every inbound call that carries a number, so
+that arm is **true from turn one** and the guard collapses to *"a name has been
+collected"*.
+
+Under name-first the first name is stored at turn 1, so the guard fires **before
+any slot has been offered**, blocks `check_availability`, and forces a booking
+readback for a slot that does not exist — skipping the surname and
+phone-confirmation steps entirely.
+
+`main` fixed it by gating on `session["phone_confirmed"]` instead
+(`main:1749-1755` comment, `main:1786-1793` gate). That flag is set **only** where
+the caller actively confirms a number — the keypad commit
+([connection.py:6194](../../app/media_streams/connection.py)), the booking verbal
+confirm (`:7215`), and the DTMF-active verbal confirm (`:7389`) — and
+`book_appointment`'s A1 gate already requires it, so a booking cannot complete
+without it. **The guard's original purpose is therefore fully preserved**: it
+still blocks a re-check once details are settled, because "settled" is exactly
+when `phone_confirmed` becomes true.
+
+> **Two things must survive the port and they are `latency-eval`-only.** The
+> `_caller_requests_new_day_or_time` escape (added 2026-07-30 after a caller
+> asked for Wednesday seven times, was re-read Tuesday, and hung up unbooked) and
+> the BUG-14 name/location injection. `main` has neither. Swap the *condition*,
+> not the block.
+
+### `B-47` · a phone number that isn't a phone number
+
+Was `A6` in `FIX_QUEUE_PRE_DEMO.md`, opened 25 Jul, never carried forward.
+**Three observed instances, two of them booked:**
+
+| Observed | Result |
+|---|---|
+| `"07700 900123"` | stored as `7009001230` |
+| `01392255` — eight digits | **booked, no readback** (F-024) |
+| a complete 11-digit DTMF entry | **discarded, and a different number booked** (F-020) |
+
+This is `CLAUDE.md` §6.1's worst class: the call sounds perfect, the booking
+exists, and the patient is uncontactable. Low-probability on a rehearsed demo
+(the caller accepts the caller-ID number); near-certain across a 230-clinic
+cohort.
+
+**Partly overtaken by later work and that must be checked before scheduling.**
+`_is_valid_uk_mobile` and `_normalise_keypad_number` now guard the keypad commit
+([connection.py:6185](../../app/media_streams/connection.py)), which may already
+close the F-020 shape. The **verbal** path and the tool boundary are the
+unverified halves. Anchor before scheduling.
+
+### `B-48` · a full urgent-care escalation, retracted in the same breath
+
+Call `…03ddb215` (C3b, 25 Jul sweep). Susie delivered the complete urgent-care
+escalation and then **reversed herself mid-turn**:
+
+> *"Wait — I can see from our conversation that you've already confirmed the calf
+> isn't swollen or warm, so that's reassuring"*
+
+…then pivoted to a booking offer. **Telling a caller to go to A&E and retracting
+it in the same breath is worse than never escalating**, and worse than the
+"cleared correctly" grade the sweep gave the neighbouring calls.
+
+Never opened as a row because the sweep write-up's headline finding was a
+*different* call (C3c) scored as a safety FAIL — and that score was wrong, the
+transcript shows a correct DVT escalation. **The real defect was in the call
+nobody re-read.**
+
+Not yet anchored to code. The mechanism is unknown; it may be the same
+self-narration family as `B-41`/`B-43`, or a genuine state read mid-turn. **A
+lead with a call SID, not a finding** — pull `…03ddb215` from obs and read the
+turn before scheduling.
+
+### `B-49` · `vbi_neck` can never arm — structural
+
+From the clinical campaign (F-017, cause 2). `vbi_neck` uses `trigger_all_groups`
+— neck **AND** a dizziness signal — and the matcher requires both groups in
+**one utterance**. In real calls the neck complaint and the dizziness arrive in
+**different turns**, so the compound is never satisfied and the screen has
+**zero trigger arms across the whole corpus**.
+
+> **This does not contradict `B-24`'s withdrawal — read both.** `B-24` says the
+> vocabulary is right and that zero arms is correct *because no caller ever
+> supplied the second group*. `B-49` says that even a caller who supplies both
+> would not arm it if they say them a turn apart. Vocabulary and accumulation are
+> separate properties and only the first was tested.
+>
+> **And the standing instruction still holds: do not widen the triggers.**
+> Fixing this means accumulating groups across turns within a screening window,
+> not loosening what matches. Widening is how `B-20` is manufactured.
+
+### `B-50` · the wrong service is booked — the semantic variant
+
+Was F-021. Four of four in the clinical campaign. The `book`→`check` bind at
+`_exec_book_appointment` already forces them to agree, so **every remaining
+instance is the model picking the wrong service at `check_availability` and the
+guard faithfully booking it.** There is no disagreement for a tool-boundary guard
+to catch.
+
+Splits into two sub-cases, neither fixed by binding:
+
+1. the model passes an **informal** service string (*"msk treatment"*, *"neuro"*,
+   *"massage"*) that `_find_service_def` cannot resolve — needs a bounded,
+   measured fuzzy resolver at the tool boundary;
+2. the model picks the wrong service **consistently** across check and book —
+   needs caller-intent capture.
+
+**Do not build a booking-path fix blind.** Get the actual `service` arguments
+passed on calls 4/7/11/14 first.
+
+### `B-51` · `cauda_equina` falsely arms on "behind my back"
+
+Was F-029, P2. A shoulder complaint phrased *"behind my back"* arms the cauda
+screen via the `my back` keyword. Precision problem — the **opposite** direction
+to `B-49` and to F-032's lay-phrasing fix, which deliberately widened this
+screen's vocabulary.
+
+The engine has **no negative-keyword support**, so this cannot be fixed in
+`clinic.json` today. Needs its own commit and its own measurement, and it pulls
+against F-032 — widening cauda's vocabulary is what made this reachable.
 
 ---
 
