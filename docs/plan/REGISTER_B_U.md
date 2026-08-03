@@ -403,6 +403,80 @@ IDs: identical, no test moved. **Not yet heard on a live call** — the fix is
 proven offline against the exact recorded text, so dial time is confirmation, not
 evidence.
 
+### `B-42` · **a cancellation was confirmed against the wrong person's appointment** — NEW, **P1**
+
+`CAe74ceae7002d6cff1ba8a324f04cf134`, 3 Aug 10:39, build `aa964ff8d173`. Caller
+was `+447502211207`. The appointment cancelled belonged to **Sarah Jenkins**.
+
+```
+10:39:01.704  lookup_patient (gcal): match 1/13 name='Sarah Jenkins'
+10:39:04.040  tts 'I can see an appointment on Wednesday the 5th of August at q…'
+10:39:04.251  tts 'is that the right one?'          <- NO NAME SPOKEN
+10:39:12.265  FINAL 'yes'
+10:39:26.247  cancel_appointment args={"patient_name": "Sarah Jenkins", …}
+10:39:26.890  {"success": true, "cancelled_event": "… for Marcus — Sarah Jenkins"}
+```
+
+> **Scope this honestly.** On *this* call it is test-data contamination — the
+> test calendar holds 13 future appointments under one phone number, booked
+> under assorted names across the morning's calls (`Quentin Rock`,
+> `Quentin Rook`, `Quinton Rock`, `Sarah Jenkins`). **No real patient was
+> harmed.** But the *mechanism* is not test-specific and it is the worst class
+> of failure this system has.
+
+**Mechanism**, [`_lookup_patient_gcal`, receptionist_tools.py:6397](../../app/tools/receptionist_tools.py):
+
+```python
+matches = [ev for ev in events
+           if (name_lower and name_lower in name(ev).lower())
+           or (pk and pk == _phone_key(_gcal_event_phone(ev)))]
+matches.sort(key=lambda e: e["start"]["dateTime"])
+return _emit(matches[0], 0, len(matches))     # <- earliest match, unconditionally
+```
+
+Two failures compound:
+
+1. **Phone-only match, first-of-N, silently.** The lookup takes the earliest
+   upcoming appointment on that number with no disambiguation.
+2. **The readback omits the patient name.** Susie said the day and the time and
+   asked *"is that the right one?"*. The caller confirmed a **date**, never a
+   **person**.
+
+**Why this is a production risk, not a test artefact:** a shared phone number is
+completely ordinary in physiotherapy — couples, a parent booking for a child, a
+carer. Caller rings from the family mobile, the earliest appointment on that
+number is their partner's, Susie reads a plausible day and time, the caller says
+yes, and **the partner's appointment is cancelled** with no one aware.
+
+**The tool already returns everything needed to prevent this.** `_emit` sends
+`match_count` and `has_more`, and the lookup supports `next=true` to step through
+matches. The model received `match_count: 13, has_more: true` and neither said
+the name nor offered the next match.
+
+**Recommended fix — a gate, not a prompt line.** A wrong cancellation is
+destructive and the caller has no way to know it happened. Block
+`cancel_appointment` / `reschedule_appointment` when the active lookup returned
+`has_more: true` **unless** the patient name has been spoken to the caller and
+confirmed. Same shape as the surname and phone backstops already guarding
+`book_appointment`. Prompt wording alone is what B-36 cause 1 proved insufficient.
+
+### `B-43` · another first-person reasoning leak — *"I need to action the cancellation now."*
+
+Same call, 10:39:23.738, spoken aloud. Gate 5g's `_SELF_NARRATION_RE` carries
+`I need to book (?:this|it) in now` — a **booking-specific literal** — and nothing
+for cancel or reschedule. Reproduced offline:
+
+```python
+th.sanitise_response("I need to book this in now.", s)            -> ''
+th.sanitise_response("I need to action the cancellation now.", s) -> unchanged
+th.sanitise_response("I need to process the cancellation now.", s)-> unchanged
+```
+
+**`B-41` therefore did not close the family, only one arm of it.** And the shape
+of the gap is exactly `B-36` cause 2 again: a guard scoped to *booking* while the
+same failure exists verbatim on the cancel and reschedule paths. Generalise the
+verb rather than adding two more literals.
+
 ### `B-39` · the retention question is asked three times — NEW, **OPEN**, demo-audible
 
 The caller said *"I'd like to cancel my appointment"*, then **"yes"**, then
@@ -428,6 +502,25 @@ cancel flow.**
 > while `"I'd like to cancel it"` does.** Much narrower than first written, and
 > it means the trigger is a short answer to the clarify, not the retention step
 > itself. Anchor that before touching the prompt.
+>
+> **That narrowing was WRONG — withdrawn 10:39.** On `CAe74ceae7` the caller
+> answered the retention question with *"I'd like to cancel it altogether"* —
+> the **canonical phrase, verbatim from the question itself** — and Susie
+> **re-asked the whole retention question anyway**, in the same turn as
+> actioning the cancellation:
+>
+> ```
+> 10:39:21.165  FINAL 'i'd like to cancel it altogether'
+> 10:39:23.542  tts   'Would you like to reschedule this appointment, or cancel it altogether?'
+> 10:39:23.738  tts   'I need to action the cancellation now. Let me do that for yo…'
+> 10:39:26.247  tool  cancel_appointment
+> ```
+>
+> The caller hears the question, then immediately hears it being done. So it is
+> **not** about short tokens: the model re-emits the retention question even on
+> a full, canonical, unambiguous answer. Three sightings now, on three different
+> answer shapes. **Two for two on my own narrowings being too clever** — see
+> [[anchor-defect-rows-before-scheduling]].
 
 ### `B-40` · 9.9 s of dead air on the cancel turn, no filler — NEW, **OPEN**, P1-latency
 
