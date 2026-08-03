@@ -260,7 +260,7 @@ patient.
 | **1** — reschedule that SUCCEEDS | `B-36` **over-fire** check | ✅ **PASS, twice** (`CA8d90deb2` on `e61c8f8`, `CA80f2d410` on `9d9efdd`). Move happened, *"That's you rescheduled…"* spoken **unaltered**, **no `[ms_gate5f]` line on either call**. This is the direction that abandoned a completed booking on 2026-06-12; it is clean |
 | **4** — `B-37`, "go for it" | slot-guard bypass | ✅ **PASS.** `[ms_conn] write CTA outstanding — bypassing slot guard for 'uh go for it'` at 09:59:12.040, `iteration=1` 5 ms later, then `L2 classifier: 'uh go for it' -> yes`. The L1-unsure → L2 path, exactly as predicted |
 | **2** — reschedule that stays REFUSED | phantom + the **R5 leak** | ✅ **PASS** (`CA9cc1a23e`, 10:03, `9d9efdd`). See below — the richest of the four |
-| **3** — cancel that stays REFUSED | destructive-write phantom | ⬜ **NOT DIALLED** |
+| **3** — cancel | destructive-write path | ⚠️ **PASS on outcome, two NEW defects found** (`CA66d6f1b4`, 10:09). See `B-39` / `B-40` |
 
 #### Call 2, turn by turn — `CA9cc1a23e431b4eb54acfd29d86479315`
 
@@ -310,6 +310,74 @@ Without FM-23 this call would have rescheduled on *"um i guess so maybe"*.
 > the first place. Gate 5f is a **backstop**, and a backstop that never fires in
 > three calls is the expected result, not a failure. Record it as: steering half
 > **production-verified**, guard half **test-verified only**.
+
+#### Call 3 — cancel, `CA66d6f1b4571b3209546c126dede8d6c9`
+
+```
+10:10:02.629  tts   'Would you like to reschedule this appointment, or cancel it altogether?'
+10:10:08.507  FINAL 'uh yes'                        <- bare yes, per the script
+10:10:10.334  tts   'Just to check — would you like to reschedule it to a new tim…'
+10:10:17.508  FINAL 'uh cancel'
+10:10:19.366  tts   'Got it — and just before I do, would you like to reschedule …
+                     or are you happy to cancel it altogether?'
+10:10:29.491  FINAL "i said i'd like to cancel it"  <- audible frustration
+10:10:30.641  HTTP 200 (LLM stream opens)
+              ... 9.9 SECONDS OF SILENCE, no filler ...
+10:10:40.550  tool  cancel_appointment
+10:10:41.849  result {"success": true, "cancelled_event": "… Quentin Rock"}
+10:10:44.223  tts   "That's all done — your appointment has been cancelled."
+```
+
+**What passed:**
+
+- **A bare "yes" did not cancel.** Correct outcome — but via the *model*
+  re-asking, not the gate. `cancel_appointment` was never called, so there is no
+  `BLOCKED` line. **The cancel gate's blocking arm remains unexercised in
+  production**, the same status as Gate 5f.
+- **No over-fire on the legitimate cancellation.** *"your appointment has been
+  cancelled"* matches the new `_FALSE_CANCEL_CLAIM_RE` exactly, and Gate 5f did
+  **not** touch it — because the write succeeded, so the cancel family was never
+  armed. That is cause 2c dissolving, verified for the cancel family on a
+  destructive write.
+
+### `B-39` · the retention question is asked three times — NEW, **OPEN**, demo-audible
+
+The caller said *"I'd like to cancel my appointment"*, then **"yes"**, then
+**"cancel"**, then **"I said I'd like to cancel it"** — and was asked to
+reconsider **three separate times** across 27 seconds. The third ask
+(*"Got it — and just before I do, would you like to reschedule…"*) comes
+**after** the caller has already said the word "cancel" plainly.
+
+Not a gate problem: no `cancel_appointment` call was attempted on those turns, so
+nothing blocked them. The model chose to re-ask. **Prompt-layer, in the template
+cancel flow** — the retention attempt has no "already asked / already answered"
+guard. *"I said…"* is the caller telling us so.
+
+### `B-40` · 9.9 s of dead air on the cancel turn, no filler — NEW, **OPEN**, P1-latency
+
+```
+susie.latency  turn_seq=20 ttfa_ms=11155 content_ttfa_ms=11155
+               llm_ttft_ms=1151 chunk_gate_ms=9907
+```
+
+The caller stopped speaking at 10:10:29.491. Susie next made a sound at
+10:10:40.550 — **11.1 s later** — and `chunk_gate_ms=9907` says ~10 s of that was
+the chunk gate holding output, not the model thinking (`llm_ttft_ms=1151`).
+
+**No filler played.** Earlier turns on this same call fired one (*"Give me a
+moment…"*) because a tool was detected early; here the tool call arrived at the
+very end of the generation, so the filler path never armed.
+
+This breaks **two** of the five production-ready bars in `CLAUDE.md` §6 at once:
+p95 turn latency under 1.5 s, and no dead air over 3 s without a filler or
+acknowledgement. On a demo call an 11-second silence reads as a dropped line.
+
+**n=1** — one observation, and it is the turn immediately after a caller
+correction (`[LAT-EP] ep_cutoff turn_seq=19 reason=correction`). Reproduce before
+fixing: dial two more cancels and watch `chunk_gate_ms`. If the correction path
+is the trigger, that is a narrow and findable cause.
+
+---
 
 ### `B-38` · the write CTA can be truncated out of `last_bot_prompt` — NEW, **OPEN**
 
