@@ -212,6 +212,40 @@ that turn. On confirmation the digits are now queued, so the model sees exactly
 what it saw before, one turn later. Without that the read-back sounds perfect
 and the lookup never runs.
 
+#### The half of that decision I missed first time — corrected 00:55
+
+The owner's request was *"the same behaviour as the booking flow **so it reads
+the number out loud**"*, **and** the keypad case. The commit above built the
+keypad case only. `CAa6910560040bc5b8befab6d1920af7ce` (00:51) hung up on the
+first phone turn, which never reaches a keypad, so none of that work was even
+touched — and the turn it hung up on was still:
+
+> *"Was your original appointment booked under the number you're calling from?
+> If so, just say 'use this number.'"*
+
+That sentence was **mandated by the prompt**
+([clinic_template_prompt.py:2187](../../app/prompts/clinic_template_prompt.py))
+while step 8 of the *same file* says, in capitals, *"NEVER ask the caller to say
+a set phrase, never say 'just say use this number'"*. **One prompt, two halves,
+opposite instructions about the same field — the `B-20` shape again.** Now
+reworded to step 8's form: digits in three groups, plain yes/no.
+
+**Two of the phrasings the owner named did not work, and were checked rather
+than assumed:**
+
+| Utterance | Before | Why it missed |
+|---|---|---|
+| `"go for it"` | ❌ | three words, none a bare affirmative in `_PHONE_CONFIRM_AFFIRMATIVES` |
+| `"that's the number"` | ❌ | the signal list holds `"that number"` and `"this number"`; neither is a substring of `"that's the number"` |
+
+Both added. The `<=3`-word cap and the negative-intent guard are untouched, so
+`"yes but call me on my work phone"` still does **not** confirm — a long yes that
+redirects is a yes to a different question, and a wrong number is an unreachable
+patient.
+
+> This is a **prompt** change, so the same caveat as `B-20` applies: the test
+> pins wording, not behaviour. It needs a dial.
+
 > **Known coverage hole, stated not implied.** That queueing branch lives inline
 > in `handle_transcript` and is not reachable without standing up a whole
 > connection, so `test_lookup_keypad_number_is_read_back.py` (29 cases) does

@@ -2184,12 +2184,25 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "EXACTLY 'Of course, let's get that moved for you.' and STOP. When they "
         "want to cancel, say EXACTLY 'No problem at all.' and STOP. Do NOT add "
         "any question on this turn, do NOT call any tool.\n"
-        "Then ask for the booking number EXACTLY: 'Was your original "
-        "appointment booked under the number you're calling from? If so, just "
-        "say \"use this number.\"' STOP there on that turn — do NOT tack on any "
-        "further instruction about reading out or giving a different number. "
-        "Only if the caller then DECLINES the calling number (says it was a "
-        "different one) do you ask them to type it — say EXACTLY: 'No problem "
+        # 3 Aug 2026, owner decision. This step used to mandate 'Was your
+        # original appointment booked under the number you're calling from? If
+        # so, just say "use this number."' — which is the set-phrase style that
+        # step 8 above explicitly BANS ("never say 'just say use this number'").
+        # Two blocks of one prompt telling the model opposite things about the
+        # same field is the shape that produced B-20; it is also just worse for
+        # the caller, who is asked to reason about a number they cannot hear.
+        # The lookup number now gets read back exactly like the booking number.
+        "Then READ THE BOOKING NUMBER BACK. You ALREADY HAVE it — it is in "
+        "CALL STATE, pre-loaded from caller ID — so do NOT ask them for it and "
+        "do NOT ask them to say a set phrase. Say the digits in three groups so "
+        "they can actually check them, then ask a plain yes/no, as ONE short "
+        "turn, EXACTLY like the booking flow's phone step: 'I've got you on oh "
+        "seven five oh two, two one one, two oh seven — is that the number the "
+        "appointment was booked under?' STOP there on that turn. A plain 'yes', "
+        "'yeah', 'that's the number' or 'go for it' is a complete answer: "
+        "accept it and move on to lookup_patient. "
+        "Only if the caller DECLINES that number (says it was a different one) "
+        "do you ask them to type it — say EXACTLY: 'No problem "
         "— go ahead and type the number on your keypad. You can press the star "
         "key to reset at any time.' Never invite them to say the number aloud, "
         "and never ask 'what number was it booked under' as an open question — "

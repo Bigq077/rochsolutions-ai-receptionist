@@ -1066,6 +1066,13 @@ _USE_THIS_NUMBER_SIGNALS: tuple = (
     # and "correct number" for months; this brings the LLM path into line, the
     # same divergence 3bbe4f0 closed for bare "yes".
     "correct number", "right number",
+    # 3 Aug 2026, with the reschedule read-back. "that's the number" is the
+    # most natural answer to "…is that the number the appointment was booked
+    # under?" and it matched NOTHING here: "that number" and "this number" are
+    # both present but neither is a substring of "that's the number", and the
+    # three-word affirmative fallback does not fire because "number" is not a
+    # bare affirmative. Named by the owner as a phrasing that must work.
+    "that's the number", "thats the number",
 )
 
 # Short bare affirmatives that, in the phone-confirm context (buffer empty,
@@ -1083,6 +1090,13 @@ _PHONE_CONFIRM_AFFIRMATIVES: frozenset = frozenset({
 # runs before this check. 2026-07-27: "it is" fell through on a live verify call.
 _PHONE_CONFIRM_AFFIRMATIVE_PHRASES: tuple = (
     "it is", "that is", "that's it", "thats it",
+    # 3 Aug 2026. "go for it" is three words, none of them a bare affirmative,
+    # so it fell through both checks — the caller giving the clearest possible
+    # go-ahead got a re-ask. Observed as the confirmation style this caller
+    # actually uses ("uh go go for it", CA3f1d1249, 00:35:54) and named by the
+    # owner. Safe under the <=3-word cap: it cannot appear in "yes, but call me
+    # on my work phone", and the negative-intent guard runs before this.
+    "go for it", "go ahead with that",
 )
 
 # The ADJECTIVE SLOT, not one more literal.

@@ -39,7 +39,10 @@ import time
 import pytest
 
 from app.media_streams import connection as conn
-from app.media_streams.connection import _is_phone_readback_rejection
+from app.media_streams.connection import (
+    _is_phone_readback_rejection,
+    _is_use_this_number,
+)
 
 PHONE = "07700900456"
 BOOKING_READBACK = f"Thanks — I've got {PHONE}. Is that correct?"
@@ -270,3 +273,79 @@ async def test_rejection_counts_toward_the_shared_reask_ladder():
     await c._reject_keypad_number()
 
     assert c.session["phone_dtmf_reask_count"] == 2
+
+
+# ── 6. the FIRST phone question now reads the number out loud ───────────────
+# 3 Aug 2026. The reschedule/cancel step used to ask "Was your original
+# appointment booked under the number you're calling from? If so, just say
+# 'use this number.'" — no digits spoken, and a set phrase that the booking
+# flow's own step 8 explicitly bans. It now reads the digits back in three
+# groups and takes a plain yes/no, identical to booking.
+#
+# That reword changes which answers arrive, so the answer vocabulary is pinned
+# here. `_is_use_this_number` is the deterministic gate: a miss costs a re-ask,
+# a false accept books an unreachable patient, so the asymmetry is deliberate.
+
+@pytest.mark.parametrize(
+    "utterance",
+    [
+        "yes",
+        "yeah",
+        "yep",
+        "go for it",
+        "uh go for it",
+        "that's the number",
+        "thats the number",
+        "that's it",
+        "it is",
+        "correct",
+        "perfect",
+        "use this number",
+        "that's the best number",
+        "yes that's the correct number",
+    ],
+)
+def test_every_way_the_caller_confirms_the_read_back_number(utterance):
+    assert _is_use_this_number(utterance) is True, (
+        f"{utterance!r} did not register as confirming the number that was "
+        f"just read back — the caller would be asked again"
+    )
+
+
+@pytest.mark.parametrize(
+    "utterance",
+    [
+        "no",
+        "no it was a different one",
+        "a different number",
+        "no, it's this one",
+        "that's the wrong number",
+    ],
+)
+def test_declines_never_confirm_the_read_back_number(utterance):
+    """A false accept here is the expensive direction: the lookup runs against
+    a number the caller has just told us is not theirs."""
+    assert _is_use_this_number(utterance) is False
+
+
+def test_a_long_yes_that_redirects_is_not_a_confirmation():
+    """The <=3-word cap, kept. "yes, but call me on my work phone" is a yes to
+    the wrong question, and a wrong number is an unreachable patient."""
+    assert _is_use_this_number("yes but call me on my work phone") is False
+
+
+def test_the_reschedule_prompt_no_longer_mandates_the_banned_set_phrase():
+    """Step 8 bans "just say use this number"; the reschedule block used to
+    require it. Two halves of one prompt contradicting each other about the
+    same field is the shape that produced B-20."""
+    from app.prompts import clinic_template_prompt as tpl
+
+    src = tpl.__file__
+    with open(src, encoding="utf-8") as fh:
+        text = fh.read()
+
+    # The old mandated sentence, in the reschedule block.
+    assert "booked under the number you're calling from? If so, just " not in text, (
+        "the reschedule flow still mandates the set-phrase wording that the "
+        "booking flow's step 8 explicitly forbids"
+    )
