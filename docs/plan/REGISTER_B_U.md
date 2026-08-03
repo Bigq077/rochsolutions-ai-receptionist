@@ -2791,7 +2791,86 @@ exactly the 36 new — failing node IDs diffed, identical.
 call, give a first name, and confirm slots are offered before any read-back.
 It joins the seven other fixes carrying the same debt.
 
-### `B-47` · a phone number that isn't a phone number
+### `B-47` · a phone number that isn't a phone number — **CLOSED 3 Aug, anchored against the code**
+
+> **Closed. Not by one guard — by four, and the owner was right that it had
+> already been fixed.** The row's "anchor before scheduling" instruction was
+> followed; this is what it found.
+>
+> **All three live clinics run free-form** (`jv_v1` and `vital_edge` are
+> `prompt_engine: template_v1`, `theorem_v3` by literal id), so **every
+> `flow.py` phone site is dead code on the live path.** That collapses 13
+> `phone_confirmed` sites to three.
+>
+> `book_appointment` **hard-blocks** unless `phone_confirmed is True` — the A1
+> gate at [receptionist_tools.py:4771](../../app/tools/receptionist_tools.py).
+> The only three sites that set it:
+>
+> | Site | Number's origin | Validation |
+> |---|---|---|
+> | `connection.py:6194` | keypad | `_is_valid_uk_mobile` at `:6185` |
+> | `connection.py:7215` | **caller ID** on a verbal yes | machine-captured |
+> | `connection.py:7389` | **caller ID** on a verbal yes | machine-captured |
+>
+> Then the A3 gate (`:4803`, `_reconcile_booking_phone`) overwrites any
+> model-authored `phone` argument disagreeing with the confirmed number.
+>
+> **There is no live path by which a spoken, STT-transcribed number reaches a
+> booking.** The "verbal confirm" sites confirm the *caller ID*, not a spoken
+> number. A booked number is either typed (format-validated) or the caller's own
+> line. All four mechanisms postdate the 25 Jul sightings.
+>
+> **Corpus corroboration.** Instance 1 is in obs: `CAcd8b36e198aa` (25 Jul)
+> stored `7009001230` — and stored it **raw**, with no leading zero, so it never
+> passed through `_normalise_keypad_number` at all. `CA3590527bc7c4` (1 Aug)
+> stored `07987124700`, the fabricated number named in
+> `_reconcile_booking_phone`'s own docstring. Both sit **before** their fixes and
+> nothing of either shape appears after.
+>
+> ⚠️ **What a length check can NOT catch, recorded so nobody re-derives it.**
+> `_is_valid_uk_mobile` is `^07\d{9}$`, and `_normalise_keypad_number` pads a
+> 10-digit buffer starting `7`. So the mangled `7009001230` normalises to
+> `07009001230` — eleven digits, valid by the regex, **and a different person's
+> number.** The padding rule that repairs a genuine dropped zero also launders a
+> shifted transcription into something well-formed. That class is only catchable
+> by a read-back, never by a format check. The helper's own docstring already
+> refuses to pad a 10-digit buffer starting `0` for this reason; the `7` case has
+> the same hazard and is kept because a dropped leading zero is the commoner
+> input. **Do not "tighten" this into a length check and call the class closed.**
+>
+> **Two things the anchor turned up — both new, neither part of `B-47`:**
+>
+> **(a) `_fast_path_phone_confirmed` is write-only.**
+> [fast_path.py:311](../../app/fast_path.py) sets it when the caller accepts the
+> caller-ID number; it is declared in `config.py`, `session.py` and
+> `redis_store.py` and **read by nothing**. So that confirmation does not set
+> `phone_confirmed`, A1 blocks the booking, and Susie asks for the number again.
+> Friction, not a wrong number — and a plausible contributor to `B-08` ("asks for
+> information the caller has already given"). **Mechanism anchored; reachability
+> of that branch NOT established.** Lead, not a finding.
+>
+> **(b) A lookup could hand the A3 gate the wrong number — HARDENED `2a146dd`.**
+> `_exec_lookup_recent_appointment` wrote the provider's number over
+> `collected["phone"]` unconditionally — the very field the A3 gate uses as its
+> reference. A caller who confirmed a new number and then hit the lookup would
+> have had their own number read as the mismatch and the booking "corrected" to
+> the stale one.
+>
+> **Reachability measured, not assumed: 0 of 155 obs calls.** Ten stored a
+> caller-supplied number, four ran the returning-patient path, **none did both**.
+> The conversational order is naturally safe (identity before number), so
+> reaching it needs a same-call reschedule after a keypad entry. Fixed anyway
+> because it is one branch and a test; recorded as **hardening, not a reproduced
+> defect**.
+>
+> **Theorem-only by construction** — the function returns early for any other
+> clinic (`:6148`), so it cannot touch `jv_v1` or `vital_edge`, and it matters
+> for **the clinic being onboarded**. Six regression tests; the three asserting
+> the guard fail before it, the three pinning existing behaviour pass before, so
+> nothing fails for the wrong reason. Full suite 95/3484, failing set diffed
+> identical.
+>
+> Original text follows.
 
 Was `A6` in `FIX_QUEUE_PRE_DEMO.md`, opened 25 Jul, never carried forward.
 **Three observed instances, two of them booked:**
