@@ -1788,11 +1788,15 @@ _V3_NAME_CONFIRM_PATTERNS_ANCHORED = [
     # Pattern 1b: "So that's Sarah," / "So that's Sarah —"  (readback)
     re.compile(r"[Ss]o (?:that'?s|it'?s)\s+([A-Za-z][a-z]{1,25})[\s—–,\-]"),
     # Pattern 1c: "Right Sarah —" / "Right Sarah,"
-    re.compile(r'[Rr]ight\s+([A-Za-z][a-z]{1,25})[\s—–,\-]'),
-    # Pattern 1d: "Sarah — got it" / "Sarah — noted" / "Sarah — perfect"
-    #   (em-dash/en-dash/hyphen, specific trailing phrase)
-    re.compile(r'^([A-Za-z][a-z]{1,25})\s*[—–\-]+\s*'
-               r'(?:got it|noted|perfect|right|could i|if you)'),
+    # B-33: anchored to a sentence boundary. Unanchored, "right" matched as an
+    # ordinary adjective mid-sentence and captured whatever followed it:
+    #   "if that doesn't feel right Marcus can take a look"  -> 'Marcus'
+    #   "that's not quite right Leanne covers the evenings"  -> 'Leanne'
+    #   "yes that's right Bolton is our only site"           -> 'Bolton'
+    # None are in any false-positive list, so a practitioner's name or the
+    # clinic's town could be persisted as the PATIENT's name. "Right Sarah —"
+    # is only ever an opener, so requiring the boundary costs nothing.
+    re.compile(r'(?:^|[.!?]\s+)[Rr]ight\s+([A-Za-z][a-z]{1,25})[\s—–,\-]'),
     # Pattern 1e: "Of course Sarah," (mid-sentence acknowledgement)
     re.compile(r'[Oo]f course\s+([A-Za-z][a-z]{1,25})[\s—–,\-]'),
     # Pattern 1f: "Just to confirm — that's Sarah," (alternate readback opening)
@@ -1800,6 +1804,16 @@ _V3_NAME_CONFIRM_PATTERNS_ANCHORED = [
 ]
 
 _V3_NAME_CONFIRM_PATTERNS_BARE = [
+    # Pattern 1d: "Sarah — got it" / "Sarah — noted" / "Sarah — if you..."
+    # B-33: MOVED here from the ANCHORED list, where it did not belong. The
+    # ANCHORED set's stated criterion is "an explicit acknowledgement verb or
+    # readback opener PRECEDES the captured word" — this pattern has no leading
+    # lexeme at all; its only hint is a trailing phrase. Sitting in ANCHORED it
+    # bypassed the phase gate entirely, so any reply opening with a title-case
+    # word, a dash and "if you" was read as a name confirmation:
+    #   "Massage — if you'd prefer something gentler…"  -> name = 'Massage'
+    re.compile(r'^([A-Za-z][a-z]{1,25})\s*[—–\-]+\s*'
+               r'(?:got it|noted|perfect|right|could i|if you)'),
     # Pattern 2 (Spec T amendment): name-first responses — "Sarah — got it.",
     #   "Sarah, noted.", "Sarah — if you'd like to use..."
     #   Permissive: title-case word + em-dash-or-comma + space.  The
@@ -1957,10 +1971,34 @@ def _v3_try_persist_name(
 
     # ── Phase gate ────────────────────────────────────────────────────────────
     # Only proceed when we are in the name-collection phase of the call.
-    _last_bot_lower = last_bot.lower()
+    # B-33: `_name_requested_this_turn` used to widen the gate to the BARE
+    # pattern as well. It cannot: **a reply that ASKS for the name cannot also
+    # read one back**, because the caller has not given it yet. On
+    # CAc3c4e6619660fa69416e8545c9d5674a the caller had said exactly one thing —
+    # "i've hurt my ankle" — and Susie's reply both explained the injury and
+    # asked for the name. That request opened the BARE pattern, which then
+    # matched the reply's own opening word and stored it as the patient's name
+    # ('Rehab'), with DTMF phone collection arming behind it.
+    #
+    # The opening word was manufactured by our own pipeline: Gate 5 strips a
+    # banned opener ("Of course — ") and then RE-CAPITALISES the next word
+    # (turn_handler, "Fix A"), turning an ordinary mid-sentence noun into a
+    # sentence-initial title-case word — exactly the shape this pattern hunts
+    # for. Reproduced end to end.
+    #
+    # So BARE now requires `post_slot_pending` alone: the PREVIOUS turn asked
+    # for the name, therefore the current caller utterance IS the answer and a
+    # readback is possible. The same-response ask-and-acknowledge case the old
+    # gate was widened for is unaffected — "Thanks Sarah — and your surname?" is
+    # ANCHORED, and ANCHORED runs on every turn regardless.
     _name_requested_this_turn = any(
-        p in _last_bot_lower for p in _NAME_REQUEST_PHRASES
+        p in last_bot.lower() for p in _NAME_REQUEST_PHRASES
     )
+    if _name_requested_this_turn and not post_slot_pending:
+        logger.info(
+            "[ms_conn v3] B-33: this reply ASKS for the name — bare readback "
+            "patterns held back until the caller has answered"
+        )
     # The phase gate used to return False here, which lost the name on the very
     # turn that proves it was given. By the time Susie says "Thanks Sarah — I've
     # got you on 07502…" she has ALREADY moved on to the phone question, so
@@ -1975,7 +2013,7 @@ def _v3_try_persist_name(
     # BARE title-case pattern is too permissive for that and stays gated.
     _patterns = (
         _V3_NAME_CONFIRM_PATTERNS
-        if (post_slot_pending or _name_requested_this_turn)
+        if post_slot_pending
         else _V3_NAME_CONFIRM_PATTERNS_ANCHORED
     )
 

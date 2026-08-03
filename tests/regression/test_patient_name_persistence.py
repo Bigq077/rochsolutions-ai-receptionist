@@ -177,10 +177,23 @@ def test_pattern_split_preserves_the_full_ordered_list():
     assert _V3_NAME_CONFIRM_PATTERNS == (
         _V3_NAME_CONFIRM_PATTERNS_ANCHORED + _V3_NAME_CONFIRM_PATTERNS_BARE
     )
-    assert len(_V3_NAME_CONFIRM_PATTERNS_BARE) == 1, (
-        "the bare title-case pattern is the only ungated-unsafe one; if another "
-        "is added it must be classified deliberately, not by default"
+    assert len(_V3_NAME_CONFIRM_PATTERNS_BARE) == 2, (
+        "bare patterns are the ungated-unsafe ones; if another is added it must "
+        "be classified deliberately, not by default"
     )
+    # The deliberate classification this invariant asks for, recorded here so the
+    # count is evidence rather than a number someone bumped to go green.
+    #
+    # B-33 (CAc3c4e661, 3 Aug 2026) moved pattern 1d — the "<Word> — got it /
+    # noted / if you" readback — out of ANCHORED and into BARE. The ANCHORED
+    # list's stated criterion is that an explicit acknowledgement verb or
+    # readback opener PRECEDES the captured word, and ANCHORED bypasses the
+    # phase gate on every turn. Pattern 1d has no leading lexeme at all; its
+    # only hint is a trailing phrase. Sitting in ANCHORED it read
+    # "Massage — if you'd prefer something gentler…" as a patient name.
+    _bare = [p.pattern for p in _V3_NAME_CONFIRM_PATTERNS_BARE]
+    assert any("got it|noted|perfect" in p for p in _bare), "pattern 1d left BARE"
+    assert any(p.startswith(r"^([A-Z][a-z]") for p in _bare), "the title-case pattern left BARE"
 
 
 # ---------------------------------------------------------------------------
