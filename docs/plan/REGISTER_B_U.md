@@ -41,6 +41,64 @@ implying more confidence than exists.
 
 ---
 
+## `B-53` · the L2 classifier's first call was the caller's — **FIXED `80d7234`**
+
+**Found on a live call, 2026-08-03 22:22, `CA3a6cfb84`, build `8e12aafe8b39`.**
+
+The caller said *"uh go for it"*. L2 timed out, `_book_reply_verdict` failed
+closed, `book_appointment` was blocked, and the caller had to answer *"i said go
+for it"* before the booking went through — **an extra turn on the single most
+important question in the call.**
+
+**A known hazard, newly observed.** `_classifier_client()`'s own docstring
+predicts it verbatim — *"a fail-closed timeout on the caller's first 'go for it'
+and nothing in the transcript would explain it"* — and `cf3be18` (2 Aug) built
+the client once to prevent it. But it is built **lazily, on first use**, so the
+cost moved off calls 2…n and stayed on **call 1 after every deploy or cold
+start**, where it is paid inside `BOOK_CLASSIFIER_TIMEOUT_S`. `grep -i timeout`
+over this register returned **zero hits** before today: never seen live.
+
+**The sharp edge, recorded because it is the whole reason the earlier fix
+missed:** `app/main.py` step 1 *does* pre-warm an Anthropic client — but
+`app.flows.conversation._get_client()` is a **different `AsyncAnthropic`
+instance with its own httpx pool.** Warming one warms nothing for the other.
+`test_prewarm_uses_the_same_client_the_classifier_uses` pins it.
+
+Constructing the client is also not enough: the object is cheap, the expense is
+the first request's DNS+TCP+TLS+auth. The prewarm therefore issues **one real
+minimal request**, as the Acuity and ElevenLabs prewarms already do — and
+deliberately **not** on the per-turn timeout, which is the very budget too tight
+to absorb a cold connection.
+
+Non-fatal in every failure mode (disabled, no key, API error, timeout,
+un-constructable client). 9 regression tests, all 9 fail before. Suite 95/3515,
+failing set identical.
+
+> **Verification is free on the next deploy.** The boot log must carry
+> `[ms_llm] L2 classifier TLS pool pre-warmed (Nms)`, and the first booking
+> confirmation after a deploy must log `L2 classifier: … -> yes` rather than
+> `L2 classifier failed`.
+
+> **Note `"go for it"` reaching L2 at all is BY DESIGN, not a defect** — see the
+> table at the `B-37` section. Adding it to the deterministic yes list makes
+> *"don't go for it"* book. Do not "fix" it there.
+
+---
+
+## `B-17` · confirmed live, same call
+
+`CA3a6cfb84` logged, two lines apart:
+
+```
+[sms] SMS_ENABLED is off — outbound SMS suppressed (not sent)
+Booking confirmation SMS sent to ***1207
+```
+
+Reports success it never checked, exactly as the row says. Still deferred, but
+it is no longer an inference.
+
+---
+
 ## Status at a glance
 
 | Track | Items | State |
@@ -363,7 +421,37 @@ patient.
 yes"* and called the tool. **The model and the gate disagreed, and the gate won.**
 Without FM-23 this call would have rescheduled on *"um i guess so maybe"*.
 
-> **What is still NOT verified: Gate 5f itself has never fired in production.**
+> ### ✅ SUPERSEDED 2026-08-03 23:22 — **Gate 5f fired in production, and it worked**
+>
+> `CA3a6cfb842684c894b743733c9914ab10`, build `8e12aafe8b39`:
+>
+> ```
+> L2 classifier failed (TimeoutError()) — failing closed to a re-ask
+> book_appointment BLOCKED — no clear caller yes (last_user_text='uh go for it')
+> book_appointment did not succeed (status='affirmation_required')
+>     — false-confirmation guard ARMED for the booking family this turn
+> [ms_gate5f] false booking confirmation with no successful write (armed=booking)
+>     — re-steering: "All booked — you're in for Saturday the 15th of August
+>        at eleven in the morning."
+> ```
+>
+> The write was blocked, the model narrated **"All booked"** anyway, and the
+> guard caught it and re-steered. **A phantom booking, prevented on a live
+> call.** The guard half is now production-verified, not test-only.
+>
+> **And it did not over-fire.** Later in the same call, after the write actually
+> succeeded, *"All booked — you're in for Saturday the 15th at eleven…"* was
+> spoken normally — no `gate5f` line, no re-steer. That was the regression check
+> for `a4c267d`, and it passed.
+>
+> ⚠️ **`a4c267d` was NOT what caught this.** The claim carried no `?`, so the
+> pre-`a4c267d` code would have caught it too. Do not credit the sentence-level
+> fix with this firing — its own case (a claim beside a mandated question) has
+> still never been seen live.
+>
+> The paragraph below is retained for the reasoning it records.
+>
+> **What was still NOT verified at the time of writing: Gate 5f itself has never fired in production.**
 > Its re-steer text, its family attribution and the R5 isolation remain
 > **test-only** evidence. That is not a gap that can be closed by dialling
 > harder — reaching it requires the model to claim success *despite* being told
