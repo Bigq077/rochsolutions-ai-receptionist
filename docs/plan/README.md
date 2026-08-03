@@ -146,5 +146,25 @@ and the Render dashboard facts. **Not yet Accepted; Phase 0 stays blocked.**
     and should be treated as unconfirmed until a human says otherwise.
     `DEPLOYMENT_INVENTORY.md` is the right home for the answers.
 
+## Corrections added 3 Aug
+
+16. **`FIX_QUEUE_PRE_DEMO.md` is stale and must not be used for scheduling.** It
+    is headed *"2026-07-26 → Hands On Money demo, Wed 29 July"* and its "Monday
+    shortlist" is a week out of date; the demo is **Wed 5 Aug**. Several rows in
+    it have since been closed, re-scoped or withdrawn elsewhere. Left in place as
+    a record of how that week was argued — it is a good document, just expired.
+    **`REGISTER_B_U.md` is the live queue.**
+
+17. **`/health` cannot tell you which commit is running.** It returns a
+    hardcoded `"version": "1.0.0"`. Two separate documents implied otherwise
+    (`healthy.py`'s docstring claims it "prints git_commit to confirm which
+    deploy is live"; `write_version.py` says it is run by `render.yaml`'s
+    `buildCommand`, which is just `pip install`). Neither is true. The **only**
+    place the running SHA appears is `[build_info] running build <sha>`, logged
+    to the Render log at call cleanup. Verified 3 Aug against build
+    `ab39553809fc`. This is the deployment-topology class of error that
+    correction 15 warned about, and it cost a deploy verification that had to be
+    done by watching for a restart instead.
+
 If you find another contradiction between these documents and the code, the code
 wins. Record the correction here.

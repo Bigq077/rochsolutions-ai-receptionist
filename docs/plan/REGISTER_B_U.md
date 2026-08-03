@@ -28,21 +28,168 @@ implying more confidence than exists.
 
 | Track | Items | State |
 |---|---|---|
-| Closed | `U-06`, `B-18`, `B-13`, `B-14`, `B-15`, `B-25`, **`B-31`** | Shipped 2–3 Aug with tests. **`B-15` closed on a different defect than the one it was sold on** — see the honest verdict in its section |
+| Closed | `U-06`, `B-18`, `B-13`, `B-14`, `B-15`, `B-25`, `B-31`, **`B-20`**, **`B-26`**, **`B-34`** | Shipped 2–3 Aug with tests. **`B-15` closed on a different defect than the one it was sold on** — see the honest verdict in its section. `B-20` closed by dial time, not by code — see the 3 Aug sweep |
 | Parked | `B-01` – `B-04` | Two provisioning items + the name work — owner decision, not capacity. **`A3` now has a live instance, see the sweep section** |
 | **Behaviour change pending deploy** | **`B-31`** | **CLOSED 3 Aug.** A 200-char cap had silently disabled the clinical screening layer. Fixed — and a call shaped like sweep call 2 now **escalates to NHS 111 and blocks the booking** where it previously booked. That makes the `B-20` authority decision urgent, not merely open |
-| Track A — deterministic, no dial time | `B-09`, **`B-26`** | `B-26` is ~15 min and stops a false alarm on every call |
+| Track A — deterministic, no dial time | `B-09` | **`B-26` closed 3 Aug.** `B-09` is the last Track A item |
 | Track B — needs an owner decision | `B-19` / `B-07` | Blocked on filler cadence. **`B-07` now has a second arm — `B-30`** |
 | Track C — prompt-side, needs dial time | `B-06` `B-08` `B-10` `B-11` `B-12` `B-16` | **`B-10` and `B-16` confirmed live 2 Aug**, see the sweep section |
 | Track D — verification only | `U-02` – `U-05` | **Still entirely open.** Sweep call 2 exercised the keypad commit, C2 read-back and the overwrite guard — none of which are `U-nn` rows. `U-03` is the *reschedule* path (call 7) and was not touched |
-| **DECIDED and shipped — needs dial time** | `B-20` (Layer 2 over-screening) | **Option B, owner decision 3 Aug.** Screening authority bounded to a matching presentation; the grant is kept, not withdrawn, because 2 of 18 orphans were Layer 1 saves (`B-32`). Prompt change ⇒ **the test pins wording, not behaviour** — the next sweep must count orphans against the 18/133 baseline |
+| **CLOSED — decided, shipped, dialled** | `B-20` (Layer 2 over-screening) | **Option B, owner decision 3 Aug**, then **verified on six live calls the same night** — see the 3 Aug sweep. Screening authority bounded to a matching presentation; the grant is kept, not withdrawn, because 2 of 18 orphans were Layer 1 saves (`B-32`) |
 | Withdrawn | `B-24` (claimed Layer 1 coverage gap) | My claim, wrong. Widening those triggers would manufacture `B-20` |
 | **Deferred to last** | `B-17`, `B-22` (the SMS family) | Owner decision 2 Aug. **`B-17` is worse than recorded — it has a second consumer.** Revisit warranted |
-| New from the sweep | `B-27` `B-28` **`B-31`** `B-30` | See the sweep section. `B-28` is root-caused by `B-31` |
+| New from the 2 Aug sweep | `B-27` `B-28` `B-31` `B-30` | See the 2 Aug sweep section. `B-28` is root-caused by `B-31` |
+| **New from the 3 Aug sweep** | **`B-33`** `B-34` `B-35` | `B-34` closed same night. **`B-33` — a name invented from Susie's own utterance, with DTMF phone collection armed behind it — is the most demo-audible thing open.** `B-35` is a Render env var |
 | New — blocks nothing, decides `B-20` | **`B-32`** (STT noise defeats Layer 1 triggers) | Two observed misses, both rescued by Layer 2. **Do not fix by adding keywords.** One safe 15-min config addition (`calves`) is separable |
 | Withdrawn same night | `B-29` (claimed the DVT grader knew half its question) | My claim, wrong — written from a truncated keyword list quoted in `B-20` rather than from `clinic.json`. **That quotation is now corrected too** |
 | **Unrecorded** | **`B-05`, `U-01`** | **See "Gaps" below** |
 | New — plan written | `B-23` (reason re-asked when already given) | `PLAN_REASON_CAPTURE.md`. **Fired live in the F4 shape.** Owner decision open on F5 |
+
+---
+
+## Sweep — 3 Aug 2026, 00:13–00:21, six calls — **`B-20` verification**
+
+Build **`ab39553809fc`**, read from the log itself (`[build_info] running build
+ab39553809fc` at call cleanup) rather than from `/health`, which returns a
+hardcoded `"version": "1.0.0"` and cannot report a commit. **That line is the
+only place the running SHA appears — use it.** Service
+`low-latency-joint-venture`, number `+447366263180`, clinic `jv_v1`.
+
+Suite: `CALL_SUITE_B20_VERIFY_2026-08-03.md`. Dialled in the order written, with
+the two safety controls first, so that a failure would stop the run before
+spending calls on the discriminating tests.
+
+| # | Presentation | Purpose | Result |
+|---|---|---|---|
+| 1 | calf, denies the red flags | screen must still fire | ✅ `dvt ARMED` → asked → graded `clear` → continued to slots |
+| 2 | calf, admits swelling + warmth | escalation must block the booking | ✅ `dvt POSITIVE (block=True)`, push to "book Thursday anyway" refused, no `check_availability` |
+| 3 | *"i'd like to book for shoulder pain"* | must not screen | ✅ zero orphans |
+| 4 | *"book an appointment for my knee"* … *"just been aching, couple weeks"* | must not screen | ✅ zero orphans |
+| 5 | ankle, no journey context | — | ✅ no screen (script not followed; see below) |
+| 5b | ankle **+ long journey** + denial | `B-31` must not false-escalate | ✅ booked through, no escalation |
+
+**One `ORPHAN`-family line across six calls, and it was the detector's fault,
+not the model's** — see `B-34`. Against the 18-in-133 baseline that is the
+result `B-20` was shipped for.
+
+> **What this does and does not prove.** Six calls is not 133, and `B-20` Option
+> B was only ever scoped to remove the eight *band-one* orphans. Calls 3 and 4
+> are the band-one shapes and both came back clean, which is the claim. Call 5
+> going clean on a bare ankle is a band-**two** shape and is *one* observation —
+> encouraging, not a measurement. Do not upgrade it into one.
+
+### `B-20` — dial-time debt **PAID**
+
+The row's standing caveat was *"a prompt change ⇒ the test pins wording, not
+behaviour"*. Behaviour is now observed on the live build, on both the shapes the
+change targets and both safety invariants it must not break. Moving from
+*"DECIDED and shipped — needs dial time"* to **closed**.
+
+### `B-31` — confirmed working on a live call, not just in a test
+
+Call 3 produced, verbatim:
+
+```
+WARNING last_bot_prompt truncated at 200 chars and lost its '?' — falling back
+to last_question for orphan matching (B-31).
+  bot='essment so Marcus can take a proper look'
+  question='Would you like to book an assessment so Marcus can take a proper look?'
+```
+
+That is `c69eb61` catching precisely the failure it was written for and
+recovering. Pre-fix that turn reads as question-less and switches the layer off.
+
+### `B-33` · a name was invented from Susie's own utterance — NEW, **demo-audible**
+
+Call 5, `CAc3c4e6619660fa69416e8545c9d5674a`, 00:20:05.660. The caller had said
+exactly one thing — *"i've hurt my ankle"* — and had given no name:
+
+```
+[ms_conn v3] name persisted (normal path): 'Rehab'
+v3_phone_dtmf_active = True (name confirmed — phone collection phase)
+...
+📊 Row built — outcome=abandoned name=Rehab phone=yes dur=33s
+```
+
+`_v3_try_persist_name` ([connection.py:10041](../../app/media_streams/connection.py))
+extracts the name from the **bot's** last utterance, on the pattern *"Thanks
+Sarah — if you'd like to use the number…"*. Susie's ankle reply was a long
+clinical explanation and a capitalised word inside it was read as a
+confirmation. **The capture is certain; the "capitalised word" mechanism is
+inferred and not yet anchored** — read the extractor before scheduling a fix,
+per the standing "anchor before scheduling" rule.
+
+Why it outranks its family (`A3` is a *mangled* surname): this is a name with no
+caller origin at all, and it armed DTMF phone collection behind it. Type a
+number at that moment and the appointment is written under "Rehab". It
+self-cleared here only because the next utterance was conversational.
+
+### `B-34` · the orphan detector scored a booking CTA as clinical evidence — NEW, **CLOSED same night**
+
+Two sightings, calls 3 and 5. jv_v1's canned `booking_offer` — *"…so Marcus can
+take a proper look?"* — collided with `trauma_fracture`'s *"That sounds like a
+proper knock"* on the single word `proper`, scoring 1 of the 2 evidence words
+needed. `trauma_fracture` carries only four evidence words, so one further
+generic collision logs a **false `ORPHAN`** — in the metric `B-20` is scored
+against. Fixed by stopwording `proper`; test
+`tests/regression/test_orphan_stopwords_reject_booking_cta.py` pins the CTA at
+**zero** evidence and pins every screen's own question still matching itself.
+
+### `B-35` · the call-summary sink is unconfigured on this service — NEW
+
+Every call this suite:
+
+```
+📊 Row built — outcome=abandoned …
+[ms_conn] call-summary row queued to Sheets
+WARNING Sheets not configured — GOOGLE_SERVICE_ACCOUNT_JSON present, GOOGLE_SHEETS_ID MISSING
+WARNING Sheets append SKIPPED (no client) tab='CallSummaries' rows=1
+```
+
+Rows are built, queued, dropped. Bar 4 of the production-ready definition
+("every call produces a record; failures alert an operator") is not met on
+`low-latency-joint-venture`. Nothing is lost outright — obs and
+`logs/calls_YYYY-MM-DD.jsonl` both captured — but the operator-facing sink is
+dead and has been failing at WARNING. **Provisioning, not code:** set
+`GOOGLE_SHEETS_ID` on the Render service.
+
+### `B-26` — five more sightings, **CLOSED**
+
+Fired after all six calls, unchanged, while synthesis returned 200 throughout.
+Demoted to WARNING and reworded to state only what is known; test
+`tests/regression/test_prewarm_401_does_not_claim_tts_failure.py` pins the level
+and pins both false claims ("credits exhausted", "will fall back to OpenAI") out
+of the message.
+
+> **The fix broke `B-13`'s own regression test, and that was the correct
+> outcome.** `test_prewarm_status_is_not_ready.py::test_a_401_is_logged_at_error`
+> asserted the ERROR level directly, on the premise *"a dead credential … the
+> one fault that silences the assistant"*. That premise is true of a 401 from
+> `synthesise_chunk` and false of a 401 from `GET /v1/models`. The test has been
+> **inverted, not deleted** — it now requires WARNING-or-above, keeping the half
+> that was always right (a 401 must not be silent, must not read as success) and
+> dropping the half the live evidence refutes. Renamed accordingly, with the
+> reasoning in its docstring so the next reader does not "restore" it.
+>
+> Worth noting as a pattern, alongside the `B-15`/`B-17` scope lesson: **a
+> regression test can pin a wrong belief just as durably as it pins a fix.**
+> This one would have blocked `B-26` silently if the suite had not been run.
+
+### Two observations recorded without a row
+
+- **The clinical barge-in guard armed on a plain empathy line.** `"sorry to
+  hear"` is in `_CLINICAL_EMPATHY_PHRASES`
+  ([connection.py:11956](../../app/media_streams/connection.py)), so a 10.3s
+  empathy-plus-CTA turn on call 3 became un-interruptible. There is direct
+  precedent for narrowing that list — `"sorry about that"` was removed from it
+  for locking a caller out of correcting a mis-captured name. Not opened as a
+  defect: no caller was actually harmed on these calls and the list is curated
+  deliberately.
+- **The DVT screen question takes 10.5 s to speak.** On calls 1 and 2 the caller
+  began answering ~3 s before it finished and got three
+  `barge-in suppressed — clinical response completing` lines. Working as
+  designed, and the answer was still captured intact. Shorten the question
+  rather than weaken the guard.
 
 ---
 
