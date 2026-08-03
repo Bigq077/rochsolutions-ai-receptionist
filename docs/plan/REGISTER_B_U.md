@@ -2522,7 +2522,7 @@ end to end.
 > those. **Before treating this register as exhaustive, `ls docs/plan/` and read
 > what is there.**
 
-### `B-46` · the booking readback fires before any slot is offered — **P1, live on both clinics**
+### `B-46` · the booking readback fires before any slot is offered — **FIXED `80b545b`**
 
 Was Item 0 of `THEOREM_PORT_PLAN.md`. **The highest-severity item in this
 section, and `main` already fixed it.**
@@ -2567,6 +2567,37 @@ when `phone_confirmed` becomes true.
 > asked for Wednesday seven times, was re-read Tuesday, and hung up unbooked) and
 > the BUG-14 name/location injection. `main` has neither. Swap the *condition*,
 > not the block.
+
+#### Fixed `80b545b` — and the plan's line numbers were stale, as usual
+
+`llm_stream.py:2604-2612` in the port plan pointed at the Gate 5 fallback, not at
+this guard. Found by symbol instead. **Treat every `llm_stream.py:NNNN` in the
+plan documents as approximate** — the same rot already measured at +36 to +88 in
+`connection.py`.
+
+**Extracted to `_post_collect_readback_due` rather than edited in place.** The
+condition sat inline in `_execute_tools`, reachable only by standing up a whole
+connection — and a guard that cannot be reached from a test is one whose tests
+pass when it is deleted. That is the coverage hole already recorded against the
+lookup keypad branch, and the reason `B-38` extracted `_cta_asked`. The call site
+is source-pinned to route through the predicate, and the predicate is
+source-pinned against reading `collected["phone"]` again, because the whole
+defect was one dictionary key.
+
+> **Fails-before was verified by running the OLD condition against the same
+> session shapes, not by checking out the parent.** The predicate does not exist
+> on the parent, so the tests would have errored on import — which proves the
+> import works, not that the defect was real. All four pre-confirmation shapes
+> return `True` on the old condition and `False` on the new; the invariant
+> (confirmed phone + name) returns `True` on both.
+
+36 tests, `tests/regression/test_b46_readback_waits_for_confirmed_phone.py`.
+Full suite 95 failed / 3411 passed against a baseline of 95 / 3375 — 3375 plus
+exactly the 36 new — failing node IDs diffed, identical.
+
+**Not yet verified on a live call**, and this one *is* dialable: place a booking
+call, give a first name, and confirm slots are offered before any read-back.
+It joins the seven other fixes carrying the same debt.
 
 ### `B-47` · a phone number that isn't a phone number
 
