@@ -292,7 +292,56 @@ independently, and a booking CTA cannot satisfy it (ask shape, no move verb).
 Test `test_move_confirmation_cta_survives_rewording.py`, 17 cases, including the
 verbatim line and the read-back statement that must NOT count as asking.
 
-#### Cause 2 — Gate 5f has a reschedule-shaped hole — **OPEN, deliberately**
+#### Cause 2 — mapped 3 Aug. It is **five** faults, not one — **OPEN**
+
+Traced end to end rather than patched. The order matters: **2a alone makes 2b
+irrelevant**, so anyone who "fixes" the vocabulary first will ship a change that
+does nothing and believe it worked.
+
+| | Fault | Where | Consequence alone |
+|---|---|---|---|
+| **2a** | **Gate 5f is never armed on a reschedule.** It requires `session["booking_flow_active"]`, which has exactly two assignment sites — a treatment-mention + booking-intent path and the booking-ack/CTA path. **Neither fires on a reschedule**, and no reschedule log in this sweep contains the line | [connection.py:9792](../../app/media_streams/connection.py), [:10874](../../app/media_streams/connection.py); read at [turn_handler.py:927](../../app/media_streams/turn_handler.py) | The guard does not run at all. **Fixing 2b without this is a no-op** |
+| **2b** | The claim pattern is booking-only — `booked`, `confirmed`, `got you in for`. *"That's you **rescheduled** — you're now in for Thursday"* matches nothing | `_FALSE_CONFIRM_CLAIM_RE`, [turn_handler.py:527](../../app/media_streams/turn_handler.py) | Even when armed, the phantom passes |
+| **2c** | **The success signal does not exist for reschedule.** `_note_book_write_result` returns early unless `tool_name == "book_appointment"`, so `booking_write_confirmed` is never set by a *successful* reschedule either | [llm_stream.py:559](../../app/media_streams/llm_stream.py) | **The trap.** Fix 2a+2b and leave this, and the guard is permanently armed on reschedules and strips **real** confirmations — precisely the Gate 5c over-fire that abandoned a completed booking on 2026-06-12 |
+| **2d** | The model is given no prohibition. Layer 2 of the same helper attaches `caller_message_rule` — *"The booking was NOT made. Do not tell the caller they are booked…"* — and is scoped to `book_appointment` too. The reschedule block message says *"ask X and wait"* and never says *"do not claim it happened"* | [llm_stream.py:565](../../app/media_streams/llm_stream.py) | The model had an instruction to ask a question and no rule against announcing success |
+| **2e** | **`cancel_appointment` has all four of the above**, and it is *destructive* | `cancellation_confirmation_required`, [llm_stream.py:2983](../../app/media_streams/llm_stream.py) | A refused cancellation can be narrated as done |
+
+> **This was a documented decision, not an oversight.** `_note_book_write_result`
+> says so in its own docstring: *"Reschedule is intentionally out of scope: its
+> confirmation is a different phrase family ('moved'), and Gate 5f targets
+> booking phantoms."* The reasoning was coherent when written. `CA23199d089`
+> falsifies it — record it as a decision overturned by evidence, not as someone
+> having been careless.
+
+##### The fix that follows from the map: **arm on the refusal, not on the flow**
+
+Every one of 2a–2e comes from the guard being scoped to *booking* — the flow
+flag, the vocabulary, the success signal, the steering rule, the tool name. The
+scoping is the bug, and widening each of the five in turn is five chances to get
+the over-fire wrong.
+
+Instead: have the tool-gate branches set a **`write_refused_this_turn`** marker
+when they return any `*_required` status or a `success: False`, and have Gate 5f
+arm on **that** instead of `booking_flow_active`.
+
+- **2a** dissolves — arming no longer depends on a flow flag that reschedule
+  never sets.
+- **2c dissolves, and this is the point.** The guard is off on every turn where
+  nothing was refused, so a successful reschedule's *"That's you rescheduled"* is
+  never even examined. The over-fire hazard that makes the vocabulary approach
+  dangerous simply does not arise, and `booking_write_confirmed` stops being
+  load-bearing.
+- **2d** becomes one shared rule attached at the same site.
+- **2e** is covered for free, along with any future gated write.
+- **2b** still needs the claim pattern to know "rescheduled"/"moved"/"cancelled",
+  but now it is only asked to judge a turn where a write is *known* to have been
+  refused — a far weaker requirement than judging every turn of a booking call.
+
+**Not done tonight on purpose.** It touches the one guard with a recorded
+history of stripping a real confirmation, and the correct version is a
+restructure, not a regex. Owner decision, with a clear head.
+
+#### Cause 2 — the original note, superseded by the map above
 
 Gate 5f ([turn_handler.py:513](../../app/media_streams/turn_handler.py)) exists
 for exactly this — *"Call 5: book_appointment was REJECTED yet the model
