@@ -916,6 +916,15 @@ def _render_clinic_info(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     return "\n".join([x for x in out if x != ""] or [""])
 
 
+# Natural-language phrasing for the UNCONFIRMED-POLICIES worked example, keyed
+# on the raw clinic.json field name. A field with no entry falls back to
+# "the <field> policy", which is grammatical for any key.
+_TBC_EXAMPLE_PHRASINGS = {
+    "deposit_required": "whether a deposit is required",
+    "reports_and_letters": "whether a report or letter can be provided",
+}
+
+
 def _render_policies(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     pol = clinic.get("pricing_and_policies", {}) or {}
     pf = clinic.get("prompt_facts", {}) or {}
@@ -926,6 +935,16 @@ def _render_policies(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
         out.append(f"Late cancellation: {pol['late_cancellation_fee']}.")
     if pol.get("no_show_fee"):
         out.append(f"No-show: {pol['no_show_fee']}.")
+    # A CONFIRMED deposit policy was never rendered at all, so a clinic that had
+    # answered the question still could not answer it on a call. TBC values are
+    # deliberately excluded here — those belong to the UNCONFIRMED block below,
+    # which is the one place allowed to speak about an unsettled policy.
+    _deposit = pol.get("deposit_required")
+    if isinstance(_deposit, str) and _deposit.strip() and "tbc" not in _deposit.lower():
+        out.append(
+            f"Deposit: {_deposit}. This is a confirmed answer — state it "
+            "directly, never defer this question."
+        )
     if pol.get("late_arrival_policy"):
         out.append(f"Late arrival: {pol['late_arrival_policy']}.")
     if pol.get("gp_referral_required") is False:
@@ -946,16 +965,24 @@ def _render_policies(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     # Unconfirmed (TBC) policy fields — Susie must NEVER invent a value for
     # these. Surfacing them by name stops the model fabricating, e.g., a
     # "no deposit required" answer when the deposit policy is still TBC.
-    tbc_fields = [
-        k.replace("_", " ")
+    #
+    # The worked example MUST come from this clinic's own TBC fields. It used to
+    # be hardcoded to the deposit, which is correct for the clinic it was written
+    # for but instructed every other clinic to defer a question it could answer.
+    tbc_keys = [
+        k
         for k, v in pol.items()
         if isinstance(v, str) and "tbc" in v.lower()
     ]
-    if tbc_fields:
+    if tbc_keys:
+        example = _TBC_EXAMPLE_PHRASINGS.get(
+            tbc_keys[0], f"the {tbc_keys[0].replace('_', ' ')} policy"
+        )
         out.append(
             "UNCONFIRMED POLICIES — NEVER STATE OR GUESS A VALUE FOR THESE, "
-            "they are not yet confirmed: " + ", ".join(tbc_fields) + ". If a "
-            "caller asks about one (e.g. whether a deposit is required), do NOT "
+            "they are not yet confirmed: "
+            + ", ".join(k.replace("_", " ") for k in tbc_keys)
+            + f". If a caller asks about one (e.g. {example}), do NOT "
             "say yes and do NOT say no — say you'll check with "
             f"{tk['practitioner']} and make a note for follow-up. Inventing an "
             "answer here is a serious error."
