@@ -140,6 +140,19 @@ def _append_transfer(
     completes — if nobody answered, Susie re-engages the caller.
     """
     vr.say(announcement, language="en-GB")
+
+    # Safety kill-switch (test sweeps). This is the legacy /twilio/voice Gather
+    # path, not the media-stream one, but a kill-switch that covers only some
+    # dial sites is worse than none — so guard it too. The announcement is still
+    # spoken, so the call still *sounds* like a transfer; only the leg is dropped.
+    from app.config import TRANSFER_DISABLED
+    if TRANSFER_DISABLED:
+        logger.warning(
+            "[twilio] transfer SUPPRESSED — TRANSFER_DISABLED set; not dialing %s",
+            transfer_phone,
+        )
+        return
+
     status_url = _abs_url(request, "/twilio/transfer-status")
     dial = Dial(action=status_url, method="POST", timeout=20)
     dial.number(transfer_phone)

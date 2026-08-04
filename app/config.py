@@ -37,6 +37,12 @@ SESSION_SECRET = os.getenv("SESSION_SECRET", "")
 # Override via env var to avoid hardcoding a real UK number in source code.
 TRANSFER_FALLBACK_NUMBER = os.getenv("TRANSFER_FALLBACK_NUMBER", "+447502211207")
 
+# Safety kill-switch for outbound transfers. When truthy, Susie will NOT dial a
+# live transfer leg and will NOT fire the "transferring a patient" heads-up SMS.
+# Defaults to OFF (unset) so production behaviour is unchanged; set it during a
+# test sweep so the run doesn't ring or text the clinic's real staff number.
+TRANSFER_DISABLED = os.getenv("TRANSFER_DISABLED", "").strip().lower() in ("1", "true", "yes", "on")
+
 # --- Observability ---
 # Sentry DSN — set to enable error reporting to Sentry.io.
 # Leave unset (or empty) to disable Sentry entirely.
