@@ -792,18 +792,42 @@ log** at call cleanup. Check it before trusting any test call.
 
 ### Must-cover cases
 
+> ## ⚠️ REVISED 2026-08-04 — the service list changed **today** (`5bc4b3b`)
+>
+> Jonathan's current list is **three** services, and the old table tested a
+> model that no longer exists. Testing against the stale version produces false
+> failures — "Susie asked about length for a Sports Massage" now reads as a bug
+> when it is **correct behaviour**.
+>
+> | Service | Length | Price |
+> |---|---|---|
+> | Neck, Back and Shoulders | **30 min, fixed** | **£65** |
+> | Sports Massage | **60 or 90** | **£125 / £180** |
+> | Deep Tissue Massage | **60 or 90** | **£125 / £180** |
+>
+> **90 minutes is £180, not £175** — the old price is wrong everywhere.
+> **Sports Massage now has the length choice too** — it is no longer fixed.
+> **Withdrawn:** Stress Buster, Muscle / Nerve Injury, Facial Release.
+> **ANF (Amino Neural Therapy):** coming soon, never bookable, never priced.
+
 | # | Case | Watching for |
 |---|---|---|
-| 1 | Deep Tissue, caller says nothing about length | Susie **asks** 60 or 90 and states both prices **before** offering times (Item 2) |
-| 2 | **Deep Tissue, caller asks for 90 minutes** | Susie does **not** refuse it (Item 1); event is **90 minutes long** on the calendar, not 60 |
-| 3 | Deep Tissue, 60 minutes | quotes £125; event is 60 |
-| 4 | Any successful booking — **listen hard to the closing** | §7.2: the pending message, and **never** "all booked" / "confirmed" / "a text is on its way" |
-| 5 | Fixed-length service (Sports, 90) | length is **never** asked — only Deep Tissue has the choice |
+| 1 | Deep Tissue, caller says nothing about length | Susie **asks** 60 or 90 and states **both prices** before offering times |
+| 2 | **Deep Tissue, caller asks for 90 minutes** | Susie does **not** refuse it (Item 1); quotes **£180**; event is **90 minutes long** on the calendar, not 60 |
+| 3 | Deep Tissue, 60 minutes | quotes **£125**; event is 60 |
+| 3a | 🆕 **Sports Massage, no length stated** | Susie **asks** 60 vs 90 — same as Deep Tissue. It used to be fixed at 90; if she assumes a length, the config did not take |
+| 3b | 🆕 **Neck, Back and Shoulders** | quotes **£65**, **never** asks about length, event is **30 minutes**. This is the case the engine used to forbid outright ("there is no 30-minute session") |
+| 4 | Any successful booking — **listen hard to the closing** | §7.2: the pending message, and **never** "all booked" / "confirmed". `SMS_ENABLED` is now **on**, so "I've just sent you a confirmation text" is **correct** — and a text must actually arrive |
+| 5 | ~~Fixed-length service (Sports, 90)~~ | ❌ **RETIRED** — Sports is no longer fixed-length. Superseded by 3a |
 | 6 | **Non-massage request (reiki / acupuncture)** | `never_autobook` — declined, not booked |
+| 6a | 🆕 **A withdrawn massage — ask for a "Stress Buster"** | not on the current list; Susie should say so and offer the closest of the three. She must **not** book it, and must not go silent |
+| 6b | 🆕 **Ask for ANF / Amino Neural Therapy** | "coming soon", takes a name and number, **never** a booking and **never** a price |
 | 7 | **Caller states they are under 18** | `never_autobook` — declined |
 | 8 | Caller changes day mid-flow | the C1 date guard and B-46 read-back, both brand new to VE (category 4) |
 | 9 | **Book, then ring back and reschedule it** | `B-55` **fixed** — expect *"That's the new time sent over to Jonathan… It's not confirmed until he comes back to you."* Any *"you're rescheduled"* / *"you're now in for"* means the fix did not take |
 | 10 | **Successful booking, then push back**: *"so I'm all booked in then?"* | §7.2 under pressure. Case 4 covers the volunteered claim; this covers the invited one, which is the likelier shape |
+| 11 | 🆕 **Read a phone number aloud, in groups**: "oh seven five oh two … two one one … two oh seven" | U3.5 groups long digit runs and the number used to be **silently discarded**. Expect 11 unbroken digits in the FINAL |
+| 12 | 🆕 **Self-correct mid-sentence**: "I want— actually, make it the 90" | U3.5 punctuates self-corrections with **em-dashes**, which broke name extraction. Expect no `—` in the FINAL |
 
 Scripts to work from: `docs/archive/JV_V1_8CALL_TEST_SUITE.md`,
 `docs/archive/CALL_TEST_SCRIPT.md`.
