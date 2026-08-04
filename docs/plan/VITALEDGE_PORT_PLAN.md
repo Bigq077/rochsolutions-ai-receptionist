@@ -651,72 +651,132 @@ did. **Do not** simply stop setting the flag; it is load-bearing elsewhere.
 
 ---
 
-## 8.0 🔕 Before Jules dials — silencing Jonathan
+## 8.0 📞 Before Jules dials — run it LIVE, and warn Jonathan
+
+> ## ✅ DECIDED 2026-08-04 — **suppress nothing.**
+>
+> **Every channel stays on, exactly as if the clinic were live.** SMS, obs
+> alerts, digest, transfer, the real calendar. The mitigation is **social, not
+> technical**: Jonathan is told test calls are coming, and every test booking
+> carries a marker he can filter on.
+>
+> The rationale is fidelity: this is the last gate before a live clinic inherits
+> four weeks of engine change, and a test that suppresses the notification path
+> cannot prove the notification path works.
+>
+> 🔬 **`SMS_ENABLED` is not just a send switch — it rewrites what Susie says.**
+> `app/prompts/clinic_template_prompt.py:1750` reads the *same* env var the send
+> path gates on and swaps the booking closing: ON → *"I've just sent you a
+> confirmation text"*; OFF → an explicit instruction to **never mention a text**.
+> So testing with it OFF exercises a **different spoken script** from the one the
+> clinic will run. That alone settles it.
+>
+> **The table below is therefore a checklist of what Jonathan WILL receive, not
+> a list of things to switch off.** `audit_outbound_to_owner` exiting **1** is
+> the *expected and correct* state for this session.
+
+### Set these on the Vital Edge service before the session
+
+| Var | Value | Why |
+|---|---|---|
+| `SMS_ENABLED` | **`true`** | ⚠️ **defaults `false` on `latency-eval`** and must be set explicitly. Do **not** flip the code default — `sms.py` carries an in-code warning, and the OFF default is what protects every other eval run |
+| `OBS_ALERTS_ENABLED` | `true` | operator alerting live |
+| `OBS_CAPTURE_ENABLED` | `true` | ⭐ **also fixes open question 1c for the session** — VE currently writes to no obs store, so without this the calls leave no record to review afterwards |
+| `OBS_DATABASE_URL` | the demo obs Postgres | as above; otherwise capture is a no-op |
+| `DIGEST_ENABLED` | unset / `true` | unset is fine — `digest.py:51` falls back to `clinic.json` `digest.enabled`, which **defaults `True`**. The 21:30 email goes to Jonathan; expected. (`DIGEST_EMAIL_TO` would redirect it — deliberately **not** used) |
+| `OBS_ALERT_SMS_TO` | the operator number | **not Jonathan's**, unless you intend him paged on every hang-up |
+
+> ⚠️ **Two new IMMEDIATE SMS conditions landed today** (`abandoned_call`,
+> `no_audio_call` — Item 3a) and with alerts ON they will fire on ordinary test
+> behaviour: ring off without speaking → `abandoned_call` SMS. That is correct
+> behaviour and useful signal, but it means **whoever `OBS_ALERT_SMS_TO` points
+> at gets a text per abandoned test call.** Point it at a tester.
+
+### Marking test bookings so Jonathan can filter them
+
+**Use the calling number, not the name.** The event description carries
+`Phone: <number>` verbatim, so a booking made from Jules' handset is exactly
+identifiable. Tell Jonathan that number.
+
+> 🔴 **Do not rely on a spoken "ZZTEST" surname.** The surname is collected only
+> *after* `book_appointment` blocks and is **never read back** — two consecutive
+> live calls wrote a wrong surname to the calendar (`Way` from the parser, `Rook`
+> from STT). A made-up token is the *worst* case for an STT engine tuned to
+> clinical vocabulary. If a name marker is wanted, put it in the **first** name,
+> which *is* read back and can be corrected in-call — but treat the phone number
+> as the authoritative filter.
+
+### What Jonathan should be told
+
+1. Test calls are coming, on `<date/window>`, from `<Jules' number>`.
+2. Bookings from that number are **not real** — delete or ignore them.
+3. He will get **SMS pings** for them, and a **21:30 digest email** listing them.
+4. If Susie ever transfers a call to him during the window, that is a **test
+   case escaping its scope** — he should say so, because §8's must-cover list has
+   no human-transfer case and one arriving means the tester wandered.
+
+---
 
 **Call testing is Jules' work. This section is the precondition for it.**
 
 Jonathan's mobile is **both** `owner_notification_sms` **and** `transfer_phone`;
-his Gmail is **both** the digest recipient **and** the booking calendar. Four
-surfaces, one person. `SMS_ENABLED=false` covers only two of them.
+his Gmail is **both** the digest recipient **and** the booking calendar. Six
+channels, one person — and under the decision above **all six stay live.**
 
-Run this against the service's actual env before every test session — it reads
+Run the auditor against the service's actual env before the session — it reads
 the same env vars and `clinic.json` keys the runtime reads:
 
 ```bash
 python -m scripts.audit_outbound_to_owner vital_edge
 ```
 
-Exit 0 = nothing reaches the owner. Exit 1 = at least one live channel, listed.
+> ⚠️ **Read the exit code backwards for this session.** Exit 0 means nothing
+> reaches the owner, which is a **misconfiguration** here. **Exit 1 listing all
+> six channels is the target state.** Use the listing as a pre-flight checklist:
+> anything the auditor reports as *not* live is a var you still have to set.
+> (The script is written for the ordinary suppress-everything case — every other
+> clinic and every eval run — which is why the polarity is inverted here.)
 
 ### The six channels, measured 2026-08-04
 
-| # | Channel | Target | Silenced by |
-|---|---|---|---|
-| 1 | Owner booking-ping SMS | his mobile | ✅ `SMS_ENABLED=false` (**default off on this branch**) |
-| 2 | obs operator alert SMS | `OBS_ALERT_SMS_TO` | ✅ double-gated: `OBS_ALERTS_ENABLED=false` **and** `SMS_ENABLED` |
-| 3 | obs operator alert **Slack** | `OBS_SLACK_WEBHOOK` | ⚠️ `OBS_ALERTS_ENABLED=false` only — **`SMS_ENABLED` does not gate this leg** |
-| 4 | End-of-day **digest email** | `vitaledgetherapy@gmail.com` | 🔴 **`DIGEST_ENABLED=false` — nothing else stops it** |
-| 5 | **Live transfer** — *rings* him | his mobile | 🔴 **no kill switch** |
-| 6 | PENDING event on **his calendar** | `vitaledgetherapy@gmail.com` | 🔴 **no kill switch — it is the booking** |
+| # | Channel | Target | Gate | State for this session |
+|---|---|---|---|---|
+| 1 | Owner booking-ping SMS | his mobile | `SMS_ENABLED` (**defaults off on this branch**) | ✅ set **`true`** |
+| 2 | obs operator alert SMS | `OBS_ALERT_SMS_TO` | `OBS_ALERTS_ENABLED` **and** `SMS_ENABLED` | ✅ both **`true`**, recipient = **a tester** |
+| 3 | obs operator alert **Slack** | `OBS_SLACK_WEBHOOK` | `OBS_ALERTS_ENABLED` only — **`SMS_ENABLED` does not gate this leg** | ✅ live |
+| 4 | End-of-day **digest email** | `vitaledgetherapy@gmail.com` | `DIGEST_ENABLED` — **nothing else stops it** | ✅ live, **Jonathan gets it** |
+| 5 | **Live transfer** — *rings* him | his mobile | no kill switch | ✅ live — see below |
+| 6 | PENDING event on **his calendar** | `vitaledgetherapy@gmail.com` | no kill switch — *it is the booking* | ✅ live — see below |
 
-> 🔴 **`DIGEST_ENABLED=false` is the one people will miss.** There is **no
+> 🔴 **Channel 4 is the one people miss in either direction.** There is **no
 > `EMAIL_ENABLED` kill switch** — the digest sends whenever SMTP is configured,
-> and `clinic.json` defaults `digest.enabled` to `true`. A day of test calls
-> would email Jonathan a 21:30 summary of every fake booking. The SMS switch does
-> nothing here.
+> and `clinic.json` defaults `digest.enabled` to `true`. `SMS_ENABLED` does
+> nothing here. For this session that is the intent, but it means **Jonathan
+> receives a 21:30 email listing every test booking** — item 3 of the heads-up
+> above is not optional.
 
-> ⚠️ **Two new IMMEDIATE SMS conditions landed 2026-08-04** (`abandoned_call`,
-> `no_audio_call` — Item 3a). Both are exactly the kind a *test* call produces:
-> ring off without speaking → `abandoned_call`. They are double-gated and safe by
-> default, but if anyone enables obs alerts for the test session, hang-ups will
-> page whoever `OBS_ALERT_SMS_TO` points at.
-
-### The two that env vars cannot fix
+### The two that no env var could have fixed anyway
 
 **5 — transfer.** Any test case where the caller asks for a human dials
-Jonathan's mobile. Either point `operational.transfer_phone` at a tester's number
-for the session, or **agree with Jules that no test case asks for a human**. §8's
-must-cover list does not currently include one, so the second option is free —
-but a caller-led test can wander into it.
+Jonathan's mobile, and under this decision it is *meant* to. §8's must-cover list
+has no human-transfer case, so **agree with Jules that none is attempted**; if
+one happens anyway it is a tester wandering out of scope, and Jonathan has been
+told to flag it (heads-up item 4). `operational.transfer_phone` stays pointed at
+him — repointing it would falsify the one channel hardest to verify later.
 
 **6 — the calendar.** Every provisional booking is a real PENDING event on
 Jonathan's own calendar, and Google may notify him depending on his settings.
-This one is structural: the provisional model books *into slots he published*, so
-a test on a different calendar needs those slots replicated first. Options, in
-order of fidelity:
+Structural, and **accepted**: the provisional model books *into slots he
+published*, so a test calendar would need those slots replicated first and would
+still not prove the real one works. §8 case 2 has to show a 90-minute event
+landing at the right duration on the calendar the clinic actually uses.
 
-1. **Tell Jonathan** test bookings are coming and to ignore/delete them. Highest
-   fidelity, zero code, needs a heads-up he may not want.
-2. **Test calendar** — repoint `operational.calendar_id`, publish a handful of
-   slots there. Full fidelity of the flow, ~15 minutes of setup, and §8's
-   reconciliation step then reads that calendar instead.
-3. **Use a recognisable test name** on every booking (e.g. `ZZTEST Whitfield`) so
-   he can filter them at a glance. Cheapest mitigation, and worth doing
-   *alongside* either of the above.
+Mitigation is the phone-number marker above, not a separate calendar.
 
-> **Whichever is chosen, §8's reconciliation still has to happen against whatever
-> calendar was used** — "the booking exists" is the one thing a call cannot prove
-> about itself.
+> **§8's reconciliation still has to happen against that calendar** — "the
+> booking exists" is the one thing a call cannot prove about itself. And every
+> test event must be **deleted afterwards**, or a published slot stays blocked
+> against a real caller.
 
 ---
 
