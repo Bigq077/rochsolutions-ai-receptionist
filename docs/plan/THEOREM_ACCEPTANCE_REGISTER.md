@@ -205,3 +205,128 @@ rejected one — which is exactly the moment someone needs to know.
 - **Benign, not a defect:** `[DIGEST] no recipient configured for theorem_v2` is
   the digest scheduler ticking for the *other* Theorem line
   (`+447366530580`, `clinic_config.py:38`). Not this call, not this clinic.
+
+---
+
+## ⚠️ BUILD BOUNDARY — a deploy landed mid-sweep
+
+**21:18:56, after call 3.** `==> Deploying…` → `Your service is live 🎉`.
+
+That was the push of `76cef3d` (the T-4 caller-ID readback fix). It means:
+
+| Calls | Build | Notes |
+|---|---|---|
+| throwaway, 2, 3 | `4dcad7d` | T-4 **not** in these — the phone step still offers the number without saying it |
+| 4 onward | `76cef3d` | T-4 fix live |
+
+Do not compare a call 3 result against a call 5 result without accounting for
+this. Record the boundary in the run sheet before scoring anything else.
+
+**Also note: `ASSEMBLYAI_USE_U35` is ON.** The call 2 handshake shows
+`speech_model=universal-3-5-pro`, `min_turn_silence=600`, `max_turn_silence=1280`.
+The recommendation before the run was to leave it off precisely so a FAIL could
+be attributed to the engine rather than to the acoustic model or the changed
+endpointing thresholds. It is on, so every transcription-shaped finding in this
+sweep carries that caveat. Not wrong — just no longer separable.
+
+---
+
+## T-7 — the name extractor took "Own" as the caller's name
+
+**Severity:** high · **Status:** open · **Call 3, 21:16:06**
+
+Caller said: *"and just a shockwave on its own"* — a pricing question, no name
+anywhere in it.
+
+```
+[ms_conn v3] first-turn name extracted: Own
+```
+
+`connection.py:10885-10905`. A regex sweep over the utterance produced the
+candidate `Own`, which was not in the `_NOT_NAMES` denylist, so it was written
+to `soft_context["name"]`.
+
+Why this is high and not cosmetic: `soft_context["name"]` is the same slot the
+booking path reads — the throwaway call shows `name persisted (normal path)`
+feeding straight into the read-back. A caller who asks a pricing question and
+*then* books can carry a junk first name into the summary, and from there onto
+a real Acuity appointment. STT has already written a wrong surname to Mark's
+calendar twice; this is the same failure from the other direction, and it does
+not even need STT to mishear anything.
+
+The guard is a **denylist**, which is the wrong shape for this: it can only ever
+catch the junk names someone already thought of. `Own` is a word an English
+sentence produces constantly ("on its own", "my own", "own it").
+
+---
+
+## T-8 — TTS chunking split "wellbeing" into "well" / "Being"
+
+**Severity:** medium · **Status:** open · **Call 3, 21:17:25**
+
+```
+[ms_tts] synthesise_chunk: … text='the idea is to promote relaxation and well'
+[ms_tts] synthesise_chunk: … text="Being by working with the body's natural energy…"
+```
+
+The chunk boundary fell inside the word. The caller hears "…relaxation and
+well. **Being** by working with the body's natural energy" — a full stop and a
+capitalised restart mid-word. It sounds like a glitch, and on a first call it
+sounds like a glitch in the clinic.
+
+Same turn also contradicts itself: opens *"Reiki and energy healing is something
+we offer"*, then *"for pricing on that one I'd need to put you through to the
+team"*, then describes the treatment and its duration anyway. Answer discipline,
+same family as T-5.
+
+---
+
+## T-3 — PROMOTED from "watch" to CONFIRMED
+
+**Severity:** medium · **Call 3 — five instances in one call**
+
+21:15:43, 21:16:00, 21:17:07, 21:16:55, 21:17:44 — every bare price answer:
+
+```
+[ms_watchdog] Spec W: turn asked nothing and no question is outstanding —
+  nothing to re-ask: 'Prescribing is twelve pounds fifty.'
+```
+
+After a flat FAQ answer there is **no watchdog armed at all**. A caller who
+goes quiet there gets unbounded dead air with no re-ask and no prompt — the
+call just sits until they hang up. This call ended `outcome=abandoned`.
+
+It did not bite visibly here because the caller kept asking questions. Five
+instances in one call means it is not an edge case; it is the default state of
+every FAQ turn.
+
+---
+
+## T-9 — Acuity calendar IDs missing for both named practitioners
+
+**Severity:** medium · **Status:** open · **Startup, 21:18:58**
+
+```
+⚠️ CLINIC CONFIG: Acuity calendar ID missing for clinic='theorem_v3' location='mark'
+⚠️ CLINIC CONFIG: Acuity calendar ID missing for clinic='theorem_v3' location='leanne'
+```
+
+Same for `theorem` and `theorem_v2`. Booking by location works (the throwaway
+call reached Acuity via `appointment_type_id=acuity_15823699`), so this is not
+blocking the generic path — but any flow that routes to a *named practitioner*
+has no calendar to write to.
+
+**Check this before calls 18/19/20**, which are the only ones that write for
+real. If any of them names Mark or Leanne, this is where it fails.
+
+---
+
+## Confirmations from call 3
+
+- **T-5 reproduced, worse.** 14.8 s (shockwave), 9.7 s (package), 7.4 s (laser),
+  and a reiki answer spanning 15.1 s + 19.1 s with terminal chunk at 21:17:44.
+  The caller hung up two seconds later. Six long turns in one call.
+- **T-2 reproduced a third time** (21:17:51, both `abandoned`). Three for three.
+- **Benign, documented in-log:** ElevenLabs `401` on `/v1/models` at prewarm.
+  The warning itself explains the key lacks `models_read` and that synthesis is
+  unaffected — synthesis then worked all call. Not a finding.
