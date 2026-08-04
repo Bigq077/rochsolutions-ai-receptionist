@@ -764,6 +764,19 @@ _ORDINAL_WORDS = {
 }
 
 
+def under_age_blocks_booking(session: dict) -> bool:
+    """True when this caller stated an age below the clinic's minimum.
+
+    Thin by design — the judgement lives in `capture_under_age`, which is
+    clinic-gated and conservative. Extracted anyway, for the reason
+    `_booking_confirmation_asked` and `_post_collect_readback_due` were: a
+    condition written inline inside `_execute_tools` can only be tested by
+    reading the source, and a source test catches the branch being DELETED but
+    not the branch being disabled. Named, it can be asserted against directly.
+    """
+    return bool(session.get("_under_age_declared"))
+
+
 def note_reason_question_asked(session: dict, spoken: str) -> bool:
     """Latch that the REASON question has been put to this caller.
 
@@ -3287,6 +3300,48 @@ class LLMStream:
                             ),
                             "available_days": session.get("available_days", {}),
                         }
+                elif (
+                    tool_name == "book_appointment"
+                    and under_age_blocks_booking(session)
+                ):
+                    # ── Under-age backstop ────────────────────────────────────
+                    # CA7d7c109b (VE acceptance run, 4 Aug): the caller raised an
+                    # under-18, Susie declined — correctly — and then asked for a
+                    # day and time anyway. The decline was prompt text; nothing
+                    # deterministic stopped the booking machinery.
+                    #
+                    # The clinic's own policy machinery could not help. Its
+                    # `never_autobook` entry ("Anyone under 18") is read by no
+                    # Python, and `evaluate_policy_gate`, which has a real minor
+                    # check, is reachable only from flow.py — bypassed on every
+                    # live clinic. So this write was ungated entirely.
+                    #
+                    # First in the book_appointment chain deliberately: there is
+                    # no point validating a slot or a confirmation for an
+                    # appointment the clinic will not accept. Clinic-gated via
+                    # minimum_age_years, which jv_v1 does not set — its policy is
+                    # "No minimum age".
+                    _ua = session.get("_under_age_declared")
+                    logger.error(
+                        "[ms_llm] book_appointment BLOCKED — caller stated age "
+                        "%s, below the clinic minimum. Booking refused for the "
+                        "rest of this call.", _ua,
+                    )
+                    result = {
+                        "status": "under_age_declined",
+                        "message": (
+                            f"book_appointment is REFUSED. The caller has said "
+                            f"they are {_ua}, which is below this clinic's "
+                            f"minimum age. Do NOT book, do NOT offer times, and "
+                            f"do NOT ask for a day, a name or a number — the "
+                            f"appointment cannot go ahead whatever they answer. "
+                            f"Say kindly that appointments are for those aged 18 "
+                            f"and over, so this is not something you can book, "
+                            f"and do not offer an alternative appointment. If "
+                            f"they ask why, it is the clinic's policy. You may "
+                            f"still answer general questions."
+                        ),
+                    }
                 elif (
                     tool_name == "book_appointment"
                     and _slot_date_disagrees_with_speech(args, session)

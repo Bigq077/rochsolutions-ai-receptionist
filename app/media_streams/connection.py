@@ -674,6 +674,56 @@ def capture_duration_choice(session: dict, utterance: str) -> "int | None":
     return dur
 
 
+def capture_under_age(session: dict, utterance: str) -> "int | None":
+    """Latch that this caller has stated an age below the clinic's minimum.
+
+    `CA7d7c109b` (Vital Edge acceptance run, 4 Aug): an under-18 was raised,
+    Susie declined correctly — and then asked for a day and time anyway. The
+    decline lives in prompt text; nothing deterministic stopped the booking
+    machinery, so the turn drifted back towards booking.
+
+    The gap is wider than that one turn. `evaluate_policy_gate` has a real minor
+    check and is reachable ONLY from `flow.py`; every live clinic runs free-form
+    with the FlowEngine bypassed, so it never executes. `never_autobook`
+    ("Anyone under 18") is read by no Python at all. Until this, nothing but the
+    model's compliance stood between a 15-year-old and a booking.
+
+    Clinic-gated: `minimum_age_years` is absent for jv_v1 — whose stated policy
+    is the opposite, "No minimum age" — and for theorem, so for them this
+    function returns before doing anything.
+
+    Never cleared within a call. An age is a fact about the caller, not a
+    preference; a later utterance that happens to contain a number must not
+    unlatch a safeguarding decision.
+
+    Never raises: a failure here must leave the prompt's own decline in force,
+    not drop the call.
+    """
+    if not utterance or session.get("_under_age_declared"):
+        return None
+    try:
+        from app.clinic_config import get_clinic as _ua_get_clinic
+        from app.tools.receptionist_tools import under_age_from_utterance
+        age = under_age_from_utterance(
+            _ua_get_clinic(session.get("clinic_id")) or {}, utterance
+        )
+    except Exception:
+        logger.warning(
+            "[ms_conn v3] under-age capture failed — prompt decline still "
+            "applies", exc_info=True,
+        )
+        return None
+    if age is None:
+        return None
+    session["_under_age_declared"] = age
+    logger.warning(
+        "[ms_conn v3] caller stated an age below the clinic minimum (%s) — "
+        "booking gate ARMED for the rest of this call (from utterance %r)",
+        age, utterance,
+    )
+    return age
+
+
 def _extract_time_preference(text: str) -> "str | None":
     """Extract an explicit time-of-day preference from *text*.
 
@@ -9918,6 +9968,11 @@ class WebSocketCallHandler:
                             # reaches the model, which passes duration_minutes
                             # explicitly and overwrites it at the tool.
                             capture_duration_choice(self.session, utterance)
+                            # And whether the caller has stated an age below the
+                            # clinic's minimum. Same phase, same reason: on
+                            # CA7d7c109b the decline was correct and the booking
+                            # flow carried on regardless.
+                            capture_under_age(self.session, utterance)
 
                             # ── Spec I: turn-level slot cache clear ──────────
                             # New patient turn starting — invalidate any slots
