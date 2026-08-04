@@ -328,8 +328,30 @@ def build_keyterms(clinic: Optional[dict]) -> list[str]:
             _collect_strings(loc.get("name"), proper_nouns)
             _collect_strings(loc.get("serves_areas"), proper_nouns)
 
+    # Tier 4/5 — vocabulary that is not derived from the clinic's own structure.
+    #
+    # _GENERIC_KEYTERMS was written for JV: a Yorkshire PHYSIOTHERAPY clinic. It
+    # boosts "physiotherapy", "osteopath", "acupuncture", "shockwave", "Pilates"
+    # and Yorkshire dialect ("nowt", "owt", "reight", "mardy", "gradely").
+    # Applied to Vital Edge — a massage-only clinic in Kingston upon Thames —
+    # it spent ~30 of the 100 slots boosting words for treatments Jonathan
+    # declines and a dialect 200 miles from his callers, crowding out the
+    # massage vocabulary that decides whether a booking is heard correctly.
+    # Measured on the first live U3.5 call, 2026-08-04.
+    #
+    # A clinic may now supply its own list via clinic.json:
+    #     "stt_keyterms": {"use_generic": false, "terms": [...]}
+    # Absent the key, behaviour is byte-identical to before — the generic list
+    # alone — so no existing clinic moves.
+    _kt_cfg = clinic.get("stt_keyterms") or {}
+    _clinic_terms: list[str] = []
+    _collect_strings(_kt_cfg.get("terms"), _clinic_terms)
+    _generic = (
+        list(_GENERIC_KEYTERMS) if _kt_cfg.get("use_generic", True) else []
+    )
+
     tiers: list[list[str]] = [
-        triggers, proper_nouns, answers, list(_GENERIC_KEYTERMS),
+        triggers, proper_nouns, answers, _clinic_terms, _generic,
     ]
 
     seen: set[str] = set()
