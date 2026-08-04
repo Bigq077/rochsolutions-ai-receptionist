@@ -383,3 +383,100 @@ ported — see the branch-lineage note above.
 rather than relying on the new default. If the service has an old
 `SMS_ENABLED=false` sitting in its env from the latency-eval lineage, the env
 var still wins and the code default changes nothing.
+
+---
+
+## T-10 — VERIFIED LIVE, call 4, build `cc88fdb`
+
+```
+Phone normalised: 07502211207 → +447502211207
+POST https://api.twilio.com/2010-04-01/Accounts/AC.../Messages.json
+Response Status Code: 201
+SMS sent successfully
+✅ Smart SMS sent [abandoned] → ***1207
+```
+
+First SMS this service has ever sent. Fix confirmed end to end against Twilio,
+not merely in test. Note the build: `cc88fdb`, which is the register commit —
+so `e0ca288` (the location-ladder tests) was not yet deployed at call 4. Tests
+only; no engine difference.
+
+---
+
+## T-11 — "the morning of" was captured as a timing preference
+
+**Severity:** medium · **Status:** open · **Call 4, 21:30:43**
+
+Caller asked a *policy* question: *"what if I rearrange the morning of"* — i.e.
+the morning of the appointment, meaning short notice.
+
+```
+[ms_conn v3] time_of_day_preference captured: mornings
+  (from utterance 'um what if i rearrange the morning of')
+```
+
+No preference was expressed. The caller was asking what a same-day change
+costs. If they had gone on to book, they would have been silently steered to
+morning slots on the strength of a word lifted out of a policy question.
+
+**Same family as T-7** ("Own" taken as a name from *"a shockwave on its own"*).
+Both are deterministic extractors scraping an utterance whose intent is a
+question, not an answer, and both write to state the booking flow later trusts.
+Worth fixing together as one class rather than one at a time: **do not run
+answer-extractors on a turn the caller framed as a question.**
+
+---
+
+## T-12 — every abandoned call now texts the caller
+
+**Severity:** medium · **Status:** open, needs an owner decision · **Call 4**
+
+The caller asked FAQs and hung up. No booking, no name, no request for
+follow-up — `outcome='abandoned'` — and they were sent an SMS.
+
+That was invisible while SMS was suppressed. Now that T-10 is fixed it is live
+behaviour, and it fires on **every** abandoned call. Two consequences:
+
+1. During the rest of this sweep, every test call that ends without a booking
+   texts the tester's phone.
+2. In production, a member of the public who rings, asks a price and hangs up
+   receives an unsolicited text from the clinic. That is a judgement call about
+   what Mark wants his clinic doing, not a bug I should decide unilaterally.
+
+**Question for the owner:** should the abandoned-call follow-up SMS fire for a
+caller who never gave a name or asked for anything? It is defensible ("sorry we
+got cut off — here's how to book"), but it should be a decision, not a
+side-effect of turning SMS on.
+
+---
+
+## T-2 — reproduced a FOURTH time, and now the two paths disagree
+
+Call 4, 21:32:33 and 21:32:35:
+
+```
+📊 Row built — outcome=abandoned name=None phone=no  dur=137s   ← /twilio/status
+📊 Row built — outcome=abandoned name=None phone=yes dur=139s   ← cleanup
+```
+
+Previously the two rows differed only in `outcome`. Here they disagree about
+whether a phone number exists at all — the webhook path also logged
+`📵 No phone number — skipping SMS` while the cleanup path had one and sent.
+
+Same root cause (two builders over two different views of the session), but it
+now has a second symptom: the SMS decision is taken twice against contradictory
+state. With SMS live, that is the difference between a caller getting a text
+and not, decided by a race.
+
+---
+
+## Confirmations from call 4
+
+- **T-5 reproduced.** 11.5 s (cancellation policy), 14.2 s (waitlist), 8.8 s,
+  8.7 s, 7.5 s. Fifth call in a row.
+- **T-3 reproduced.** `Spec W … nothing to re-ask` on five FAQ answers.
+- **Answers themselves were correct** — 24-hour notice, 75% short-notice
+  charge, self-pay/Bupa, payment methods, no GP referral needed, no video
+  consultations, what to wear. Content is good; it is the delivery length and
+  the missing watchdog that keep failing.
+- Obs judge scored this call **4** (previous calls: 3).
