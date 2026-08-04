@@ -8,6 +8,10 @@ import json
 import copy as _copy
 from pathlib import Path
 
+# Canonical source of truth for Theorem clinic facts. Pure data, no app deps —
+# safe to import here. Used to keep structured prices in a single place.
+from app.clinics.theorem import canonical as theorem_canonical
+
 
 def _hours_tuple(start_hour: float, end_hour: float):
     """
@@ -473,17 +477,17 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             },
         },
         "pricing_details": {
-            "new_patient_assessment_gbp": 75.0,
+            "new_patient_assessment_gbp": 85.0,
             "new_patient_duration_mins": 50,
-            "standard_followup_gbp": 75.0,
+            "standard_followup_gbp": 85.0,
             "standard_followup_duration_mins": 40,
             "rehab_session_gbp": 65.0,
             "rehab_duration_mins": 50,
             "prescribing_gbp": 12.50,
             "specialist_equipment_surcharge_gbp": 45.0,
-            "standalone_shockwave_laser_gbp": 120.0,
+            "standalone_shockwave_laser_gbp": 130.0,
             "standalone_shockwave_laser_duration_mins": 30,
-            "package_4x_shockwave_laser_gbp": 420.0,
+            "package_4x_shockwave_laser_gbp": 468.0,
             "package_validity_months": 6,
             "package_cooling_off_days": 14,
             "notes": [
@@ -1068,6 +1072,7 @@ THEOREM_LOCATIONS = {
         "short_name": "Alcester",
         "address": "Theorem Health and Wellness, The Greig Leisure Centre, Kinwarton Road, Alcester, B49 6AD",
         "acuity_calendar_id": os.getenv("ACUITY_CALENDAR_ID_ALCESTER"),
+        "bookable": True,
     },
     "redditch": {
         "id": "redditch",
@@ -1075,6 +1080,11 @@ THEOREM_LOCATIONS = {
         "short_name": "Redditch",
         "address": "Theorem Health and Wellness, 51 Bromsgrove Road, Redditch, B97 4RH",
         "acuity_calendar_id": os.getenv("ACUITY_CALENDAR_ID_REDDITCH"),
+        # Redirect-only (Mark, 2026-07-08): Redditch is NOT bookable through
+        # Susie for now. Flip to True to fully restore Redditch booking — this
+        # single flag drives both the prompt redirect block and the code guard
+        # in llm_stream.py. Nothing else needs changing to re-enable.
+        "bookable": False,
     },
 }
 
@@ -1204,6 +1214,22 @@ THEOREM_APPOINTMENT_TYPES = {
         "acuity_appointment_type_id": None,
     },
 }
+
+# Maps Acuity appointment-type ids → canonical service ids. Any type not listed
+# keeps its literal above (none currently). Tests assert these stay in sync.
+_CANONICAL_PRICE_MAP = {
+    "physio_assessment": "physio_assessment",
+    "physio_followup":   "physio_followup",
+    "remedial_rehab":    "remedial_rehab",
+    "rehab_pt":          "remedial_rehab",
+    "prescribing":       "prescribing",
+    "acupuncture":       "acupuncture",
+    "psychotherapy":     "psychotherapy",
+}
+for _apt_id, _canon_id in _CANONICAL_PRICE_MAP.items():
+    _canon_price = theorem_canonical.get_price(_canon_id)
+    if _apt_id in THEOREM_APPOINTMENT_TYPES and _canon_price is not None:
+        THEOREM_APPOINTMENT_TYPES[_apt_id]["price_gbp"] = float(_canon_price)
 
 # Specialist equipment surcharges (applied during session, not at booking)
 THEOREM_SURCHARGES = {
