@@ -84,7 +84,12 @@ UNCHANGED_CLINIC_PROMPTS = {
     # added inside _build_theorem_v3 and did not leak into the shared
     # renderers. Susie answered "Yes" to "are you a real person" because the
     # rendered theorem_v3 prompt had no disclosure instruction at all.
-    "theorem_v3": "93568fb7f0496419",
+    # Re-pinned again 2026-08-04 (T-5). theorem_v3 only, once more: the FAQ
+    # answer-length rule lives inside _build_theorem_v3. Susie was running
+    # 20s answers because "don't volunteer information not asked about"
+    # was present and ignored — hours + parking drew hours, parking, the
+    # train-station walk and two competing offers.
+    "theorem_v3": "e1de4f81f74e5aaf",
 }
 
 OLD_CONFIRMED_WORDING = ("that's you rescheduled", "you're now in for")
