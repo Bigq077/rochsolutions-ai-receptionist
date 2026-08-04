@@ -171,13 +171,58 @@ def test_lovely_still_permitted_as_a_warm_transition(static_block):
 # ── screening stays out ───────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("term", [
-    "clinical_screening",
-    "cauda equina",
-    "night sweats",
-    "red flag",
-])
-def test_no_screening_language_entered_the_prompt(static_block, term):
-    """Mark wants no clinical triage. The prompt must not acquire screening
-    questions by way of a ported block."""
+@pytest.mark.parametrize("term", ["clinical_screening", "night sweats"])
+def test_no_interrogative_screening_entered_the_prompt(static_block, term):
+    """Mark wants no clinical triage: Susie must never ASK symptom questions.
+
+    That is the clinical_screening.py layer, which is opt-in per clinic and
+    stays off for Theorem — pinned separately in test_theorem_config_port.py."""
     assert term.lower() not in static_block.lower()
+
+
+def test_the_red_flag_net_IS_present_and_is_reactive_not_interrogative(static_block):
+    """Decision, 2026-08-04 (Quentin): port as-is. This is NOT the screening
+    that was excluded.
+
+    The excluded thing is the interrogative layer — Susie asking symptom
+    questions unprompted. This block only fires on what the caller has already
+    volunteered ("only when the caller actually describes these"), and main
+    runs it on Mark's line today. Removing it would have been a REGRESSION
+    against his current live behaviour, not a refusal to add something new."""
+    assert "RED-FLAG SAFETY NET" in static_block
+    assert "only when the caller actually describes these" in static_block
+    assert "never for routine aches or niggles" in static_block
+
+
+def test_concern_handling_block_is_wired_in(static_block):
+    """caller_concerns.py was copied across in Item 1 but not imported — the
+    plan's §2.2 warning about ending up with two dead files."""
+    assert "PHYSIO CALLER HANDLING" in static_block
+    assert "Never diagnose or name what the caller has." in static_block
+
+
+def test_condition_injection_fires_on_a_matching_utterance():
+    s = dict(SESSION, _v3_current_utterance="my back has been sore since gardening")
+    assert "CALLER CONDITION CUE" in _build_theorem_v3(s)[1]
+
+
+def test_condition_injection_escalates_on_red_flag_words():
+    s = dict(SESSION, _v3_current_utterance="numbness in both legs and the saddle area")
+    dyn = _build_theorem_v3(s)[1]
+    assert "RED-FLAG" in dyn and "do NOT book" in dyn
+
+
+def test_condition_injection_stays_silent_on_an_ordinary_question():
+    """It must not fire on every turn — it is a dynamic block and noise here
+    costs tokens on every single turn of every call."""
+    before = _build_theorem_v3(dict(SESSION))[1]
+    after = _build_theorem_v3(dict(SESSION, _v3_current_utterance="how much is an assessment"))[1]
+    assert before == after
+
+
+def test_llm_stream_stashes_the_utterance_the_injection_reads():
+    """Without this the injection reads '' forever and is dead code. It is a
+    separate file, so nothing in the prompt tests would have caught it."""
+    import app.media_streams.llm_stream as ls
+    src = open(ls.__file__, encoding="utf-8").read()
+    assert 'session["_v3_current_utterance"] = user_text' in src

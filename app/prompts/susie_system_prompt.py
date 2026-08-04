@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from app.clinics.theorem.caller_concerns import build_concern_handling_block
+
 
 # ───────────────────────────────────────────────────────────────────────────
 # Dedicated slot-formatting system prompt for the post-check_availability
@@ -3824,8 +3826,13 @@ def _build_theorem_v3(session: dict) -> str:
     # ── STATIC block — large, content never changes within a call ────────────
     # Cached by llm_stream.py with cache_control: ephemeral so only turn 1
     # pays the full input cost.  Do NOT put any session-derived content here.
+    # Physio caller-concern handling: red-flag net + must-not-say + objection
+    # scripts. Lean, content-static, rendered from app/clinics/theorem/
+    # caller_concerns.py (pure data) so it stays in sync without prompt edits.
+    concern_handling = build_concern_handling_block()
     static_blocks = [
         treatment_override,
+        concern_handling,
         identity,
         persona_character,
         language_signal,
@@ -3855,6 +3862,15 @@ def _build_theorem_v3(session: dict) -> str:
     dynamic_blocks = []
     if b7: dynamic_blocks.append(b7)
     if b6: dynamic_blocks.append(b6)
+
+    # Per-turn physio condition cue: inject the one curated, guard-railed script
+    # matching the caller's current utterance (stashed by llm_stream before the
+    # build). Uncached dynamic block, so the static prefix cache is untouched;
+    # returns '' (no injection) when nothing relevant matches.
+    from app.clinics.theorem.caller_concerns import build_condition_injection
+    _cond_block = build_condition_injection(session.get("_v3_current_utterance", ""))
+    if _cond_block:
+        dynamic_blocks.append(_cond_block)
 
     return (
         # `if b` matters: redditch_redirect is "" when Redditch is bookable,
