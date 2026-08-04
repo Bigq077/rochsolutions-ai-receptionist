@@ -330,3 +330,56 @@ real. If any of them names Mark or Leanne, this is where it fails.
 - **Benign, documented in-log:** ElevenLabs `401` on `/v1/models` at prewarm.
   The warning itself explains the key lacks `models_read` and that synthesis is
   unaffected — synthesis then worked all call. Not a finding.
+
+---
+
+## T-10 — SMS was off because the branch inherited an eval default  ✅ FIXED
+
+**Severity:** high · **Fixed:** 2026-08-04, `6f664a4`, mid-sweep on owner request.
+
+Mark's line was sending **no SMS at all**. Every call logged:
+
+```
+[sms] SMS_ENABLED is off — outbound SMS suppressed (not sent)
+```
+
+which reads as correct, because that is exactly what a healthy latency-eval
+branch prints. theorem-onboarding descends from latency-eval and inherited its
+default-OFF — past a comment sitting in that very function reading *"DO NOT
+port this default flip to main/theorem/jv live branches."*
+
+Second instance of the same class as `TRANSFER_DISABLED`, in the opposite
+direction: **theorem-onboarding's lineage is latency-eval, not main, so it
+carries eval-branch defaults and lacks main's live-branch fixes.** Worth
+sweeping for a third.
+
+It also made Susie untruthful — the theorem_v3 prompt closes a cancellation
+with *"Confirmation text on its way"* unconditionally, so callers were promised
+a text that could not arrive. Heard on call 2.
+
+Default now ON. Suppression is still available but must be deliberate
+(`SMS_ENABLED=false`). The test pins the *direction*, not the value: unset must
+send.
+
+### Still inert after this fix — config, not code
+
+```
+owner_alerts = None      digest = None      call_overflow = None
+```
+
+| Surface | After the fix |
+|---|---|
+| Patient booking confirmation | ✅ works |
+| Staff notice on transfer | ✅ works (`transfer_phone`) |
+| Reminders | ✅ worker running, 5-min tick |
+| Owner alerts to Mark (book/cancel/reschedule) | ❌ needs `operational.owner_alerts` |
+| Daily digest | ❌ needs `operational.digest.email_to` |
+
+`owner_alert.py:31` no-ops when the clinic has no `owner_alerts` block. The
+main-branch commit that added Theorem owner-alerts is one of the 128 never
+ported — see the branch-lineage note above.
+
+**Belt and braces for the sweep:** set `SMS_ENABLED=true` in Render explicitly
+rather than relying on the new default. If the service has an old
+`SMS_ENABLED=false` sitting in its env from the latency-eval lineage, the env
+var still wins and the code default changes nothing.
