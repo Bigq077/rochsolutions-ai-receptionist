@@ -663,6 +663,124 @@ def _find_service_def(clinic: Dict[str, Any], service: str) -> Optional[Dict[str
     return None
 
 
+# Number words a caller actually uses for a session length. Deliberately short —
+# this feeds a WRITE, so an unrecognised phrase (no capture, ask again) costs
+# less than a creative one (wrong length booked at the wrong price).
+_DURATION_WORDS = {
+    "thirty": 30, "half an hour": 30, "half hour": 30,
+    "forty five": 45, "forty-five": 45,
+    "sixty": 60, "an hour": 60, "one hour": 60, "a hour": 60,
+    "ninety": 90, "hour and a half": 90, "an hour and a half": 90,
+    "hour and a half long": 90,
+    "one twenty": 120, "two hours": 120,
+}
+# "the 30th" is a DATE, not a thirty-minute session.
+_ORDINAL_NUM_RE = re.compile(r"\b\d+(?:st|nd|rd|th)\b")
+# pricing keys look like "60min_in_clinic_gbp" / "90min_in_clinic_gbp"
+_PRICE_KEY_RE = re.compile(r"^(\d+)\s*min", re.IGNORECASE)
+
+
+def _options_services(clinic: Dict[str, Any]) -> list:
+    """Every service in the clinic that offers a CHOICE of session lengths.
+
+    `services` is a list of DICTS for the template clinics and a list of plain
+    STRINGS for `theorem` and `demo`. This runs on every turn of every call, so
+    the isinstance guard is load-bearing rather than defensive tidiness — without
+    it a Theorem call raises on the first utterance.
+    """
+    return [
+        s for s in (clinic.get("services") or [])
+        if isinstance(s, dict) and s.get("typical_duration_minutes_options")
+    ]
+
+
+def duration_choice_from_utterance(
+    clinic: Dict[str, Any], utterance: str
+) -> Optional[int]:
+    """The session length a caller just chose, or None if they did not name one.
+
+    **Why this exists.** `CA86c320ef` (4 Aug 2026, Vital Edge, live): asked
+    "60-minute at £125, or 90-minute at £180?", the caller answered **"£180"**.
+    Eight turns and two minutes later `book_appointment` fired with
+    `duration_minutes: 60` — the silent `opts[0]` default in
+    `_service_duration_minutes` below. The caller expected 90 minutes and £180;
+    the owner was notified of 60. Nothing had gone wrong deterministically: the
+    choice existed ONLY in the model's context, and it did not survive the trip.
+
+    So the choice is captured in the engine, at the moment it is spoken, the same
+    way `time_of_day_preference` already is — not inferred from a tool argument
+    the model may or may not carry.
+
+    **Service-agnostic on purpose.** At transcript time the engine does not know
+    which service is being booked — the service only appears later, in tool args.
+    So this scans every options-service in the clinic and returns a length only
+    when they AGREE. For Vital Edge both options-services are [60, 90] with
+    identical pricing, so "£180" is unambiguous. Where two services would imply
+    different lengths, it returns None and the existing behaviour stands.
+
+    **Answers by PRICE count**, because that is what the caller actually said and
+    what the question invites ("…at £125, or …at £180?"). The map is derived from
+    each service's own `pricing` block, so it cannot drift from the prices Susie
+    quotes.
+
+    Bias, stated because it runs the wrong way for a write: a false positive
+    books the wrong length at the wrong price — the very defect this closes — so
+    anything ambiguous returns None and the caller is simply asked again.
+    """
+    if not utterance:
+        return None
+    svcs = _options_services(clinic)
+    if not svcs:
+        return None
+
+    low = " " + re.sub(r"[^a-z0-9£ ]+", " ", (utterance or "").lower()).strip() + " "
+    # Strip ordinals so "the 30th of August" cannot read as a 30-minute session.
+    low = _ORDINAL_NUM_RE.sub(" ", low)
+
+    found: set = set()
+    for svc in svcs:
+        opts = [int(o) for o in (svc.get("typical_duration_minutes_options") or [])]
+        if not opts:
+            continue
+        # 1. an explicit length: "90", "90 minutes", "ninety"
+        for n in opts:
+            if re.search(rf"\b{n}\s*(?:min|mins|minute|minutes)?\b", low):
+                found.add(n)
+        # Longest phrase first, CONSUMING each match. "an hour and a half"
+        # contains "an hour", and "half an hour" contains it too — scored
+        # independently both read as ambiguous 60-or-90 and captured nothing,
+        # which is the safe failure but the wrong answer. The longer phrase is
+        # always the more specific one, so it wins and is then removed.
+        _rest = low
+        for word, n in sorted(
+            _DURATION_WORDS.items(), key=lambda kv: -len(kv[0])
+        ):
+            if not re.search(rf"\b{re.escape(word)}\b", _rest):
+                continue
+            _rest = re.sub(rf"\b{re.escape(word)}\b", " ", _rest)
+            if n in opts:
+                found.add(n)
+        # 2. a PRICE that identifies one — "£180", "180", "a hundred and eighty"
+        for key, price in (svc.get("pricing") or {}).items():
+            m = _PRICE_KEY_RE.match(str(key))
+            if not m:
+                continue
+            n = int(m.group(1))
+            if n not in opts or not isinstance(price, (int, float)):
+                continue
+            if re.search(rf"£?\s*{int(price)}\b", low):
+                found.add(n)
+
+    if len(found) == 1:
+        return found.pop()
+    if len(found) > 1:
+        logger.info(
+            "[ms_tools] duration choice ambiguous in %r — candidates %s, not "
+            "captured; the caller will be asked again", utterance, sorted(found),
+        )
+    return None
+
+
 def _service_duration_minutes(
     clinic: Dict[str, Any], service: str, fallback: int, preferred=None
 ) -> int:
@@ -689,6 +807,17 @@ def _service_duration_minutes(
             opts_i = [int(o) for o in opts]
             if preferred and int(preferred) in opts_i:
                 return int(preferred)
+            # No captured choice. Falling back to the SHORTEST option is what
+            # booked 60 minutes for a caller who had said £180 on CA86c320ef,
+            # and it did so without a trace. Keep the behaviour — re-asking from
+            # inside a resolver is not this function's job — but make it loud,
+            # because "quietly the cheapest" is how a price gap stays invisible.
+            logger.warning(
+                "[ms_tools] %r offers %s minutes and NO choice was captured — "
+                "defaulting to %s. If the caller named a length or a price, it "
+                "was not captured (see duration_choice_from_utterance).",
+                service, opts_i, opts_i[0],
+            )
             return opts_i[0]
     return int(fallback)
 
