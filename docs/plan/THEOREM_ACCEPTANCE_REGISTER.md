@@ -669,3 +669,105 @@ Downgraded to medium. Still real: five bare FAQ answers on call 3 armed nothing.
   Then 13.1 s and 12.1 s. Seven calls running.
 - The caller had to say *"say that again you got cut off"* — the 20.1 s answer
   was replayed in full, costing another 13.1 s.
+
+---
+
+## T-15 — the answer to "mornings or afternoons?" was discarded
+
+**Severity:** high · **Status:** fix written, NOT committed, NOT deployed
+**Call 7, 21:54:47**
+
+```
+Susie:  "Do you prefer mornings or afternoons?"
+Caller: "more so afternoons"
+log:    [ms_conn] slot fragment ignored — re-arming: 'more so afternoons'
+```
+
+The answer was dropped on the floor. Ten seconds later the watchdog fired
+*"Still with you — which of those would you like?"* — pointing at the 10th/11th/
+12th August days the caller had **already rejected** — and they had to say the
+whole thing again:
+
+> *"i said i i don't want to book this week i want to book the week after"*
+
+Roughly 30 seconds and two caller repetitions lost.
+
+**Root cause, reproduced offline:**
+
+```
+True   'more so afternoons'   ← _is_short_meaningless_fragment
+True   'afternoons'
+True   'mornings'
+False  'afternoons please'    ← only survived because "please" is on the list
+```
+
+`_is_short_meaningless_fragment` discards any utterance of ≤3 words containing
+no word from `_COMMUNICATIVE_WORDS`. That list has no time-of-day words, so the
+single most likely answer to a question Susie asks in every booking was, by
+construction, meaningless to her. It survived on the caller's second attempt
+only because they happened to add "please".
+
+**This is a named, recurring failure in this codebase.** The comment on
+`_PURE_FILLER_TOKENS`, twenty lines below the list that caused this, says it
+outright: *"a hand-maintained vocabulary sitting between the caller and what
+they asked for"*, citing B-25, the step-8 reword, the timing singles and B-36
+cause 1. T-15 is the fifth instance of the same shape.
+
+Fix written (adds the time-of-day vocabulary; widening only ever sends MORE to
+the LLM, which is the safe direction) with 30 tests pinning both directions —
+answers survive, genuine fragments still re-arm, phone numbers and negations
+still always reach the LLM. **Held uncommitted on owner instruction.**
+
+---
+
+## T-2 — CORRECTION to the call-6 escalation
+
+My call-6 entry said the duplicate `abandoned` row was firing the operator SMS
+via the `abandoned_call` alert. **That was wrong.**
+
+Call 7 settles it. Both summary rows agreed this time —
+`reached_confirmation name=Quentin Rook phone=yes` twice — and an operator SMS
+still fired at 21:57:33, immediately after:
+
+```
+[obs.store] judged call_sid=… score=3
+```
+
+The sender is `review_alert()` (`app/obs/alerts.py:220`), *"Immediate operator
+alert for a low-quality call"*, gated only on `OBS_ALERTS_ENABLED`. It is
+triggered by the **judge score**, not by the abandoned row.
+
+What that changes:
+
+- **T-2 goes back to medium.** It is duplicate rows and occasional disagreement,
+  not a false-alert generator.
+- **A new concern replaces it:** every call in this sweep has scored 3 or 4, and
+  every one has fired an immediate operator SMS. If that threshold ships as-is,
+  Mark is texted after essentially every call. Still worth finding out whose
+  number `OBS_ALERT_SMS_TO` holds — but the reason is alert volume, not
+  correctness.
+- T-2's own consequence is narrower than I wrote: duplicated Sheets rows, and
+  on calls 4 and 6 a row that misreported the outcome.
+
+Also note the dedup **worked** on call 7: `📩 Follow-up SMS already sent —
+skipping duplicate`.
+
+---
+
+## Confirmations from call 7
+
+- **T-4 held again.** *"Thanks Quentin — is oh seven five oh two, two one one,
+  two o…"* — digits spoken before the confirm, second call running.
+- **Correct refusals, all three:** the August bank holiday (*"Monday the 25th…
+  the clinic is closed that day"*), a March booking (*"we can only book up to 30
+  days ahead"*), and an unavailable time (*"Four in the afternoon isn't one I
+  have available on Wednesday — I've got two o'clock or three"*). That last one
+  is the important one: she refused a slot that did not exist rather than
+  accepting it.
+- **"could you repeat the last day that you offered"** → replayed Wednesday 19th
+  correctly.
+- **Abort rule held.** Hung up at *"shall I go ahead and book that in?"*; no
+  `book_appointment`, nothing reached Acuity.
+- **T-5 continues:** 14.5 s, 14.0 s, 12.0 s, 12.6 s. Eight calls running.
+- Call duration 198 s, 22 turns — the longest of the sweep, and roughly 30 s of
+  it was the T-15 recovery.
