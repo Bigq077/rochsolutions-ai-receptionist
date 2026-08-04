@@ -651,6 +651,75 @@ did. **Do not** simply stop setting the flag; it is load-bearing elsewhere.
 
 ---
 
+## 8.0 🔕 Before Jules dials — silencing Jonathan
+
+**Call testing is Jules' work. This section is the precondition for it.**
+
+Jonathan's mobile is **both** `owner_notification_sms` **and** `transfer_phone`;
+his Gmail is **both** the digest recipient **and** the booking calendar. Four
+surfaces, one person. `SMS_ENABLED=false` covers only two of them.
+
+Run this against the service's actual env before every test session — it reads
+the same env vars and `clinic.json` keys the runtime reads:
+
+```bash
+python -m scripts.audit_outbound_to_owner vital_edge
+```
+
+Exit 0 = nothing reaches the owner. Exit 1 = at least one live channel, listed.
+
+### The six channels, measured 2026-08-04
+
+| # | Channel | Target | Silenced by |
+|---|---|---|---|
+| 1 | Owner booking-ping SMS | his mobile | ✅ `SMS_ENABLED=false` (**default off on this branch**) |
+| 2 | obs operator alert SMS | `OBS_ALERT_SMS_TO` | ✅ double-gated: `OBS_ALERTS_ENABLED=false` **and** `SMS_ENABLED` |
+| 3 | obs operator alert **Slack** | `OBS_SLACK_WEBHOOK` | ⚠️ `OBS_ALERTS_ENABLED=false` only — **`SMS_ENABLED` does not gate this leg** |
+| 4 | End-of-day **digest email** | `vitaledgetherapy@gmail.com` | 🔴 **`DIGEST_ENABLED=false` — nothing else stops it** |
+| 5 | **Live transfer** — *rings* him | his mobile | 🔴 **no kill switch** |
+| 6 | PENDING event on **his calendar** | `vitaledgetherapy@gmail.com` | 🔴 **no kill switch — it is the booking** |
+
+> 🔴 **`DIGEST_ENABLED=false` is the one people will miss.** There is **no
+> `EMAIL_ENABLED` kill switch** — the digest sends whenever SMTP is configured,
+> and `clinic.json` defaults `digest.enabled` to `true`. A day of test calls
+> would email Jonathan a 21:30 summary of every fake booking. The SMS switch does
+> nothing here.
+
+> ⚠️ **Two new IMMEDIATE SMS conditions landed 2026-08-04** (`abandoned_call`,
+> `no_audio_call` — Item 3a). Both are exactly the kind a *test* call produces:
+> ring off without speaking → `abandoned_call`. They are double-gated and safe by
+> default, but if anyone enables obs alerts for the test session, hang-ups will
+> page whoever `OBS_ALERT_SMS_TO` points at.
+
+### The two that env vars cannot fix
+
+**5 — transfer.** Any test case where the caller asks for a human dials
+Jonathan's mobile. Either point `operational.transfer_phone` at a tester's number
+for the session, or **agree with Jules that no test case asks for a human**. §8's
+must-cover list does not currently include one, so the second option is free —
+but a caller-led test can wander into it.
+
+**6 — the calendar.** Every provisional booking is a real PENDING event on
+Jonathan's own calendar, and Google may notify him depending on his settings.
+This one is structural: the provisional model books *into slots he published*, so
+a test on a different calendar needs those slots replicated first. Options, in
+order of fidelity:
+
+1. **Tell Jonathan** test bookings are coming and to ignore/delete them. Highest
+   fidelity, zero code, needs a heads-up he may not want.
+2. **Test calendar** — repoint `operational.calendar_id`, publish a handful of
+   slots there. Full fidelity of the flow, ~15 minutes of setup, and §8's
+   reconciliation step then reads that calendar instead.
+3. **Use a recognisable test name** on every booking (e.g. `ZZTEST Whitfield`) so
+   he can filter them at a glance. Cheapest mitigation, and worth doing
+   *alongside* either of the above.
+
+> **Whichever is chosen, §8's reconciliation still has to happen against whatever
+> calendar was used** — "the booking exists" is the one thing a call cannot prove
+> about itself.
+
+---
+
 ## 8. Live call protocol
 
 **Reconcile every call against the Google Calendar — not Acuity.** Open the
