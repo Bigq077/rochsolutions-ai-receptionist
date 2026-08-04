@@ -1258,9 +1258,35 @@ def _booking_confirmation_asked(last_bot_prompt: str) -> bool:
     a name and can be asserted against directly — B-36 R5 turns on which
     last_bot_prompt satisfies which gate, and a test that re-types the literals
     would not have caught the leak it exists to prevent.
+
+    B-36 R6 / VE acceptance run 2026-08-04, calls 1 and 7 (`CA094dcb41`,
+    `CAb408ed32`): the two original literals are the CONFIRMED-booking wording.
+    A **provisional** clinic's prompt mandates a different sentence —
+    `clinic_template_prompt.py`'s `readback_cta` is "shall I put that request
+    through to {prac} to confirm?" — and deliberately bans "book"/"booked", so
+    neither literal could ever appear. Vital Edge's prompt was therefore
+    required to say the one thing its own write gate could not recognise, and
+    `book_appointment` was refused every time the model obeyed it.
+
+    Intermittent rather than total, which is why it survived: when the model
+    drifted to "shall I go ahead and put that through" the first literal matched
+    and the booking landed. Obedience to the mandated wording is what broke it.
+
+    This is the same defect and the same repair as `_move_confirmation_asked`
+    below (`CA23199d08`, 3 Aug) — a single-phrasing gate against a sentence the
+    model composes. Widening the CTA arm cannot by itself book anything: FM-01
+    requires `_book_reply_is_affirmative` on top, and this predicate is only its
+    necessary half.
     """
     lbp = (last_bot_prompt or "").lower()
-    return "shall i go ahead" in lbp or "book that in" in lbp
+    return (
+        "shall i go ahead" in lbp
+        or "book that in" in lbp
+        # Provisional clinics. Practitioner-name agnostic on purpose — the
+        # mandated sentence interpolates {prac}, so matching the name would
+        # re-break on the next clinic.
+        or "put that request through" in lbp
+    )
 
 
 def _cancel_retention_asked(last_bot_prompt: str) -> bool:
