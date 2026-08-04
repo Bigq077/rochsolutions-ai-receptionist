@@ -66,13 +66,24 @@ class SMSService:
         # owner alerts, booking SMS — funnels through this method, so this one
         # gate covers them all.
         #
-        # ⚑ latency-eval branch: default is OFF (opposite of live branches, where
-        # it defaults to "true"). This branch is an isolated timing-eval service
-        # that must NEVER text a real caller; defaulting off guarantees silence
-        # even if the Render env var is forgotten. To deliberately send SMS from
-        # an eval run, set SMS_ENABLED=true. DO NOT port this default flip to
-        # main/theorem/jv live branches.
-        if os.getenv("SMS_ENABLED", "false").strip().lower() not in ("true", "1", "yes", "on"):
+        # ⚑ theorem-onboarding: default is ON, matching the other live branches.
+        #
+        # This branch descends from latency-eval, which defaults OFF because it
+        # is an isolated timing-eval service that must never text a real caller.
+        # That default came across with the lineage — and the comment sitting
+        # here said, in as many words, "DO NOT port this default flip to
+        # main/theorem/jv live branches". It got ported anyway, and the result
+        # was a live clinic line that silently sent nothing: no booking
+        # confirmation, no staff transfer notice, no reminder.
+        #
+        # Worse than silence, it made Susie a liar. The theorem_v3 prompt closes
+        # a cancellation with "Confirmation text on its way" unconditionally, so
+        # every caller was promised a text that was never going to arrive.
+        #
+        # Defaulting ON is the correct failure direction for a live clinic: a
+        # forgotten env var must not silence patient comms. Set SMS_ENABLED=false
+        # explicitly to suppress a run.
+        if os.getenv("SMS_ENABLED", "true").strip().lower() not in ("true", "1", "yes", "on"):
             logger.info("[sms] SMS_ENABLED is off — outbound SMS suppressed (not sent)")
             return None
 
