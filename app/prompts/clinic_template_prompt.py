@@ -153,15 +153,48 @@ def _home_visits_enabled(clinic: Dict[str, Any]) -> bool:
     in its modalities list, so the price renderers must not gate solely on the
     modalities list (Call 5, 2026-07-08: home-visit acupuncture quoted the
     in-clinic £48 instead of £70 because the £70 was suppressed from the prompt).
-    Mirrors the _home_on signal computed inline by _render_service_mapping."""
+    Mirrors the _home_on signal computed inline by _render_service_mapping.
+
+    NOTE: this is the PRICING/advisory signal — it also gates the "FIRST
+    APPOINTMENT & HOME VISITS" block. It deliberately does NOT count a clinic
+    that declares home visits in prose only (Vital Edge's
+    prompt_facts.home_visit_note), because that block asserts things Vital Edge
+    has not confirmed. The step-2 refusal uses the broader _home_on computed in
+    _render_booking_steps instead."""
     if "home_visit" in (clinic.get("modalities") or []):
         return True
     for s in clinic.get("services", []) or []:
+        # services is a list of plain strings for some clinics (theorem, demo).
+        if not isinstance(s, dict):
+            continue
         if s.get("service_id") == "home_visit":
             return True
         if (s.get("pricing") or {}).get("home_visit_gbp") is not None:
             return True
     return False
+
+
+def _home_visits_offered(clinic: Dict[str, Any]) -> bool:
+    """True if the clinic offers home visits AT ALL, however it says so.
+
+    Deliberately broader than _home_visits_enabled, and the two are not
+    interchangeable:
+
+      * _home_visits_enabled gates PRICING and the "FIRST APPOINTMENT & HOME
+        VISITS" advisory, which assert specifics (coverage area, travel charge,
+        how the address is taken). Those need a structured declaration.
+      * this one gates only whether Susie REFUSES a home visit outright. For
+        that decision a prose declaration is enough, because the two errors are
+        not symmetrical: reading it too narrowly turns away a caller the clinic
+        wants, which is the defect being fixed (VE acceptance run, call 12).
+
+    Vital Edge declares home visits in prompt_facts.home_visit_note only — no
+    modality, no service, no per-service rate — which is why it was refused.
+    """
+    if _home_visits_enabled(clinic):
+        return True
+    pf = clinic.get("prompt_facts", {}) or {}
+    return bool(pf.get("home_visit_note") or pf.get("home_visit_area"))
 
 
 # P1 #2 (2026-07-22): a service price that is deliberately "to be confirmed" is
@@ -1393,6 +1426,11 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
     is_provisional = tk["booking_system"] == "google_calendar_provisional"
     # An in-clinic-only clinic must never claim it offers video/phone consults.
     _remote_on = "remote" in (clinic.get("modalities") or [])
+    # ...and a clinic that DOES do home visits must never be told to refuse one.
+    # Home visits used to ride on _remote_on, which is a different axis entirely:
+    # Vital Edge has no video and does home visits, so it landed in the branch
+    # that denies them and contradicted its own HOME VISITS block on every call.
+    _home_on = _home_visits_offered(clinic)
 
     # Physio/MSK condition-acknowledgement families (knee/ACL, plantar fasciitis,
     # neurological physiotherapy, post-surgical rehab …). These are DISCIPLINE-
@@ -2049,14 +2087,20 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
            "check_availability on the same turn the caller changes modality "
            "without also giving a time; a modality switch is NOT a 'no preference' "
            "signal and must not trigger a slot list (that cancels your "
-           "acknowledgement and the caller feels ignored). There is no home-visit "
-           "option — never offer one. Determine the SERVICE from SERVICE MAPPING.\n"
+           "acknowledgement and the caller feels ignored). "
+           + ("" if _home_on else
+              "There is no home-visit option — never offer one. ")
+           + "Determine the SERVICE from SERVICE MAPPING.\n"
            if _remote_on else
            "2. TIMING. Every appointment is in-clinic at "
            f"{loc_spoken} (location='{tk['primary_location_id']}'). There is NO "
-           "remote, video, or phone appointment option and NO home visit — never "
+           "remote, video, or phone appointment option"
+           + ("" if _home_on else " and NO home visit")
+           + " — never "
            "offer one and never say we offer video or phone consultations. If the "
-           "caller asks for a remote/video/phone appointment or a home visit, say "
+           "caller asks for a remote/video/phone appointment"
+           + ("" if _home_on else " or a home visit")
+           + ", say "
            f"plainly that all sessions are in person at the {loc_spoken} clinic, "
            "then continue. Ask the TIMING question: 'Do you have a preference for "
            "when you'd like to come in?' — UNLESS the caller has ALREADY given a "
