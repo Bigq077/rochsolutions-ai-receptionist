@@ -6173,9 +6173,12 @@ async def _exec_transfer_to_human(args: Dict[str, Any], session: Dict[str, Any])
     try:
         from app.clinic_config import get_clinic
         from app.notifications.sms import send_sms
+        from app.config import TRANSFER_DISABLED
         clinic = get_clinic(session.get("clinic_id"))
         transfer_phone = clinic.get("transfer_phone", "")
-        if transfer_phone:
+        # TRANSFER_DISABLED (test-sweep kill-switch) suppresses the heads-up SMS
+        # so a run doesn't text a real staff number. No-op in production.
+        if transfer_phone and not TRANSFER_DISABLED:
             caller_snippet = (
                 f" from {caller_phone}"
                 if (caller_phone and not caller_phone.startswith("client:"))
