@@ -391,6 +391,8 @@
     "returning_patient_definition": "Same area of concern = returning. New or unrelated issue = treat as a new appointment.",
     "chaperone": "",
     "minimum_age": "Minimum age 18 — do NOT book anyone under 18. Politely explain appointments are for those aged 18 and over, and offer no further booking.",
+    "_minimum_age_years_note": "The MACHINE-READABLE form of minimum_age above. The prose is for the prompt; this is what the engine gates on. Absent (jv_v1, theorem) means no age policy and no gate — jv_v1 explicitly has 'No minimum age', so this must never be added there.",
+    "minimum_age_years": 18,
     "gp_referral_required": false,
     "reports_and_letters": "TBC with Jonathan"
   },

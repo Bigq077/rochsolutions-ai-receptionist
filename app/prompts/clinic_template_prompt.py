@@ -2552,6 +2552,34 @@ def _b7_call_state(session: Dict[str, Any], clinic: Dict[str, Any], tk: Dict[str
     value_key = keys.get("value_key", "modality")
     state: List[str] = []
 
+    # Under-age, latched by the engine. FIRST in CALL STATE because it overrides
+    # every other instruction in the block — there is no version of this call
+    # that ends in a booking.
+    #
+    # The write gate alone does not fix what CA7d7c109b actually showed. There
+    # the model declined and then kept collecting a day and a time; the gate
+    # would have refused the write at the very end, after the caller had been
+    # walked through a booking that was never going to happen. This is what
+    # stops the walk.
+    # Gated on the CLINIC as well as the session flag. Only capture_under_age
+    # writes that flag and it is already clinic-gated, so this is belt and
+    # braces — but a clinic whose policy is "No minimum age" (jv_v1) must not be
+    # one stray session key away from telling a caller it cannot book them.
+    _ua = (
+        session.get("_under_age_declared")
+        if (clinic.get("pricing_and_policies") or {}).get("minimum_age_years")
+        else None
+    )
+    if _ua:
+        state.append(
+            f"the caller has said they are {_ua}, which is UNDER this clinic's "
+            "minimum age of 18. No appointment can be booked for them on this "
+            "call. Do not offer times, do not ask for a day, a name or a "
+            "number, and do not suggest booking later or leaving details — "
+            "there is nothing to book. Say kindly that appointments are for "
+            "those aged 18 and over. You may still answer general questions"
+        )
+
     # The reason question has already been PUT to this caller. Rule 1b says "ask
     # ONCE" and on CA86c320ef it was asked twice — once as the mandated literal
     # and again, differently worded, on the next turn. Prompt text alone cannot

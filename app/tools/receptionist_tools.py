@@ -781,6 +781,98 @@ def duration_choice_from_utterance(
     return None
 
 
+_AGE_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
+    "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+}
+# Only these shapes are read as an AGE. A bare number is not — "the 15th",
+# "quarter past", "15 minutes", a house number and a phone digit all look the
+# same otherwise, and over-blocking turns a legitimate adult booking into a
+# refusal nobody can talk their way out of.
+#
+# The subject before "is" is constrained to things that are PEOPLE. A bare
+# "is" read "my appointment is 12", "the time that works is 12" and "the best
+# time is 11" as ages — arming a latch that is never cleared and refusing an
+# adult caller outright. A person's age and a clock time are the same two
+# digits; only the subject tells them apart.
+_AGE_SUBJECT = (
+    r"son|daughter|child|kid|boy|girl|grandson|granddaughter|patient|"
+    r"he|she|they"
+)
+_AGE_PATTERNS = (
+    r"\b(?:i\s*am|i'?m|he'?s|she'?s|they'?re|(?:" + _AGE_SUBJECT +
+    r")\s+(?:is|are)|aged?|turning)"
+    r"\s+(\d{1,2}|" + "|".join(_AGE_WORDS) + r")\b(?!\s*(?:st|nd|rd|th|:|pm|am|o'?clock|minute|min|past|to\b))",
+    r"\b(\d{1,2}|" + "|".join(_AGE_WORDS) + r")\s*(?:years?\s*old|yrs?\s*old|year[- ]old)\b",
+)
+
+
+def minimum_age_years(clinic: Dict[str, Any]) -> Optional[int]:
+    """The clinic's machine-readable minimum age, or None when it has no policy.
+
+    `minimum_age` (prose) drives the PROMPT. This drives the ENGINE. They are
+    separate on purpose: the prose is written for a model to read aloud and has
+    been reworded several times, so parsing it for a number would make a
+    safeguarding gate depend on copywriting.
+
+    Absent means NO GATE. jv_v1's policy is the opposite of Vital Edge's — "No
+    minimum age — discounts available for under 18" — so this key must never
+    appear there, and its absence is what keeps this change to one clinic.
+    """
+    c = clinic or {}
+    # get_clinic flattens clinic.json into the legacy contract and stringifies
+    # scalars, so this arrives as '18' from pricing_and_policies rather than as
+    # an int at top level. Both shapes are read: a future flattening change must
+    # not silently disable a safeguarding gate.
+    v = (c.get("pricing_and_policies") or {}).get("minimum_age_years")
+    if v is None:
+        v = c.get("minimum_age_years")
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        logger.warning("[ms_tools] minimum_age_years=%r is not an integer — "
+                       "age gate DISABLED for this clinic", v)
+        return None
+
+
+def under_age_from_utterance(
+    clinic: Dict[str, Any], utterance: str
+) -> Optional[int]:
+    """An age below the clinic's minimum, stated in this utterance. Else None.
+
+    `CA7d7c109b` (Vital Edge acceptance run, 4 Aug): the caller raised an
+    under-18, Susie declined correctly — and then asked for a day and time
+    anyway. The decline is prompt text; nothing deterministic stopped the
+    booking machinery, so the turn drifted back to booking.
+
+    That gap is wider than one call. `evaluate_policy_gate` — which has a real
+    minor check — is reachable ONLY from `flow.py`, and every live clinic runs
+    free-form with the FlowEngine bypassed, so it never executes. `never_autobook`
+    ("Anyone under 18") is read by no Python at all. Before this, the only thing
+    standing between a 15-year-old and a booking was the model's compliance.
+
+    Conservative by design, and the bias is argued rather than assumed: a false
+    NEGATIVE here leaves the prompt's own decline in place (which worked on
+    CA7d7c109b), whereas a false POSITIVE refuses a legitimate adult and gives
+    them no way to talk past it. So a bare number is never an age — only
+    "I'm 15", "he's fifteen", "aged 15", "15 years old" — and times, ordinals
+    and durations are excluded explicitly.
+    """
+    minimum = minimum_age_years(clinic)
+    if minimum is None or not utterance:
+        return None
+    low = " " + re.sub(r"[^a-z0-9' ]+", " ", utterance.lower()).strip() + " "
+    for pat in _AGE_PATTERNS:
+        for m in re.finditer(pat, low):
+            tok = m.group(1)
+            age = _AGE_WORDS.get(tok) if tok in _AGE_WORDS else int(tok)
+            if age is not None and 0 < age < minimum:
+                return age
+    return None
+
+
 def _service_duration_minutes(
     clinic: Dict[str, Any], service: str, fallback: int, preferred=None
 ) -> int:
