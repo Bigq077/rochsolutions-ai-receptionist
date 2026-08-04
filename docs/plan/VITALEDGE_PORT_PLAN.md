@@ -865,7 +865,50 @@ hand, coordination — all of that applies **there**, not on the engine branch.
    > ```
 3. Re-cut: `vitaledge-onboarding` → `latency-eval`. Because step 2 proves VE
    holds nothing unique, this is a fast-forward, not a merge.
-4. Confirm `[build_info] running build <sha>` in the Render log.
+
+4. 🔴 **Set VE's Render env — the re-cut carries CODE, NOT CONFIG.** Render env
+   vars are per-service and live nowhere in this repo, so a fast-forward gives
+   Jonathan's service every new *flag* at its **code default**, which for the
+   levers is OFF. Nothing errors and nothing logs; the service simply runs the
+   old behaviour on the new engine. That is the same silent-no-op shape as
+   `SMS_ENABLED` in §8.0.
+
+   The one that matters today is **`ASSEMBLYAI_USE_U35`**. `latency-eval` has
+   been running Universal-3.5 Pro since ~31 July because the var is set **on
+   that service**. Default in code is `false`, so **post-re-cut VE stays on
+   `universal-streaming-english` until the var is set on VE's own service.**
+
+   | Var | VE value | Note |
+   |---|---|---|
+   | `ASSEMBLYAI_USE_U35` | see the ordering note below | defaults `false`; the re-cut does **not** carry it |
+   | `ASSEMBLYAI_USE_V2` | **unset** | break-glass 8kHz; **beats U3.5** in `assemblyai_ws_url()`, so if it is set anywhere U3.5 silently does nothing |
+   | `SMS_ENABLED` | `true` | §8.0 — also rewrites the spoken closing |
+
+   Verify from the log, not the dashboard — one line per call at STT init:
+
+   ```bash
+   [ms_stt] init — stt_variant=
+   ```
+
+   `u3.5-pro` / `universal-streaming-english` / `v2`. This is the STT twin of
+   `[build_info]`: the service's env is the only truth and it is not in the repo.
+
+   > ⚠️ **Ordering: do NOT enable U3.5 for the §9 gate calls.** The re-cut is
+   > already a 155-commit jump. Landing a new acoustic model in the same change
+   > makes every Category 4 finding unattributable — a mis-heard name could be
+   > the inherited engine or the new STT, and §9 gives you no way to tell them
+   > apart. Take the gate on `universal-streaming-english`, matching VE's
+   > current model, then flip U3.5 as its own one-variable change afterwards.
+
+5. Confirm `[build_info] running build <sha>` in the Render log.
+
+> ⚠️ **§5's day plan runs §8's live calls *before* this section, but §9's gate
+> criteria can only be judged on the converged build** ("Case 2 refuses a
+> 90-minute booking → Item 1 did not take" is meaningless on the 24-July
+> engine). So either the calls run against a service pointed at the converged
+> code, or steps 1–4 happen first and the rollback tag is the safety net.
+> Decide which before Jules dials — reconciling test calls made against the old
+> engine proves nothing about the port.
 
 **Rollback:** tag VE's current tip **before** anything
 (`archive/vitaledge-pre-convergence` @ `23b8dbe`). Rolling back is pointing the
