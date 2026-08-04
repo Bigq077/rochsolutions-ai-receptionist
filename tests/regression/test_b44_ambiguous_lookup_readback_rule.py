@@ -88,9 +88,12 @@ def test_the_rule_and_the_gate_message_agree():
     """Two texts telling the model what to do about the same situation. If they
     diverge, one of them is training the model out of the other."""
     gate_src = inspect.getsource(ls.LLMStream._execute_tools)
+    # Window widened for B-54: the gate message now also carries the day/date
+    # instruction and the second question, so 1600 chars no longer reaches
+    # next=true. Sized from the message, not guessed.
     gate_msg_region = gate_src[
         gate_src.find("identity_confirmation_required"):
-        gate_src.find("identity_confirmation_required") + 1600
+        gate_src.find("identity_confirmation_required") + 2600
     ]
     for token in ("next=true", "is that you"):
         assert token in gate_msg_region, f"gate message lost {token!r}"
@@ -109,15 +112,23 @@ def test_the_rule_does_not_itself_satisfy_the_gate():
 
 
 def test_following_the_rule_is_what_opens_the_gate():
-    """The intended happy path: the model obeys, the name is spoken in the
-    read-back, and the gate never fires on the write."""
-    session = {"_lookup_patient_name": "Quentin Rock"}
+    """The intended happy path: the model obeys, the name AND the date are
+    spoken in the read-back, and the gate never fires on the write.
+
+    B-54 added the date half. The rule already told the model to say the day and
+    time, so an obedient model was always producing this sentence — what changed
+    is that the gate now checks."""
+    session = {
+        "_lookup_patient_name": "Quentin Rock",
+        "_lookup_appointment_datetime": "2026-08-05T19:00:00+01:00",
+    }
     _note_lookup_ambiguity(session, 12)
-    ls._note_lookup_name_spoken(
-        session,
+    spoken = (
         "I've got an appointment for Quentin Rock on Wednesday the 5th at "
-        "seven — is that you?",
+        "seven — is that you?"
     )
+    ls._note_lookup_name_spoken(session, spoken)
+    ls._note_lookup_slot_spoken(session, spoken)
     assert ls._lookup_identity_unconfirmed(session) is False
 
 

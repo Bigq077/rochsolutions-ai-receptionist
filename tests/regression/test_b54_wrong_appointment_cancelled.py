@@ -20,12 +20,25 @@ said "yes it is" to their own name and appointment #1 was cancelled. There is
 no path for "that's me, but not that appointment", and the caller was never
 told the other 14 existed.
 
-This file covers the STEERING half only. The gate half — `_note_name_spoken`
-([llm_stream.py](../../app/media_streams/llm_stream.py)) flips the moment any
-name token reaches TTS, without the caller having agreed to anything — is
-deliberately NOT changed here. It is a behaviour change on the destructive path
-and needs its own measurement. `test_the_gate_half_is_still_open` pins that so
-the gap is not mistaken for closed.
+Both halves are now covered here.
+
+The STEERING half (`c273475`) states the count, requires the day and date and
+time, and extends the `next=true` escape to "not the appointment they meant".
+
+The GATE half adds a second latch on the APPOINTMENT axis:
+`_note_lookup_slot_spoken` ([llm_stream.py](../../app/media_streams/llm_stream.py))
+sets `_lookup_slot_spoken` only when the matched appointment's DATE reaches TTS,
+and `_lookup_identity_unconfirmed` now requires both latches.
+
+Note the cause this file originally recorded was wrong, and it is worth not
+re-inheriting: the open gap was written up as the gate "never checking that the
+caller agreed". On CA156fa25 the caller DID agree — they said "yes it is" to
+their own name. Requiring agreement would have changed nothing. The agreement
+was about the PERSON while the write was about an APPOINTMENT, which is why the
+new latch is on the date rather than on a second yes.
+
+B-42's guarantee is untouched and must stay that way: a nameless read-back still
+blocks. This change only ever ADDS a condition.
 """
 import inspect
 
@@ -36,6 +49,7 @@ from app.tools.receptionist_tools import (
     LOOKUP_AMBIGUOUS_KEY,
     LOOKUP_MATCH_COUNT_KEY,
     LOOKUP_NAME_SPOKEN_KEY,
+    LOOKUP_SLOT_SPOKEN_KEY,
     _LOOKUP_AMBIGUOUS_RULE,
     _note_lookup_ambiguity,
     _with_ambiguity_rule,
@@ -80,10 +94,15 @@ def test_wrong_appointment_is_an_escape_route_not_just_wrong_person():
 
 
 def test_the_rule_still_requires_the_day_and_time():
-    """A name alone does not identify WHICH appointment."""
+    """A name alone does not identify WHICH appointment.
+
+    Tightened with the gate half: the placeholder now carries the DATE as well
+    as the weekday. `[day] at [time]` could render as a bare "Tuesday", which
+    does not distinguish one appointment in a course of treatment from the
+    next — and would leave the B-54 latch shut, looping the caller."""
     r = _LOOKUP_AMBIGUOUS_RULE.lower()
-    assert "day and time" in r
-    assert "[day] at [time]" in r
+    assert "the day, the date and the time" in r
+    assert "[day] the [date] at [time]" in r
 
 
 # ── B-42's guarantees must survive unchanged ───────────────────────────────
@@ -150,24 +169,115 @@ def test_gate_message_and_rule_still_agree():
     assert "not the appointment they" in region
 
 
-# ── what is deliberately NOT fixed ─────────────────────────────────────────
+# ── the gate half — CLOSED, on the appointment axis ───────────────────────
+#
+# The scope marker that used to live here asserted the open behaviour so the gap
+# would not be mistaken for closed. It is replaced rather than deleted, and the
+# reasoning it carried is worth keeping straight, because it named the wrong
+# cause: it said the gate "never checks that the caller AGREED". On CA156fa25
+# the caller DID agree — the register's own narrative has them saying "yes it
+# is" to their own name. Requiring agreement would have changed nothing.
+#
+# What was missing is that the agreement was about the PERSON and the write was
+# about an APPOINTMENT. So the second latch is on the appointment axis: the
+# matched date must reach TTS before a destructive write is allowed.
 
 
-def test_the_gate_half_is_still_open():
-    """SCOPE MARKER, not an endorsement.
+def _post_lookup(when: str = "2026-08-05T20:30:00+01:00", total: int = 15) -> dict:
+    """The CA156fa25 session: 15 matches, all the same person, emitted match #1
+    on 5 Aug — while the caller meant the one booked four minutes earlier."""
+    s = {"_lookup_patient_name": "Quentin Rock",
+         "_lookup_appointment_datetime": when}
+    _note_lookup_ambiguity(s, total)
+    return s
 
-    `_note_name_spoken` satisfies the B-42 gate as soon as a name token reaches
-    TTS — it never checks that the caller AGREED, and never considers which
-    appointment. On CA156fa25 that is precisely what let the cancel through.
-    Steering reduces the odds; it is not a guard.
 
-    This asserts the CURRENT behaviour so that closing the gap is a deliberate,
-    tested change rather than an accident. If this test starts failing, someone
-    has changed the gate — good, but it needs its own measurement against the
-    27 legitimate lines and the shared-phone case.
-    """
-    session = {"_lookup_patient_name": "Quentin Rock"}
-    ls._note_lookup_name_spoken(session, "I've got an appointment for Quentin Rock")
-    assert session.get(LOOKUP_NAME_SPOKEN_KEY) is True, (
-        "gate still flips on the name being SPOKEN, with no caller agreement"
+def test_the_verbatim_call_is_now_blocked():
+    """The name was spoken and the gate opened. It must not any more."""
+    s = _post_lookup()
+    ls._note_lookup_name_spoken(s, "I've got an appointment for Quentin Rock")
+    ls._note_lookup_slot_spoken(s, "I've got an appointment for Quentin Rock")
+    assert ls._lookup_identity_unconfirmed(s) is True, (
+        "the name alone reopened the write path that cancelled the wrong event"
+    )
+
+
+def test_speaking_the_date_opens_it():
+    s = _post_lookup()
+    spoken = ("I've got 15 on this number — this one's for Quentin Rock on "
+              "Wednesday the 5th at half past eight in the evening. Is that "
+              "you? And is that the one you mean?")
+    ls._note_lookup_name_spoken(s, spoken)
+    ls._note_lookup_slot_spoken(s, spoken)
+    assert ls._lookup_identity_unconfirmed(s) is False
+
+
+def test_the_weekday_alone_is_not_enough():
+    """A course of treatment is weekly — "Wednesday" names several of them."""
+    s = _post_lookup()
+    ls._note_lookup_slot_spoken(s, "that one's on Wednesday")
+    assert s.get(LOOKUP_SLOT_SPOKEN_KEY) is not True
+
+
+def test_the_date_alone_is_not_enough():
+    """Symmetric: a bare "the 5th" with no weekday is thin evidence, and the
+    dangerous direction here is a false POSITIVE."""
+    s = _post_lookup()
+    ls._note_lookup_slot_spoken(s, "that one's the 5th")
+    assert s.get(LOOKUP_SLOT_SPOKEN_KEY) is not True
+
+
+def test_a_different_date_does_not_open_it():
+    """The wrong date must not satisfy the latch — that is the whole failure."""
+    s = _post_lookup()
+    ls._note_lookup_slot_spoken(s, "I've got one for you on Friday the 14th")
+    assert s.get(LOOKUP_SLOT_SPOKEN_KEY) is not True
+
+
+def test_the_word_form_of_the_ordinal_counts():
+    """TTS may render "5th" as "fifth"; the caller heard the date either way."""
+    s = _post_lookup()
+    ls._note_lookup_slot_spoken(s, "that's the Wednesday, the fifth of August")
+    assert s.get(LOOKUP_SLOT_SPOKEN_KEY) is True
+
+
+def test_an_unparseable_datetime_fails_closed():
+    """A destructive write on the input we understand least must not proceed.
+    The caller is not stranded: the refusal is a message to the model, so the
+    turn continues and degrades to taking a message."""
+    s = _post_lookup(when="not-a-date")
+    ls._note_lookup_slot_spoken(s, "Wednesday the 5th")
+    assert s.get(LOOKUP_SLOT_SPOKEN_KEY) is not True
+
+
+def test_stepping_to_the_next_match_re_arms_the_slot_latch():
+    """`next=true` changes WHICH APPOINTMENT is in play — the reason this latch
+    exists. Carrying the previous match's confirmation forward would reproduce
+    B-54 one step down the list."""
+    s = _post_lookup()
+    ls._note_lookup_slot_spoken(s, "Wednesday the 5th")
+    assert s.get(LOOKUP_SLOT_SPOKEN_KEY) is True
+    _note_lookup_ambiguity(s, 15)                    # what _emit does on step
+    s["_lookup_appointment_datetime"] = "2026-08-15T11:45:00+01:00"
+    assert s.get(LOOKUP_SLOT_SPOKEN_KEY) is False
+    assert ls._lookup_identity_unconfirmed(s) is True
+
+
+def test_a_single_match_is_still_never_blocked():
+    """The overwhelmingly common case. Both latches hang off the ambiguity
+    flag, so one appointment on the number must not grow an extra turn."""
+    s = _post_lookup(total=1)
+    assert ls._lookup_identity_unconfirmed(s) is False
+
+
+def test_same_day_duplicates_are_a_known_residual():
+    """Stated, not hidden. The latch matches the DATE, not the time, because
+    matching spoken times reliably is a false-negative factory and on this path
+    a false negative loops a caller entitled to cancel. Two appointments on the
+    same date therefore still resolve to whichever the lookup emitted first."""
+    s = _post_lookup()
+    ls._note_lookup_slot_spoken(s, "Wednesday the 5th at nine in the morning")
+    assert s.get(LOOKUP_SLOT_SPOKEN_KEY) is True, (
+        "documents the residual: the 20:30 appointment's latch is satisfied by "
+        "speaking a DIFFERENT time on the same date"
     )

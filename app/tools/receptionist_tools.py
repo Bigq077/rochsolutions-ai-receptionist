@@ -6518,8 +6518,15 @@ def _match_gcal_event(events: List[Dict[str, Any]], args: Dict[str, Any],
 # whenever more than one upcoming appointment sits on the identifier, and
 # `_name_spoken` is cleared on every new match and re-set by llm_stream only
 # when the matched name actually reaches TTS. The write gate reads both.
+#
+# B-54 adds a THIRD key on a different axis. `_name_spoken` answers "is this the
+# right person"; it cannot answer "is this the right appointment", and on
+# CA156fa25 all 15 matches were the same person, so the name settled nothing.
+# `_slot_spoken` is set only when the matched appointment's DATE reaches TTS, so
+# the caller has heard which of their appointments is about to be written to.
 LOOKUP_AMBIGUOUS_KEY   = "_lookup_ambiguous"
 LOOKUP_NAME_SPOKEN_KEY = "_lookup_name_spoken"
+LOOKUP_SLOT_SPOKEN_KEY = "_lookup_slot_spoken"
 LOOKUP_MATCH_COUNT_KEY = "_lookup_match_count"
 
 
@@ -6545,9 +6552,13 @@ _LOOKUP_AMBIGUOUS_RULE = (
     "neither which person you are speaking to NOR which of the appointments "
     "they mean. SAY HOW MANY THERE ARE — a caller cannot ask for a different "
     "one if they do not know others exist. When you read this appointment back, "
-    "SAY THE NAME and the day and time — for example \"I've got {count} "
-    "appointments on this number — this one's for {name} on [day] at [time], "
-    "is that you?\" — and settle who they are before asking anything else, "
+    "SAY THE NAME and the day, the DATE and the time — the weekday alone is not "
+    "enough, because a caller with a course of treatment has several on the same "
+    "weekday — and ask BOTH questions, because the name settles the person and "
+    "only the date settles which appointment: for example \"I've got {count} "
+    "appointments on this number — this one's for {name} on [day] the [date] at "
+    "[time], is that you? And is that the one you mean?\" "
+    "— and settle who they are before asking anything else, "
     "including before asking whether they want to reschedule or cancel. If they "
     "say it is not them, OR that it is not the appointment they meant, call "
     "lookup_patient again with next=true to step to the following match."
@@ -6561,9 +6572,15 @@ def _note_lookup_ambiguity(session: Dict[str, Any], total: int) -> None:
     clinics and Theorem behave identically. `_name_spoken` resets here rather
     than only on the first lookup: stepping to the next match with `next=true`
     changes who we are talking about, so the name has to be spoken again.
+
+    `_slot_spoken` resets for the same reason and it matters more here: stepping
+    to the next match changes WHICH APPOINTMENT is about to be written to, which
+    is the whole of B-54. Carrying a previous match's confirmation forward would
+    reproduce the defect one step further down the list.
     """
     session[LOOKUP_AMBIGUOUS_KEY] = total > 1
     session[LOOKUP_NAME_SPOKEN_KEY] = False
+    session[LOOKUP_SLOT_SPOKEN_KEY] = False
     # The COUNT itself, not just the boolean. The write-gate refusal message in
     # llm_stream has to be able to tell the caller how many there are, and it
     # only has the session — B-54 turns on the caller knowing that others exist.
