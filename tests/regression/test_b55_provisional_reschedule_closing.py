@@ -79,7 +79,12 @@ UNCHANGED_CLINIC_PROMPTS = {
     # `demo` and `theorem` still match latency-eval exactly, which is the useful
     # half of this row: the port's prompt work is confined to _build_theorem_v3
     # and has not leaked into the shared builders.
-    "theorem_v3": "7fd3a907a868d624",
+    # Re-pinned 2026-08-04 (T-0). theorem_v3 ONLY this time — demo and theorem
+    # are unchanged, which is the useful signal: the AI-disclosure rule was
+    # added inside _build_theorem_v3 and did not leak into the shared
+    # renderers. Susie answered "Yes" to "are you a real person" because the
+    # rendered theorem_v3 prompt had no disclosure instruction at all.
+    "theorem_v3": "93568fb7f0496419",
 }
 
 OLD_CONFIRMED_WORDING = ("that's you rescheduled", "you're now in for")
