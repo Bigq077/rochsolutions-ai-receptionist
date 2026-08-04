@@ -402,6 +402,27 @@ _COMMUNICATIVE_WORDS: frozenset = frozenset({
     "want", "need", "like", "have", "got",
     "can", "could", "would",
     "what", "when", "where", "which", "how", "why",
+    # ── Time-of-day answers (added 2026-08-04, T-15) ─────────────────────
+    # Susie asks "Do you prefer mornings or afternoons?" during slot
+    # selection. The one-word answer to that question — "afternoons" — was
+    # not on this list, so _is_short_meaningless_fragment returned True and
+    # the answer was DISCARDED, logged as "slot fragment ignored".
+    #
+    # Observed on call 7 of the acceptance sweep, 21:54:47. The caller
+    # answered "more so afternoons"; it was dropped, and ten seconds later
+    # the watchdog re-asked "which of those would you like?" — pointing at
+    # a set of days the caller had already rejected. They had to say the
+    # whole thing again.
+    #
+    # This is the failure mode the _PURE_FILLER_TOKENS comment below warns
+    # about in as many words: a hand-maintained vocabulary sitting between
+    # the caller and what they asked for. The most likely answer to the
+    # question being asked was missing from it.
+    "morning", "mornings", "afternoon", "afternoons",
+    "evening", "evenings", "midday", "lunchtime",
+    "early", "late", "earlier", "later",
+    "weekend", "weekends", "weekday", "weekdays",
+    "am", "pm",
 })
 
 
