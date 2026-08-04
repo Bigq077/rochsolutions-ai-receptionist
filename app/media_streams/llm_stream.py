@@ -764,6 +764,53 @@ _ORDINAL_WORDS = {
 }
 
 
+def note_reason_question_asked(session: dict, spoken: str) -> bool:
+    """Latch that the REASON question has been put to this caller.
+
+    `CA86c320ef` (4 Aug 2026, Vital Edge, live) asked it twice:
+
+        "Right — What's the appointment for?"                      (turn 2)
+        "Noted — and is there a particular area or reason for the
+         massage, like back tension, general stress, or something
+         else?"                                                    (turn 3)
+
+    Rule 1b already says "ask ONCE". It was not honoured, and it could not be:
+    the model composes each turn with no reliable memory of having asked, so
+    "once" is a property of the CALL, not of a sentence. Prompt text sets the
+    wording; engine state has to set the guarantee. Same division of labour as
+    `_note_lookup_name_spoken` above and `capture_duration_choice`.
+
+    Matched on INTENT rather than the clinic's exact literal, deliberately. The
+    second ask on that call was an improvisation that shared no wording with the
+    first — a literal match would have missed precisely the turn that mattered.
+
+    Read from the text released to TTS, so it records what the caller HEARD.
+    Latches: once true it stays true for the call.
+    """
+    if session.get("_reason_question_asked"):
+        return True
+    if not spoken or "?" not in spoken:
+        return False
+    low = spoken.lower()
+    asked = (
+        # "what's the appointment for", "what is it for", "what's it for"
+        re.search(r"\bwhat(?:'?s| is)\b[^?]{0,40}\bfor\b[^?]{0,20}\?", low)
+        # "is there a particular area or reason…", "what's the reason for…"
+        or re.search(r"\breason for\b[^?]{0,60}\?", low)
+        or re.search(r"\barea or reason\b", low)
+        # "what brings you in", "what's brought you in"
+        or re.search(r"\bwhat\b[^?]{0,20}\bbrings? you (?:in|to)\b", low)
+    )
+    if not asked:
+        return False
+    session["_reason_question_asked"] = True
+    logger.info(
+        "[ms_llm] reason question asked — latched so it cannot be re-asked: %r",
+        spoken[:90],
+    )
+    return True
+
+
 def _note_lookup_slot_spoken(session: dict, spoken: str) -> None:
     """B-54 — record that the matched appointment's DATE actually reached the caller.
 
@@ -1807,6 +1854,10 @@ class LLMStream:
             # source and the same reasoning — the name alone cannot distinguish
             # one caller's initial from their follow-up.
             _note_lookup_slot_spoken(session, _display_reply)
+            # And whether the REASON question was put to the caller this turn —
+            # same source, same reason: rule 1b's "ask ONCE" needs a latch, not
+            # an instruction. CA86c320ef asked it twice in two different forms.
+            note_reason_question_asked(session, _display_reply)
             # Store only the question portion in F_LAST_QUESTION.
             # F_LAST_BOT_PROMPT keeps the full response for fast-path trigger
             # matching; F_LAST_QUESTION is narrowed to the actual question
