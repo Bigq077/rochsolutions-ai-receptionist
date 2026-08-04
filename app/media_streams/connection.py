@@ -620,6 +620,60 @@ def _is_modality_switch_utterance(text: str) -> bool:
     return _noun and _cue
 
 
+def capture_duration_choice(session: dict, utterance: str) -> "int | None":
+    """Record the session length the caller just chose, once, in the engine.
+
+    `CA86c320ef` (4 Aug 2026, Vital Edge, live): asked "60 at £125, or 90 at
+    £180?" the caller said **"£180"**, and `book_appointment` fired eight turns
+    later with `duration_minutes: 60` — the silent shortest-option default in
+    `_service_duration_minutes`. The choice existed only in the model's context
+    and did not survive the trip. Caller expected 90 minutes and £180; the owner
+    was notified of 60.
+
+    Called from the transcript handler BEFORE the turn is dispatched, which
+    matters twice: `_service_duration_minutes` is the single source of truth for
+    the slot GRID as well as the booked event, so capturing here also makes
+    `check_availability` offer slots of the right length. On `CA86c320ef` every
+    slot offered was on the 60-minute grid.
+
+    **Never overwrites.** A caller who says "90" and then discusses times must
+    not have it re-derived from a later utterance. A real change of mind still
+    reaches the model, which passes `duration_minutes` explicitly and overwrites
+    it at the tool.
+
+    Extracted rather than left inline so it can be asserted against directly —
+    the same reason `_booking_confirmation_asked` and `_post_collect_readback_due`
+    were. An inline version is only testable by `inspect.getsource`, which
+    catches the call being deleted but not the call being disabled; that
+    difference was measured on the B-36 R6 fix the same day.
+
+    Returns the captured length, or None. Never raises: a failure here must cost
+    the caller a re-ask, not the call.
+    """
+    if not utterance or session.get("_service_duration_choice"):
+        return None
+    try:
+        from app.clinic_config import get_clinic as _dc_get_clinic
+        from app.tools.receptionist_tools import duration_choice_from_utterance
+        dur = duration_choice_from_utterance(
+            _dc_get_clinic(session.get("clinic_id")) or {}, utterance
+        )
+    except Exception:
+        logger.warning(
+            "[ms_conn v3] duration-choice capture failed — the caller will be "
+            "asked again", exc_info=True,
+        )
+        return None
+    if not dur:
+        return None
+    session["_service_duration_choice"] = dur
+    logger.info(
+        "[ms_conn v3] session length captured: %s minutes (from utterance %r)",
+        dur, utterance,
+    )
+    return dur
+
+
 def _extract_time_preference(text: str) -> "str | None":
     """Extract an explicit time-of-day preference from *text*.
 
@@ -9839,6 +9893,31 @@ class WebSocketCallHandler:
                                         _tod,
                                         utterance,
                                     )
+
+                            # ── Session-length choice, captured here for the
+                            # same reason and at the same point in the turn.
+                            #
+                            # CA86c320ef (4 Aug, Vital Edge, live): asked "60 at
+                            # £125 or 90 at £180?" the caller said "£180", and
+                            # book_appointment fired eight turns later with
+                            # duration_minutes=60 — the silent shortest-option
+                            # default. The choice lived only in the model's
+                            # context and did not survive the trip.
+                            #
+                            # Capturing BEFORE dispatch matters twice over:
+                            # _service_duration_minutes is the single source of
+                            # truth for the slot GRID as well as the booked
+                            # event, so a choice captured here also makes
+                            # check_availability offer slots of the right length
+                            # — on CA86c320ef every slot offered was on the
+                            # 60-minute grid.
+                            #
+                            # Never overwritten: a caller who says "90" and then
+                            # discusses times must not have it re-derived from a
+                            # later utterance. A genuine change of mind still
+                            # reaches the model, which passes duration_minutes
+                            # explicitly and overwrites it at the tool.
+                            capture_duration_choice(self.session, utterance)
 
                             # ── Spec I: turn-level slot cache clear ──────────
                             # New patient turn starting — invalidate any slots
