@@ -111,7 +111,7 @@ def test_every_form_of_the_question_latches(spoken):
     """Matched on INTENT, not on one clinic's literal. The second ask on
     CA86c320ef shared no wording with the first — a literal match would have
     missed precisely the turn that mattered."""
-    session = {}
+    session = {"clinic_id": VE}
     assert note_reason_question_asked(session, spoken) is True
     assert session["_reason_question_asked"] is True
 
@@ -127,13 +127,13 @@ def test_every_form_of_the_question_latches(spoken):
 def test_ordinary_turns_do_not_latch(spoken):
     """A false latch suppresses a question that was never asked, and the reason
     never gets collected — book_appointment then REFUSES for want of one."""
-    session = {}
+    session = {"clinic_id": VE}
     assert note_reason_question_asked(session, spoken) is False
     assert "_reason_question_asked" not in session
 
 
 def test_the_latch_holds_for_the_rest_of_the_call():
-    session = {}
+    session = {"clinic_id": VE}
     note_reason_question_asked(session, "What's the appointment for?")
     assert note_reason_question_asked(session, "What day suits you?") is True
     assert session["_reason_question_asked"] is True
@@ -178,6 +178,19 @@ def test_the_gate_is_the_clinic_opting_in():
     assert "do not ask a second, differently-worded" not in jv
     ve = _static(VE)
     assert "do not ask a second, differently-worded" in ve
+
+
+@pytest.mark.parametrize("clinic_id", [JV, "theorem_v3", "demo", None])
+def test_the_latch_does_not_even_run_for_a_clinic_that_did_not_opt_in(clinic_id):
+    """The absolute form of containment: not "no visible effect" but "no
+    execution". jv_v1 and theorem are live lines that did not ask for this, and
+    their rendered prompt is already byte-identical static and dynamic; this
+    pins that no session key is written for them either."""
+    session = {"clinic_id": clinic_id}
+    assert note_reason_question_asked(
+        session, "Right — What's the appointment for?"
+    ) is False
+    assert "_reason_question_asked" not in session
 
 
 def test_the_latch_is_wired_into_the_turn_loop():
