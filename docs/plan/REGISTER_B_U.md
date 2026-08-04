@@ -165,6 +165,59 @@ half, plus the four unchanged-clinic hashes).
 
 ---
 
+## `B-57` · **Theorem cannot cancel — its mandated CTA does not satisfy the cancel gate** — OPEN
+
+**P2. Found by sweep, 2026-08-04, not by a call.** The `B-36 R6` fix (`015eeb0`)
+was a single-literal write gate meeting a prompt that mandates different wording.
+That is a SHAPE, so all three write arms were swept against all three prompts.
+**Six of seven pass. One does not.**
+
+| arm | prompt | gate opens? |
+|---|---|---|
+| booking | theorem / template / template-provisional | ✅ ✅ ✅ (R6) |
+| reschedule | theorem / template | ✅ ✅ (widened `CA23199d08`) |
+| **cancel** | **theorem** | 🔴 **NO** |
+| cancel | template | ✅ |
+
+`_cancel_retention_asked` ([llm_stream.py](../../app/media_streams/llm_stream.py))
+requires `"altogether"`. `clinic_template_prompt.py:2353` teaches *"…or cancel it
+altogether?"* — passes. **Theorem mandates the other wording** at
+[susie_system_prompt.py:2188](../../app/prompts/susie_system_prompt.py): *"The
+CTA is always 'shall I go ahead and cancel that?'"* — no `"altogether"`, so
+`cancel_appointment` is refused. The template even calls that phrasing
+"redundant" at `:2387`, which is why only Theorem is exposed.
+
+### Why this is P2 and not P1 — the outcome differs from R6
+
+**Theorem's cancel closing IS visible to Gate 5f** (*"That's all done — your
+appointment has been cancelled"* → `_false_write_claim` = True), so the phantom
+is **stripped, not spoken**. No silent false confirmation. The re-steer then
+contains `"altogether"` and re-opens the gate, so it self-heals in one turn.
+
+### But it can loop, and that is B-44 recurring
+
+Recovery needs an explicit cancel token — `_cancel_reply_consents` measured:
+
+    "cancel it" / "yes cancel it"  -> True
+    "yes" / "yes please" / "go ahead" -> False
+
+The re-steer asks *"would you like to keep this appointment, or cancel it
+altogether?"* — to which **"yes" is the natural answer**, and it blocks again.
+`B-44` recorded exactly this: a caller stating an intention to cancel **four
+times across 89 s**.
+
+**Reaches Theorem only.** Not screening-scoped. `theorem-onboarding` is about to
+take Mark's live traffic, so it lands with a cancel path a caller may not be able
+to complete.
+
+**Fix:** widen `_cancel_retention_asked` to accept `"cancel that"` — the same
+repair as R6 and as `_move_confirmation_asked`. `_cancel_reply_consents` remains
+the second arm, so the destructive write still needs explicit consent. Ships with
+the R6 test file's structure: controls per arm, and end-to-end through
+`sanitise_response` rather than the predicate alone.
+
+---
+
 ## `B-54` · **a real calendar event was cancelled that the caller did not mean** — steering **FIXED `c273475`**, gate **FIXED `9c6fd53`**
 
 **P1. Found live, 2026-08-03 22:46, `CA156fa25206ffa7b15cb3474b617c8672`, build
