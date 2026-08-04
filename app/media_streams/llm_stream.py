@@ -160,6 +160,37 @@ def _date_hints_differ_materially(hint_a: str, hint_b: str) -> bool:
     return _extract_week_reference(hint_a) != _extract_week_reference(hint_b)
 
 
+def _location_not_bookable(tool_name: str, args: dict, session: Dict[str, Any]) -> bool:
+    """Deterministic backstop for the Redditch redirect (Mark, 2026-07-08).
+
+    Returns True when a NEW-booking tool (check_availability / book_appointment)
+    targets a Theorem location flagged ``bookable=False`` in THEOREM_LOCATIONS.
+    This guarantees a non-bookable clinic can never reach Acuity even if the
+    prompt redirect is ignored.  Scoped to new bookings only — cancel/reschedule
+    of an existing appointment at that location are unaffected.  Flip the
+    location's ``bookable`` flag back to True to disable this guard.
+    """
+    if tool_name not in ("check_availability", "book_appointment"):
+        return False
+    if session.get("clinic_id") != "theorem_v3":
+        return False
+    loc = str(
+        (args or {}).get("location")
+        or session.get("selected_location")
+        or ""
+    ).lower().strip()
+    if not loc:
+        return False
+    try:
+        from app.clinic_config import THEOREM_LOCATIONS
+    except Exception:
+        return False
+    entry = THEOREM_LOCATIONS.get(loc)
+    if not entry:
+        return False
+    return not entry.get("bookable", True)
+
+
 # Words that signal the caller wants a DIFFERENT / new slot (a real reason to
 # re-run check_availability after a slot is already confirmed).  Used by the
 # slot-locked guard so a genuine slot change still searches while a spurious
@@ -2894,7 +2925,38 @@ class LLMStream:
                 # _caller_requests_new_day_or_time escape (Bug B, 2026-07-30)
                 # and the BUG-14 name/location injection below.
                 _col = session.get("collected") or {}
-                if _post_collect_readback_due(tool_name, session, messages):
+                if _location_not_bookable(tool_name, args, session):
+                    _loc_nb = str(
+                        args.get("location")
+                        or session.get("selected_location") or ""
+                    ).strip()
+                    logger.warning(
+                        "[ms_llm] %s BLOCKED — location %r not bookable "
+                        "(Redditch redirect) call_sid=%s",
+                        tool_name, _loc_nb, call_sid,
+                    )
+                    result = {
+                        "error": "location_not_bookable",
+                        "message": (
+                            "That clinic is not bookable through Susie. Do NOT "
+                            "call check_availability or book_appointment for it, "
+                            "and do not collect booking details for it. Tell the "
+                            "caller exactly: \"Unfortunately I can't book the "
+                            "Redditch clinic myself at the moment — but I can "
+                            "book you straight in at our Awlstuh clinic if that "
+                            "suits, or I can put you straight through to Mark, "
+                            "who can book you in at Redditch. Which would you "
+                            "prefer?\" If the caller says yes "
+                            "to being put through, call transfer_to_human. If "
+                            "they would rather book at Awlstuh, treat it as a "
+                            "fresh booking for that clinic: ask them again "
+                            "\"Is there a particular day or time that works best "
+                            "for you?\" and wait for their answer before calling "
+                            "check_availability — do NOT reuse any day or time "
+                            "they mentioned for the Redditch attempt."
+                        ),
+                    }
+                elif _post_collect_readback_due(tool_name, session, messages):
                     logger.warning(
                         "[ms_llm] check_availability BLOCKED — name collected + "
                         "phone CONFIRMED; forcing booking readback call_sid=%s",
@@ -3461,6 +3523,36 @@ class LLMStream:
                             logger.info(
                                 "[ms_llm] slots_presented=True slots_count=%d", n,
                             )
+                            # Deterministic location sync (2026-07-12).  A
+                            # slot-returning check_availability is guaranteed to
+                            # be a BOOKABLE clinic — not-bookable clinics are
+                            # blocked upstream by _location_not_bookable and
+                            # never reach here — so THIS is the clinic the caller
+                            # is now booking.  When the caller switches clinics
+                            # after the Redditch redirect, the LLM drives the
+                            # switch via tool args but nothing updates the
+                            # authoritative session["selected_location"]: it
+                            # stays on the old clinic, so CALL STATE keeps
+                            # reporting it and the final book_appointment reverts
+                            # to it (observed: caller switched Redditch->Awlstuh,
+                            # was shown/agreed Alcester slots, but book_appointment
+                            # fired with location='redditch' -> blocked -> caller
+                            # bounced after a full booking).  Sync selected_location
+                            # to the location just checked so CALL STATE and the
+                            # downstream book_appointment stay consistent with the
+                            # clinic actually being offered.
+                            _av_loc = str(args.get("location") or "").strip().lower()
+                            if _av_loc and _av_loc != str(
+                                session.get("selected_location") or ""
+                            ).strip().lower():
+                                _prev_loc = session.get("selected_location")
+                                session["selected_location"] = _av_loc
+                                session["v3_location_confirmed"] = True
+                                logger.info(
+                                    "[ms_llm] selected_location synced %r -> %r "
+                                    "after successful check_availability "
+                                    "(clinic switch)", _prev_loc, _av_loc,
+                                )
                     else:
                         logger.warning("[ms_llm] unknown tool: %s", tool_name)
                         result = {"error": f"Unknown tool: {tool_name}"}
