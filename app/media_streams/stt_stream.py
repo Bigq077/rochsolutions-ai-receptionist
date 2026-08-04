@@ -455,24 +455,50 @@ def _is_garbage_transcript(text: str) -> bool:
 #
 # Apostrophes and hyphens are KEPT: "it's", "o'brien" and "smith-jones" are
 # load-bearing in the name and yes/no matchers.  Digits are kept as-is so
-# "07502211207." still satisfies ^\d{5,}$ after the trailing stop is removed.
+# "07502211207." still satisfies ^\d{5,}$ after the trailing stop is removed —
+# but see _U35_DIGIT_GROUPS_RE below: stripping punctuation is only half of it,
+# because the formatter also splits a long number across words.
 _U35_PUNCT_RE = re.compile(r"[.,!?;:\"“”„…]+")
+
+# Stripping punctuation is not enough on its own.  U3.5's formatter also GROUPS
+# long digit runs ("07502 211207"), and connection.py's phone path is
+# _PHONE_NUMBER_RE = ^\d{5,}$ guarded by len(words) == 1 — so a grouped number is
+# two words, fails the match, and is discarded by _is_short_meaningless_fragment
+# exactly as the punctuated one was.  Measured 2026-08-04: with the shim on but
+# without this rejoin, "07502 211207." and "0750 221 1207." were both DISCARDED.
+#
+# Only a whole utterance of digit groups is rejoined, and only at >= 7 digits.
+# Both limits are deliberate:
+#   - whole-utterance keeps "i'm 34 years old" untouched;
+#   - the 7-digit floor keeps a spoken time ("9 30" -> would become "930") and a
+#     year ("20 25" -> "2025") from being welded into a fake phone number.
+# A UK mobile is 11 digits and a landline 10-11, so nothing real is excluded.
+_U35_DIGIT_GROUPS_RE = re.compile(r"^\+?\d+(?: \d+)+$")
 
 
 def _deformat_transcript(text: str) -> str:
     """Strip U3.5's always-on formatting back to the unformatted contract.
 
     Lowercases and removes sentence punctuation, collapsing any whitespace the
-    removal leaves behind.  A no-op for text that was never formatted, so it is
-    safe if the model or the flag changes underneath it.
+    removal leaves behind, then rejoins a grouped all-digit utterance.  A no-op
+    for text that was never formatted, so it is safe if the model or the flag
+    changes underneath it.
 
         "My name is Sarah."   -> "my name is sarah"
         "Yes, that's right!"  -> "yes that's right"
-        "07502 211207."       -> "07502 211207"
+        "07502 211207."       -> "07502211207"
+        "0750 221 1207."      -> "07502211207"
+        "I'm 34 years old."   -> "i'm 34 years old"    (not all digits)
+        "9 30."               -> "9 30"                (under the 7-digit floor)
     """
     if not text:
         return text
-    return " ".join(_U35_PUNCT_RE.sub(" ", text).split()).lower()
+    out = " ".join(_U35_PUNCT_RE.sub(" ", text).split()).lower()
+    if _U35_DIGIT_GROUPS_RE.match(out):
+        joined = out.replace(" ", "")
+        if len(joined.lstrip("+")) >= 7:
+            return joined
+    return out
 
 
 def _mask_key(url_or_str: str, key: str) -> str:
