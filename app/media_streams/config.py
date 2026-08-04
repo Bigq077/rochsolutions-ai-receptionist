@@ -129,9 +129,19 @@ ASSEMBLYAI_WS_URL = (
 #     `format_turns=false` explicitly. The reference also states unrecognised
 #     query parameters are IGNORED, not rejected — so the "sending it risks a
 #     rejected socket" fear was unfounded in both directions.
+#     🔴 CORRECTION TO THE CORRECTION, 2026-08-04, from a LIVE CALL — the
+#     original claim was closer to right. `format_turns=false` is now on the
+#     socket, and finals STILL arrive formatted:
+#         'um well just— i want— just want a deep tissue massage'
+#     came off a socket that had requested it. So the parameter is accepted and
+#     ignored for this model, or formatting is not what it gates. Either way:
+#     U35_DEFORMAT is LOAD-BEARING, not belt-and-braces. Do not turn it off, and
+#     do not trust the API reference over a transcript.
+#     (That em-dash breaks name extraction outright — see _U35_PUNCT_RE.)
+#
 #     U35_DEFORMAT stays ON regardless: it is a no-op on unformatted text, and
 #     it is the only thing standing between us and the three breakages below if
-#     the vendor default ever moves. Belt and braces, cheap.
+#     the vendor default ever moves.
 #     Two other figures below are also stale against that reference: the vendor
 #     max_turn_silence default is 1536ms (not 1000) and vad_threshold 0.2 (not
 #     0.3), and end_of_turn_confidence_threshold still documents a 0.4 default

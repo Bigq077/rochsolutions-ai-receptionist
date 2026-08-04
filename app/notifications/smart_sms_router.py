@@ -333,14 +333,35 @@ async def send_smart_followup_sms(
 
     # ── SEND ─────────────────────────────────────────────────────────────────
 
+    # send_sms returns the Twilio SID on success and None on EITHER the
+    # SMS_ENABLED kill switch or a real failure (invalid number, Twilio error).
+    # It does not raise for those, so the try/except alone proved nothing: this
+    # used to log "✅ Smart SMS sent" and set the latch unconditionally.
+    #
+    # Observed live 2026-08-04, two lines apart in the same call:
+    #     [sms] SMS_ENABLED is off — outbound SMS suppressed (not sent)
+    #     ✅ Smart SMS sent [abandoned] → ***1207
+    #
+    # The latch is the damage, not the log line: followup_sms_sent=True is
+    # mirrored to /status and gates any retry, so a send that never happened was
+    # recorded as done and could never be re-attempted.
     try:
-        await send_sms(to=patient_phone, message=message)
-        session["followup_sms_sent"] = True   # idempotency latch (mirrored to /status)
-        logger.info("✅ Smart SMS sent [%s] → ***%s", outcome, patient_phone[-4:] if patient_phone else "????")
-        return True
+        sid = await send_sms(to=patient_phone, message=message)
     except Exception as e:
         logger.error(f"❌ Failed to send SMS: {e}", exc_info=True)
         return False
+
+    if not sid:
+        logger.warning(
+            "⚠️  Smart SMS NOT sent [%s] → ***%s — send_sms returned no SID "
+            "(SMS_ENABLED off, or the number was rejected). Latch NOT set.",
+            outcome, patient_phone[-4:] if patient_phone else "????",
+        )
+        return False
+
+    session["followup_sms_sent"] = True   # idempotency latch (mirrored to /status)
+    logger.info("✅ Smart SMS sent [%s] → ***%s", outcome, patient_phone[-4:] if patient_phone else "????")
+    return True
 
 
 # ============================================================================

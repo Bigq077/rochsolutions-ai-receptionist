@@ -327,3 +327,38 @@ def test_config_import_does_not_leak_env_between_tests(monkeypatch):
     config = _load_config(monkeypatch)
     assert config.assemblyai_ws_url() == config.ASSEMBLYAI_WS_URL
     assert os.getenv("ASSEMBLYAI_USE_U35") is None
+
+
+def test_deformat_strips_em_dash_disfluencies():
+    """U3.5 punctuates self-corrections with em-dashes. Measured live 2026-08-04:
+
+        'um well just— i want— just want a deep tissue massage'
+
+    arriving from a socket that had ALREADY requested format_turns=false. The
+    dash is not cosmetic: name_collector._NAME_AFTER_IS_RE finds 'sarah' in
+    "my name is sarah" and nothing at all in "my name is— sarah", so the
+    caller's name is silently lost.
+    """
+    from app.media_streams.name_collector import _NAME_AFTER_IS_RE
+    from app.media_streams.stt_stream import _deformat_transcript as d
+
+    assert d("um well just— i want— just want a deep tissue massage") == (
+        "um well just i want just want a deep tissue massage"
+    )
+
+    # The regression this guards against:
+    assert _NAME_AFTER_IS_RE.search("my name is— sarah") is None
+    # ...and the fix:
+    m = _NAME_AFTER_IS_RE.search(d("my name is— sarah"))
+    assert m is not None and m.group(1) == "sarah"
+
+    # En-dash and horizontal bar too.
+    assert d("yes – that's right") == "yes that's right"
+
+
+def test_deformat_keeps_the_ascii_hyphen():
+    """Load-bearing in surnames and in the duration the caller just chose."""
+    from app.media_streams.stt_stream import _deformat_transcript as d
+
+    assert d("Smith-Jones.") == "smith-jones"
+    assert d("uh the 90-minute session") == "uh the 90-minute session"

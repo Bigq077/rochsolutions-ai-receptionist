@@ -480,7 +480,21 @@ def _is_garbage_transcript(text: str) -> bool:
 # "07502211207." still satisfies ^\d{5,}$ after the trailing stop is removed —
 # but see _U35_DIGIT_GROUPS_RE below: stripping punctuation is only half of it,
 # because the formatter also splits a long number across words.
-_U35_PUNCT_RE = re.compile(r"[.,!?;:\"“”„…]+")
+# Em-dash, en-dash and horizontal bar are included; the ASCII hyphen is NOT.
+# U3.5 punctuates self-corrections with em-dashes — measured live 2026-08-04:
+#     'um well just— i want— just want a deep tissue massage'
+# and that breaks name extraction outright: name_collector._NAME_AFTER_IS_RE
+# finds 'sarah' in "my name is sarah" and NOTHING in "my name is— sarah".
+#
+# ⚠️ This also corrects the note above ASSEMBLYAI_WS_URL_U35 in config.py.
+# Sending format_turns=false did NOT stop U3.5 formatting — the finals above
+# arrived from a socket that requested it. The original in-repo claim that
+# formatting is unconditional was closer to the truth than the API reference
+# implied, so U35_DEFORMAT is load-bearing, not belt-and-braces.
+#
+# The ASCII hyphen stays: 'smith-jones' and '90-minute' are both load-bearing,
+# and neither has ever been a disfluency marker.
+_U35_PUNCT_RE = re.compile(r"[.,!?;:\"“”„…—–―]+")
 
 # Stripping punctuation is not enough on its own.  U3.5's formatter also GROUPS
 # long digit runs ("07502 211207"), and connection.py's phone path is
