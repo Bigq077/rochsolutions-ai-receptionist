@@ -317,7 +317,7 @@ def build_system_prompt(session: dict) -> str:
         "Treat them as NO time signal given and ask the timing question before checking availability.\n"
         "Offer slots naturally: \"I've got Tuesday at half two or Thursday morning — either work?\"\n"
         "Name: \"Who am I booking in today?\" — single question, never split first/last. "
-        "Phone: store the caller's number immediately once collected — no readback needed. If the caller confirms the number they're calling from, store it directly with collect_and_store.\n"
+        "Phone: when you offer the calling number, SAY THE DIGITS aloud (caller_number_spaced) so the caller confirms a number they have heard; store it with collect_and_store once they do.\n"
         "Read the full booking back and wait for yes before calling book_appointment. "
         "Never ask for info you already have. If no slots, offer the waitlist.\n"
         "Returning patients: call lookup_patient before re-collecting details.\n"
@@ -391,7 +391,12 @@ def build_system_prompt(session: dict) -> str:
         spaced = " ".join(caller_number_local)
         state_lines.append(
             f"Caller phone (pre-loaded): {caller_number_local} "
-            f"Use this number directly if the caller says 'use this number' or confirms the calling number — no readback needed."
+            f"(spoken form: {spaced}) "
+            f"Store this number when the caller says 'use this number' or confirms "
+            f"the calling number. You must SPEAK the digits — in the spoken form "
+            f"above — at the moment you offer it, so the caller confirms a number "
+            f"they have actually heard. Never ask them to confirm a number you "
+            f"have not said out loud."
         )
 
     if session.get("booking_id") or session.get("acuity_booking_id") or session.get("calendar_event_id"):
@@ -631,12 +636,16 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
     if twilio_from_local and not collected.get("phone"):
         context_lines.append(f"  caller_number = {twilio_from_local}")
         _spaced = " ".join(twilio_from_local)
-        context_lines.append(f"  caller_number_spaced = {_spaced}  ← use this value when caller confirms; do NOT read it back aloud")
+        context_lines.append(f"  caller_number_spaced = {_spaced}  ← SPEAK this value aloud, digit by digit, when you offer the calling number; store the unspaced caller_number when they confirm")
 
     if context_lines:
         known_context = (
             "The following is already known -- do NOT ask for it again and do NOT say any of it aloud:\n"
             "DO NOT read these back or mention the variable names. Use them silently.\n"
+            "ONE EXCEPTION: caller_number_spaced. The caller has never heard the "
+            "number we hold for them, so they cannot catch it being wrong. Speak "
+            "those digits aloud when you offer the calling number — see the phone "
+            "steps below. Everything else here stays silent.\n"
             + "\n".join(context_lines)
         )
     else:
@@ -2021,8 +2030,8 @@ def _build_theorem_v3(session: dict) -> str:
         "- Caller: 'I prefer afternoons' → Susie: 'Afternoons, "
         "noted — let me check what we have.'\n"
         "- Caller: 'My name is Sarah' → Susie: 'Did you say Sarah "
-        "— is that right?' [Caller: yes] → Susie: 'Right — if "
-        "you'd like me to use the number you're calling from, "
+        "— is that right?' [Caller: yes] → Susie: 'Right — is "
+        "0 7 7 0 0 9 0 0 1 2 3 the best number for you? If so, "
         "just say use this number.'\n"
         "- Caller: 'That time works for me' → Susie: 'Perfect — "
         "could I take your first name and surname?'\n"
@@ -3283,15 +3292,15 @@ def _build_theorem_v3(session: dict) -> str:
         "better than a filler that leaves the caller uncertain "
         "what to do.\n"
         "Example: Caller: 'Sarah Jenkins' → Susie: 'Thanks "
-        "Sarah — if you'd like me to use the number you're "
-        "calling from, just say use this number.' (Full name "
+        "Sarah — is 0 7 7 0 0 9 0 0 1 2 3 the best number for "
+        "you? If so, just say use this number.' (Full name "
         "\"Sarah Jenkins\" registered via collect_and_store; only "
         "the first name is read back AT THIS STEP — the surname is "
         "spoken back once, later, in the Step 9 readback.)\n"
         "If the caller corrects their name, acknowledge and "
         "continue with the calling number offer in the same turn: "
-        "'Sarah — got it. If you'd like to use the number you're "
-        "calling from, just say use this number.'\n"
+        "'Sarah — got it. Is 0 7 7 0 0 9 0 0 1 2 3 the best "
+        "number for you? If so, just say use this number.'\n"
         "⚠️ NAME vs PHONE DISAMBIGUATION: If the caller says "
         "'no that's wrong', 'that's not right', 'wrong name', "
         "'no', or anything negative immediately after you echoed "
@@ -3305,15 +3314,25 @@ def _build_theorem_v3(session: dict) -> str:
         "STATE, but not always (some calls arrive with no caller "
         "ID). Your phrasing depends on whether it is there:\n"
         "   (a) CALL STATE SHOWS a calling number → offer it "
-        "first. Do NOT say 'what number shall I put down for "
-        "you?' — always offer the calling number first. Say: 'If "
-        "you'd like me to use the number you're calling from, "
-        "just say use this number.' Do NOT add 'otherwise go "
-        "ahead with a different one' or any similar hint — if the "
-        "caller wants a different number they will say so. Only "
-        "ask them to provide a number if they decline the calling "
-        "number. When the calling number is confirmed, store it "
-        "immediately — no readback needed.\n"
+        "first, AND SAY THE DIGITS. Do NOT say 'what number shall "
+        "I put down for you?' — always offer the calling number "
+        "first. Say the caller_number_spaced value digit by "
+        "digit: 'Is 0 7 7 0 0 9 0 0 1 2 3 the best number for "
+        "you? If so, just say use this number.' Do NOT add "
+        "'otherwise go ahead with a different one' or any similar "
+        "hint — if the caller wants a different number they will "
+        "say so. Only ask them to provide a number if they "
+        "decline the calling number. When they confirm, store it "
+        "immediately.\n"
+        "   ⚠️ NEVER offer the calling number without speaking "
+        "its digits. 'Is that the same number you're calling "
+        "from?' asks the caller to vouch for something they have "
+        "not heard. Caller ID is not always the caller's own "
+        "number — diverted lines, office switchboards and "
+        "carrier-substituted numbers all arrive looking normal. "
+        "A blind yes writes a stranger's number to the booking, "
+        "and the confirmation text and reminders follow it there. "
+        "Saying the digits is what makes the confirmation real.\n"
         "   (b) CALL STATE SHOWS NO calling number → do NOT offer "
         "'use this number' (there is no number to use) and do NOT "
         "improvise 'what's the best number to reach you on?'. Go "
