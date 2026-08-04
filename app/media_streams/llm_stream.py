@@ -783,15 +783,103 @@ def _note_lookup_name_spoken(session: dict, spoken: str) -> None:
         )
 
 
+_ORDINAL_WORDS = {
+    1: "first", 2: "second", 3: "third", 4: "fourth", 5: "fifth", 6: "sixth",
+    7: "seventh", 8: "eighth", 9: "ninth", 10: "tenth", 11: "eleventh",
+    12: "twelfth", 13: "thirteenth", 14: "fourteenth", 15: "fifteenth",
+    16: "sixteenth", 17: "seventeenth", 18: "eighteenth", 19: "nineteenth",
+    20: "twentieth", 21: "twenty-first", 22: "twenty-second",
+    23: "twenty-third", 24: "twenty-fourth", 25: "twenty-fifth",
+    26: "twenty-sixth", 27: "twenty-seventh", 28: "twenty-eighth",
+    29: "twenty-ninth", 30: "thirtieth", 31: "thirty-first",
+}
+
+
+def _note_lookup_slot_spoken(session: dict, spoken: str) -> None:
+    """B-54 — record that the matched appointment's DATE actually reached the caller.
+
+    `_note_lookup_name_spoken` answers "is this the right person". It cannot
+    answer "is this the right appointment", and on CA156fa25 (3 Aug 2026) that
+    distinction cost a real calendar event: all 15 matches were the SAME person,
+    so saying "Quentin Rock" settled nothing. The caller agreed to their own
+    name — the register's framing that they never agreed is wrong — and match #1
+    was cancelled. What they were never told is WHICH of their appointments it
+    was. `lookup_patient` emits the EARLIEST upcoming match unconditionally
+    (receptionist_tools.py, `matches.sort(...)` then `matches[0]`), and the
+    caller meant the one they had booked four minutes earlier.
+
+    So this latch is on the appointment axis, not the identity axis. Both must
+    be satisfied before a destructive write is allowed.
+
+    Matched on WEEKDAY NAME **and** DAY OF MONTH, both required. Same bias as
+    B-42 and it runs the same way: a false positive opens the gate on a
+    destructive write, a false negative only makes Susie say the date. Hence two
+    independent components rather than one, and word boundaries throughout.
+
+    The TIME is deliberately NOT required. Susie says "half past six in the
+    evening", "six thirty", "18:30" — matching that reliably is a false-negative
+    factory, and on this path a false negative loops the caller on a cancel they
+    are entitled to make. **Consequence, stated so nobody assumes otherwise:
+    two appointments on the SAME DATE are not disambiguated by this latch.**
+    That is a real residual, it is rarer than the initial-plus-follow-up case
+    this closes, and it needs the time-matching work to fix properly.
+    """
+    from datetime import datetime as _dt
+    from app.tools.receptionist_tools import LOOKUP_SLOT_SPOKEN_KEY
+    if session.get(LOOKUP_SLOT_SPOKEN_KEY):
+        return
+    iso = (session.get("_lookup_appointment_datetime") or "").strip()
+    if not iso or not spoken:
+        return
+    try:
+        when = _dt.fromisoformat(iso)
+    except ValueError:
+        # Fail CLOSED — the gate stays shut and the model is re-steered. The
+        # alternative (treat an unparseable date as "no need to verify") opens a
+        # destructive write on the exact input we understand least. The caller
+        # is not stranded: the refusal is a message to the model, so the turn
+        # continues and degrades to taking a message.
+        logger.warning(
+            "[ms_llm] B-54: could not parse looked-up appointment datetime %r "
+            "— slot gate stays CLOSED", iso,
+        )
+        return
+    low = spoken.lower()
+    weekday = when.strftime("%A").lower()
+    if not re.search(r"\b" + weekday + r"\b", low):
+        return
+    dom = when.day
+    forms = [
+        rf"\b{dom}(?:st|nd|rd|th)?\b",
+        r"\b" + re.escape(_ORDINAL_WORDS.get(dom, "\x00")) + r"\b",
+    ]
+    if any(re.search(f, low) for f in forms):
+        session[LOOKUP_SLOT_SPOKEN_KEY] = True
+        logger.info(
+            "[ms_llm] B-54: appointment date %s (%s the %d) was spoken to the "
+            "caller — slot gate satisfied", iso, weekday, dom,
+        )
+
+
 def _lookup_identity_unconfirmed(session: dict) -> bool:
-    """B-42 — True when the active lookup was ambiguous and the caller has not
-    been told WHOSE appointment it is."""
+    """B-42 + B-54 — True when the active lookup was ambiguous and the caller has
+    not been told BOTH whose appointment it is and WHICH ONE.
+
+    Two axes, deliberately separate. B-42 is the shared-phone / different-person
+    case (a couple, a parent, a carer) and its name check is verified live on
+    CAdbc84848. B-54 is the same-person / multiple-appointments case — an initial
+    plus a follow-up is entirely routine — which the name check does not model at
+    all. Neither subsumes the other, so both are required.
+    """
     from app.tools.receptionist_tools import (
-        LOOKUP_AMBIGUOUS_KEY, LOOKUP_NAME_SPOKEN_KEY,
+        LOOKUP_AMBIGUOUS_KEY, LOOKUP_NAME_SPOKEN_KEY, LOOKUP_SLOT_SPOKEN_KEY,
     )
     return bool(
         session.get(LOOKUP_AMBIGUOUS_KEY)
-        and not session.get(LOOKUP_NAME_SPOKEN_KEY)
+        and not (
+            session.get(LOOKUP_NAME_SPOKEN_KEY)
+            and session.get(LOOKUP_SLOT_SPOKEN_KEY)
+        )
     )
 
 
@@ -1724,6 +1812,10 @@ class LLMStream:
             # capped at 200 chars — a readback long enough to lose the name to
             # that cap is exactly the turn where the caller most needs it.
             _note_lookup_name_spoken(session, _display_reply)
+            # B-54: and was the matched appointment's DATE said out loud? Same
+            # source and the same reasoning — the name alone cannot distinguish
+            # one caller's initial from their follow-up.
+            _note_lookup_slot_spoken(session, _display_reply)
             # Store only the question portion in F_LAST_QUESTION.
             # F_LAST_BOT_PROMPT keeps the full response for fast-path trigger
             # matching; F_LAST_QUESTION is narrowed to the actual question
@@ -3401,10 +3493,25 @@ class LLMStream:
                     # the standing evidence that prompt wording alone does not
                     # hold: the model rewords, and the guarantee evaporates.
                     _lp_name = session.get("_lookup_patient_name") or "the patient"
+                    # Say WHICH arm failed. The single-cause line was accurate
+                    # while there was one, and would now misdirect exactly the
+                    # way the reschedule log did before it was split below.
+                    from app.tools.receptionist_tools import (
+                        LOOKUP_NAME_SPOKEN_KEY as _K_NAME,
+                        LOOKUP_SLOT_SPOKEN_KEY as _K_SLOT,
+                    )
+                    _why = " and ".join(
+                        w for w, ok in (
+                            ("name not read back (B-42)", session.get(_K_NAME)),
+                            ("appointment date not read back (B-54)",
+                             session.get(_K_SLOT)),
+                        ) if not ok
+                    )
                     logger.warning(
-                        "[ms_llm] %s BLOCKED — ambiguous lookup, name not read "
-                        "back (B-42): name=%r matches>1",
-                        tool_name, _lp_name,
+                        "[ms_llm] %s BLOCKED — ambiguous lookup, %s: name=%r "
+                        "when=%r matches>1",
+                        tool_name, _why, _lp_name,
+                        session.get("_lookup_appointment_datetime"),
                     )
                     _lp_count = session.get("_lookup_match_count") or 0
                     _lp_howmany = (
@@ -3421,11 +3528,18 @@ class LLMStream:
                             f"Do NOT cancel or move anything yet. Tell the "
                             f"caller HOW MANY there are — they cannot ask for a "
                             f"different one if they do not know others exist — "
-                            f"then say that name and the day and time, and ask "
-                            f"them to confirm — for example \"I've got "
+                            f"then say that name AND the day and date and time, "
+                            f"and ask BOTH questions — for example \"I've got "
                             f"{_lp_howmany} on this number; this one's under "
-                            f"{_lp_name} — is that you?\". If they say it is "
-                            f"not them, OR that it is not the appointment they "
+                            f"{_lp_name}, on Tuesday the 5th at half past "
+                            f"eight in the evening — is that you? And is that "
+                            f"the one you mean?\". The day and date are not "
+                            f"optional: "
+                            f"naming the person does not tell a caller which "
+                            f"of their own appointments you are about to "
+                            f"touch, and that is what went wrong on the call "
+                            f"this rule exists for. If they say it is not "
+                            f"them, OR that it is not the appointment they "
                             f"meant, call lookup_patient again with next=true "
                             f"to step to the following match."
                         ),

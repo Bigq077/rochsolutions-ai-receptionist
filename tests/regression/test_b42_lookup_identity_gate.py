@@ -42,11 +42,25 @@ from app.tools.receptionist_tools import (
 )
 
 
-def _looked_up(name: str, total: int) -> dict:
+# The date the emitted match sits on. B-54 added a second latch on the
+# appointment axis, so a session that only carries a name is no longer a
+# realistic post-lookup session — both back-ends set this key at _emit.
+_WHEN = "2026-08-05T18:15:00+01:00"          # Wednesday the 5th
+_SAID = "Wednesday the 5th"                   # what satisfies the B-54 latch
+
+
+def _looked_up(name: str, total: int, when: str = _WHEN) -> dict:
     """A session immediately after a lookup returned `total` matches."""
-    s = {"_lookup_patient_name": name}
+    s = {"_lookup_patient_name": name, "_lookup_appointment_datetime": when}
     _note_lookup_ambiguity(s, total)
     return s
+
+
+def _say(session: dict, spoken: str) -> None:
+    """Both latches read the same released-to-TTS text, so the tests must feed
+    both or they assert against a state the engine can never be in."""
+    ls._note_lookup_name_spoken(session, spoken)
+    ls._note_lookup_slot_spoken(session, spoken)
 
 
 # ── The observed failure ──────────────────────────────────────────────────
@@ -63,19 +77,35 @@ def test_the_verbatim_call_is_now_blocked():
     )
 
 
-def test_saying_the_name_releases_the_gate():
+def test_saying_the_name_and_the_date_releases_the_gate():
     s = _looked_up("Sarah Jenkins", 13)
-    ls._note_lookup_name_spoken(
-        s, "I've got an appointment under Sarah Jenkins — is that you?"
-    )
+    _say(s, f"I've got an appointment under Sarah Jenkins on {_SAID} — "
+            "is that you? And is that the one you mean?")
     assert ls._lookup_identity_unconfirmed(s) is False
+
+
+def test_the_name_alone_no_longer_releases_the_gate():
+    """B-54, and the reason this file's expectations moved.
+
+    Saying the name used to be sufficient. On CA156fa25 all 15 matches were the
+    SAME person, so the name settled nothing and the earliest match was
+    cancelled. The B-42 guarantee is untouched — a nameless read-back still
+    blocks, asserted above. What changed is that the name is no longer the
+    whole of the check.
+    """
+    s = _looked_up("Sarah Jenkins", 13)
+    _say(s, "I've got an appointment under Sarah Jenkins — is that you?")
+    assert ls._lookup_identity_unconfirmed(s) is True, (
+        "the caller confirmed a person, not an appointment — with several on "
+        "the number the write still must not proceed"
+    )
 
 
 def test_a_first_name_alone_is_enough():
     """Among people sharing a number the first name is the discriminator.
     Requiring the surname would loop the caller on a natural readback."""
     s = _looked_up("Sarah Jenkins", 4)
-    ls._note_lookup_name_spoken(s, "That one's under Sarah — is that you?")
+    _say(s, f"That one's under Sarah, on {_SAID} — is that you?")
     assert ls._lookup_identity_unconfirmed(s) is False
 
 
@@ -96,7 +126,7 @@ def test_a_single_match_never_blocks():
 def test_stepping_to_the_next_match_re_arms_the_gate():
     """`next=true` changes WHO we are discussing, so the name must be said again."""
     s = _looked_up("Sarah Jenkins", 13)
-    ls._note_lookup_name_spoken(s, "That's under Sarah Jenkins — is that you?")
+    _say(s, f"That's under Sarah Jenkins, on {_SAID} — is that you?")
     assert ls._lookup_identity_unconfirmed(s) is False
     _note_lookup_ambiguity(s, 13)          # what _emit does on the next match
     s["_lookup_patient_name"] = "Quentin Rock"
