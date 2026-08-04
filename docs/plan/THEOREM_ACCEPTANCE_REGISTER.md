@@ -480,3 +480,94 @@ and not, decided by a race.
   consultations, what to wear. Content is good; it is the delivery length and
   the missing watchdog that keep failing.
 - Obs judge scored this call **4** (previous calls: 3).
+
+---
+
+## T-13 — a medication question was answered with "which clinic?"  ✅ FIXED
+
+**Severity:** high · **Fixed:** `6e6d7aa` · **Call 5, 21:35:49**
+
+With the clinic question pending, the caller asked:
+
+> *"should I take ibuprofen, ice or heat in the meantime"*
+
+and Susie said:
+
+> *"No worries — did you say the Awlstuh clinic? If so, just say 'use this clinic'."*
+
+```
+[ms_conn v3] Haiku unknown non-question — rung 2 biased confirm (bias=alcester):
+  'um should i take ibuprofen ice or heat in the meantime'
+```
+
+The caller had to repeat themselves — *"no I said should I take ibuprofen"* —
+to be heard.
+
+**Root cause.** `_QUESTION_SIGNALS` held only wh-words. English forms yes/no
+questions by inverting an auxiliary, with no question word in the sentence at
+all. And there is no punctuation to fall back on: the AssemblyAI handshake sets
+`format_turns=false`, so the word list is the **only** signal — a gap in it is
+silent, not degraded.
+
+Reproduced offline before touching anything:
+
+```
+False  um should i take ibuprofen ice or heat in the meantime
+False  can i come in today
+False  do i need a gp referral
+```
+
+Fixed by adding the inversion forms. Nine spoken clinic answers were checked to
+confirm they stay non-questions — otherwise the ladder could never resolve a
+clinic through this path again.
+
+**Note on scope:** this is a mis-*trigger* of the location ladder, and the tests
+added in `e0ca288` would not have caught it. They pin what the ladder does once
+armed; this was about whether it should have armed. Both matter.
+
+---
+
+## T-14 — "yeah but" read as booking assent
+
+**Severity:** medium · **Status:** open · **Call 5, 21:35:31**
+
+> *"um i want yeah but i want to know how many sessions do i need just to get a
+> good idea"*
+
+```
+[ms_conn] booking_flow_active = True
+[ms_conn v3] booking ack detected — intent=booking, loc Q queued
+```
+
+The caller was pushing back — *"yeah but"* — and asking a question. It was read
+as assent to book, which queued the clinic question and produced the collision
+that became T-13 four turns later.
+
+**Third member of the T-7 / T-11 family.** All three lift an answer out of a
+turn the caller framed as a question:
+
+| | Utterance | Taken as |
+|---|---|---|
+| T-7 | "a shockwave on its own" | first name = `Own` |
+| T-11 | "what if I rearrange the morning of" | timing preference = mornings |
+| T-14 | "yeah but I want to know how many sessions" | booking assent |
+
+Worth one fix, not three: **do not run answer-extractors on a turn that parses
+as a question.** T-13's corrected `_transcript_is_question` is now a usable
+predicate for exactly that.
+
+---
+
+## Confirmations from call 5
+
+- **Age gate works, including the hard edge.** *"my daughter's 12"* → minimum
+  age 15, redirected. Then *"she's 15 next month"* → *"we do need patients to be
+  fifteen at the time of the appointment… just give us a call then."* Correct
+  on both, and the second is the one that usually goes wrong.
+- **Clinical deflection is right.** Cause-of-pain and medication questions were
+  both routed to the practitioner rather than answered. Good safety behaviour.
+- **T-5 reproduced, worst yet.** 12.8 s, 12.4 s, 11.1 s, 13.0 s, 15.0 s, 13.6 s
+  — and the caller barged in on **every single one** (barge-ins #1–#4 all
+  confirmed). Six calls running. The caller is now visibly fighting for a turn.
+- **Repetition.** `duplicate response discarded (matches previous)` twice;
+  *"That's one for the practitioner at your appointment"* was said three times.
