@@ -771,3 +771,69 @@ skipping duplicate`.
 - **T-5 continues:** 14.5 s, 14.0 s, 12.0 s, 12.6 s. Eight calls running.
 - Call duration 198 s, 22 turns — the longest of the sweep, and roughly 30 s of
   it was the T-15 recovery.
+
+---
+
+# CALL SUITE V2 — Part A results (build `e2a44f3`)
+
+## A1 — PASS, with one new finding
+
+### Verified live
+
+| | Result |
+|---|---|
+| **T-0** | ✅ `"No — I'm Susie, Theorem Health's AI receptionist."` Opens with No. |
+| **T-5** | ✅ The identical hours+parking question that ran **20.2 s** now runs **5.2 s**, two sentences, no train station, no stacked offers. Follow-up 4.2 s, Bupa 6.1 s. |
+| **Warmth** | ✅ *"A follow-up appointment is eighty-five pounds, and that's forty minutes."* Not clipped. This was the risk in T-5 and it held. |
+| **T-7 / T-11** | ✅ `soft-context extraction skipped — caller asked a question` fired on **all four** question turns. |
+
+Build not printed in the excerpt, but proven by behaviour: `"No — I'm Susie"`
+and the extraction-skip line exist only in `e2a44f3`.
+
+---
+
+## T-16 — the caller named the clinic and was asked which clinic
+
+**Severity:** medium · **Status:** open · **A1, 23:15:41**
+
+> Caller: *"what are your **redditch** opening hours and is there parking"*
+> Susie: *"Is this for our Awlstuh or Redditch clinic?"*
+> Caller: *"**I said** you're Redditch clinic"*
+
+```
+[ms_conn v3] FAQ clinic gate: no clinic confirmed — injecting 'Which clinic?'
+  and skipping run_turn (utterance='uh what are your redditch opening hours
+  and is there parking')
+```
+
+The FAQ clinic gate fires on `v3_location_confirmed` being unset, without ever
+checking whether the utterance in hand already names a clinic. The caller
+answered the question before it was asked and was asked anyway.
+
+**The detector already exists and works.** Sweep call 2 logged
+`inline alias detected pre-ack: redditch` from *"i'd like to book at your
+redditch clinic"* — the booking-ack path scans for an inline alias. The FAQ gate
+path does not.
+
+Same family as T-13: a gate firing on a turn that had already satisfied it. The
+"I said" in the caller's reply is the same tell as T-15's *"I said I don't want
+to book this week"* — it is what a caller says when the system did not listen.
+
+Cheap: reuse the existing inline-alias scan before injecting the clinic
+question, and skip the gate when it hits.
+
+---
+
+## Confirmations from A1
+
+- **T-12 again.** Abandoned call → SMS to the caller. Still an owner decision.
+- **T-2 again**, but both rows agreed this time (`abandoned`, phone=yes) and the
+  dedup worked: `📩 Follow-up SMS already sent — skipping duplicate`.
+- **Operator-alert threshold observation:** this call scored **4** and fired NO
+  operator SMS. Earlier calls scored 3 and did. So `review_alert` appears to
+  trigger below 4, not on every call — better than feared, and it means the
+  alert-volume concern is proportional to call quality rather than constant.
+- **T-3 twice** (`Spec W … nothing to re-ask`) after the follow-up price and the
+  Bupa answer. Known, narrow.
+- The **backstop** fired correctly once, holding the outstanding clinic question
+  after the parking answer.
