@@ -8,13 +8,17 @@
 > | Item | Plan said | Now |
 > |---|---|---|
 > | 1 — provisional 90-min | to do | ✅ **landed on `latency-eval` as `e3f3d2f`** (`pop("end")` at `receptionist_tools.py:4351`, `patch_event_time` at `:4514`); `git cherry` marks `a1c2d70` `-` |
-> | 2 — Deep Tissue 60/90 ask | to do | ❌ still VE-only — `duration_choice_note` absent from `app/`, `test_vital_edge_duration_ask.py` absent |
+> | 2 — Deep Tissue 60/90 ask | to do | ✅ **landed as `24e38f7`** — `duration_choice_note` + the `SESSION LENGTH:` render hook + its 3 tests |
 > | 3 — zombie / `abandoned_call` | to do | ❌ still absent from `latency-eval` |
 > | 4 — obs surface | to do | ❌ `app/obs/show.py` still absent |
 > | 5 — turn-taking perf | deferred | deferred, unchanged |
 >
-> **Unique commits are now 7, not 8.** `latency-eval` local and origin are level,
-> so §1.1's "one commit ahead — push before cutting" is **resolved**.
+> **Unique commits are now 6, not 8**, and — the point of the exercise —
+> **both canonical-first violations are repaired.** `git cherry latency-eval
+> vitaledge-onboarding` no longer shows a single stranded engine fix; the six
+> remaining `+` lines are Items 3–4 (obs / dead-air detection) and the
+> deliberately deferred Item 5. `latency-eval` local and origin are level, so
+> §1.1's "one commit ahead — push before cutting" is **resolved**.
 >
 > §7.1 **re-run and clean** (it was not reproducible — see §7.1). §7.2
 > **ANSWERED: clean, 0/30** — its stated method was impossible (no VE obs
@@ -282,7 +286,20 @@ already stale (`3960`/`4000` there, `4185`/`4324` on `latency-eval` today):
 
 Ships with `tests/regression/test_provisional_90min_bookable.py` (141 lines).
 
-### Item 2 — Deep Tissue 60-vs-90 ask · `475401e` · risk: low
+### Item 2 — Deep Tissue 60-vs-90 ask · `475401e` · ✅ **LANDED `24e38f7`**
+
+> Done, verbatim. `duration_choice_note` is in `vital_edge/clinic.json` and the
+> `SESSION LENGTH:` hook is in `_render_provisional_booking`; the 3 tests came
+> with it. Applied **by symbol** — the original hunk is at `:717` in `475401e`
+> and `:1002` here, the third recurrence of the drift §13.5 warns about.
+>
+> Scope proven: `demo`, `jv_v1`, `theorem`, `theorem_v3` prompt hashes
+> byte-identical; `vital_edge` only. The hook is doubly gated — on the
+> provisional model *and* on the clinic declaring the key — and VE is the only
+> clinic that declares it.
+>
+> **§8 case 1 still verifies it live.** The prompt now mandates the question;
+> whether Susie asks it on a real call is a separate fact.
 
 Three files: one `clinic.json` key, two lines in `clinic_template_prompt.py`, one
 test. The key is the *entire* config delta between the branches:
@@ -377,7 +394,7 @@ This is why §8 calls eight cases and not three.
 
 | Slot | Work | Exit condition |
 |---|---|---|
-| **Morning** | ~~Item 1~~ done · **Item 2** remains, with its test | test passes on `latency-eval`; failing set diffed against baseline |
+| ~~**Morning**~~ | ~~Items 1–2, the two canonical-first violations~~ ✅ **both landed** (`e3f3d2f`, `24e38f7`) | done — baseline held at 95 across both |
 | **Midday** | Items 3–4 (detection + obs surface) | `zombie` / `abandoned_call` / `show.py` present; `alerts.py` merge reviewed by hand |
 | **Afternoon** | ~~§7 audits~~ — §7.1 **done and clean**; §7.2 **blocked on an API key** | run the §7.2 probe the moment a key is available; decide `B-55` |
 | **Evening** | §8 live calls | every booking reconciled in **Google Calendar**, not Acuity |
