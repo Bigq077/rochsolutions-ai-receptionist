@@ -142,3 +142,66 @@ shortcut.
    the call log) into worked examples that render on every call — a number the
    model could have spoken onto a booking. Examples now use Ofcom's reserved
    drama range, `07700 900123`, and a test pins that.
+
+---
+
+## T-5 — a twenty-second monologue, which the caller interrupted
+
+**Severity:** high · **Status:** open · **Call 2, 21:13:47**
+
+Caller asked two short questions: *"what are your redditch opening hours and is
+there parking"*. The answer ran **20.2 seconds** in one unbroken block:
+
+```
+[ms_silence] tts_finished in 20.2s: 'Redditch is open Thursdays only, nine in the morning until t'
+```
+
+Four chunks: opening hours → parking → the train station walk → *"would you
+like me to put you through to Mark"* → *"or would you prefer to book at Awlstuh
+instead?"*. The caller barged in at 21:14:06, eighteen seconds in, before the
+last question finished playing.
+
+The turn immediately before it ran **12.0 s** on the same pattern.
+
+This is not a latency bug in the pipeline — the LLM answered in 3.3 s. It is an
+answer-length bug: two questions were answered with five pieces of information
+plus two competing offers. `docs/plan` sets the bar at no dead air over 3 s;
+nothing sets a ceiling on how long Susie may hold the floor, and it shows.
+
+The caller interrupting is the evidence. Note also that the barge-in landed in
+the playback-only window (`synthesis_active=False playback_active=True`), so the
+recovery path worked — the defect is that it was needed.
+
+---
+
+## T-6 — the staff-notify log says "sent" when SMS is suppressed
+
+**Severity:** low (observability) · **Status:** open · **Call 2, 21:14:13**
+
+```
+[sms] SMS_ENABLED is off — outbound SMS suppressed (not sent)
+[ms_conn] staff notify SMS sent → +447870166861
+```
+
+`connection.py:14330` logs success unconditionally, without checking whether
+`send_sms` returned a SID. The sibling path in `smart_sms_router` gets this
+right and logs `Smart SMS NOT sent … send_sms returned no SID`.
+
+Harmless while SMS is off and everything is suppressed. At handover SMS is ON,
+and then this line cannot distinguish a delivered staff alert from a silently
+rejected one — which is exactly the moment someone needs to know.
+
+---
+
+## Confirmations from call 2
+
+- **T-2 reproduced.** Two `Row built` lines again (21:14:16, 21:14:18), both
+  `human_requested`. Second observation, same call path. Not a one-off.
+- **Redditch redirect works.** `check_availability BLOCKED — location 'redditch'
+  not bookable (Redditch redirect)`. The guard fired before any Acuity call.
+- **Transfer path works end to end** — `transfer_to_human` → Twilio POST →
+  `[realtime] transfer initiated … → +447870166861`. Mark's real mobile, as
+  agreed (TRANSFER_DISABLED deliberately not set, see the run notes).
+- **Benign, not a defect:** `[DIGEST] no recipient configured for theorem_v2` is
+  the digest scheduler ticking for the *other* Theorem line
+  (`+447366530580`, `clinic_config.py:38`). Not this call, not this clinic.
