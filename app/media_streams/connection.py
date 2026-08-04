@@ -830,6 +830,27 @@ _QUESTION_SIGNALS: frozenset = frozenset({
     "what is the", "difference",
     "is there", "do you", "does it",
     "what are", "how do",
+    # ── Auxiliary-verb inversion (added 2026-08-04, T-13) ────────────────
+    # English forms yes/no questions by inverting an auxiliary, with no
+    # question word anywhere: "should I take ibuprofen", "can I come in
+    # today", "do I need a referral". The list above catches only wh-
+    # questions, so every one of these read as a NON-question.
+    #
+    # There is no "?" to fall back on: the AssemblyAI handshake sets
+    # format_turns=false, so transcripts arrive unpunctuated. The word list
+    # is the ONLY signal, which makes a gap in it a silent gap.
+    #
+    # Live consequence, call 5 of the acceptance sweep: with the clinic
+    # question pending, "should I take ibuprofen, ice or heat in the
+    # meantime" was classified a non-question and answered with "did you
+    # say the Awlstuh clinic?". A caller asking about medication was handed
+    # a location re-ask, and had to repeat themselves to be heard at all.
+    "should i", "shall i", "could i", "can i", "may i",
+    "would i", "will i", "am i", "do i", "did i", "have i",
+    "should we", "can we", "could we", "do we",
+    "is it", "are you", "are there", "was it", "were there",
+    "have you", "has it", "did you", "does he", "does she",
+    "would you", "could you", "will you", "shall we",
 })
 
 
