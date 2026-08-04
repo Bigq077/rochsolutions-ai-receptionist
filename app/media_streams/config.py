@@ -120,7 +120,35 @@ ASSEMBLYAI_WS_URL = (
 # BEHAVIOURAL DELTAS that matter to this codebase — read before flipping:
 #
 #  1. format_turns is REMOVED; formatting is always on. Finals now arrive
-#     punctuated and capitalised. A first audit checked only the two normalising
+#     punctuated and capitalised.
+#
+#     🔴 CORRECTION 2026-08-04, checked against the live WebSocket API reference
+#     (/docs/api-reference/streaming-api/universal-3-pro-streaming): this is
+#     WRONG. `format_turns` IS accepted on the U3.5 socket and DEFAULTS TO
+#     `false`, so formatting is not unconditional. The URL below now sends
+#     `format_turns=false` explicitly. The reference also states unrecognised
+#     query parameters are IGNORED, not rejected — so the "sending it risks a
+#     rejected socket" fear was unfounded in both directions.
+#     🔴 CORRECTION TO THE CORRECTION, 2026-08-04, from a LIVE CALL — the
+#     original claim was closer to right. `format_turns=false` is now on the
+#     socket, and finals STILL arrive formatted:
+#         'um well just— i want— just want a deep tissue massage'
+#     came off a socket that had requested it. So the parameter is accepted and
+#     ignored for this model, or formatting is not what it gates. Either way:
+#     U35_DEFORMAT is LOAD-BEARING, not belt-and-braces. Do not turn it off, and
+#     do not trust the API reference over a transcript.
+#     (That em-dash breaks name extraction outright — see _U35_PUNCT_RE.)
+#
+#     U35_DEFORMAT stays ON regardless: it is a no-op on unformatted text, and
+#     it is the only thing standing between us and the three breakages below if
+#     the vendor default ever moves.
+#     Two other figures below are also stale against that reference: the vendor
+#     max_turn_silence default is 1536ms (not 1000) and vad_threshold 0.2 (not
+#     0.3), and end_of_turn_confidence_threshold still documents a 0.4 default
+#     rather than reading as deprecated. None are load-bearing here — we set our
+#     own endpointing — but do not cite the numbers in delta 3 as vendor truth.
+#
+#     A first audit checked only the two normalising
 #     consumers (clinical_screening._norm(), fast_path._normalize()) and wrongly
 #     concluded nothing else cared. A full sweep on 2026-07-31 found three
 #     consumers that read the transcript RAW and break on punctuation:
@@ -180,7 +208,10 @@ ASSEMBLYAI_WS_URL_U35 = (
     "?speech_model=universal-3-5-pro"
     "&sample_rate=16000"
     "&encoding=pcm_s16le"
-    # no format_turns — removed in U3.5, formatting is always on
+    # format_turns=false — see the CORRECTION note above delta 1. Asking for the
+    # unformatted contract at the socket is strictly better than undoing
+    # formatting afterwards; U35_DEFORMAT stays on behind it as defence in depth.
+    "&format_turns=false"
     f"&min_turn_silence={U35_MIN_TURN_SILENCE}"
     f"&max_turn_silence={U35_MAX_TURN_SILENCE}"
 )

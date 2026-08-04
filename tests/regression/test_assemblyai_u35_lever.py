@@ -45,9 +45,13 @@ def test_lever_on_selects_u35(monkeypatch):
     config = _load_config(monkeypatch, ASSEMBLYAI_USE_U35="true")
     url = config.assemblyai_ws_url()
     assert "speech_model=universal-3-5-pro" in url
-    # format_turns was REMOVED in U3.5 — sending it risks a rejected socket,
-    # and formatting is unconditionally on regardless.
-    assert "format_turns" not in url
+    # CORRECTED 2026-08-04 against the live WebSocket API reference: format_turns
+    # is NOT removed in U3.5 — it is accepted and defaults false. This assertion
+    # previously demanded its ABSENCE on the theory that sending it would get the
+    # socket rejected; the reference says unrecognised params are ignored, not
+    # rejected, so that fear was doubly unfounded. Ask for the unformatted
+    # contract at the socket rather than undoing formatting downstream.
+    assert "format_turns=false" in url
     assert "sample_rate=16000" in url
     assert "encoding=pcm_s16le" in url
 
@@ -136,7 +140,10 @@ def test_deformat_restores_the_unformatted_contract():
 
     assert d("My name is Sarah.") == "my name is sarah"
     assert d("Yes, that's right!") == "yes that's right"
-    assert d("07502 211207.") == "07502 211207"
+    # Grouped digits are rejoined, not merely de-punctuated — see
+    # test_deformat_rejoins_grouped_phone_digits for why the old expectation
+    # ("07502 211207") was itself the bug.
+    assert d("07502 211207.") == "07502211207"
     # Idempotent, and a no-op on text that was never formatted — so it stays
     # safe if the model, or the flag, changes underneath it.
     assert d("my name is sarah") == "my name is sarah"
@@ -167,6 +174,41 @@ def test_deformat_saves_the_phone_number_from_being_discarded():
     assert _is_short_meaningless_fragment("07502211207.") is True
     # ...and the fix:
     assert _is_short_meaningless_fragment(d("07502211207.")) is False
+
+
+def test_deformat_rejoins_grouped_phone_digits():
+    """Stripping punctuation alone still loses a GROUPED number.
+
+    U3.5's formatter groups long digit runs. connection.py's phone path is
+    ^\\d{5,}$ guarded by len(words) == 1, so "07502 211207" is two words, fails
+    the match, and is discarded by _is_short_meaningless_fragment exactly as the
+    punctuated form was. Measured 2026-08-04 with the shim on and no rejoin:
+    both "07502 211207." and "0750 221 1207." were DISCARDED.
+    """
+    from app.media_streams.connection import _is_short_meaningless_fragment
+    from app.media_streams.stt_stream import _deformat_transcript as d
+
+    # The regression this guards against — grouped, de-punctuated, still lost:
+    assert _is_short_meaningless_fragment("07502 211207") is True
+
+    for grouped in ("07502 211207.", "0750 221 1207.", "07502 211 207"):
+        assert d(grouped) == "07502211207"
+        assert _is_short_meaningless_fragment(d(grouped)) is False
+
+
+def test_deformat_does_not_weld_ordinary_numbers_together():
+    """The rejoin must not invent a phone number out of a time, year or age."""
+    from app.media_streams.stt_stream import _deformat_transcript as d
+
+    # Not a whole-utterance digit run — untouched.
+    assert d("I'm 34 years old.") == "i'm 34 years old"
+    assert d("Half 9 on the 12th.") == "half 9 on the 12th"
+    # Whole-utterance digits, but under the 7-digit floor — untouched.
+    assert d("9 30.") == "9 30"          # a spoken time
+    assert d("20 25.") == "20 25"        # a spoken year
+    assert d("12 08.") == "12 08"        # a spoken date
+    # Idempotent on an already-joined number.
+    assert d(d("07502 211207.")) == "07502211207"
 
 
 def test_deformat_keeps_the_name_wrapper_patterns_firing():
@@ -285,3 +327,38 @@ def test_config_import_does_not_leak_env_between_tests(monkeypatch):
     config = _load_config(monkeypatch)
     assert config.assemblyai_ws_url() == config.ASSEMBLYAI_WS_URL
     assert os.getenv("ASSEMBLYAI_USE_U35") is None
+
+
+def test_deformat_strips_em_dash_disfluencies():
+    """U3.5 punctuates self-corrections with em-dashes. Measured live 2026-08-04:
+
+        'um well just— i want— just want a deep tissue massage'
+
+    arriving from a socket that had ALREADY requested format_turns=false. The
+    dash is not cosmetic: name_collector._NAME_AFTER_IS_RE finds 'sarah' in
+    "my name is sarah" and nothing at all in "my name is— sarah", so the
+    caller's name is silently lost.
+    """
+    from app.media_streams.name_collector import _NAME_AFTER_IS_RE
+    from app.media_streams.stt_stream import _deformat_transcript as d
+
+    assert d("um well just— i want— just want a deep tissue massage") == (
+        "um well just i want just want a deep tissue massage"
+    )
+
+    # The regression this guards against:
+    assert _NAME_AFTER_IS_RE.search("my name is— sarah") is None
+    # ...and the fix:
+    m = _NAME_AFTER_IS_RE.search(d("my name is— sarah"))
+    assert m is not None and m.group(1) == "sarah"
+
+    # En-dash and horizontal bar too.
+    assert d("yes – that's right") == "yes that's right"
+
+
+def test_deformat_keeps_the_ascii_hyphen():
+    """Load-bearing in surnames and in the duration the caller just chose."""
+    from app.media_streams.stt_stream import _deformat_transcript as d
+
+    assert d("Smith-Jones.") == "smith-jones"
+    assert d("uh the 90-minute session") == "uh the 90-minute session"

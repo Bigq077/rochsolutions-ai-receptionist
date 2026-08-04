@@ -691,27 +691,38 @@ def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
         )
     # Duration question — any service with multiple bookable durations (30/60,
     # 60/90, …). Reads the actual options + matching '<n>min_in_clinic_gbp' keys.
-    for svc in clinic.get("services", []) or []:
-        if _has_duration_options(svc):
-            dp = _duration_pricing(svc)
-            opts = [m for m, _ in dp]
-            lines.append("")
-            _opts_phrase = " or ".join(f"{m}-minute ({_gbp(p)})" for m, p in dp)
-            lines.append(
-                f"DURATION QUESTION FOR {svc.get('name','').upper()}: "
-                f"ask whether they'd like a {opts[0]}-minute "
-                f"({_gbp(dp[0][1])}) or {opts[-1]}-minute "
-                f"({_gbp(dp[-1][1])}) session."
-            )
-            lines.append(
-                f"DURATIONS ARE FIXED: the ONLY session lengths are "
-                f"{_opts_phrase}. NEVER offer, mention, or invent any other "
-                "length (there is no 30-minute session). The number of available "
-                "time slots is NOT a number of durations — each slot is a start "
-                "time, and the caller's chosen length applies to whichever slot "
-                "they pick."
-            )
-            break
+    #
+    # EVERY duration-choice service gets its own block, and each block scopes its
+    # claim to that service. This previously rendered only the FIRST such service
+    # (a `break`), asserted "the ONLY session lengths are …" as a clinic-wide
+    # fact, and hardcoded "(there is no 30-minute session)".
+    #
+    # All three were safe only while a clinic had exactly one duration-choice
+    # service and no short fixed one. Vital Edge broke all three on 2026-08-04 by
+    # giving Sports Massage the same 60/90 choice as Deep Tissue and adding a
+    # genuine 30-minute service: the `break` silently dropped Deep Tissue's
+    # duration question, and the hardcoded parenthetical told Susie to refuse a
+    # £65 session the clinic actually sells. A clinic fact does not belong in
+    # engine code — derive it from clinic.json or do not say it.
+    for svc in [s for s in (clinic.get("services") or []) if _has_duration_options(s)]:
+        dp = _duration_pricing(svc)
+        opts = [m for m, _ in dp]
+        _name = svc.get("name", "")
+        lines.append("")
+        _opts_phrase = " or ".join(f"{m}-minute ({_gbp(p)})" for m, p in dp)
+        lines.append(
+            f"DURATION QUESTION FOR {_name.upper()}: "
+            f"ask whether they'd like a {opts[0]}-minute "
+            f"({_gbp(dp[0][1])}) or {opts[-1]}-minute "
+            f"({_gbp(dp[-1][1])}) session."
+        )
+        lines.append(
+            f"DURATIONS ARE FIXED: for a {_name} the ONLY session lengths are "
+            f"{_opts_phrase}. NEVER offer, mention, or invent any other length "
+            "for it. The number of available time slots is NOT a number of "
+            "durations — each slot is a start time, and the caller's chosen "
+            "length applies to whichever slot they pick."
+        )
     return "\n".join(lines)
 
 
@@ -999,6 +1010,8 @@ def _render_provisional_booking(clinic: Dict[str, Any], tk: Dict[str, str]) -> s
         f"is 'shall I put that request through to {prac} to confirm?') and in the "
         "closing message. Never tell the caller they are 'booked in' or 'confirmed'.",
     ]
+    if pf.get("duration_choice_note"):
+        out.append("SESSION LENGTH: " + pf["duration_choice_note"])
     if pf.get("booking_horizon_note"):
         out.append(
             "BOOKING HORIZON: " + pf["booking_horizon_note"] + " If the caller "
@@ -2190,6 +2203,59 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "is coming — no text will be sent on this service. "
     )
 
+    # ── B-55 — the reschedule closing must respect a provisional clinic ──────
+    # `is_provisional` rewrote the BOOKING success line and banned 'all booked'
+    # / 'confirmed' / "you're booked in", but stopped there. The reschedule
+    # closing below is shared, so a provisional clinic was instructed — word for
+    # word, and with no model judgement left in the loop — to say "That's you
+    # rescheduled — you're now in for Monday the 1st of June…".
+    #
+    # On Vital Edge nothing is ever confirmed on the call: moving a pending
+    # request leaves it pending until Jonathan agrees. That sentence is a false
+    # promise, and it is worse than the booking case it sits next to — there the
+    # prompt BANS the claim and the only question is whether the model obeys
+    # (measured 0/30 on 2026-08-04); here the prompt MANDATES it.
+    #
+    # Gate 5f cannot backstop this. `_armed_write_families` arms the reschedule
+    # family only on a REFUSAL, and a successful reschedule refuses nothing —
+    # deliberate, and correct for every confirmed-booking clinic, but it means a
+    # provisional clinic has no guard behind the prompt at all.
+    #
+    # Scoped strictly to `is_provisional`, so a non-provisional clinic renders a
+    # byte-identical prompt. Verified across all five clinics: only vital_edge's
+    # hash moves.
+    if is_provisional:
+        _reschedule_closing = (
+            "RESCHEDULE CLOSING — this booking is PROVISIONAL and the move is "
+            "NOT confirmed. Say this EXACT line, word for word, changing ONLY "
+            "the day, date and time: 'That's the new time sent over to "
+            f"{prac} — Monday the 1st of June at three in the afternoon. "
+            "It's not confirmed until he comes back to you, same as before. "
+            "Take care.'\n"
+            "The closing MUST contain the day and date, the time, and the warm "
+            "close. It is a STATEMENT, not a question: do NOT end with 'Is "
+            "there anything else I can help with?', do NOT ask any question, "
+            "and add nothing after 'take care.' Do NOT say 'That's you "
+            "rescheduled', \"you're now in for\", 'all set', 'confirmed', or "
+            "anything else implying the new time is agreed — it is not, and "
+            "none of that is true for this clinic. Do NOT promise a "
+            "confirmation text. "
+        )
+    else:
+        _reschedule_closing = (
+            "RESCHEDULE CLOSING — say this EXACT line, word for word, changing "
+            "ONLY the day, date and time: 'That's you rescheduled — you're now "
+            f"in for Monday the 1st of June at three in the afternoon.{_rc_text} "
+            "We'll see you then — take care.'\n"
+            "The closing MUST contain the day and date, the time, and the warm "
+            "close. It is a STATEMENT, not a question: do NOT end with 'Is "
+            "there anything else I can help with?', do NOT ask any question, "
+            "and add nothing after 'take care.' A bare 'I've rescheduled to "
+            "[date]' with no close leaves the caller unsure whether the move "
+            "actually happened — always give the full line. "
+            + _rc_no_text_rule
+        )
+
     reschedule_cancel = (
         "RESCHEDULE / CANCEL FLOW\n"
         f"{cn} is a single site — there is NO clinic-selection step, never ask "
@@ -2311,17 +2377,7 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "the data you already have — no filler, no intermediate step. Sequence: "
         "(1) caller says yes → (2) call reschedule_appointment → (3) CLOSE THE "
         "CALL with the confirmation below.\n"
-        "RESCHEDULE CLOSING — say this EXACT line, word for word, changing "
-        "ONLY the day, date and time: 'That's you rescheduled — you're now in "
-        f"for Monday the 1st of June at three in the afternoon.{_rc_text} "
-        "We'll see you then — take care.'\n"
-        "The closing MUST contain the day and date, the time, and the warm "
-        "close. It is a STATEMENT, not a question: do NOT end with 'Is there "
-        "anything else I can help with?', do NOT ask any question, and add "
-        "nothing after 'take care.' A bare 'I've rescheduled to [date]' with "
-        "no close leaves the caller unsure whether the move actually "
-        "happened — always give the full line. "
-        + _rc_no_text_rule
+        + _reschedule_closing
         + "Do NOT re-state the old appointment, and do NOT mention the "
         "location.\n\n"
         "CANCEL → by this point the caller has already (a) confirmed this is "

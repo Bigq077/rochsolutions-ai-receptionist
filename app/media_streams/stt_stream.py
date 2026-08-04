@@ -328,8 +328,30 @@ def build_keyterms(clinic: Optional[dict]) -> list[str]:
             _collect_strings(loc.get("name"), proper_nouns)
             _collect_strings(loc.get("serves_areas"), proper_nouns)
 
+    # Tier 4/5 — vocabulary that is not derived from the clinic's own structure.
+    #
+    # _GENERIC_KEYTERMS was written for JV: a Yorkshire PHYSIOTHERAPY clinic. It
+    # boosts "physiotherapy", "osteopath", "acupuncture", "shockwave", "Pilates"
+    # and Yorkshire dialect ("nowt", "owt", "reight", "mardy", "gradely").
+    # Applied to Vital Edge — a massage-only clinic in Kingston upon Thames —
+    # it spent ~30 of the 100 slots boosting words for treatments Jonathan
+    # declines and a dialect 200 miles from his callers, crowding out the
+    # massage vocabulary that decides whether a booking is heard correctly.
+    # Measured on the first live U3.5 call, 2026-08-04.
+    #
+    # A clinic may now supply its own list via clinic.json:
+    #     "stt_keyterms": {"use_generic": false, "terms": [...]}
+    # Absent the key, behaviour is byte-identical to before — the generic list
+    # alone — so no existing clinic moves.
+    _kt_cfg = clinic.get("stt_keyterms") or {}
+    _clinic_terms: list[str] = []
+    _collect_strings(_kt_cfg.get("terms"), _clinic_terms)
+    _generic = (
+        list(_GENERIC_KEYTERMS) if _kt_cfg.get("use_generic", True) else []
+    )
+
     tiers: list[list[str]] = [
-        triggers, proper_nouns, answers, list(_GENERIC_KEYTERMS),
+        triggers, proper_nouns, answers, _clinic_terms, _generic,
     ]
 
     seen: set[str] = set()
@@ -455,24 +477,64 @@ def _is_garbage_transcript(text: str) -> bool:
 #
 # Apostrophes and hyphens are KEPT: "it's", "o'brien" and "smith-jones" are
 # load-bearing in the name and yes/no matchers.  Digits are kept as-is so
-# "07502211207." still satisfies ^\d{5,}$ after the trailing stop is removed.
-_U35_PUNCT_RE = re.compile(r"[.,!?;:\"“”„…]+")
+# "07502211207." still satisfies ^\d{5,}$ after the trailing stop is removed —
+# but see _U35_DIGIT_GROUPS_RE below: stripping punctuation is only half of it,
+# because the formatter also splits a long number across words.
+# Em-dash, en-dash and horizontal bar are included; the ASCII hyphen is NOT.
+# U3.5 punctuates self-corrections with em-dashes — measured live 2026-08-04:
+#     'um well just— i want— just want a deep tissue massage'
+# and that breaks name extraction outright: name_collector._NAME_AFTER_IS_RE
+# finds 'sarah' in "my name is sarah" and NOTHING in "my name is— sarah".
+#
+# ⚠️ This also corrects the note above ASSEMBLYAI_WS_URL_U35 in config.py.
+# Sending format_turns=false did NOT stop U3.5 formatting — the finals above
+# arrived from a socket that requested it. The original in-repo claim that
+# formatting is unconditional was closer to the truth than the API reference
+# implied, so U35_DEFORMAT is load-bearing, not belt-and-braces.
+#
+# The ASCII hyphen stays: 'smith-jones' and '90-minute' are both load-bearing,
+# and neither has ever been a disfluency marker.
+_U35_PUNCT_RE = re.compile(r"[.,!?;:\"“”„…—–―]+")
+
+# Stripping punctuation is not enough on its own.  U3.5's formatter also GROUPS
+# long digit runs ("07502 211207"), and connection.py's phone path is
+# _PHONE_NUMBER_RE = ^\d{5,}$ guarded by len(words) == 1 — so a grouped number is
+# two words, fails the match, and is discarded by _is_short_meaningless_fragment
+# exactly as the punctuated one was.  Measured 2026-08-04: with the shim on but
+# without this rejoin, "07502 211207." and "0750 221 1207." were both DISCARDED.
+#
+# Only a whole utterance of digit groups is rejoined, and only at >= 7 digits.
+# Both limits are deliberate:
+#   - whole-utterance keeps "i'm 34 years old" untouched;
+#   - the 7-digit floor keeps a spoken time ("9 30" -> would become "930") and a
+#     year ("20 25" -> "2025") from being welded into a fake phone number.
+# A UK mobile is 11 digits and a landline 10-11, so nothing real is excluded.
+_U35_DIGIT_GROUPS_RE = re.compile(r"^\+?\d+(?: \d+)+$")
 
 
 def _deformat_transcript(text: str) -> str:
     """Strip U3.5's always-on formatting back to the unformatted contract.
 
     Lowercases and removes sentence punctuation, collapsing any whitespace the
-    removal leaves behind.  A no-op for text that was never formatted, so it is
-    safe if the model or the flag changes underneath it.
+    removal leaves behind, then rejoins a grouped all-digit utterance.  A no-op
+    for text that was never formatted, so it is safe if the model or the flag
+    changes underneath it.
 
         "My name is Sarah."   -> "my name is sarah"
         "Yes, that's right!"  -> "yes that's right"
-        "07502 211207."       -> "07502 211207"
+        "07502 211207."       -> "07502211207"
+        "0750 221 1207."      -> "07502211207"
+        "I'm 34 years old."   -> "i'm 34 years old"    (not all digits)
+        "9 30."               -> "9 30"                (under the 7-digit floor)
     """
     if not text:
         return text
-    return " ".join(_U35_PUNCT_RE.sub(" ", text).split()).lower()
+    out = " ".join(_U35_PUNCT_RE.sub(" ", text).split()).lower()
+    if _U35_DIGIT_GROUPS_RE.match(out):
+        joined = out.replace(" ", "")
+        if len(joined.lstrip("+")) >= 7:
+            return joined
+    return out
 
 
 def _mask_key(url_or_str: str, key: str) -> str:
