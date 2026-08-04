@@ -56,7 +56,16 @@ UNCHANGED_CLINIC_PROMPTS = {
     # a sentence denying a session the clinic sells, in the same breath as the
     # line offering it. The claim is now scoped per service and derived from
     # clinic.json instead of asserted in engine code.
-    "jv_v1": "023c5092170d2f31",
+    # Re-pinned 2026-08-04 (2nd time today), 023c5092170d2f31 -> 46d6a95cf2c4f7b9.
+    # ONE line left jv_v1's prompt, and its removal is the fix:
+    #     "There is no home-visit option — never offer one."
+    # jv_v1 sells a named Home Visit service at £80 with a declared area of
+    # Bolton and Greater Manchester, and its own FAQ answers "Yes — we offer
+    # home visits". The engine hung that denial off the REMOTE flag, a different
+    # axis, so both template_v1 clinics were told to refuse a service they sell.
+    # Owner-confirmed 2026-08-04. demo/theorem/theorem_v3 are untouched below:
+    # they use a different prompt engine and never render the step-2 block.
+    "jv_v1": "46d6a95cf2c4f7b9",
     "theorem": "61b93fdac3e8fe18",
     "theorem_v3": "e6202afb47d91820",
 }
