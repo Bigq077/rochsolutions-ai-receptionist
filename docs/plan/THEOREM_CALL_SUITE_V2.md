@@ -103,17 +103,19 @@ Grep after: `slot fragment ignored`, `first-turn name extracted`, `Haiku unknown
 
 ## Call A3 — the keypad ladder and the transfer
 
-The location DTMF ladder is covered by 12 tests and **has never run live** — no
-call in the sweep reached rung 3.
+**Two rungs: ask, then keypad.** The second ask is the keypad — there is no
+biased "did you say the Awlstuh clinic?" step in between. A caller who was not
+understood the first time gets a keypad, not a guess.
+
+Never run live: no call in the sweep reached the keypad rung.
 
 | # | Say | PASS | FAIL |
 |---|---|---|---|
 | 1 | *"I want to book"* → asks which clinic | — | — |
-| 2 | Mumble something unintelligible | Rung 2: *"No worries — did you say the Awlstuh clinic? If so, just say 'use this clinic'."* | Jumps straight to the keypad |
-| 3 | Mumble again | Rung 3: *"…on your keypad, just press 1 for Awlstuh, or 2 for Redditch."* | No keypad offer |
-| 4 | Press **5** | Re-prompts, keypad **stays armed** | Silence, or a clinic gets chosen |
-| 5 | Press **2** | Redditch → the redirect ( *"I can't book Redditch myself…"* ) | Attempts to book Redditch |
-| 6 | *"Put me through to Mark"* | Transfer initiated | — |
+| 2 | Mumble something unintelligible | **Straight to the keypad** — *"No problem at all — on your keypad, just press 1 for Awlstuh, or 2 for Redditch."* | **Any spoken re-ask.** *"Did you say the Awlstuh clinic?"* is a FAIL — the three-rung ladder has come back |
+| 3 | Press **5** | Re-prompts, keypad **stays armed** | Silence, or a clinic gets chosen |
+| 4 | Press **2** | Redditch → the redirect ( *"I can't book Redditch myself…"* ) | Attempts to book Redditch |
+| 5 | *"Put me through to Mark"* | Transfer initiated | — |
 
 **Then check the log for T-6:**
 

@@ -8,13 +8,21 @@ acceptance sweep, on owner request.
 
 The contract, in the order the caller experiences it:
 
-    rung 1  open question   "Is this for our Awlstuh or Redditch clinic?"
-    rung 2  biased confirm  "did you say the Awlstuh clinic? … 'use this clinic'"
-    rung 3  KEYPAD          "press 1 for Awlstuh, or 2 for Redditch"
+    ask         "Is this for our Awlstuh or Redditch clinic?"
+    re-ask      KEYPAD — "press 1 for Awlstuh, or 2 for Redditch"
 
-Rung 3 is the SECOND fallback — that positioning is the requirement, and it is
-what these tests hold. Voice must keep working throughout; the keypad is an
-escape hatch for when speech recognition has already failed twice, never a
+TWO RUNGS. The SECOND ASK is the keypad — corrected 2026-08-04 after the owner
+restated it. An earlier version of this file pinned a three-rung ladder with a
+biased "did you say the Awlstuh clinic?" confirm in the middle, which was a
+misreading of the same instruction and is what these tests now exist to prevent
+returning.
+
+Why two and not three: the re-ask only happens because the caller was not
+understood. Guessing Alcester at someone who has just failed to be understood
+is the worst moment to guess, and it spends the one turn that could have been
+deterministic. The keypad cannot be misheard.
+
+Voice keeps working throughout — the keypad is the fallback, never a
 replacement for saying the clinic out loud.
 
 It must also cover every context that asks the question — booking, cancel,
@@ -46,13 +54,44 @@ def test_rung1_names_both_clinics_and_asks():
     assert r1.rstrip().endswith("?"), "the opening rung must be a question"
 
 
-def test_rung2_is_a_biased_confirm_not_a_keypad_prompt():
-    """Rung 2 must stay a spoken confirm. If the keypad prompt migrates up to
-    rung 2, callers get sent to their keypad before voice has had a fair
-    second attempt."""
-    r2 = conn._LOC_RUNG2_CONFIRM.lower()
-    assert "use this clinic" in r2, "rung 2 lost its verbal trigger phrase"
-    assert "press 1" not in r2 and "keypad" not in r2
+def test_the_biased_confirm_is_not_in_any_reask_path():
+    """The biased confirm still EXISTS, and legitimately: it is used when the
+    caller actually named a clinic and Susie is confirming that candidate. What
+    it must never again be is a rung of the no-answer ladder.
+
+    All four re-ask sites — silence, watchdog, Haiku-unknown, and the W1
+    capture-phase re-ask — must reach for the keypad.
+    """
+    src = inspect.getsource(conn)
+    assert "_LOC_RUNG2_CONFIRM" in src, (
+        "the confirm copy was deleted outright; the candidate-confirm path "
+        "needs it"
+    )
+    for marker in (
+        "silence ladder → DTMF keypad",
+        "watchdog → DTMF keypad",
+        "non-question → DTMF keypad",
+    ):
+        assert marker in src, (
+            f"a re-ask site is missing its straight-to-keypad path: {marker}"
+        )
+    assert "TWO RUNGS ONLY" in src
+
+
+def test_no_reask_site_still_arms_the_biased_confirm():
+    """The tell that a three-rung ladder has come back: a re-ask site setting
+    v3_use_this_clinic_bias. Only the candidate-confirm path may do that."""
+    src = inspect.getsource(conn)
+    import re as _re
+    for m in _re.finditer(r'"v3_use_this_clinic_bias"\s*\]\s*=', src):
+        window = src[max(0, m.start() - 1200):m.start()]
+        assert (
+            "Caller named a clinic during the" in window
+            or "_soft_cand" in window
+        ), (
+            "a location RE-ASK is arming the biased confirm again — the second "
+            "ask must go straight to the keypad"
+        )
 
 
 def test_rung3_is_the_keypad_and_maps_1_alcester_2_redditch():

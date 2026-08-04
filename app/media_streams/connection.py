@@ -3197,33 +3197,23 @@ class SilenceHandler:
             _sr_sess = self._get_session() if self._get_session else {}
             if (_sr_sess or {}).get("v3_location_q_active"):
                 _sr_lrc = int((_sr_sess or {}).get("v3_location_reask_count", 0))
-                if _sr_lrc == 0:
-                    # Rung 2 — biased confirm; arms the use-this-clinic handler.
-                    # (The open question was already the first ask; the first
-                    # re-ask escalates straight to the biased confirm — same as
-                    # the watchdog ladder.)
-                    phrase = _LOC_RUNG2_CONFIRM
-                    if _sr_sess:
-                        _sr_sess["v3_awaiting_use_this_clinic"] = True
-                        _sr_sess["last_question"] = phrase
-                        _sr_sess["last_bot_prompt"] = phrase
-                        _sr_sess["v3_use_this_clinic_bias"] = "alcester"
-                        logger.info(
-                            "[ms_conn v3] silence ladder rung 2"
-                            " (biased confirm) — bias=alcester",
-                        )
-                else:
-                    # Rung 3 — DTMF keypad fallback; deterministic terminal.
-                    phrase = _LOC_RUNG3_DTMF
-                    if _sr_sess:
-                        _sr_sess["v3_awaiting_location_dtmf"] = True
-                        _sr_sess["v3_awaiting_use_this_clinic"] = False
-                        _sr_sess["v3_location_q_active"] = False
-                        _sr_sess["last_question"] = phrase
-                        _sr_sess["last_bot_prompt"] = phrase
-                        logger.info(
-                            "[ms_conn v3] silence ladder rung 3 (DTMF keypad)",
-                        )
+                # TWO RUNGS ONLY (owner instruction, 2026-08-04, restated).
+                # The open question is the ask; the FIRST re-ask goes straight
+                # to the keypad. The biased "did you say the Awlstuh clinic?"
+                # confirm that used to sit between them is gone: it guessed a
+                # clinic at a caller who had just failed to be understood, and
+                # it spent the one turn that should have been deterministic.
+                phrase = _LOC_RUNG3_DTMF
+                if _sr_sess:
+                    _sr_sess["v3_awaiting_location_dtmf"] = True
+                    _sr_sess["v3_awaiting_use_this_clinic"] = False
+                    _sr_sess["v3_location_q_active"] = False
+                    _sr_sess["last_question"] = phrase
+                    _sr_sess["last_bot_prompt"] = phrase
+                    logger.info(
+                        "[ms_conn v3] silence ladder → DTMF keypad"
+                        " (first re-ask)",
+                    )
                 if _sr_sess:
                     _sr_sess["v3_location_reask_count"] = _sr_lrc + 1
             else:
@@ -4196,39 +4186,24 @@ class SilenceHandler:
                 # next response to the existing yes/no confirmation handler.
                 elif (_sess or {}).get("v3_location_q_active"):
                     _v3_lrc = int((_sess or {}).get("v3_location_reask_count", 0))
-                    if _v3_lrc == 0:
-                        # Rung 1: biased confirm — lets the caller say yes/no once.
-                        # Solicit "use this clinic" explicitly: a bare "yes" is
-                        # frequently dropped by STT, whereas the distinct phrase
-                        # "use this clinic" lands reliably (caller feedback
-                        # 2026-06-12).
-                        phrase = _LOC_RUNG2_CONFIRM
-                        if _sess is not None:
-                            _sess["v3_awaiting_use_this_clinic"] = True
-                            _sess["last_question"] = phrase
-                            _sess["last_bot_prompt"] = phrase
-                            # Bias: rung-1 phrase is always "Did you say the
-                            # Awlstuh clinic?" (Alcester).  Set directly rather
-                            # than parsing the human-readable phrase — fragile
-                            # if text ever changes.
-                            _v3_bias = "alcester"
-                            _sess["v3_use_this_clinic_bias"] = _v3_bias
-                            logger.info(
-                                "[ms_conn v3] watchdog bias set: %s"
-                                " (rung-1 alcester constant)",
-                                _v3_bias,
-                            )
-                    else:
-                        # Rung 2: DTMF keypad fallback — completely deterministic, no STT.
-                        # Clear v3_location_q_active so the ladder stops here.
-                        phrase = _LOC_RUNG3_DTMF
-                        if _sess is not None:
-                            _sess["v3_awaiting_location_dtmf"] = True
-                            _sess["v3_awaiting_use_this_clinic"] = False
-                            _sess["v3_location_q_active"] = False
-                            _sess["last_question"] = phrase
+                    # TWO RUNGS ONLY (owner instruction, 2026-08-04, restated).
+                    # Straight to the keypad on the first re-ask. The biased
+                    # confirm is gone — after a caller has already not been
+                    # understood once, guessing Alcester at them is the wrong
+                    # move, and it consumed the turn that should have been
+                    # deterministic. Clearing v3_location_q_active stops the
+                    # ladder here, as before.
+                    phrase = _LOC_RUNG3_DTMF
                     if _sess is not None:
+                        _sess["v3_awaiting_location_dtmf"] = True
+                        _sess["v3_awaiting_use_this_clinic"] = False
+                        _sess["v3_location_q_active"] = False
+                        _sess["last_question"] = phrase
+                        _sess["last_bot_prompt"] = phrase
                         _sess["v3_location_reask_count"] = _v3_lrc + 1
+                        logger.info(
+                            "[ms_conn v3] watchdog → DTMF keypad (first re-ask)",
+                        )
                 else:
                     # Non-location GREETING re-ask: use last_question or generic.
                     # Strip any slot/time confirmation prefix that precedes the
@@ -9786,37 +9761,30 @@ class WebSocketCallHandler:
                                                 "v3_location_reask_count", 0
                                             )
                                         )
-                                        if _hu_lrc == 0:
-                                            _hu_phrase = _LOC_RUNG2_CONFIRM
-                                            self.session[
-                                                "v3_awaiting_use_this_clinic"
-                                            ] = True
-                                            self.session[
-                                                "v3_use_this_clinic_bias"
-                                            ] = "alcester"
-                                            logger.info(
-                                                "[ms_conn v3] Haiku unknown"
-                                                " non-question — rung 2 biased"
-                                                " confirm (bias=alcester): %r",
-                                                utterance[:60],
-                                            )
-                                        else:
-                                            _hu_phrase = _LOC_RUNG3_DTMF
-                                            self.session[
-                                                "v3_awaiting_location_dtmf"
-                                            ] = True
-                                            self.session[
-                                                "v3_awaiting_use_this_clinic"
-                                            ] = False
-                                            self.session[
-                                                "v3_location_q_active"
-                                            ] = False
-                                            logger.info(
-                                                "[ms_conn v3] Haiku unknown"
-                                                " non-question — rung 3 DTMF"
-                                                " keypad: %r",
-                                                utterance[:60],
-                                            )
+                                        # TWO RUNGS ONLY (owner instruction,
+                                        # 2026-08-04, restated). Straight to
+                                        # the keypad. This is the site that
+                                        # fires when STT produced something
+                                        # Haiku could not resolve to a clinic —
+                                        # exactly the case where guessing
+                                        # Alcester at the caller is worst, and
+                                        # where a keypad answer is certain.
+                                        _hu_phrase = _LOC_RUNG3_DTMF
+                                        self.session[
+                                            "v3_awaiting_location_dtmf"
+                                        ] = True
+                                        self.session[
+                                            "v3_awaiting_use_this_clinic"
+                                        ] = False
+                                        self.session[
+                                            "v3_location_q_active"
+                                        ] = False
+                                        logger.info(
+                                            "[ms_conn v3] Haiku unknown"
+                                            " non-question → DTMF keypad"
+                                            " (first re-ask): %r",
+                                            utterance[:60],
+                                        )
                                         self.session[
                                             "v3_location_reask_count"
                                         ] = _hu_lrc + 1
@@ -14010,13 +13978,20 @@ class WebSocketCallHandler:
                         # through to the generic "how can I help today?" reset:
                         # that throws away the booking/location context and
                         # forces the caller to start over (stress test
-                        # 2026-06-12 12:23).  Mirror the watchdog location-ladder
-                        # rung-1 biased binary confirm and solicit the
-                        # STT-robust "use this clinic" phrase, routing the next
-                        # answer through the existing use-this-clinic handler.
-                        _phrase_1 = _LOC_RUNG2_CONFIRM
-                        self.session["v3_awaiting_use_this_clinic"] = True
-                        self.session["v3_use_this_clinic_bias"] = "alcester"
+                        # 2026-06-12 12:23).
+                        #
+                        # TWO RUNGS ONLY (owner instruction, 2026-08-04,
+                        # restated). This used to mirror the watchdog's rung-1
+                        # biased confirm; that rung no longer exists, and
+                        # leaving it here would make this the one path that
+                        # still guesses Alcester. The trigger for this branch is
+                        # literally "STT can't catch the clinic name", which is
+                        # the strongest case in the file for going to the keypad
+                        # rather than asking again in words.
+                        _phrase_1 = _LOC_RUNG3_DTMF
+                        self.session["v3_awaiting_location_dtmf"] = True
+                        self.session["v3_awaiting_use_this_clinic"] = False
+                        self.session["v3_location_q_active"] = False
                         self.session["last_question"] = _phrase_1
                         self.session["last_bot_prompt"] = _phrase_1
                     elif self.session.get("v3_awaiting_slot_selection"):

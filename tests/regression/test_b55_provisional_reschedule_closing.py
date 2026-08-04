@@ -51,7 +51,7 @@ UNCHANGED_CLINIC_PROMPTS = {
 # number" without ever speaking the digits, so callers confirmed a number they
 # had never heard. Intended drift, not B-55 leaking into confirmed-booking
 # clinics — the property this table exists to prove still holds.
-    "demo": "24113de0267dac94",
+    "demo": "a26c6a5ec53d4a88",
     # Re-pinned 2026-08-04. jv_v1 is the only other clinic with a
     # duration-choice service, so it is the only one the DURATIONS-ARE-FIXED
     # rewrite could move — demo, theorem and theorem_v3 are byte-identical
@@ -63,8 +63,8 @@ UNCHANGED_CLINIC_PROMPTS = {
     # a sentence denying a session the clinic sells, in the same breath as the
     # line offering it. The claim is now scoped per service and derived from
     # clinic.json instead of asserted in engine code.
-    "jv_v1": "023c5092170d2f31",
-    "theorem": "5de9580c45d5fb15",
+    "jv_v1": "2850b4662a281b1f",
+    "theorem": "edb23ef9e7aea7ed",
     # Re-pinned 2026-08-04 on theorem-onboarding ONLY — this value deliberately
     # diverges from latency-eval's e6202afb47d91820, and a cherry-pick conflict
     # here is expected rather than a mistake.
@@ -89,7 +89,7 @@ UNCHANGED_CLINIC_PROMPTS = {
     # 20s answers because "don't volunteer information not asked about"
     # was present and ignored — hours + parking drew hours, parking, the
     # train-station walk and two competing offers.
-    "theorem_v3": "e1de4f81f74e5aaf",
+    "theorem_v3": "366ff482b1a93c27",
 }
 
 OLD_CONFIRMED_WORDING = ("that's you rescheduled", "you're now in for")
@@ -106,8 +106,36 @@ def _rendered(clinic_id: str) -> str:
     return f"{static}\n\n{dynamic}"
 
 
+# Every rendered prompt embeds today's date and the current week's boundaries —
+# "5 August 2026 (London time). This week runs until Sunday 9 August 2026. Next
+# week runs Monday 10 August 2026 to Sunday 16 August 2026." So a raw hash of
+# the prompt changes at every midnight, and this table went red on 2026-08-05
+# with nobody having touched a prompt file.
+#
+# That is a false alarm on a suite whose real failures are tracked by DIFFING
+# the failing set, so noise here costs real signal. Dates are normalised out
+# before hashing: the table still proves a prompt EDIT did not leak into
+# another clinic, which is all it was ever for, and it no longer fails for the
+# passage of time.
+_DATE_NOISE = (
+    re.compile(r"\d{1,2} (?:January|February|March|April|May|June|July|August"
+               r"|September|October|November|December) \d{4}"),
+    re.compile(r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)"
+               r" \d{1,2}(?:st|nd|rd|th)? (?:January|February|March|April|May|June"
+               r"|July|August|September|October|November|December)"),
+    re.compile(r"\d{4}-\d{2}-\d{2}"),
+)
+
+
+def _date_normalised(text: str) -> str:
+    for pattern in _DATE_NOISE:
+        text = pattern.sub("<DATE>", text)
+    return text
+
+
 def _sha(clinic_id: str) -> str:
-    return hashlib.sha256(_rendered(clinic_id).encode("utf-8")).hexdigest()[:16]
+    body = _date_normalised(_rendered(clinic_id))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------
