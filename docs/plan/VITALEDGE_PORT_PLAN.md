@@ -9,9 +9,10 @@
 > |---|---|---|
 > | 1 — provisional 90-min | to do | ✅ **landed on `latency-eval` as `e3f3d2f`** (`pop("end")` at `receptionist_tools.py:4351`, `patch_event_time` at `:4514`); `git cherry` marks `a1c2d70` `-` |
 > | 2 — Deep Tissue 60/90 ask | to do | ✅ **landed as `24e38f7`** — `duration_choice_note` + the `SESSION LENGTH:` render hook + its 3 tests |
-> | 3 — zombie / `abandoned_call` | to do | ❌ still absent from `latency-eval` |
-> | 4 — obs surface | to do | ❌ `app/obs/show.py` still absent |
-> | 5 — turn-taking perf | deferred | deferred, unchanged |
+> | 3a — `abandoned_call` / `no_audio_call` | to do | ✅ **landed as `65dae5b`** |
+> | 3b — zombie-STT detector | to do (*"risk: low"*) | 🔴 **SPLIT OUT and DEFERRED** — not detection-only; it closes the live STT socket, and the patch conflicts in both files |
+> | 4 — obs surface | to do | ✅ **landed as `65dae5b`** — `show.py` verified against the real store; open question 2 **answered**, no conflict |
+> | 5 — turn-taking perf | deferred | deferred, unchanged — now joined by 3b |
 >
 > **Unique commits are now 6, not 8**, and — the point of the exercise —
 > **both canonical-first violations are repaired.** `git cherry latency-eval
@@ -312,26 +313,82 @@ git diff latency-eval vitaledge-onboarding -- app/clinics/vital_edge/clinic.json
 Confirmed absent from `latency-eval` (`duration_choice_note`: 0 files).
 Ships with `tests/regression/test_vital_edge_duration_ask.py`.
 
-### Item 3 — dead-air / zombie-session detection · `ca8652e` + `f26cea8` · risk: low
+### Item 3 — dead-air / zombie-session detection · **SPLIT 2026-08-04**
 
-`latency-eval` has **neither**. Both are pure additions to failure *detection*,
-not to the call path:
+> ⚠️ **This item was mis-scoped.** It was written as one low-risk item — *"pure
+> additions to failure detection, not to the call path"*. The second half of
+> that sentence is **wrong**, and the two halves have opposite risk profiles.
+> They are now separate.
 
-- zombie AssemblyAI session detect (`stt_stream.py`, ~101 lines) — a dead STT
-  socket that never errors is dead air on a live call, and it is currently
-  invisible on the canonical branch.
-- `abandoned_call` backstop (`obs/alerts.py`) for ghost calls that race the
-  safety net.
+#### 3a — alerting · `f26cea8` + `ca8652e`'s `alerts.py` hunk · ✅ **LANDED `65dae5b`**
 
-This is the item that most directly serves CLAUDE.md §6.4 (*visibility*) and it
-has been sitting on a clinic branch for two weeks.
+`no_audio_call` and `abandoned_call` are in `app/obs/alerts.py`. Genuinely pure
+additions: they read the durable call record and live-session flags at teardown
+and change no call behaviour. Inert until `OBS_ALERTS_ENABLED` (default `false`).
 
-### Item 4 — obs surface · `e1394a6` + `553d7e6` · risk: none
+Behaviour verified directly rather than assumed — zero-turn hang-up →
+`abandoned_call`; 1-turn short call → still `short_call`; zero-turn *booked* call
+→ **not** abandoned; dead-air close → `no_audio_call`; `stt_error` → still only
+`stt_tts_failure`, no double-SMS.
 
-`app/obs/show.py` (147 lines) is absent from `latency-eval`; take it verbatim.
-For `e1394a6`'s operator alerting, **diff before taking** — `latency-eval`'s
-`alerts.py` is newer (§1.3), so this is a merge of two edits to one file, not a
-copy.
+> One reclassification to know about: `short_call` becomes an `elif`, so a
+> zero-turn non-normal call now reports as `abandoned_call` rather than
+> `short_call`. Intended, and inert until alerts are enabled.
+
+#### 3b — the zombie-STT detector · `ca8652e`'s `stt_stream` + `connection` half · 🔴 **DEFERRED with Item 5**
+
+**Not a detection-only change.** It closes the live AssemblyAI socket after 6s of
+voiced audio with zero Turn events, to force the reconnect loop to open a fresh
+session. That is a **call-path action on every call on every clinic**, and if the
+voiced-energy gate (`_chunk_is_voiced`, mean |sample| > 300) misjudges, it kills a
+healthy STT session — producing the exact dead air it exists to detect.
+
+**And it does not apply.** Measured 2026-08-04:
+
+```
+app/media_streams/stt_stream.py   +397 −145   since ca8652e (5 commits)
+app/media_streams/connection.py  +2599 −240
+git apply --3way  →  "Applied patch with conflicts" in BOTH files
+```
+
+The five intervening `stt_stream` commits include the phase-aware endpointing
+rewrite (`5490dbf`) and the U3.5 lever (`34580d0`/`f0adf21`) — i.e. the drift is
+in exactly the machinery this patch hooks into.
+
+> **This is the same argument that defers Item 5**, applied to the same kind of
+> code: *"touches the live turn-taking path on a branch that has had ~155 commits
+> of change underneath it… the only item that can plausibly introduce dead air
+> rather than reveal it."* It was only ever separated from Item 5 by the
+> "detection-only" claim, and that claim does not survive reading the diff.
+>
+> **Land it with Item 5, after VE is stable, with its own measurement** — and
+> re-implement it by symbol against today's `stt_stream.py`, never by applying
+> the stale patch. Regression tests for the voiced-energy gate and the stall
+> counter are a precondition, not a nicety: nothing in the current suite would
+> catch a gate that fires on ordinary speech.
+
+**The visibility gap 3b was meant to close is still open**, and on Vital Edge it
+is wider than anywhere else — see open question 1c: VE writes to no obs store at
+all, so neither 3a's alerts nor a replay can see a VE dead-air call today.
+
+### Item 4 — obs surface · `e1394a6` + `553d7e6` · ✅ **LANDED `65dae5b`**
+
+`app/obs/show.py` taken verbatim and **verified against the real store**, not
+merely imported: `python -m app.obs.show --recent 5` returns the 3 Aug calls with
+outcomes and turn counts. (Needs `OBS_CAPTURE_ENABLED=true` and
+`OBS_DATABASE_URL`; it is read-only and adds nothing to the live app.)
+
+> ✅ **Open question 2 answered: there is no conflict, and it was never a
+> two-way merge.** `latency-eval` already carries **all** of `e1394a6` —
+> `OBS_ALERTS_ENABLED`, `OBS_ALERT_SMS_TO`, `OBS_SLACK_WEBHOOK`, `route_call` and
+> the teardown hook are all present. The entire branch delta on `alerts.py` is
+> the two new conditions from Item 3a: 5 hunks, 33 insertions, 3 deletions, with
+> nothing of `latency-eval`'s removed.
+>
+> The §1.3 warning ("`latency-eval`'s `alerts.py` is newer, diff before taking")
+> was the right instruction and it is what produced this answer — but the feared
+> merge did not materialise. `latency-eval`'s newer obs commit `e25457f` touched
+> other modules, not this file.
 
 ### Item 5 — turn-taking perf · `d7593e2` · risk: medium — **do last, or defer**
 
@@ -395,7 +452,7 @@ This is why §8 calls eight cases and not three.
 | Slot | Work | Exit condition |
 |---|---|---|
 | ~~**Morning**~~ | ~~Items 1–2, the two canonical-first violations~~ ✅ **both landed** (`e3f3d2f`, `24e38f7`) | done — baseline held at 95 across both |
-| **Midday** | Items 3–4 (detection + obs surface) | `zombie` / `abandoned_call` / `show.py` present; `alerts.py` merge reviewed by hand |
+| ~~**Midday**~~ | ~~Items 3–4~~ ✅ **3a + 4 landed** (`65dae5b`); **3b split out and deferred** | `abandoned_call` / `no_audio_call` / `show.py` present and verified; `alerts.py` reviewed by hand and found to need no merge |
 | **Afternoon** | ~~§7 audits~~ — §7.1 **done and clean**; §7.2 **blocked on an API key** | run the §7.2 probe the moment a key is available; decide `B-55` |
 | **Evening** | §8 live calls | every booking reconciled in **Google Calendar**, not Acuity |
 | **Gate** | §9 | re-cut, or demo-call fallback |
@@ -653,8 +710,30 @@ hand, coordination — all of that applies **there**, not on the engine branch.
 
 1. Push `latency-eval` (it is currently one commit ahead of origin — §1.1).
 2. Confirm `git cherry latency-eval vitaledge-onboarding` shows **no `+` lines**
-   except any deliberately deferred (Item 5). If it does, the backport is
-   incomplete — **stop**.
+   except the deliberately deferred ones. As of 2026-08-04 that is **`d7593e2`
+   (Item 5) and `ca8652e` (Item 3b)** — plus `e1394a6`, `087cecd` and `553d7e6`,
+   which stay `+` because they were applied by **content, not cherry-pick**
+   (`latency-eval` already held most of them; see Item 4). Anything else is an
+   incomplete backport — **stop**.
+
+   > ⚠️ **`git cherry` alone cannot gate this any more.** Of the six remaining
+   > `+` commits, four (`e1394a6`, `f26cea8`, `087cecd`, `553d7e6`) are already
+   > present **by content**, and `ca8652e` is **partially** applied — its
+   > `alerts.py` hunk landed as Item 3a, its `stt_stream`/`connection` half is
+   > deferred as 3b. Only `d7593e2` is wholly outstanding.
+   >
+   > Check the markers, not the commit list. All verified present 2026-08-04:
+   >
+   > ```bash
+   > grep -rl "abandoned_call\|no_audio_call\|duration_choice_note" app/
+   > grep -rl '_ved_slot.pop' app/ ; ls app/obs/show.py
+   > ```
+   >
+   > And the one that must still be **absent**, or 3b landed by accident:
+   >
+   > ```bash
+   > grep -rl "_chunk_is_voiced\|_on_stt_stall" app/    # expect: no matches
+   > ```
 3. Re-cut: `vitaledge-onboarding` → `latency-eval`. Because step 2 proves VE
    holds nothing unique, this is a fast-forward, not a merge.
 4. Confirm `[build_info] running build <sha>` in the Render log.
@@ -679,7 +758,8 @@ Render service back at that tag — a branch switch, not a code change.
 | 1d | **Close the Gate 5f provisional gap, or leave it prompt-only?** Both closings now measure clean, so this is no longer urgent — but VE remains the one clinic whose worst sentence has no guard behind the prompt | a false promise if the prompt ever drifts; touches every clinic's write path, so it needs its own measurement |
 | 1e | **VE's cancel closing** — *"your appointment has been cancelled"* still trips the detector. Arguably true (deleting a pending request is a real deletion). Decide rather than reflex-fix | a wrong call either way is a caller who turns up, or one who doesn't |
 | 1c | **Should obs be provisioned for the Vital Edge service?** Today it writes nowhere this repo can read, so no VE question is answerable by replay — now or after cutover | every future VE defect costs a live call to find; CLAUDE.md §6.4 *visibility* is unmet for this clinic |
-| 2 | Does `e1394a6`'s operator alerting conflict with `latency-eval`'s newer `alerts.py`? (§3 Item 4) | duplicated or dropped alerting |
+| ~~2~~ | ~~Does `e1394a6`'s operator alerting conflict with `latency-eval`'s newer `alerts.py`?~~ **ANSWERED: no.** `latency-eval` already had all of `e1394a6`; the whole file delta was Item 3a's two conditions | — |
+| 2b | **Item 3b is deferred, so a zombie STT session is still invisible on every clinic.** When it lands, re-implement by symbol against today's `stt_stream.py` — the 07-20 patch conflicts in both files | dead air that no alert can see; and a careless re-apply is dead air it *causes* |
 | 3 | Do any of the 155 inherited `app/` commits assume Acuity semantics that do not hold for a provisional Google Calendar clinic? | category-4 bug on a live clinic |
 | 4 | Is Item 5's turn-taking work still correct against a `connection.py` that has moved 2,788 lines? | dead air — which is why §3 defers it |
 | 5 | JV is in the identical position (16 ahead / 294 behind, 5 unique). Does this plan generalise, or does JV need its own? | a third stranded clinic branch |
