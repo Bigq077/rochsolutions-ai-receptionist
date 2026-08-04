@@ -58,7 +58,21 @@ UNCHANGED_CLINIC_PROMPTS = {
     # clinic.json instead of asserted in engine code.
     "jv_v1": "023c5092170d2f31",
     "theorem": "61b93fdac3e8fe18",
-    "theorem_v3": "e6202afb47d91820",
+    # Re-pinned 2026-08-04 on theorem-onboarding ONLY — this value deliberately
+    # diverges from latency-eval's e6202afb47d91820, and a cherry-pick conflict
+    # here is expected rather than a mistake.
+    #
+    # theorem_v3 is the clinic this branch exists to port. Its prompt is edited
+    # by 90d723a (persona/language/Redditch/pacing), 6dbee13 (concern block),
+    # 6127399 (£75 -> £85), f94c7e7 (reschedule closing onto the Gate 5f
+    # wording) and 3087d3b (the A3 surname read-back). B-55 did not move it —
+    # the port did, and every one of those changes is covered by its own
+    # regression test.
+    #
+    # `demo` and `theorem` still match latency-eval exactly, which is the useful
+    # half of this row: the port's prompt work is confined to _build_theorem_v3
+    # and has not leaked into the shared builders.
+    "theorem_v3": "a8f6a207c8de1910",
 }
 
 OLD_CONFIRMED_WORDING = ("that's you rescheduled", "you're now in for")
