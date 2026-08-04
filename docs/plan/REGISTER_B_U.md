@@ -165,7 +165,7 @@ half, plus the four unchanged-clinic hashes).
 
 ---
 
-## `B-54` · **a real calendar event was cancelled that the caller did not mean** — steering **FIXED `c273475`**, gate **STILL OPEN**
+## `B-54` · **a real calendar event was cancelled that the caller did not mean** — steering **FIXED `c273475`**, gate **FIXED `9c6fd53`**
 
 **P1. Found live, 2026-08-03 22:46, `CA156fa25206ffa7b15cb3474b617c8672`, build
 `68077af59dd3`.** The caller rang to cancel the appointment they had booked four
@@ -210,19 +210,54 @@ Every `B-42`/`B-44` literal survives; all **34** existing tests pass unchanged.
 Weakening the shared-phone guarantee to make room would have been a worse defect
 than the one being fixed.
 
-### 🔴 STILL OPEN — the gate half
+### ✅ Fixed — the gate half (`9c6fd53`, 4 Aug) — and a correction to the row above
 
-`_note_lookup_name_spoken` ([llm_stream.py](../../app/media_streams/llm_stream.py))
-flips the `B-42` gate **the moment any name token reaches TTS** — it never checks
-that the caller *agreed*, and never considers which appointment. That is what
-actually let this cancel through, and steering only lowers the odds.
+> **The cause this row recorded was wrong.** It said the gate *"never checks
+> that the caller agreed"*. On `CA156fa25` **the caller did agree** — this same
+> entry has them saying *"yes it is"* to their own name. A guard requiring
+> agreement would have changed nothing, and building one would have closed the
+> row while leaving the defect live.
+>
+> The agreement was about the **person**; the write was about an
+> **appointment**. That is the axis that was unguarded.
 
-Closing it is a behaviour change on the **destructive** path and needs its own
-measurement against the shared-phone case. `test_the_gate_half_is_still_open`
-asserts the current behaviour so the gap is not mistaken for closed.
+`_note_lookup_slot_spoken` ([llm_stream.py](../../app/media_streams/llm_stream.py))
+sets `_lookup_slot_spoken` only when the matched appointment's **date** reaches
+TTS, and `_lookup_identity_unconfirmed` now requires **both** latches. Two axes,
+neither subsuming the other: `B-42` is shared-phone / different-person, `B-54` is
+same-person / multiple-appointments.
 
-**Reaches every clinic, including Theorem.** Not screening-scoped, not
-clinic-scoped.
+Matched on **weekday + day-of-month**, both required, word-bounded, digit or word
+ordinal. The **time is deliberately not matched** — spoken time forms are a
+false-negative factory and on this path a false negative loops a caller entitled
+to cancel.
+
+> ⚠️ **Residual, pinned by `test_same_day_duplicates_are_a_known_residual`:**
+> two appointments on the **same date** are still not disambiguated. Rarer than
+> the initial-plus-follow-up case this closes; needs the time-matching work.
+
+An unparseable datetime **fails closed**, logged at warning; the turn continues
+and degrades to taking a message.
+
+`B-42` is not weakened — this only ADDS a condition, and `B-44`'s *"is that
+you?"* identity framing is kept **verbatim**: `B-44` pins that literal precisely
+because on `CAe74ceae7` the caller answered an appointment-framed question and
+confirmed the wrong **person**. The read-back now asks **both** questions.
+
+Suite 95 failed / 3596 passed, failing set diffed and identical. **Not verified
+on a call** — B-54 stays dial-time debt until an ambiguous lookup is dialled and
+the date is heard before the write.
+
+**Reaches every clinic.** Not screening-scoped, not clinic-scoped.
+
+> **Deployed to `latency-eval` and `theorem-onboarding` only.**
+> `vitaledge-onboarding` and `jv-v1-onboarding` **cannot take this by
+> cherry-pick** — both are ~300 commits behind and carry **zero** occurrences of
+> `_note_lookup_name_spoken` / `_lookup_identity_unconfirmed` /
+> `LOOKUP_AMBIGUOUS_KEY`. VE's `llm_stream.py` is 2,320 lines against
+> `latency-eval`'s 4,082. Verified 4 Aug: cherry-picking `0dc510d` (B-42, the
+> first dependency) conflicts immediately. **They inherit this through the
+> re-cut** — `VITALEDGE_PORT_PLAN.md` Item 6 — not by porting the stack by hand.
 
 ---
 
