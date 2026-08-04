@@ -786,10 +786,24 @@ def note_reason_question_asked(session: dict, spoken: str) -> bool:
 
     Read from the text released to TTS, so it records what the caller HEARD.
     Latches: once true it stays true for the call.
+
+    Gated on the clinic having opted in, so that for a clinic which never asked
+    for any of this — jv_v1, theorem — this function does nothing at all rather
+    than merely having no visible effect. The prompt side was already inert for
+    them (their rendered prompt is byte-identical, static and dynamic, across
+    every session shape); this makes the code side inert too, which is the
+    difference between "no behaviour change" and "no execution".
     """
     if session.get("_reason_question_asked"):
         return True
     if not spoken or "?" not in spoken:
+        return False
+    try:
+        from app.clinic_config import get_clinic
+        _pf = (get_clinic(session.get("clinic_id")) or {}).get("prompt_facts") or {}
+        if not _pf.get("reason_question"):
+            return False
+    except Exception:
         return False
     low = spoken.lower()
     asked = (
