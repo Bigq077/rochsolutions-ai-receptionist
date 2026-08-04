@@ -571,3 +571,101 @@ predicate for exactly that.
   confirmed). Six calls running. The caller is now visibly fighting for a turn.
 - **Repetition.** `duplicate response discarded (matches previous)` twice;
   *"That's one for the practitioner at your appointment"* was said three times.
+
+---
+
+## T-4 — VERIFIED LIVE, call 6, 21:45:28
+
+```
+[ms_tts] synthesise_chunk: text='Thanks Quentin — is oh, seven, five, oh, two, two, one, one,'
+[ms_watchdog] BACKSTOP armed — … 'Thanks Quentin — is 0 7 5 0 2 2 1 1 2 0 7 the best number fo'
+```
+
+Susie spoke the number back digit by digit before asking the caller to confirm
+it. The caller then said "use this number" against a number they had actually
+heard. Closed.
+
+Build was `a684e40`, so **T-13 (`6e6d7aa`) was not yet deployed on this call** —
+the clinic-question fix is still unverified in production.
+
+---
+
+## T-2 — ESCALATE: the phantom row now pages an operator
+
+**Severity:** raised from medium to HIGH · **Fifth reproduction, call 6**
+
+This call **succeeded**: slot chosen, name given, number confirmed, read back.
+The two summary paths recorded it as:
+
+```
+📊 Row built — outcome=abandoned            name=None         phone=no   ← /twilio/status
+📊 Row built — outcome=reached_confirmation name=Quentin Rook phone=yes  ← cleanup
+```
+
+Then, seconds later:
+
+```
+[obs.store] judged … score=3
+SMS service initialized … POST …/Messages.json → 201
+SMS sent successfully
+```
+
+That is a **second, different SMS** from the caller confirmation at 21:45:51 —
+an operator alert via `_send_operator_sms` → `config.OBS_ALERT_SMS_TO`
+(`app/obs/alerts.py:195`). `abandoned_call` is wired `{"severity": "medium",
+"cadence": IMMEDIATE, "channels": ("sms", "slack")}` at `alerts.py:47`.
+
+So the consequence chain is now:
+
+> two summary builders disagree → the losing one writes `abandoned` for a call
+> that reached confirmation → an IMMEDIATE operator alert fires → someone is
+> paged about a successful booking.
+
+This is no longer a duplicated spreadsheet row. `OBS_ALERTS_ENABLED` is
+evidently ON in this service and `OBS_ALERT_SMS_TO` is set — **find out whose
+number that is before handover.** If it is Mark's, he will be alerted on
+successful calls from day one, and the alerts will be ignored within a week,
+which is how a real alert gets missed.
+
+---
+
+## T-3 — partially self-correcting: there IS a backstop, and it worked
+
+Call 6, 21:45:36:
+
+```
+[ms_watchdog] BACKSTOP armed — turn asked nothing ('If so, just say use this
+  number.') but a question is still outstanding: 'Thanks Quentin — is 0 7 5 …'
+```
+
+`tests/regression/test_questionless_turn_backstop.py` covers this mechanism and
+it fired correctly. **T-3 is narrower than first written:** the gap is only
+turns where no question is outstanding *at all* — a bare FAQ answer. When a
+question is genuinely pending, the backstop arms.
+
+Downgraded to medium. Still real: five bare FAQ answers on call 3 armed nothing.
+
+---
+
+## Working, worth recording
+
+- **Ambiguous relative date handled well.** *"next friday"* → Susie said
+  *"Next Friday being Friday the 14th of August — do you prefer…"*. She stated
+  her interpretation aloud rather than silently picking one. Today is Tue 4 Aug,
+  so 7 vs 14 August was a real ambiguity and she surfaced it.
+- **Service-to-assessment redirect correct.** *"I want to book acupuncture"* →
+  *"Acupuncture is something Mark works with — we'd recommend starting with a
+  physiotherapy assessment first."* Booked the assessment.
+- **Slot DTMF map armed** (`{'1': 'one in the afternoon', '2': 'two in the
+  afternoon'}`) alongside the spoken options. Voice answer resolved it.
+- **Abort rule held.** Caller hung up at *"shall I go ahead and book that in?"*;
+  no `book_appointment`, nothing reached Acuity.
+- **Patience handling.** *"one second please"* → *"No rush at all."* and the
+  clinic question was correctly suppressed rather than fired into the pause.
+
+## Still failing
+
+- **T-5, worst single turn of the sweep: 20.1 s** on the acupuncture answer.
+  Then 13.1 s and 12.1 s. Seven calls running.
+- The caller had to say *"say that again you got cut off"* — the 20.1 s answer
+  was replayed in full, costing another 13.1 s.
