@@ -655,8 +655,47 @@ _FALSE_CANCEL_CLAIM_RE = re.compile(
 # for Thursday" is exactly as much a phantom as "you're rescheduled". The
 # booking pattern is the well-measured one (18/18, 0/27) and costs nothing to
 # reuse, because it too is only reached on a turn with a refused write.
+# B-36 R6 — the PROVISIONAL completion claim.
+#
+# VE acceptance run 2026-08-04, calls 1 and 7: `book_appointment` was refused
+# and Susie still said "I've noted your preferred time and sent it to Jonathan
+# to confirm". Nothing was written. Gate 5f did not strip it, and the reason is
+# structural rather than an oversight: a provisional clinic's prompt BANS the
+# words "booked" and "confirmed" (they are not true for that clinic), and those
+# are exactly the tokens `_FALSE_CONFIRM_CLAIM_RE` keys on. The two safety
+# mechanisms cancelled each other out.
+#
+# The claim being made is that the REQUEST WAS SENT. That is as false as "all
+# booked" when no write happened, and it is what the caller acts on.
+#
+# Matched on the shape, not on one clinic's sentence: `booking_pending_message`
+# is configurable per clinic, so a literal for Vital Edge's wording would fail
+# silently for the next provisional clinic. Practitioner-name agnostic for the
+# same reason.
+#
+# Cannot fire on the pre-write CTA ("shall I put that request through to
+# Jonathan to confirm?") — that is a question, so `_declarative_part` drops it,
+# and "shall i" is in `_FALSE_CONFIRM_NEG_RE` besides. Both are asserted.
+_FALSE_PROVISIONAL_CLAIM_RE = re.compile(
+    r"\b(?:"
+    r"sent\s+(?:it|that|this|them|your\s+(?:request|details|preferred\s+time))"
+    r"\s+(?:through\s+)?to\b"
+    r"|put\s+(?:that|your|the)\s+request\s+through\b"
+    r"|noted\s+your\s+(?:preferred\s+)?time\b"
+    r"|request\s+is\s+(?:now\s+)?with\b"
+    r")"
+)
+
 _FAMILY_CLAIM_RES = {
-    WRITE_FAMILY_BOOKING:    (_FALSE_CONFIRM_CLAIM_RE,),
+    # The provisional pattern is added to the BOOKING family only. It is inert
+    # for confirmed-booking clinics, whose prompts never produce these phrases,
+    # and it is safe on the success path: `booking_write_confirmed` is set on
+    # ANY successful book_appointment including a provisional one
+    # (llm_stream.py, `if family == WRITE_FAMILY_BOOKING`), so the family
+    # disarms and a LEGITIMATE provisional closing is never seen by this gate.
+    # That is the over-fire this guard has actually committed before — it
+    # abandoned a completed booking on 2026-06-12 — so it is asserted directly.
+    WRITE_FAMILY_BOOKING:    (_FALSE_CONFIRM_CLAIM_RE, _FALSE_PROVISIONAL_CLAIM_RE),
     WRITE_FAMILY_RESCHEDULE: (_FALSE_CONFIRM_CLAIM_RE, _FALSE_RESCHEDULE_CLAIM_RE),
     WRITE_FAMILY_CANCEL:     (_FALSE_CONFIRM_CLAIM_RE, _FALSE_CANCEL_CLAIM_RE),
 }
@@ -709,11 +748,68 @@ _FALSE_CANCEL_RESTEER = (
     "Sorry — before I confirm anything, would you like to keep this appointment, "
     "or cancel it altogether?"
 )
+# B-36 R6 — the booking re-steer for a PROVISIONAL clinic.
+#
+# `_FALSE_CONFIRM_RESTEER` says "shall I go ahead and book that in for you?".
+# Said to a Vital Edge caller that is a promise of a CONFIRMED booking, which is
+# the one thing VE's entire prompt exists to avoid — so stripping the false
+# provisional closing and replacing it with that would swap one untrue sentence
+# for a worse one.
+#
+# It must also still satisfy the booking gate, or the caller's next "yes" is
+# evaluated against a CTA that was never asked and the write is refused again.
+# It does: `_booking_confirmation_asked` now accepts "put that request through".
+# That coupling is asserted in the tests — this string and that predicate have
+# to move together.
+_FALSE_CONFIRM_RESTEER_PROVISIONAL = (
+    "Sorry — before I confirm anything, shall I put that request through for "
+    "you?"
+)
+
 _FAMILY_RESTEER = {
     WRITE_FAMILY_BOOKING:    _FALSE_CONFIRM_RESTEER,
     WRITE_FAMILY_RESCHEDULE: _FALSE_RESCHEDULE_RESTEER,
     WRITE_FAMILY_CANCEL:     _FALSE_CANCEL_RESTEER,
 }
+
+
+def _clinic_is_provisional(session: Dict[str, Any]) -> bool:
+    """True for clinics whose bookings are provisional until a human confirms.
+
+    Read from the clinic contract rather than a clinic-id list — `booking_system
+    == "google_calendar_provisional"` is what drives the provisional write path
+    and the provisional prompt branch, so it is the same switch, not a parallel
+    one that can drift out of step.
+
+    Fails to False on any error: a confirmed-booking re-steer said to a
+    provisional caller is wrong, but a provisional re-steer said to a CONFIRMED
+    clinic's caller understates a real booking and would not satisfy that
+    clinic's gate. False is the direction that preserves today's behaviour for
+    the two live confirmed clinics.
+    """
+    try:
+        from app.clinic_config import get_clinic
+        clinic = get_clinic(session.get("clinic_id")) or {}
+        return clinic.get("booking_system") == "google_calendar_provisional"
+    except Exception:
+        logger.warning(
+            "[ms_gate5f] could not resolve clinic for the re-steer — "
+            "defaulting to the confirmed-booking wording",
+            exc_info=True,
+        )
+        return False
+
+
+def _resteer_for(family: str, session: Dict[str, Any]) -> str:
+    """The sentence the caller hears in place of a phantom confirmation.
+
+    Per family (B-36: never share a re-steer across families — this return value
+    becomes `last_bot_prompt`, which every write gate reads), and for the
+    booking family also per booking model.
+    """
+    if family == WRITE_FAMILY_BOOKING and _clinic_is_provisional(session):
+        return _FALSE_CONFIRM_RESTEER_PROVISIONAL
+    return _FAMILY_RESTEER[family]
 
 
 def _norm_for_claim(text: str) -> str:
@@ -1209,7 +1305,7 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
                 "question: %r",
                 _claim_family, ",".join(_armed), result[:80],
             )
-            return _FAMILY_RESTEER[_claim_family]
+            return _resteer_for(_claim_family, session)
         logger.error(
             "[ms_gate5f] additional false-confirmation chunk dropped (%s): %r",
             _claim_family, result[:80],
