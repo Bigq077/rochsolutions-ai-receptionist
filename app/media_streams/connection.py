@@ -10838,12 +10838,46 @@ class WebSocketCallHandler:
                                         _requeue_loc,
                                     )
 
+                            # ── T-7 / T-11: never mine an ANSWER out of a
+                            # turn the caller framed as a QUESTION ────────
+                            # Both extractors below scrape the raw utterance
+                            # and write into soft_context, which the booking
+                            # flow later treats as something the caller said
+                            # about themselves. On a question turn that is
+                            # never true.
+                            #
+                            # Acceptance sweep, 2026-08-04:
+                            #   "and just a shockwave on its own"
+                            #       -> first name = "Own"          (T-7)
+                            #   "what if I rearrange the morning of"
+                            #       -> timing preference = mornings (T-11)
+                            #
+                            # Neither caller stated a name or a preference;
+                            # both were asking about price and policy. A junk
+                            # first name is the serious one — soft_context
+                            # ["name"] is what the booking read-back reads,
+                            # so it can reach a real Acuity appointment.
+                            #
+                            # _transcript_is_question was corrected in 6e6d7aa
+                            # to recognise auxiliary inversion ("should I…",
+                            # "can I…"), which is what makes it usable as this
+                            # gate — before that it knew only wh-words.
+                            _extractable_turn = not _transcript_is_question(
+                                utterance
+                            )
+                            if not _extractable_turn:
+                                logger.info(
+                                    "[ms_conn v3] soft-context extraction"
+                                    " skipped — caller asked a question: %r",
+                                    utterance[:60],
+                                )
+
                             # ── First-turn date/time extraction ──────────
                             # Capture time/date preference from this
                             # utterance so the booking flow can skip the
                             # timing question entirely if it was stated
                             # up front.  Only runs before booking starts.
-                            if not self.session.get("v3_location_confirmed"):
+                            if _extractable_turn and not self.session.get("v3_location_confirmed"):
                                 _utt_lower = utterance.lower()
                                 _time_pref = None
 
@@ -10907,9 +10941,29 @@ class WebSocketCallHandler:
                             # "my name is [name]", "this is [name]",
                             # "[name] here", "hello it's [name]"
                             # re is already imported at module level (line 43).
+                            #
+                            # T-7 (2026-08-04): the apostrophe class used to be
+                            # `it[‘’]?s`, which was wrong in BOTH directions.
+                            #
+                            #   "a shockwave on its own"  -> name = "Own"
+                            #   "is it worth its cost"    -> name = "Cost"
+                            # because the OPTIONAL apostrophe let the
+                            # possessive "its" match the contraction.
+                            #
+                            #   "it's quentin"            -> no match
+                            # because the class held only curly quotes, and
+                            # AssemblyAI emits ASCII apostrophes — so the one
+                            # phrasing this pattern exists to catch was the one
+                            # it could not see.
+                            #
+                            # The apostrophe is now REQUIRED and all three
+                            # forms are accepted: junk names stop, and real
+                            # ones start being caught. "i'm" keeps its optional
+                            # apostrophe — bare "im" is a safe lead-in, bare
+                            # "its" is not.
                             _name_patterns = [
-                                r"\b(?:it[‘’]?s|this is|i[‘’]?m|"
-                                r"hello[,\s]+(?:it[‘’]?s)?)\s+"
+                                r"\b(?:it[‘’']s|this is|i[‘’']?m|"
+                                r"hello[,\s]+(?:it[‘’']s)?)\s+"
                                 r"([A-Za-z][a-z]{1,20})\b",
                                 r"\bmy name is ([A-Za-z][a-z]{1,20})\b",
                                 r"^([A-Za-z][a-z]{1,20}) here\b",
@@ -10925,6 +10979,13 @@ class WebSocketCallHandler:
                                 "Be", "Do", "Go", "At", "In",
                                 "On", "Up", "If", "As", "Is",
                             }
+                            # The denylist above is the wrong shape for this
+                            # job and cannot be made right: it can only ever
+                            # hold junk somebody already thought of, and "own"
+                            # is a word ordinary English produces constantly
+                            # ("on its own", "my own", "own it"). The question
+                            # gate is the real guard; _NOT_NAMES stays as a
+                            # second line for statement turns.
                             _name_found = None
                             for _pat in _name_patterns:
                                 _nm = re.search(_pat, utterance, re.I)
@@ -10934,7 +10995,7 @@ class WebSocketCallHandler:
                                         _name_found = _candidate
                                         break
 
-                            if _name_found:
+                            if _name_found and _extractable_turn:
                                 _sc = (
                                     self.session.get("soft_context") or {}
                                 )
