@@ -41,6 +41,130 @@ implying more confidence than exists.
 
 ---
 
+## `B-55` · Vital Edge is **instructed** to narrate a reschedule as confirmed — **FIXED 2026-08-04** (prompt half), gate half **left open deliberately**
+
+**Not found by dialling. Found while running `VITALEDGE_PORT_PLAN.md` §7.1
+against the rendered prompt.** No live occurrence yet — Vital Edge has no obs
+corpus at all (see the §7.2 note below), so "no occurrence" here means
+*unobserved*, not *does not happen*.
+
+Vital Edge books **provisionally**: Jonathan confirms out of band, so no
+appointment is ever confirmed on the call. `clinic_template_prompt.py`'s
+`is_provisional` arm rewrites the **booking** success line and explicitly bans
+`'all booked'`, `'confirmed'`, `'you're booked in'` and any claim that a text was
+sent.
+
+`is_provisional` has **four** sites in that file, and none of them touch
+reschedule or cancel. So the shared closings render verbatim for Vital Edge:
+
+```
+RESCHEDULE CLOSING — say this EXACT line, word for word, changing ONLY the
+day, date and time: 'That's you rescheduled — you're now in for Monday the
+1st of June at three in the afternoon. We'll see you then — take care.'
+```
+
+**On a provisional clinic that sentence is false.** Moving a pending request
+leaves it pending; the caller is told they are "now in for" a time Jonathan has
+not agreed to. `cancel_appointment`'s *"That's all done — your appointment has
+been cancelled"* is the milder case and may well be true — deleting a pending
+request is a real deletion — so this entry is about **reschedule**.
+
+**Worse than the booking case, in one specific way.** For booking the prompt
+*bans* the false sentence. For reschedule the prompt **mandates** it, word for
+word. There is no model judgement to rely on.
+
+### Gate 5f does not cover it either
+
+Same structure as the booking gap in `VITALEDGE_PORT_PLAN.md` §7.2, one step
+further along. `_armed_write_families`
+([turn_handler.py](../../app/media_streams/turn_handler.py)) arms the reschedule
+family **only on a refusal**. A *successful* reschedule refuses nothing, so the
+guard is not armed and the mandated line is never examined — by design, and
+documented as such in the B-36 cause-2 comment ("a SUCCESSFUL reschedule refuses
+nothing, so on that turn the guard is not armed").
+
+That reasoning is correct for every confirmed-booking clinic. It does not hold
+for a provisional one, where a successful write still does not make the
+completion sentence true.
+
+### Not yet a fix — the decision is the owner's
+
+Two shapes, and they are not equivalent:
+
+1. **Prompt** — give the `is_provisional` arm a reschedule closing, the way it
+   already has a booking closing. Smallest diff, consistent with how the booking
+   case is handled, and it is the only half that Vital Edge's own prompt can fix.
+2. **Gate** — arm Gate 5f for provisional clinics regardless of the refusal
+   signal. This is the same OR-not-replace shape as B-36 cause 2, and the same
+   caution applies: `booking_write_confirmed` is load-bearing elsewhere
+   ([slot_followup.py](../../app/tools/slot_followup.py)), so do not stop setting
+   it.
+
+**Do 1 before 2.** §7.2's standing instruction — *do not write code against the
+provisional gap until it is observed* — was written about the booking sentence,
+where the prompt already bans it and the question is whether the model obeys.
+Here there is nothing to observe: the prompt tells Susie to say it.
+
+### ✅ Fixed — the prompt half
+
+`is_provisional` now selects the reschedule closing, exactly as it already
+selected the booking closing. Vital Edge is told to say:
+
+```
+'That's the new time sent over to Jonathan — Monday the 1st of June at three
+ in the afternoon. It's not confirmed until he comes back to you, same as
+ before. Take care.'
+```
+
+…and is explicitly forbidden *"That's you rescheduled"*, *"you're now in for"*,
+*"all set"* and *"confirmed"*. Both old phrases survive in the prompt **only**
+inside that prohibition, which the tests check rather than assume.
+
+**Scoped so nothing else moves.** Prompt SHA-256 captured for all five clinics
+before and after: `demo`, `jv_v1`, `theorem`, `theorem_v3` **byte-identical**;
+`vital_edge` the only change (74,834 → 74,900 chars). Those four hashes are
+pinned in the test file, so a later edit that leaks out of the `is_provisional`
+branch fails immediately.
+
+Gate 5f now flags **one** claim-shaped line in the rendered VE prompt, down from
+two, and the survivor is the cancel closing (see below).
+
+`tests/regression/test_b55_provisional_reschedule_closing.py` — 9 tests.
+Suite unchanged at the standing **95 failed** baseline; 0 new failures.
+
+### 🔴 Still open — the gate half, on purpose
+
+Gate 5f remains blind to provisional clinics. The prompt is again the only thing
+standing between a Vital Edge caller and a false promise, on both booking and
+reschedule. That is the same latent gap `VITALEDGE_PORT_PLAN.md` §7.2 documents,
+and closing it is a change to every clinic's write path — it needs its own
+measurement, not a same-day follow-on.
+
+**What the fix does buy:** the prompt no longer *mandates* the false sentence, so
+the question drops from "will Susie say the wrong thing when told to?" (always)
+back to "will Susie volunteer it?" — which for the booking closing measured
+**0/30** on 2026-08-04 (see §7.2).
+
+### Cancel — assessed, not fixed
+
+*"That's all done — your appointment has been cancelled"* still renders for
+Vital Edge and still trips the detector. Left alone deliberately: deleting a
+pending request **is** a real deletion, so unlike the reschedule case the
+sentence is arguably true. Worth a decision, not a reflex fix.
+
+### Scope
+
+Vital Edge only, today. Any future clinic with
+`operational.booking_system == "google_calendar_provisional"` inherits it. JV and
+Theorem are confirmed-booking clinics and are unaffected.
+
+Pinned by two files: `tests/regression/test_vital_edge_provisional_closing.py`
+(the booking half — config chain and rendered closing) and
+`tests/regression/test_b55_provisional_reschedule_closing.py` (the reschedule
+half, plus the four unchanged-clinic hashes).
+
+---
+
 ## `B-54` · **a real calendar event was cancelled that the caller did not mean** — steering **FIXED `c273475`**, gate **STILL OPEN**
 
 **P1. Found live, 2026-08-03 22:46, `CA156fa25206ffa7b15cb3474b617c8672`, build

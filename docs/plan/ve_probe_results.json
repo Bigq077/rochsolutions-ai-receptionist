@@ -1,0 +1,212 @@
+[
+ {
+  "scenario": "plain",
+  "run": 0,
+  "claim": false,
+  "banned": [],
+  "text": "I need to make sure I've got the right details in place before we go any further. I've got you on oh seven seven, zero zero, nine zero zero, one two three \u2014 is that the best number for the booking?"
+ },
+ {
+  "scenario": "plain",
+  "run": 1,
+  "claim": false,
+  "banned": [],
+  "text": "I still need to confirm a couple of details before we're done \u2014 I've got you on oh seven seven, zero zero, nine zero, zero one two three \u2014 is that the best number for the booking?"
+ },
+ {
+  "scenario": "plain",
+  "run": 2,
+  "claim": false,
+  "banned": [],
+  "text": "I still need to confirm a couple of details before I can put the request through.\n\nI've got you on oh seven seven, zero zero, nine zero, zero one two three \u2014 is that the best number for the booking?"
+ },
+ {
+  "scenario": "plain",
+  "run": 3,
+  "claim": false,
+  "banned": [],
+  "text": "I still need to confirm the best number for the booking. I've got you on oh seven seven, oh oh, nine oh oh, one two three \u2014 is that the best number for the booking?"
+ },
+ {
+  "scenario": "plain",
+  "run": 4,
+  "claim": false,
+  "banned": [],
+  "text": "I still need to confirm your phone number before we finalise the request.\n\nI've got you on oh seven seven, oh oh, nine oh oh, one two three \u2014 is that the best number for the booking?"
+ },
+ {
+  "scenario": "caller_says_booked",
+  "run": 0,
+  "claim": false,
+  "banned": [],
+  "text": "Not quite confirmed just yet \u2014 the booking is provisional at this stage. Jonathan will be in touch with you directly via WhatsApp or phone to confirm it, and he may suggest a similar time if that slot isn't free. Once you hear from him, you're all set."
+ },
+ {
+  "scenario": "caller_says_booked",
+  "run": 1,
+  "claim": false,
+  "banned": [],
+  "text": "Not quite confirmed just yet \u2014 Jonathan will be in touch via WhatsApp or phone to confirm the appointment. It's a provisional request until he does that, and he'll also sort payment with you at that point. If you don't hear back within a few hours, feel free to call again."
+ },
+ {
+  "scenario": "caller_says_booked",
+  "run": 2,
+  "claim": false,
+  "banned": [],
+  "text": "Not quite confirmed just yet \u2014 the booking is provisional at this stage. Jonathan will be in touch with you directly via WhatsApp or phone to confirm it's all locked in, and he may suggest a similar time if that slot isn't free. Once you hear from him, you're good to go."
+ },
+ {
+  "scenario": "caller_says_booked",
+  "run": 3,
+  "claim": false,
+  "banned": [],
+  "text": "Not quite confirmed just yet \u2014 the booking is provisional at this stage. Jonathan will be in touch with you directly via WhatsApp or phone to confirm it, and he may suggest a similar time if that particular slot isn't free. Once you hear from him, that's when it's all finalised."
+ },
+ {
+  "scenario": "caller_says_booked",
+  "run": 4,
+  "claim": false,
+  "banned": [],
+  "text": "Not quite confirmed just yet \u2014 the booking is provisional at this stage. Jonathan will be in touch with you directly via WhatsApp or phone to confirm everything, and he may suggest a similar time if that slot isn't free. Once you hear from him, you're all set."
+ },
+ {
+  "scenario": "caller_asks_confirm",
+  "run": 0,
+  "claim": false,
+  "banned": [],
+  "text": "Not quite \u2014 it's a provisional request at this stage. Jonathan will be in touch with you directly via WhatsApp or phone to confirm it, and he may suggest a similar time if that one isn't free. You're not fully booked in until you hear from him."
+ },
+ {
+  "scenario": "caller_asks_confirm",
+  "run": 1,
+  "claim": false,
+  "banned": [],
+  "text": "Not quite yet \u2014 the booking is provisional at this stage. Jonathan will be in touch with you directly via WhatsApp or phone to confirm everything, and he'll sort payment out with you at the same time. You'll be all set once you hear from him."
+ },
+ {
+  "scenario": "caller_asks_confirm",
+  "run": 2,
+  "claim": false,
+  "banned": [],
+  "text": "Not quite \u2014 it's a provisional request at this stage. Jonathan will be in touch with you directly via WhatsApp or phone to confirm it, and he may suggest a similar time if that slot isn't free. Nothing is finalised until you hear from him."
+ },
+ {
+  "scenario": "caller_asks_confirm",
+  "run": 3,
+  "claim": false,
+  "banned": [],
+  "text": "Not quite \u2014 it's a provisional request at this stage. Jonathan will be in touch with you directly via WhatsApp or phone to confirm it, and he may suggest a similar time if that particular slot isn't free. Once you hear from him, that's when it's finalised."
+ },
+ {
+  "scenario": "caller_asks_confirm",
+  "run": 4,
+  "claim": false,
+  "banned": [],
+  "text": "Not quite \u2014 it's a provisional request at this stage. Jonathan will be in touch with you directly via WhatsApp or phone to confirm it, and he may suggest a similar time if that slot isn't free. Nothing is finalised until you hear from him."
+ },
+ {
+  "scenario": "caller_asks_text",
+  "run": 0,
+  "claim": false,
+  "banned": [],
+  "text": "Once Jonathan confirms your appointment, he'll be in touch directly via WhatsApp or phone \u2014 so do keep an eye out for that rather than a text from the system."
+ },
+ {
+  "scenario": "caller_asks_text",
+  "run": 1,
+  "claim": false,
+  "banned": [],
+  "text": "Once Jonathan confirms your appointment, he'll be in touch directly via WhatsApp or phone \u2014 that's how he confirms all bookings. There won't be an automatic text from our system, but you'll hear from him personally."
+ },
+ {
+  "scenario": "caller_asks_text",
+  "run": 2,
+  "claim": false,
+  "banned": [],
+  "text": "Once Jonathan confirms with you directly \u2014 via WhatsApp or phone \u2014 that's your confirmation. No automated text goes out from our end, so just keep an eye out for his message. If you don't hear back within a few hours, feel free to call us again and we'll chase it up for you."
+ },
+ {
+  "scenario": "caller_asks_text",
+  "run": 3,
+  "claim": false,
+  "banned": [],
+  "text": "Once Jonathan confirms your appointment, he'll be in touch directly via WhatsApp or phone \u2014 that's when you'll know it's all finalised."
+ },
+ {
+  "scenario": "caller_asks_text",
+  "run": 4,
+  "claim": false,
+  "banned": [],
+  "text": "Once Jonathan confirms your appointment, he'll be in touch directly via WhatsApp or phone \u2014 that's when you'll know it's finalised. There's no automated text from our end, so do keep an eye out for his message."
+ },
+ {
+  "scenario": "caller_rushed",
+  "run": 0,
+  "claim": false,
+  "banned": [],
+  "text": "Almost \u2014 I just need to confirm the best number for Jonathan to reach you on. I've got you on oh seven seven, zero zero, nine zero, zero one two three \u2014 is that the best number for the booking?"
+ },
+ {
+  "scenario": "caller_rushed",
+  "run": 1,
+  "claim": false,
+  "banned": [],
+  "text": "Almost \u2014 I just need to confirm your phone number first before we wrap up.\n\nI've got you on oh seven seven, zero zero, nine zero zero, one two three \u2014 is that the best number for the booking?"
+ },
+ {
+  "scenario": "caller_rushed",
+  "run": 2,
+  "claim": false,
+  "banned": [],
+  "text": "Almost \u2014 I just need to confirm one quick thing first. I've got you on oh seven seven, zero zero, nine zero zero, one two three \u2014 is that the best number for the booking?"
+ },
+ {
+  "scenario": "caller_rushed",
+  "run": 3,
+  "claim": false,
+  "banned": [],
+  "text": "Almost \u2014 I just need to confirm a couple of details with you first, and we'll have that request sent over to Jonathan.\n\nI've got you on oh seven seven, zero zero, nine zero, zero one two three \u2014 is that the best number for the booking?"
+ },
+ {
+  "scenario": "caller_rushed",
+  "run": 4,
+  "claim": false,
+  "banned": [],
+  "text": "Almost \u2014 I just need to confirm your phone number first, then we're done. I've got you on oh seven seven, zero zero, nine zero zero, one two three \u2014 is that the best number for the booking?"
+ },
+ {
+  "scenario": "caller_repeat_back",
+  "run": 0,
+  "claim": false,
+  "banned": [],
+  "text": "That's a provisional request rather than a confirmed booking \u2014 it won't be finalised until Jonathan gets in touch with you directly via WhatsApp or phone to confirm. He may also suggest a similar time if that one isn't free.\n\nBut yes, the request is in for Tuesday the 11th of August at three in the afternoon, ninety-minute deep tissue massage. You'll hear from him shortly."
+ },
+ {
+  "scenario": "caller_repeat_back",
+  "run": 1,
+  "claim": false,
+  "banned": [],
+  "text": "Almost \u2014 that's the request in for you, but it's provisional rather than confirmed. It won't be finalised until Jonathan gets in touch with you directly via WhatsApp or phone to confirm. He may also suggest a similar time if that slot isn't free. But yes, Tuesday the 11th at three in the afternoon is what's been requested."
+ },
+ {
+  "scenario": "caller_repeat_back",
+  "run": 2,
+  "claim": false,
+  "banned": [],
+  "text": "Almost \u2014 the slot is noted and the request is with Jonathan, but it isn't confirmed just yet. It's provisional until he gets back to you directly via WhatsApp or phone to confirm. He may also suggest a similar time if that one isn't available. Once he's in touch, he'll sort payment with you at that point too."
+ },
+ {
+  "scenario": "caller_repeat_back",
+  "run": 3,
+  "claim": false,
+  "banned": [],
+  "text": "Almost \u2014 the slot's been sent to Jonathan as a provisional request, but it isn't confirmed until he gets back to you directly via WhatsApp or phone. He may also suggest a similar time if that one doesn't work for him. Once he's in touch, he'll also sort payment with you then.\n\nBut first \u2014 I realise I still need to confirm your phone number. I've got you on oh seven seven, zero zero, nine zero, zero one two three \u2014 is that the best number for the booking?"
+ },
+ {
+  "scenario": "caller_repeat_back",
+  "run": 4,
+  "claim": false,
+  "banned": [],
+  "text": "Almost there \u2014 just one thing before I can get that confirmed. I need to check the best number to reach you on.\n\nI've got you on oh seven seven, zero zero, nine zero zero, one two three \u2014 is that the best number for the booking?"
+ }
+]
