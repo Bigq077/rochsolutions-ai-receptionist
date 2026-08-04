@@ -44,7 +44,14 @@ from app.media_streams.turn_handler import (
 # with:  python -c "from tests.regression.test_b55_provisional_reschedule_closing
 #        import _sha; print(_sha('jv_v1'))"
 UNCHANGED_CLINIC_PROMPTS = {
-    "demo": "a245db1d4d06abd5",
+# Re-pinned 2026-08-04 (T-4, commit 76cef3d). demo, theorem and theorem_v3 all
+# moved together because the caller-ID read-back fix edits all three renderers:
+# build_system_prompt, get_system_prompt's known-context block, and the
+# _build_theorem_v3 worked examples. Susie used to offer "just say use this
+# number" without ever speaking the digits, so callers confirmed a number they
+# had never heard. Intended drift, not B-55 leaking into confirmed-booking
+# clinics — the property this table exists to prove still holds.
+    "demo": "24113de0267dac94",
     # Re-pinned 2026-08-04. jv_v1 is the only other clinic with a
     # duration-choice service, so it is the only one the DURATIONS-ARE-FIXED
     # rewrite could move — demo, theorem and theorem_v3 are byte-identical
@@ -57,7 +64,7 @@ UNCHANGED_CLINIC_PROMPTS = {
     # line offering it. The claim is now scoped per service and derived from
     # clinic.json instead of asserted in engine code.
     "jv_v1": "023c5092170d2f31",
-    "theorem": "61b93fdac3e8fe18",
+    "theorem": "5de9580c45d5fb15",
     # Re-pinned 2026-08-04 on theorem-onboarding ONLY — this value deliberately
     # diverges from latency-eval's e6202afb47d91820, and a cherry-pick conflict
     # here is expected rather than a mistake.
@@ -72,7 +79,7 @@ UNCHANGED_CLINIC_PROMPTS = {
     # `demo` and `theorem` still match latency-eval exactly, which is the useful
     # half of this row: the port's prompt work is confined to _build_theorem_v3
     # and has not leaked into the shared builders.
-    "theorem_v3": "a8f6a207c8de1910",
+    "theorem_v3": "7fd3a907a868d624",
 }
 
 OLD_CONFIRMED_WORDING = ("that's you rescheduled", "you're now in for")
