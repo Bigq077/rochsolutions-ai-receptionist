@@ -29,8 +29,15 @@ def test_duration_choice_note_present_in_config():
     note = (clinic.get("prompt_facts") or {}).get("duration_choice_note", "")
     assert note, "vital_edge must declare a duration_choice_note"
     # Must name both lengths, both prices, and the duration to pass through.
-    for token in ("60", "90", "£125", "£175", "duration_minutes"):
+    # 90 min was re-priced £175 -> £180 on 2026-08-04 (Jonathan, WhatsApp), and
+    # Sports Massage gained the same 60/90 choice Deep Tissue already had.
+    for token in ("60", "90", "£125", "£180", "duration_minutes"):
         assert token in note, f"duration_choice_note missing {token!r}"
+    assert "£175" not in note, "the withdrawn 90-minute price is still quoted"
+    # Both choice services must be named, or Susie asks the length question for
+    # only one of them and silently assumes a length for the other.
+    for svc in ("Deep Tissue", "Sports"):
+        assert svc in note, f"duration_choice_note does not name {svc!r}"
 
 
 def test_duration_ask_renders_into_provisional_booking_section():

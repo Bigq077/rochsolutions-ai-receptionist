@@ -45,7 +45,18 @@ from app.media_streams.turn_handler import (
 #        import _sha; print(_sha('jv_v1'))"
 UNCHANGED_CLINIC_PROMPTS = {
     "demo": "a245db1d4d06abd5",
-    "jv_v1": "1c14e1bf976fdb0d",
+    # Re-pinned 2026-08-04. jv_v1 is the only other clinic with a
+    # duration-choice service, so it is the only one the DURATIONS-ARE-FIXED
+    # rewrite could move — demo, theorem and theorem_v3 are byte-identical
+    # across that change, which is the property this table exists to prove.
+    #
+    # What moved, and why it is a FIX for jv_v1 rather than drift: the engine
+    # used to hardcode "(there is no 30-minute session)" into that block.
+    # jv_v1's Sports Massage IS 30 minutes at £40 — so Susie was being handed
+    # a sentence denying a session the clinic sells, in the same breath as the
+    # line offering it. The claim is now scoped per service and derived from
+    # clinic.json instead of asserted in engine code.
+    "jv_v1": "023c5092170d2f31",
     "theorem": "61b93fdac3e8fe18",
     "theorem_v3": "e6202afb47d91820",
 }

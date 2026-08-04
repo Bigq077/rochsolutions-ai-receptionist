@@ -691,27 +691,38 @@ def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
         )
     # Duration question — any service with multiple bookable durations (30/60,
     # 60/90, …). Reads the actual options + matching '<n>min_in_clinic_gbp' keys.
-    for svc in clinic.get("services", []) or []:
-        if _has_duration_options(svc):
-            dp = _duration_pricing(svc)
-            opts = [m for m, _ in dp]
-            lines.append("")
-            _opts_phrase = " or ".join(f"{m}-minute ({_gbp(p)})" for m, p in dp)
-            lines.append(
-                f"DURATION QUESTION FOR {svc.get('name','').upper()}: "
-                f"ask whether they'd like a {opts[0]}-minute "
-                f"({_gbp(dp[0][1])}) or {opts[-1]}-minute "
-                f"({_gbp(dp[-1][1])}) session."
-            )
-            lines.append(
-                f"DURATIONS ARE FIXED: the ONLY session lengths are "
-                f"{_opts_phrase}. NEVER offer, mention, or invent any other "
-                "length (there is no 30-minute session). The number of available "
-                "time slots is NOT a number of durations — each slot is a start "
-                "time, and the caller's chosen length applies to whichever slot "
-                "they pick."
-            )
-            break
+    #
+    # EVERY duration-choice service gets its own block, and each block scopes its
+    # claim to that service. This previously rendered only the FIRST such service
+    # (a `break`), asserted "the ONLY session lengths are …" as a clinic-wide
+    # fact, and hardcoded "(there is no 30-minute session)".
+    #
+    # All three were safe only while a clinic had exactly one duration-choice
+    # service and no short fixed one. Vital Edge broke all three on 2026-08-04 by
+    # giving Sports Massage the same 60/90 choice as Deep Tissue and adding a
+    # genuine 30-minute service: the `break` silently dropped Deep Tissue's
+    # duration question, and the hardcoded parenthetical told Susie to refuse a
+    # £65 session the clinic actually sells. A clinic fact does not belong in
+    # engine code — derive it from clinic.json or do not say it.
+    for svc in [s for s in (clinic.get("services") or []) if _has_duration_options(s)]:
+        dp = _duration_pricing(svc)
+        opts = [m for m, _ in dp]
+        _name = svc.get("name", "")
+        lines.append("")
+        _opts_phrase = " or ".join(f"{m}-minute ({_gbp(p)})" for m, p in dp)
+        lines.append(
+            f"DURATION QUESTION FOR {_name.upper()}: "
+            f"ask whether they'd like a {opts[0]}-minute "
+            f"({_gbp(dp[0][1])}) or {opts[-1]}-minute "
+            f"({_gbp(dp[-1][1])}) session."
+        )
+        lines.append(
+            f"DURATIONS ARE FIXED: for a {_name} the ONLY session lengths are "
+            f"{_opts_phrase}. NEVER offer, mention, or invent any other length "
+            "for it. The number of available time slots is NOT a number of "
+            "durations — each slot is a start time, and the caller's chosen "
+            "length applies to whichever slot they pick."
+        )
     return "\n".join(lines)
 
 
