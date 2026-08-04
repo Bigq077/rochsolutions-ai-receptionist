@@ -85,6 +85,29 @@ def _tokens(clinic: Dict[str, Any]) -> Dict[str, str]:
         # unchanged; a massage/other clinic overrides these in prompt_facts.
         "booking_offer_line": pf.get("booking_offer_line")
             or f"book an assessment so {practitioner} can take a proper look",
+        # The REASON question (rule 1b). Physio callers arrive with a problem,
+        # so "What's the appointment for?" is a natural opener for them. Massage
+        # callers often arrive with tension or stress rather than an injury, and
+        # the bare question reads as a blank page — on CA86c320ef the caller
+        # answered it by restating booking intent, and the reason was only
+        # captured when the model improvised a version WITH examples. That
+        # improvisation is the wording below: better, but nothing guaranteed it.
+        "reason_question": pf.get("reason_question")
+            or "What's the appointment for?",
+        # Did the clinic OPT IN by supplying its own wording? That is the gate
+        # for the once-only tightening too, so a clinic that never asked for any
+        # of this renders byte-identical.
+        "reason_question_is_custom": bool(pf.get("reason_question")),
+        # Does naming a SERVICE settle the reason? For physio, yes — someone who
+        # says "sports massage" after describing a knee has told you enough. For
+        # a massage-only clinic, no: the service and the problem are different
+        # facts, and it is the problem the therapist needs. On CA86c320ef the
+        # caller named "deep tissue massage" and the useful reason turned out to
+        # be "general stress". Defaults True so jv_v1/theorem are unchanged.
+        "service_name_is_reason": (
+            True if pf.get("service_name_is_reason") is None
+            else bool(pf.get("service_name_is_reason"))
+        ),
         "clinical_fit_line": pf.get("clinical_fit_line")
             or (f"Physiotherapy with {practitioner} is really well-suited to "
                 "that kind of problem — a full assessment would look at what's "
@@ -1947,13 +1970,29 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "(modality if not yet known, otherwise timing).\n"
         "1b. REASON — BEFORE TIMING, AND BEFORE AVAILABILITY. If you do not "
         "already know what the appointment is for, ask ONCE as its own short "
-        "turn — 'What's the appointment for?' — and WAIT for the answer. The "
+        f"turn — '{tk['reason_question']}' — and WAIT for the answer. The "
         "reason decides the SERVICE, its length and its price (see SERVICE "
         "MAPPING), so availability checked without it is availability for the "
         "wrong appointment: a 30-minute massage and a 60-minute assessment are "
-        "not the same slot. If the caller has ALREADY said why they are "
-        "calling — a body part, a symptom, an injury, 'another session', or a "
-        "service by name — that IS the reason: do NOT ask again. NEVER ask it "
+        "not the same slot."
+        # Gated, not shared. The once-only tightening came out of CA86c320ef,
+        # a Vital Edge call, and a clinic that has not asked for it must render
+        # byte-identical — jv_v1 and theorem are live lines and this is not
+        # their defect. A clinic opts in by supplying its own reason_question.
+        + (" Ask it in EXACTLY that form — do not shorten it to a bare "
+           "'what's it for?' and do not ask a second, differently-worded "
+           "version later in the call."
+           if tk["reason_question_is_custom"] else "")
+        + " If the caller has ALREADY said why they "
+        "are calling — a body part, a symptom, an injury, 'another session'"
+        + (", or a service by name" if tk["service_name_is_reason"] else "")
+        + " — that IS the reason: do NOT ask again."
+        + ("" if tk["service_name_is_reason"] else
+           " Naming a SERVICE is NOT the reason here: 'a deep tissue massage' "
+           "says which treatment, not what it is for, and it is what it is for "
+           "that the session is planned around. Ask the question above once, "
+           "then proceed.")
+        + " NEVER ask it "
         "after presenting slots. By then the caller is choosing a time, and "
         "interrupting with 'what's it for?' reads as not having listened — on "
         "the 2026-07-26 verification call the caller ignored the question and "
@@ -2512,6 +2551,23 @@ def _b7_call_state(session: Dict[str, Any], clinic: Dict[str, Any], tk: Dict[str
     confirmed_flag = keys.get("confirmed_flag", "modality_confirmed")
     value_key = keys.get("value_key", "modality")
     state: List[str] = []
+
+    # The reason question has already been PUT to this caller. Rule 1b says "ask
+    # ONCE" and on CA86c320ef it was asked twice — once as the mandated literal
+    # and again, differently worded, on the next turn. Prompt text alone cannot
+    # enforce "once", because the model composes each turn without a reliable
+    # memory of having asked. This is the engine half: the flag is set from the
+    # text actually released to TTS, so it reflects what the caller HEARD.
+    # Gated to clinics that opted in via their own reason_question. jv_v1 and
+    # theorem are live lines that did not ask for this and must render
+    # byte-identical; CA86c320ef was a Vital Edge call.
+    if session.get("_reason_question_asked") and pf.get("reason_question"):
+        state.append(
+            "the reason question has ALREADY been asked this call — do NOT ask "
+            "what the appointment is for again, in any wording. If the caller "
+            "did not answer it, move on with what you have; asking a second "
+            "time reads as not having listened"
+        )
 
     cn = session.get("twilio_from_local") or ""
     if cn:
