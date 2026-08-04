@@ -999,6 +999,8 @@ def _render_provisional_booking(clinic: Dict[str, Any], tk: Dict[str, str]) -> s
         f"is 'shall I put that request through to {prac} to confirm?') and in the "
         "closing message. Never tell the caller they are 'booked in' or 'confirmed'.",
     ]
+    if pf.get("duration_choice_note"):
+        out.append("SESSION LENGTH: " + pf["duration_choice_note"])
     if pf.get("booking_horizon_note"):
         out.append(
             "BOOKING HORIZON: " + pf["booking_horizon_note"] + " If the caller "
