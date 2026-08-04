@@ -14609,8 +14609,23 @@ class WebSocketCallHandler:
                     or self.session.get("twilio_from")
                     or "unknown number"
                 )
+                # T-6 (2026-08-04): this is the MISSED-PATIENT ping — a caller
+                # asked for a human and did not get one. It is the safety net
+                # for the case where the AI has already failed, so whether it
+                # actually went out is the only thing worth logging about it.
+                #
+                # It used to log "sent" unconditionally, discarding send_sms's
+                # return value. send_sms returns a SID on success and None on
+                # every failure — invalid number, Twilio error, SMS_ENABLED off.
+                # On call 2 of the acceptance sweep this line printed while the
+                # SMS layer had logged, two lines earlier, that it suppressed
+                # the send. A patient was lost and the log said otherwise.
+                #
+                # Every branch below carries the caller's number, because that
+                # is the entire payload: if the text does not arrive, the log
+                # has to be enough to make the callback from.
                 if _staff_phone:
-                    await _send_sms(
+                    _notify_sid = await _send_sms(
                         to=_staff_phone,
                         message=(
                             f"Hi {_prac}, a caller just asked to speak to you "
@@ -14618,9 +14633,44 @@ class WebSocketCallHandler:
                             f"Give them a call back when you get a chance. — Susie"
                         ),
                     )
-                    logger.info("[ms_conn] staff notify SMS sent → %s", _staff_phone)
+                    if _notify_sid:
+                        logger.info(
+                            "[ms_conn] staff notify SMS sent → %s (sid=%s)",
+                            _staff_phone, _notify_sid,
+                        )
+                    else:
+                        logger.error(
+                            "[ms_conn] ⚠️ staff notify SMS NOT SENT → %s — "
+                            "send_sms returned no SID (SMS_ENABLED off, or the "
+                            "number was rejected). A caller asked for %s and "
+                            "did not get through, and nobody has been told. "
+                            "CALL THEM BACK ON %s. call_sid=%s",
+                            _staff_phone, _prac, _caller, self.call_sid,
+                        )
+                else:
+                    # No transfer_phone and no THEOREM_NOTIFICATION_SMS. The
+                    # block used to fall through in silence, so a caller who
+                    # asked for a human vanished without a trace anywhere.
+                    logger.error(
+                        "[ms_conn] ⚠️ staff notify SKIPPED — no transfer_phone "
+                        "and no THEOREM_NOTIFICATION_SMS configured for "
+                        "clinic=%r. A caller asked for %s and did not get "
+                        "through. CALL THEM BACK ON %s. call_sid=%s",
+                        self.session.get("clinic_id"), _prac, _caller,
+                        self.call_sid,
+                    )
             except Exception as _notify_exc:
-                logger.warning("[ms_conn] staff notify SMS failed: %r", _notify_exc)
+                # Carries the caller's number for the same reason as above —
+                # this is the last place the callback can still be recovered.
+                logger.error(
+                    "[ms_conn] ⚠️ staff notify SMS FAILED: %r — a caller asked "
+                    "for a human and did not get through. CALL THEM BACK ON %s. "
+                    "call_sid=%s",
+                    _notify_exc,
+                    (self.session.get("twilio_from_local")
+                     or self.session.get("twilio_from") or "unknown number"),
+                    self.call_sid,
+                )
 
     # ========================================================================
     # Internal helper
