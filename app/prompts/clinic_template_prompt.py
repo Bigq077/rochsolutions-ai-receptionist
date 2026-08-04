@@ -2190,6 +2190,59 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "is coming — no text will be sent on this service. "
     )
 
+    # ── B-55 — the reschedule closing must respect a provisional clinic ──────
+    # `is_provisional` rewrote the BOOKING success line and banned 'all booked'
+    # / 'confirmed' / "you're booked in", but stopped there. The reschedule
+    # closing below is shared, so a provisional clinic was instructed — word for
+    # word, and with no model judgement left in the loop — to say "That's you
+    # rescheduled — you're now in for Monday the 1st of June…".
+    #
+    # On Vital Edge nothing is ever confirmed on the call: moving a pending
+    # request leaves it pending until Jonathan agrees. That sentence is a false
+    # promise, and it is worse than the booking case it sits next to — there the
+    # prompt BANS the claim and the only question is whether the model obeys
+    # (measured 0/30 on 2026-08-04); here the prompt MANDATES it.
+    #
+    # Gate 5f cannot backstop this. `_armed_write_families` arms the reschedule
+    # family only on a REFUSAL, and a successful reschedule refuses nothing —
+    # deliberate, and correct for every confirmed-booking clinic, but it means a
+    # provisional clinic has no guard behind the prompt at all.
+    #
+    # Scoped strictly to `is_provisional`, so a non-provisional clinic renders a
+    # byte-identical prompt. Verified across all five clinics: only vital_edge's
+    # hash moves.
+    if is_provisional:
+        _reschedule_closing = (
+            "RESCHEDULE CLOSING — this booking is PROVISIONAL and the move is "
+            "NOT confirmed. Say this EXACT line, word for word, changing ONLY "
+            "the day, date and time: 'That's the new time sent over to "
+            f"{prac} — Monday the 1st of June at three in the afternoon. "
+            "It's not confirmed until he comes back to you, same as before. "
+            "Take care.'\n"
+            "The closing MUST contain the day and date, the time, and the warm "
+            "close. It is a STATEMENT, not a question: do NOT end with 'Is "
+            "there anything else I can help with?', do NOT ask any question, "
+            "and add nothing after 'take care.' Do NOT say 'That's you "
+            "rescheduled', \"you're now in for\", 'all set', 'confirmed', or "
+            "anything else implying the new time is agreed — it is not, and "
+            "none of that is true for this clinic. Do NOT promise a "
+            "confirmation text. "
+        )
+    else:
+        _reschedule_closing = (
+            "RESCHEDULE CLOSING — say this EXACT line, word for word, changing "
+            "ONLY the day, date and time: 'That's you rescheduled — you're now "
+            f"in for Monday the 1st of June at three in the afternoon.{_rc_text} "
+            "We'll see you then — take care.'\n"
+            "The closing MUST contain the day and date, the time, and the warm "
+            "close. It is a STATEMENT, not a question: do NOT end with 'Is "
+            "there anything else I can help with?', do NOT ask any question, "
+            "and add nothing after 'take care.' A bare 'I've rescheduled to "
+            "[date]' with no close leaves the caller unsure whether the move "
+            "actually happened — always give the full line. "
+            + _rc_no_text_rule
+        )
+
     reschedule_cancel = (
         "RESCHEDULE / CANCEL FLOW\n"
         f"{cn} is a single site — there is NO clinic-selection step, never ask "
@@ -2311,17 +2364,7 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "the data you already have — no filler, no intermediate step. Sequence: "
         "(1) caller says yes → (2) call reschedule_appointment → (3) CLOSE THE "
         "CALL with the confirmation below.\n"
-        "RESCHEDULE CLOSING — say this EXACT line, word for word, changing "
-        "ONLY the day, date and time: 'That's you rescheduled — you're now in "
-        f"for Monday the 1st of June at three in the afternoon.{_rc_text} "
-        "We'll see you then — take care.'\n"
-        "The closing MUST contain the day and date, the time, and the warm "
-        "close. It is a STATEMENT, not a question: do NOT end with 'Is there "
-        "anything else I can help with?', do NOT ask any question, and add "
-        "nothing after 'take care.' A bare 'I've rescheduled to [date]' with "
-        "no close leaves the caller unsure whether the move actually "
-        "happened — always give the full line. "
-        + _rc_no_text_rule
+        + _reschedule_closing
         + "Do NOT re-state the old appointment, and do NOT mention the "
         "location.\n\n"
         "CANCEL → by this point the caller has already (a) confirmed this is "
