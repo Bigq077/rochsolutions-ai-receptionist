@@ -1864,6 +1864,21 @@ def _normalize_location(value: str) -> str:
     return v
 
 
+def location_from_appointment_type(appt_type: str) -> str:
+    """The clinic an existing appointment belongs to, or "" if it names none.
+
+    Theorem's Acuity appointment types carry the site in their name
+    ("Theorem Clinics Alcester."), which is what the prompt's STRICT RULE means
+    when it says a cancel or reschedule takes its location from the lookup
+    result rather than from the session or the caller's preference.
+
+    Returns "" for clinics whose types name no town, so callers can leave the
+    session untouched rather than guessing.
+    """
+    loc = _normalize_location(appt_type or "")
+    return loc if loc in ("alcester", "redditch") else ""
+
+
 def _make_acuity_adapter():
     """
     Create a fresh AcuityAdapter using Theorem clinic credentials.
@@ -6947,6 +6962,36 @@ async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) ->
         session["_lookup_appointment_id"] = _id
         session["_lookup_appointment_datetime"] = appt.get("datetime", "")
         session["_lookup_appointment_type"] = appt.get("type", "")
+        # ── The appointment decides the clinic (T-18 follow-up, 2026-08-05) ──
+        # The prompt's STRICT RULE has always said location for a cancel or
+        # reschedule comes from this appointment_type and never from the
+        # session. Nothing enforced it, and two things made that dangerous the
+        # moment the reschedule flow stopped asking which clinic:
+        #
+        #   - `selected_location` DEFAULTS to "alcester" in DEFAULT_MS_SESSION.
+        #     It is not a confirmed choice, but every downstream tool reads
+        #     `args.get("location") or session["selected_location"]`, and
+        #     check_availability's "location must never be guessed" gate reads
+        #     the session ONLY — so the default silently satisfies it.
+        #   - That left one thing standing between a Redditch appointment and
+        #     Alcester slots: the model remembering to pass location= itself.
+        #     Forget it once and the caller is moved to the wrong town, with
+        #     nothing in the call to hear.
+        #
+        # Setting it here makes the session agree with the booking record, so
+        # the outcome no longer depends on the model passing an argument.
+        # Only fires when the type names exactly one known clinic; other
+        # clinics' appointment types name no town, so nothing changes for them.
+        _appt_type = appt.get("type", "") or ""
+        _appt_loc = location_from_appointment_type(_appt_type)
+        if _appt_loc:
+            if session.get("selected_location") != _appt_loc:
+                logger.info(
+                    "[ms_tools] lookup_patient: location taken from the "
+                    "appointment — %r → selected_location=%s (was %r)",
+                    _appt_type, _appt_loc, session.get("selected_location"),
+                )
+            session["selected_location"] = _appt_loc
         _note_lookup_ambiguity(session, total)
         logger.info(
             "[ms_tools] lookup_patient: match %d/%d name=%r appointment_id=%r",
