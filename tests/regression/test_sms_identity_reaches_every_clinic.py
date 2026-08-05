@@ -103,6 +103,52 @@ def test_the_spelling_confirm_note_is_still_template_only():
     )
 
 
+# ── the branded Maps short links carried over from `main` ───────────────────
+
+def test_theorem_uses_the_branded_maps_short_link_per_location():
+    """`main` sent a short branded redirect; this branch sent the raw ~120-char
+    Google Maps URL, which is what made the message look untidy. Both redirects
+    verified resolving 2026-08-05 before this was enabled."""
+    alcester = _sms("theorem_v3", "alcester")
+    redditch = _sms("theorem_v3", "redditch")
+    assert "Maps: https://bit.ly/theorem-alcester" in alcester
+    assert "Maps: https://bit.ly/theorem-redditch" in redditch
+    assert "maps.google.com" not in alcester
+
+
+def test_an_unknown_location_still_gets_a_working_maps_link(monkeypatch):
+    """The short link is a nicety; the full URL stays as the fallback whenever
+    the location is unknown.
+
+    CLINIC_ADDRESS is read into a module global at import, and it IS set on the
+    Theorem Render service (the live SMS printed the right address while the
+    name and phone were blank) — so this patches it to the deployed shape
+    rather than the bare test env.
+
+    Note the remaining hole this does NOT cover: with no location AND no
+    CLINIC_ADDRESS, the body still emits a bare "📍" and "Maps: " with nothing
+    after them. Theorem has two sites, so defaulting one of them would be
+    guessing — left as a deliberate open item.
+    """
+    monkeypatch.setattr(
+        "app.sms_templates.CLINIC_ADDRESS",
+        "The Greig Leisure Centre, Kinwarton Road, Alcester, B49 6AD",
+    )
+    body = _sms("theorem_v3", "")
+    assert "Maps: https://maps.google.com/?q=" in body
+
+
+def test_template_clinics_never_inherit_a_theorem_redirect():
+    """jv_v1/vital_edge resolve their address from clinic.json but have no short
+    link of their own — a location_id collision must not send their patients to
+    a Theorem map."""
+    for clinic_id in ("jv_v1", "vital_edge"):
+        for loc in ("bolton", "kingston", "alcester", "redditch"):
+            assert "bit.ly/theorem" not in _sms(clinic_id, loc), (
+                f"{clinic_id}/{loc} inherited a Theorem Maps redirect"
+            )
+
+
 # ── the fees line carried over from `main` ──────────────────────────────────
 
 def test_theorem_carries_its_fees_note():

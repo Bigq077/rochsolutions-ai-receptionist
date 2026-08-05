@@ -15,6 +15,19 @@ CLINIC_NAME    = os.getenv("CLINIC_NAME",    "the clinic")   # MARK_REVIEW
 CLINIC_ADDRESS = os.getenv("CLINIC_ADDRESS", "")              # MARK_REVIEW
 CLINIC_PHONE   = os.getenv("CLINIC_PHONE",   "")              # MARK_REVIEW
 
+# Branded short links per location. Each redirects to that location's Google
+# Maps page (verified resolving 2026-08-05: alcester → the Greig Leisure Centre
+# pin, redditch → the Bromsgrove Road pin). Plain SMS has no link text, so the
+# raw URL is what the patient sees — a short branded link is the only tidy
+# alternative to a ~120-character Google Maps URL. Env-overridable so the links
+# can be re-pointed without a deploy.
+MAPS_SHORT_URL_ALCESTER = os.getenv("MAPS_SHORT_URL_ALCESTER", "https://bit.ly/theorem-alcester")
+MAPS_SHORT_URL_REDDITCH = os.getenv("MAPS_SHORT_URL_REDDITCH", "https://bit.ly/theorem-redditch")
+_LOCATION_SHORT_LINKS = {
+    "alcester": MAPS_SHORT_URL_ALCESTER,
+    "redditch": MAPS_SHORT_URL_REDDITCH,
+}
+
 FIRST_VISIT_NOTE = (
     "As it's your first visit, please arrive 5 mins early and bring any "
     "relevant medical records or scan results.\n\n"
@@ -252,7 +265,14 @@ def build_sms(session: dict) -> str:
     except Exception:
         pass
 
-    maps_link      = build_maps_link(clinic_address)
+    # Maps link: prefer the location's branded short link, fall back to the full
+    # Google Maps URL. Template clinics (jv_v1, vital_edge) resolve their address
+    # from clinic.json above but have no short link of their own, so they must
+    # never inherit a Theorem redirect even if a future location_id collides.
+    maps_link = (
+        ("" if _is_template_clinic else _LOCATION_SHORT_LINKS.get(_loc, ""))
+        or build_maps_link(clinic_address)
+    )
 
     # Pending full name?  Only the caller's first name is collected on the
     # call, so the stored name is typically a single token.  When a full name
