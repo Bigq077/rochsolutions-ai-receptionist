@@ -43,8 +43,12 @@ from app.media_streams.turn_handler import (
 # its job — confirm the change was intended for that clinic, then re-baseline
 # with:  python -c "from tests.regression.test_b55_provisional_reschedule_closing
 #        import _sha; print(_sha('jv_v1'))"
+#
+# ⚠️ Re-pinned 2026-08-05 to DATE-REDACTED hashes — see `_sha`. The previous
+# values were raw hashes of a prompt containing today's date, so they were only
+# ever valid on the day they were taken.
 UNCHANGED_CLINIC_PROMPTS = {
-    "demo": "a245db1d4d06abd5",
+    "demo": "17c7162e49200716",
     # Re-pinned 2026-08-04. jv_v1 is the only other clinic with a
     # duration-choice service, so it is the only one the DURATIONS-ARE-FIXED
     # rewrite could move — demo, theorem and theorem_v3 are byte-identical
@@ -65,9 +69,9 @@ UNCHANGED_CLINIC_PROMPTS = {
     # axis, so both template_v1 clinics were told to refuse a service they sell.
     # Owner-confirmed 2026-08-04. demo/theorem/theorem_v3 are untouched below:
     # they use a different prompt engine and never render the step-2 block.
-    "jv_v1": "46d6a95cf2c4f7b9",
-    "theorem": "61b93fdac3e8fe18",
-    "theorem_v3": "e6202afb47d91820",
+    "jv_v1": "ef52a277a80a4799",
+    "theorem": "8565be9a48a7a9aa",
+    "theorem_v3": "f43d021df561b9b0",
 }
 
 OLD_CONFIRMED_WORDING = ("that's you rescheduled", "you're now in for")
@@ -85,7 +89,30 @@ def _rendered(clinic_id: str) -> str:
 
 
 def _sha(clinic_id: str) -> str:
-    return hashlib.sha256(_rendered(clinic_id).encode("utf-8")).hexdigest()[:16]
+    """Hash the rendered prompt with today's date redacted.
+
+    Raw hashes of this prompt rot at midnight — it interpolates the current
+    date — so all four pins below were failing on 2026-08-05 for no reason but
+    the calendar, and had been quietly contributing to the standing baseline.
+    A scope guarantee that fails daily stops being read, which is the opposite
+    of what it is for.
+
+    Weekday names, month names and digit runs are redacted; the WORDING, which
+    is what "did this fix leak into another clinic's script" actually asks, is
+    still hashed. Kept identical to the helper in
+    `test_b57_theorem_cancel_gate.py` so the two tables move together.
+    """
+    text = _DATEISH_RE.sub("<date>", _rendered(clinic_id))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+_DATEISH_RE = re.compile(
+    r"\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b"
+    r"|\b(?:january|february|march|april|may|june|july|august|september"
+    r"|october|november|december)\b"
+    r"|\d+",
+    re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------
