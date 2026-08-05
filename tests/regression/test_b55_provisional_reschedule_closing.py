@@ -43,6 +43,9 @@ from app.media_streams.turn_handler import (
 # its job — confirm the change was intended for that clinic, then re-baseline
 # with:  python -c "from tests.regression.test_b55_provisional_reschedule_closing
 #        import _sha; print(_sha('jv_v1'))"
+# Re-pinned 2026-08-05 for B-39 (retention question scoped to the cancel path
+# and bounded to one ask). jv_v1 and theorem_v3 move deliberately; demo and
+# theorem are verified unchanged.
 UNCHANGED_CLINIC_PROMPTS = {
 # Re-pinned 2026-08-04 (T-4, commit 76cef3d). demo, theorem and theorem_v3 all
 # moved together because the caller-ID read-back fix edits all three renderers:
@@ -63,7 +66,7 @@ UNCHANGED_CLINIC_PROMPTS = {
     # a sentence denying a session the clinic sells, in the same breath as the
     # line offering it. The claim is now scoped per service and derived from
     # clinic.json instead of asserted in engine code.
-    "jv_v1": "2850b4662a281b1f",
+    "jv_v1": "7d90d044ca7534b2",
     "theorem": "edb23ef9e7aea7ed",
     # Re-pinned 2026-08-04 on theorem-onboarding ONLY — this value deliberately
     # diverges from latency-eval's e6202afb47d91820, and a cherry-pick conflict
@@ -111,7 +114,7 @@ UNCHANGED_CLINIC_PROMPTS = {
     # which clinic again, and asks it FIRST — the model asks it in the same
     # turn as the ack, and stores the answer with collect_and_store. theorem_v3
     # only; demo and theorem unchanged.
-    "theorem_v3": "1659806dbbe712e6",
+    "theorem_v3": "baf8a8be151d5e23",
 }
 
 OLD_CONFIRMED_WORDING = ("that's you rescheduled", "you're now in for")

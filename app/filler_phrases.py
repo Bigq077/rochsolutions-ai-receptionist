@@ -36,7 +36,10 @@ THINKING_FILLERS_PRIMARY: List[str] = [
 
 THINKING_FILLERS_SECONDARY: List[str] = [
     "Nearly there…",
-    "Just a moment longer…",
+    # Was "Just a moment longer…" — `config.SILENCE_RULE` bans "just a moment"
+    # and `turn_handler` strips it from model speech, so this list was quietly
+    # exempt from a rule the rest of the engine enforces.
+    "Won't be long now…",
     "Almost got it…",
 ]
 
@@ -44,18 +47,54 @@ THINKING_FILLERS_SECONDARY: List[str] = [
 # (cancel / reschedule confirmation). These must read sensibly in BOTH cases,
 # so they avoid "checking the diary / what's free" phrasing (which is wrong once
 # the appointment is already found and we're cancelling it) — P17.
+#
+# 2026-08-05, owner instruction: this is the wait a caller hears when they have
+# rung to CANCEL or MOVE something, which is the most anxious moment of any call
+# on this system — they are worried about a fee, or about being told no. The
+# wording should sound understanding rather than like a hold message.
+#
+# "Bear with me just a moment…" is gone, and it should never have been here:
+# `config.SILENCE_RULE` bans that exact phrase and `turn_handler` strips it out
+# of model speech, so a deterministic filler was the one path by which the
+# caller could still hear the phrase the engine forbids everywhere else.
 LOOKUP_FILLERS: List[str] = [
-    "One moment while I check that for you…",
-    "Just pulling that up for you…",
-    "Let me find that for you…",
-    "Bear with me just a moment…",
-    "Let me sort that for you…",
+    "No problem at all — let me find that for you…",
+    "Of course — just pulling your appointment up…",
+    "Let me bring that up for you…",
+    "One moment while I find that for you…",
+    "Let me take a look for you…",
 ]
 
 BOOKING_WRITE_FILLERS: List[str] = [
-    "Getting that all booked in for you…",
+    # Was "Getting that all booked in for you…", which Gate 5f's real claim
+    # detector reads as a COMPLETED booking — while its two siblings do not. A
+    # filler is queued straight to TTS and never passes through
+    # `sanitise_response`, so the detector never saw it; the caller heard it
+    # before the write had returned, and heard it again if the write then failed.
+    "Just getting that into the diary for you…",
     "Just locking that in now…",
     "Popping that in the diary…",
+]
+
+# The write turns for the two flows a caller frets about. Before this they had
+# no filler at all — `_FILLER_TOOLS` covered availability, booking and lookup
+# only — so the caller who had just agreed to a cancellation heard nothing while
+# the calendar call ran. `B-40` measured 11.1 s of that on a live cancel.
+#
+# Reassuring, and TRUE even if the provider call then fails: they describe the
+# action being taken, not an outcome. They cannot be spoken over a REFUSED
+# write, because every write gate returns before the executor — and therefore
+# before the filler — is ever reached.
+CANCEL_WRITE_FILLERS: List[str] = [
+    "No problem at all — I'm taking care of that for you now…",
+    "That's absolutely fine — sorting that for you now…",
+    "Not to worry — doing that for you now…",
+]
+
+RESCHEDULE_WRITE_FILLERS: List[str] = [
+    "No problem at all — I'm moving that for you now…",
+    "Of course — getting that changed for you now…",
+    "That's fine — shifting that across for you now…",
 ]
 
 
