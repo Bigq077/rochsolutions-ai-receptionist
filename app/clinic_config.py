@@ -162,6 +162,20 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         # Branding / contact — used in SMS messages
         "sms_name": "Theorem Health and Wellness",
         "phone":    "07870 166861",
+
+        # Fees / policy line on the in-clinic booking confirmation SMS.
+        # Carried across from `main`, where it was hardcoded as FEES_NOTE with
+        # the note "Wording confirmed by Mark/Quentin". The port to this branch
+        # took latency-eval's sms_templates.py, which reads this line from
+        # clinic config instead — and nobody moved the wording into config, so
+        # Mark's clinic silently lost it. Every figure here matches what the
+        # prompt already tells callers: £85 assessment, £45 laser/shockwave
+        # surcharge, 24-hour cancellation.
+        "sms_fees_note": (
+            "Fees: £85, credit/debit cards taken.\n"
+            "Surcharges: +£45 for Laser or Shockwave Therapy.\n"
+            "Cancellations with less than 24hrs notice are charged.\n\n"
+        ),
         "transfer_phone": "+447870166861",   # E.164 — Twilio dials this for live transfers
 
         # Booking system / routing

@@ -207,17 +207,41 @@ def build_sms(session: dict) -> str:
     # Theorem/demo are unaffected (they have no template_v1 prompt_engine).
     _is_template_clinic = False
     # Optional per-clinic fees / policy line for the in-clinic confirmation.
-    # Driven from clinic.json ("sms_fees_note"); "" for clinics that don't set it
-    # so their message is byte-identical (theorem/demo have no such key).
+    # Driven from clinic.json ("sms_fees_note"); "" for clinics that don't set it.
     fees_note = ""
     try:
         from app.clinic_config import get_clinic
         _clinic = get_clinic(session.get("clinic_id"))
         fees_note = _clinic.get("sms_fees_note") or ""
+
+        # ── Identity comes from the clinic, for EVERY clinic ──────────────────
+        # 2026-08-05. This resolution used to sit inside the template_v1 gate
+        # below, so it ran for jv_v1 and vital_edge and for nobody else.
+        # theorem_v3 has prompt_engine=None, so it fell through to CLINIC_NAME /
+        # CLINIC_PHONE env vars — which are not set on its Render service. The
+        # live confirmation SMS therefore read:
+        #
+        #     "Your appointment at the clinic is confirmed"
+        #     "To reschedule, reply to this message or call us on ."
+        #     "— the clinic"
+        #
+        # while the clinic's own config held sms_name="Theorem Health and
+        # Wellness" and phone="07870 166861" the whole time. A patient was told
+        # to ring a number that was not there.
+        #
+        # Identity is not a template-engine concern: a clinic that knows its own
+        # name and number should use them regardless of which prompt builder it
+        # runs. The env vars stay as the last fallback for deployments with no
+        # clinic config at all. What remains gated below is `_is_template_clinic`,
+        # which drives the spelling-confirm note — a genuinely template-only
+        # behaviour.
+        clinic_name  = (
+            _clinic.get("sms_name") or _clinic.get("clinic_name") or clinic_name
+        )
+        clinic_phone = _clinic.get("phone") or clinic_phone
+
         if _clinic.get("prompt_engine") == "template_v1":
             _is_template_clinic = True
-            clinic_name  = _clinic.get("sms_name") or _clinic.get("clinic_name") or clinic_name
-            clinic_phone = _clinic.get("phone") or clinic_phone
             _locs  = _clinic.get("locations") or []
             _match = next(
                 (l for l in _locs if str(l.get("location_id", "")).lower() == _loc),
