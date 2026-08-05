@@ -10775,13 +10775,41 @@ class WebSocketCallHandler:
                                 # location= in CALL STATE and can answer the
                                 # original FAQ question (parking/hours/etc.)
                                 # without requiring the watchdog to fire.
+                                # T-17 (2026-08-05): the silence test used to read
+                                # _turn_speech_emitted, which is maintained ONLY by
+                                # _TrackedQueue in flow.py. theorem_v3 returns before
+                                # the FlowEngine path (see "do not fall through to
+                                # FlowEngine path"), so on this clinic that flag is
+                                # reset to False every turn and never set back — the
+                                # clause was dead and this branch fired whenever the
+                                # first two conditions held.
+                                #
+                                # Live consequence, reschedule call 00:08:43: TTS was
+                                # synthesised at .639 and this code decided "no TTS
+                                # emitted this turn" at .676. The synthetic transcript
+                                # raced the turn that was still speaking — two
+                                # lookup_patient calls, the appointment read out
+                                # twice, four overlapping fillers, caller hung up.
+                                #
+                                # _turn_real_tts is the flag llm_stream actually
+                                # maintains on this path: reset at the top of
+                                # run_turn, set the moment a chunk reaches the TTS
+                                # queue. The comment at ~11521 already said as much —
+                                # "the v3 tts_text_queue is a plain asyncio.Queue
+                                # (not _TrackedQueue), so _turn_speech_emitted is NOT
+                                # used here" — and this site had not been told.
+                                #
+                                # Only reachable on theorem_v3: it is the only clinic
+                                # with two sites, so no other deployment ever asks
+                                # "which clinic?" and no other deployment can enter
+                                # this branch at all.
                                 if (
                                     _prev_was_loc_q
                                     and self.session.get(
                                         "v3_location_confirmed"
                                     )
                                     and not self.session.get(
-                                        "_turn_speech_emitted"
+                                        "_turn_real_tts"
                                     )
                                 ):
                                     _requeue_loc = self.session.get(
