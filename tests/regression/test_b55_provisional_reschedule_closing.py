@@ -69,9 +69,9 @@ UNCHANGED_CLINIC_PROMPTS = {
     # axis, so both template_v1 clinics were told to refuse a service they sell.
     # Owner-confirmed 2026-08-04. demo/theorem/theorem_v3 are untouched below:
     # they use a different prompt engine and never render the step-2 block.
-    "jv_v1": "ef52a277a80a4799",
+    "jv_v1": "9d9bb58b69f88929",
     "theorem": "8565be9a48a7a9aa",
-    "theorem_v3": "f43d021df561b9b0",
+    "theorem_v3": "d5d26ee076213608",
 }
 
 OLD_CONFIRMED_WORDING = ("that's you rescheduled", "you're now in for")
