@@ -165,7 +165,37 @@ half, plus the four unchanged-clinic hashes).
 
 ---
 
-## `B-57` · **Theorem cannot cancel — its mandated CTA does not satisfy the cancel gate** — OPEN
+## `B-57` · **Theorem cannot cancel — its mandated CTA does not satisfy the cancel gate** — **FIXED 2026-08-05**
+
+> ✅ **Both halves fixed.** `latency-eval` `7090e4c`; `theorem-onboarding` `d2a3338`
+> (applied by symbol, not cherry-picked — the two branches have diverged too far
+> in these files for a clean pick).
+>
+> **Arming half:** `_cancel_retention_asked` now returns True for *either*
+> sanctioned wording — the retention question's `"altogether"` as before, or a
+> direct cancel CTA via the new `_direct_cancel_cta`. The CTA arm requires BOTH
+> an ask shape (`"shall i go ahead"`, `"would you like me to cancel"`, …) **and**
+> a cancel verb, so a statement cannot arm the gate, and the booking and
+> reschedule re-steers — which carry an ask shape but no cancel verb — still
+> cannot. That leak is asserted shut in the tests.
+>
+> **Consent half — the B-44 loop below.** `_cancel_reply_consents` now takes the
+> session and, *only* when the CTA named a single action, accepts a clear
+> affirmative through `_book_verdict_deterministic` (which settles negation and
+> correction before the yes, and returns `'unsure'` — which blocks — rather than
+> guessing). Against the retention question an explicit `"cancel"` token is still
+> required, because a bare "yes" answers an OR and identifies nothing. Every
+> negation, reschedule word and "keep/leave it" still blocks first, ahead of all
+> of this. **No classifier decides a deletion.**
+>
+> Read through `_cta_asked` rather than `last_bot_prompt` directly, so the
+> uncapped `last_question` is consulted too: a cancel read-back naming service,
+> practitioner and site runs past the 200-char cap (`B-38`), and the truncated
+> form would have silently fallen back to demanding the token.
+>
+> Regression: `tests/regression/test_b57_theorem_cancel_gate.py`, per arm and per
+> prompt — including the negation and re-steer cases, which are the ones that
+> must never regress.
 
 **P2. Found by sweep, 2026-08-04, not by a call.** The `B-36 R6` fix (`015eeb0`)
 was a single-literal write gate meeting a prompt that mandates different wording.
@@ -1101,7 +1131,39 @@ verb rather than adding two more literals.
 > to book this in now — shall I go ahead?"* both survive, with a test asserting
 > the flip. Same argument that made `B-41`'s widening safe.
 
-### `B-39` · the retention question is asked three times — NEW, **OPEN**, demo-audible
+### `B-39` · the retention question is asked three times — **FIXED 2026-08-05**
+
+> ✅ `latency-eval` `3d5d0b8`; `theorem-onboarding` `d2a3338`. Prompt-layer, in
+> both prompt engines — `clinic_template_prompt.py` (jv_v1, vital_edge) and
+> `susie_system_prompt.py` (theorem_v3).
+>
+> **The cause was one clause.** Both prompts said the retention question was
+> *"REQUIRED on the cancel path **EVERY TIME**"*. That is true of the **call** and
+> false of the **turn**, and "every time" is precisely the reading that produces a
+> loop — which is what the `CAe74ceae7` transcript above shows, the question and
+> the action in the same breath. Replaced with a **count**: *ASK IT ONCE PER
+> CALL*, followed by an explicit list of the answer shapes that discharge it
+> ("cancel", "cancel it altogether", "yes cancel it", or a plain affirmative) and
+> three named prohibitions — do not re-ask because the answer was short, do not
+> re-ask to be sure, never say it in the same turn as actioning the cancellation.
+> Each of the three sightings above maps to one of those three.
+>
+> **Also scoped to the cancel path, which is Quentin's bonus item** (2026-08-05):
+> the reschedule branch now carries an explicit prohibition — never ask a caller
+> who is *moving* an appointment whether they would rather cancel it, because they
+> are trying to keep it and the question invites them to lose it. The question
+> remains on the cancel path, where it is a deliberate retention step, and on a
+> genuinely ambiguous opening.
+>
+> ⚠️ **The `"altogether"` wording is deliberately still present in the cancel
+> turn.** Until `B-57` it was also load-bearing — the gate armed on that literal
+> and nothing else. `B-57` removed that coupling, but the phrase stays because
+> retention is wanted; the two fixes shipped together so neither is standing on
+> the other.
+>
+> Regression: `tests/regression/test_b39_retention_question_scope.py`, per prompt
+> engine, asserting the reschedule prohibition, the one-ask bound, the same-turn
+> case, and that the `"every time"` clause is gone.
 
 The caller said *"I'd like to cancel my appointment"*, then **"yes"**, then
 **"cancel"**, then **"I said I'd like to cancel it"** — and was asked to
@@ -1146,7 +1208,43 @@ cancel flow.**
 > answer shapes. **Two for two on my own narrowings being too clever** — see
 > [[anchor-defect-rows-before-scheduling]].
 
-### `B-40` · 9.9 s of dead air on the cancel turn, no filler — NEW, **OPEN**, P1-latency
+### `B-40` · 9.9 s of dead air on the cancel turn, no filler — **MITIGATED 2026-08-05**
+
+> ✅ `latency-eval` `4eb1e0c`; `theorem-onboarding` `d2a3338`. **Read this as
+> mitigated, not closed** — the chunk gate holding output for ~10 s is the
+> underlying cause and it is untouched. What changed is that the silence is no
+> longer silent.
+>
+> `_FILLER_TOOLS` mapped `check_availability`, `book_appointment` and
+> `lookup_patient` — and **not** `cancel_appointment` or
+> `reschedule_appointment`. So the two turns where a caller is most anxious, and
+> which both make a calendar round-trip after the caller's go-ahead, were the two
+> with no filler pool at all. Both are now mapped, to new
+> `CANCEL_WRITE_FILLERS` / `RESCHEDULE_WRITE_FILLERS`.
+>
+> **Safe against a blocked write:** a gate refusal returns before the filler
+> branch, so neither pool can be spoken over a `*_confirmation_required` result —
+> i.e. a filler can never imply an action the gate just refused.
+>
+> **This did not fix the arming path**, which is the other half of the sighting:
+> the filler armed on earlier turns only because a tool was detected early, and
+> here the tool call arrived at the end of generation. A pool cannot play if the
+> path never arms. What the mapping guarantees is that when it *does* arm on a
+> cancel or reschedule, the caller hears something appropriate rather than a
+> booking phrase or nothing.
+>
+> Bundled with it, per the owner's 2026-08-05 instruction: **"bear with me" and
+> "just a second" are gone** from every pool that can play on these turns
+> (`LOOKUP_FILLERS`, `THINKING_FILLERS_SECONDARY`,
+> `config.FILLER_PHRASES`), replaced with warmer wording. Two of the
+> replacements were caught by the new test for making a **false completion
+> claim** — *"Getting that all booked in for you…"* trips
+> `_false_write_claim` — which is exactly the `B-36` shape appearing in filler
+> text, and worth knowing is possible.
+>
+> Regression: `tests/regression/test_stall_phrases_on_cancel_and_reschedule.py` —
+> asserts the mapping, the banned phrases' absence, and that no filler reads as a
+> completed write.
 
 ```
 susie.latency  turn_seq=20 ttfa_ms=11155 content_ttfa_ms=11155
