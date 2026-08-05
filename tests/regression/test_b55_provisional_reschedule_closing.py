@@ -101,7 +101,13 @@ UNCHANGED_CLINIC_PROMPTS = {
     # to _build_theorem_v3 from theoremhealth.co.uk/joint-injections. theorem_v3
     # only; demo and theorem unchanged. See
     # tests/regression/test_joint_injections_service.py.
-    "theorem_v3": "55c56801a6607042",
+    # Re-pinned 2026-08-05 (T-18 follow-up). Three blocks outside the
+    # RESCHEDULE / CANCEL FLOW were still teaching the code-driven contract —
+    # the banned-openers carve-out ("the system handles that automatically"),
+    # ONE QUESTION PER TURN making ack-and-stop the global default, and the
+    # new-booking flow's first step swallowing reschedule intent. theorem_v3
+    # only; demo and theorem unchanged.
+    "theorem_v3": "c4d246b4eee2da27",
 }
 
 OLD_CONFIRMED_WORDING = ("that's you rescheduled", "you're now in for")

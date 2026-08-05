@@ -1971,13 +1971,29 @@ def _build_theorem_v3(session: dict) -> str:
         "recent context the caller gave you. Keep the recovery to "
         "one sentence before the CTA — do not over-explain the "
         "silence.\n\n"
+        # T-18 follow-up (2026-08-05). This block used to say "the
+        # acknowledgement is its own turn — the next question goes on the
+        # following turn", which is the flat opposite of the ACKNOWLEDGEMENT
+        # RULE section ("The acknowledgement and the next question are
+        # delivered in the same turn — never as separate turns"). The model
+        # resolved the contradiction by acking and stopping, which is how the
+        # reschedule flow opened on silence three calls running.
+        #
+        # Ack-and-stop is real, but it is a per-flow exception (booking step 1,
+        # where code injects the next question), not the global default. Stated
+        # that way round the two blocks agree.
         "ONE QUESTION PER TURN. Every response contains at most one "
-        "question mark. When acknowledging information, the "
-        "acknowledgement is its own turn — the next question goes "
-        "on the following turn. Never bundle two questions into one "
+        "question mark. Never bundle two questions into one "
         "response. Never offer two alternatives in one "
         "turn. Make one offer, wait, then offer the next if "
-        "needed.\n\n"
+        "needed.\n"
+        "An acknowledgement is NOT a turn of its own. Acknowledge and "
+        "ask in the SAME turn — see the ACKNOWLEDGEMENT RULE. The one "
+        "exception is a flow that tells you in terms to acknowledge "
+        "and stop, which only the new-booking flow's first step does. "
+        "If no flow has told you to stop, never end a turn on a bare "
+        "acknowledgement: it leaves the caller in silence with "
+        "nothing to answer.\n\n"
         "ANSWER WHAT WAS ASKED. Reply to the specific question. Do "
         "not volunteer related prices, durations, packages, or "
         "services unless the caller asks. \"How much is an "
@@ -2000,12 +2016,35 @@ def _build_theorem_v3(session: dict) -> str:
         "Never open a reply with (hollow call-centre openers): "
         "Of course, Absolutely, Certainly, Sure, Sure thing, "
         "Wonderful, Fantastic, Exactly, Indeed, Definitely, Totally, "
+        # T-18 follow-up (2026-08-05). This carve-out used to read: "The ONLY
+        # exception is the scripted reschedule acknowledgement 'Of course,
+        # let's get that moved for you.' — the system handles that
+        # automatically."
+        #
+        # Both halves were wrong, and together they are why the reschedule
+        # flow kept dying on the ack even after it was ported.
+        #
+        #  - The phrase it exempted is one Gate 5 deletes anyway. Its
+        #    banned_opener rule strips a leading "Of course, ", so the model
+        #    was told to say something the pipeline removes — and the strip is
+        #    visible in every one of these calls' logs.
+        #  - "the system handles that automatically" is no longer true. It
+        #    described the code-driven flow, where connection.py injected the
+        #    next question. The model owns that turn now. Left in place, this
+        #    sentence tells the model to ack and stop, which is exactly what it
+        #    did: ack, silence, caller hangs up.
+        #
+        # No exception now. "Of course" is simply banned, the reschedule ack
+        # opens without it, and the flow that owns the turn says what follows.
         "Obviously, Clearly, Great, Brilliant, Excellent, Superb. "
-        "The ONLY exception is the scripted reschedule acknowledgement "
-        "'Of course, let's get that moved for you.' — the system "
-        "handles that automatically. Never use 'Of course' as an "
-        "opener anywhere else — open directly with the substance "
-        "instead.\n\n"
+        "There are NO exceptions — not even the reschedule "
+        "acknowledgement, which opens \"Let's get that moved for "
+        "you.\" and never \"Of course, let's get that moved for "
+        "you.\" Open directly with the substance instead.\n"
+        "No acknowledgement is handled for you. Nothing is appended "
+        "to your turn by the system. If a flow needs a question "
+        "asked, YOU ask it, in the same turn as the "
+        "acknowledgement.\n\n"
         "Never use: \"Great question\", \"As an AI\", \"I'd be "
         "happy to help with that\", \"I'd be glad to\", "
         "\"I'd love to\", \"Feel free to\", \"Just a moment\", "
@@ -2820,6 +2859,23 @@ def _build_theorem_v3(session: dict) -> str:
         "readback, in one turn). Do NOT ask which clinic. If genuinely "
         "ambiguous, ask: 'Just to check — did you want to book an "
         "appointment, or cancel one you already have?' Do not assume "
+        "booking.\n"
+        # T-18 (2026-08-05). This step is the FIRST thing an existing-patient
+        # caller hits, and until now only a near-miss of "cancel" escaped it.
+        # "I'd like to reschedule my appointment" fell through to the
+        # "Otherwise" below — ack "Right —" and NOTHING ELSE, system injects
+        # the next question — so the reschedule flow's own opening turn was
+        # never reached. Three live calls died here on a bare ack.
+        "The same applies to an EXISTING appointment the caller wants "
+        "MOVED. If they say reschedule, rearrange, move, change, or "
+        "push back an appointment they already have, this is NOT a "
+        "new booking. Do NOT continue in this flow and do NOT stop "
+        "after an acknowledgement — go straight to the RESCHEDULE / "
+        "CANCEL FLOW and follow its OPENING TURN, which is the ack "
+        "AND the phone readback together in one turn. If it is "
+        "genuinely unclear whether they mean an appointment they "
+        "already have or a new one, ask: 'Just to check — is that an "
+        "appointment you've already got booked?' Do not assume a new "
         "booking.\n"
         "Otherwise, acknowledge simply: \"Right —\" and NOTHING ELSE. "
         "This phrase is your entire response for this turn. Do NOT "

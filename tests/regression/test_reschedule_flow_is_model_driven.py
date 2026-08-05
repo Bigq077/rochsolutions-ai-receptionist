@@ -202,6 +202,82 @@ def test_location_gate_is_suppressed_for_reschedule_and_cancel():
     )
 
 
+# ── 3b. No OTHER block may re-teach the code-driven contract ────────────────
+#
+# The port fixed the RESCHEDULE / CANCEL FLOW block and the code, and the flow
+# still died on a bare ack for three more live calls, because three other
+# blocks were still teaching the old behaviour. Editing the block you are
+# looking at is not enough in a 100k-char prompt: what reaches the model is the
+# UNION of every block, and the model obeys the most emphatic one it finds.
+
+
+def test_no_block_claims_the_system_finishes_the_turn():
+    """The model owns its whole turn now — nothing is appended by code.
+
+    The banned-openers block used to exempt "Of course, let's get that moved
+    for you." with "— the system handles that automatically". Both halves were
+    wrong: Gate 5 strips that opener, and no system injection remains. Left in,
+    it told the model to ack and stop.
+    """
+    p = _theorem_prompt()
+    assert "the system handles that automatically" not in p, (
+        "a block still tells the model the system finishes its reschedule "
+        "turn — it will ack and stop, and the caller hears silence"
+    )
+    assert "No acknowledgement is handled for you" in p
+    # "The system injects the next question" is deliberately NOT asserted away:
+    # it is still true of the new-booking flow's first step, which really is
+    # code-injected. Only the reschedule ack lost its injection.
+
+
+def test_ack_and_stop_is_not_the_global_default():
+    """Two blocks used to contradict each other outright.
+
+    ONE QUESTION PER TURN said "the acknowledgement is its own turn — the next
+    question goes on the following turn". The ACKNOWLEDGEMENT RULE said "The
+    acknowledgement and the next question are delivered in the same turn —
+    never as separate turns". The model resolved it by stopping.
+    """
+    p = _theorem_prompt()
+    assert "acknowledgement is its own turn" not in p, (
+        "ONE QUESTION PER TURN has gone back to making ack-and-stop the "
+        "default, contradicting the ACKNOWLEDGEMENT RULE"
+    )
+    assert "The acknowledgement and the next question are delivered in the same turn" in p
+    assert "An acknowledgement is NOT a turn of its own" in p
+
+
+def test_reschedule_intent_escapes_the_new_booking_flow_first_step():
+    """Booking step 1 is the first thing an existing patient hits.
+
+    Until 5 Aug only a near-miss of "cancel" escaped it; "I'd like to
+    reschedule my appointment" fell through to 'acknowledge simply "Right —"
+    and NOTHING ELSE'. The reschedule flow's opening turn was never reached.
+    """
+    p = _theorem_prompt()
+    step1 = p[p.index("1. Caller signals booking intent"):]
+    step1 = step1[:step1.index('acknowledge simply')]
+    assert "MOVED" in step1, (
+        "booking step 1 no longer hands reschedule intent to the reschedule "
+        "flow — a bare 'Right —' will swallow it again"
+    )
+    for word in ("reschedule", "rearrange", "move", "change"):
+        assert word in step1.lower(), f"{word!r} does not escape booking step 1"
+    assert "do NOT stop after an acknowledgement" in step1
+
+
+def test_the_reschedule_ack_is_taught_without_the_banned_opener():
+    """Gate 5 deletes a leading "Of course, ". The taught ack must not have one."""
+    p = _theorem_prompt()
+    banned = _banned_opener_re()
+    assert not banned.match("Let's get that moved for you.")
+    # The old form may appear only as an explicit negative example.
+    for m in re.finditer(r"[^.\n]*Of course, let's get that moved[^.\n]*", p):
+        assert "never" in m.group().lower(), (
+            f"the banned-opener form is still taught as the ack: {m.group()[:120]!r}"
+        )
+
+
 # ── 4. The not-found path must not dead-end on a transfer ───────────────────
 
 def test_lookup_not_found_offers_alternatives_before_transferring():
