@@ -244,7 +244,12 @@ def test_consent_reads_the_uncapped_question_too():
 # FlowEngine clinics and render neither block.
 UNMOVED_PROMPTS = {
     "demo": "17c7162e49200716",
-    "jv_v1": "9d9bb58b69f88929",
+    # Re-pinned 2026-08-05. BOOKING STEPS 1 gained a condition-led opening
+    # exception, gated on the condition library — so jv_v1 moves and every
+    # clinic without one (vital_edge, demo, theorem, theorem_v3) is
+    # byte-identical, which is the containment claim this table exists for.
+    # See tests/regression/test_condition_led_opening.py.
+    "jv_v1": "b393a5c7c1c6c8e7",
     "theorem": "8565be9a48a7a9aa",
     "theorem_v3": "d5d26ee076213608",
     "vital_edge": "102b1509d8665af3",
