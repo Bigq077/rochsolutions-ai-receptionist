@@ -1875,6 +1875,53 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
     # without the library keep the original generic-reassurance + deflection
     # wording byte-for-byte.
     _has_fluency = bool((clinic.get("condition_knowledge") or {}).get("conditions"))
+
+    # ── Condition-led opening (CAe689cfb5, 2026-08-05) ───────────────────────
+    # "I've had knee pain for three weeks, it's worse going down stairs, can I
+    # get booked in please" — a body part, a symptom, a duration and explicit
+    # booking intent in one breath. The most natural way a patient opens a call
+    # to a clinic that ships a condition library, and the one turn where two
+    # blocks of this prompt gave opposite instructions:
+    #
+    #   BOOKING STEPS 1   → "'Right —' and NOTHING ELSE … no question"
+    #   CONDITION FLUENCY → answer, give the pathway, "offer the best-fit service"
+    #
+    # The model split the difference and obeyed neither: it recited the library
+    # entry for 24 seconds, then asked two questions that are BOTH explicitly
+    # forbidden — the reason (1b: "that IS the reason: do NOT ask again") and
+    # new-vs-returning (its own HARD RULE: "PERMANENTLY BANNED FROM THIS ENTIRE
+    # FLOW"). It never offered to book, and the caller — who had asked to be
+    # booked in — hung up.
+    #
+    # Root cause is the same shape as T-18: because it did not say the scripted
+    # ack, `_is_booking_ack` never matched, connection.py injected nothing (no
+    # `booking_flow_active = True` in that call's log), and the model was left
+    # improvising a turn no rule covered.
+    #
+    # Gated on the condition library, so clinics without one — vital_edge has
+    # zero entries — render byte-identical and carry no risk from this change.
+    _step1_condition_led = ""
+    if _has_fluency:
+        _step1_condition_led = (
+            "EXCEPTION — THE CALLER LED WITH A CONDITION (this overrides the "
+            "'Right —' instruction above): if the SAME utterance that asked to "
+            "book also described a complaint — a body part, a symptom, an "
+            "injury, how long it has been going on — do NOT say 'Right —'. "
+            "They have already told you why they are calling AND asked to be "
+            "seen; a bare acknowledgement gives them nothing to answer and "
+            "wastes the turn. This turn IS the CONDITION FLUENCY reply, and it "
+            "is ONE short turn: one or two sentences showing you genuinely know "
+            "that condition, then a SINGLE question — the booking offer for the "
+            f"best-fit service, e.g. 'Shall I get you booked in with {prac} for "
+            "an assessment?'\n"
+            "Nothing else belongs on that turn. Do NOT ask what the appointment "
+            "is for — they just told you, and 1b already forbids re-asking it. "
+            "Do NOT ask whether they have been seen here before — that question "
+            "is banned outright everywhere in this flow. Do NOT ask two "
+            "questions. If a safety screen matches what they described, the "
+            "screen comes first and replaces the booking offer.\n"
+        )
+
     if _has_fluency:
         _step2_clinical = (
             "2. CLINICAL COMPLAINT EXCEPTION — MANDATORY for specific complaints: "
@@ -2029,6 +2076,7 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "acknowledge simply: 'Right —' and NOTHING ELSE. This phrase is your "
         "entire response for this turn — no question, no tool call. The system "
         "injects the next question automatically.\n"
+        f"{_step1_condition_led}"
         "EXCEPTION — BOOKING FLOW ALREADY ACTIVE: If CALL STATE shows a "
         "booking is already in progress, do NOT say 'Right —' and do NOT "
         "re-offer to book. Proceed directly to the current booking step "

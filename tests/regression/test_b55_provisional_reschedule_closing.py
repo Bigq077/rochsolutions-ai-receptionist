@@ -69,7 +69,12 @@ UNCHANGED_CLINIC_PROMPTS = {
     # axis, so both template_v1 clinics were told to refuse a service they sell.
     # Owner-confirmed 2026-08-04. demo/theorem/theorem_v3 are untouched below:
     # they use a different prompt engine and never render the step-2 block.
-    "jv_v1": "9d9bb58b69f88929",
+    # Re-pinned 2026-08-05. BOOKING STEPS 1 gained a condition-led opening
+    # exception, gated on the condition library — so jv_v1 moves and every
+    # clinic without one (vital_edge, demo, theorem, theorem_v3) is
+    # byte-identical, which is the containment claim this table exists for.
+    # See tests/regression/test_condition_led_opening.py.
+    "jv_v1": "b393a5c7c1c6c8e7",
     "theorem": "8565be9a48a7a9aa",
     "theorem_v3": "d5d26ee076213608",
 }
