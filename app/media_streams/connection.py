@@ -432,6 +432,25 @@ def _is_pure_filler(transcript: str) -> bool:
     return bool(words) and all(w in _PURE_FILLER_TOKENS for w in words)
 
 
+def should_notify_unreached_caller(session: dict) -> bool:
+    """True when a caller asked for a human and nothing else has reached staff.
+
+    Public and pure so the rule is testable — the call site lives at the tail of
+    a very long _cleanup, where it cannot be exercised directly.
+
+    `_waitlist_pinged` is the important exclusion: add_to_waitlist already texted
+    the practitioner on `transfer_phone`, which is the same number this notify
+    targets. Both firing means two near-identical texts about one caller, and an
+    alert that arrives twice is an alert the owner starts ignoring.
+    """
+    return bool(
+        session.get("human_requested")
+        and not session.get("booking_confirmed")
+        and not session.get("transfer_attempted")
+        and not session.get("_waitlist_pinged")
+    )
+
+
 def _write_cta_outstanding(session: dict) -> bool:
     """True when the bot's last turn asked a booking / move / cancel confirmation.
 
@@ -14354,11 +14373,7 @@ class WebSocketCallHandler:
             logger.warning("[ms_conn] mirror-save failed: %r", exc)
 
         # Notify staff if caller asked for a human but didn't get through
-        if (
-            self.session.get("human_requested")
-            and not self.session.get("booking_confirmed")
-            and not self.session.get("transfer_attempted")
-        ):
+        if should_notify_unreached_caller(self.session):
             try:
                 import os as _os
                 from app.notifications.sms import send_sms as _send_sms

@@ -245,7 +245,9 @@ def infer_call_outcome(session: dict[str, Any], summary: dict[str, Any]) -> str:
       rescheduled           — calendar event updated
       reached_confirmation  — caller reached "shall I go ahead and book?" but
                               hung up or went silent before saying yes
-      human_requested       — caller explicitly asked for a human / live transfer
+      human_requested       — caller was promised a human would make contact:
+                              an explicit transfer request, or a waitlist /
+                              callback entry taken on their behalf
       out_of_hours          — call received outside clinic opening hours
       manual_followup       — booking attempted but needs manual intervention
       faq_only              — caller only asked questions, no booking attempt
