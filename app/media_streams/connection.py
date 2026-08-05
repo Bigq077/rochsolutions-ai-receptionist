@@ -8340,17 +8340,33 @@ class WebSocketCallHandler:
                         _gate_intent = self.session.get(
                             "v3_caller_intent", "booking"
                         )
-                        # T-18 (2026-08-05): the reschedule/cancel flow has no
-                        # clinic question. Its location comes from the
-                        # lookup_patient result's appointment_type — the prompt
-                        # has said so in a STRICT RULE the whole time, and says
-                        # explicitly that a location collected here is
-                        # discarded. So "Was your original appointment at our
-                        # Awlstuh or Redditch clinic?" cost the caller a turn to
-                        # produce an answer nothing reads, and its re-queue is
-                        # what collapsed the 00:08:43 call (T-17 / d9df18a).
-                        # The model now opens this flow itself with the ack and
-                        # the phone readback in one turn.
+                        # The reschedule/cancel flow DOES ask which clinic —
+                        # owner's call, 2026-08-05, and it is source (2) of the
+                        # prompt's STRICT RULE. What is suppressed here is the
+                        # CODE asking it, because the MODEL now asks it, in the
+                        # same turn as the ack.
+                        #
+                        # Exactly one of them may ask. When code owned it the
+                        # question arrived as an injected turn, and it was that
+                        # injection's re-queue that collapsed the 00:08:43 call
+                        # (T-17 / d9df18a). Model-driven, it is one turn with
+                        # the ack, there is nothing to re-queue, and no code
+                        # path has to literal-match the model's speech to know
+                        # the ack happened — which is what left three calls in
+                        # dead air (T-18).
+                        #
+                        # The caller's answer is stored by the model calling
+                        # collect_and_store(field="location"), which syncs
+                        # selected_location and is persisted to Redis by
+                        # save_session. lookup_patient then overwrites it from
+                        # the appointment if the two disagree (b4174bf) — the
+                        # booking, not the caller's memory, decides the write.
+                        #
+                        # Trade-off accepted knowingly: the location DTMF ladder
+                        # and the Haiku alias resolver only arm when the CODE
+                        # asks, so they do not cover this question on this flow.
+                        # A mishear is caught instead by the lookup, which will
+                        # not find a Redditch booking under an Awlstuh search.
                         if _v3_gate_fired and _gate_intent in (
                             "reschedule", "cancel"
                         ):

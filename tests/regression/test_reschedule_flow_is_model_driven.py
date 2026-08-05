@@ -119,24 +119,53 @@ def test_reschedule_ack_survives_gate5_and_is_still_detected():
 
 # ── 2. The prompt must own the opening turn ─────────────────────────────────
 
-def test_reschedule_flow_asks_for_the_phone_in_its_opening_turn():
+def test_reschedule_flow_asks_which_clinic_first():
+    """Owner's call, 2026-08-05: the clinic question is asked, and asked FIRST.
+
+    It is source (2) of the STRICT RULE — an explicit statement from the caller
+    naming the clinic — and on a two-site clinic it is the natural opening
+    question. What changed in a1c4593 is only WHO asks it: the model, in the
+    same turn as the ack, rather than code injecting a separate turn.
+    """
     block = _reschedule_block(_theorem_prompt())
-    assert "OPENING TURN" in block
-    assert "is that the number the appointment was booked under?" in block, (
-        "the model no longer has the phone readback, and code no longer "
-        "injects a phone question — the flow would open on silence"
+    assert "TURN 1" in block
+    assert "Was your original appointment at our Awlstuh or Redditch clinic?" in block, (
+        "the reschedule flow no longer asks which clinic"
+    )
+    assert "Was the appointment you'd like to cancel at our Awlstuh or Redditch clinic?" in block, (
+        "the cancel flow no longer asks which clinic"
     )
 
 
-def test_reschedule_flow_never_asks_which_clinic():
-    """Two sites, but the location comes from the lookup, never from a question.
+def test_the_clinic_answer_is_stored():
+    """Asking is only half of it — the answer has to reach the session.
 
-    The prompt has always said the caller's clinic preference is discarded in
-    this flow; asking anyway cost a turn, and that question's re-queue is what
-    collapsed the 00:08:43 call.
+    collect_and_store(field="location") syncs selected_location and is
+    persisted to Redis by save_session; without it the answer is spoken into
+    the void and downstream tools fall back to the alcester default.
     """
     block = _reschedule_block(_theorem_prompt())
-    assert "THERE IS NO CLINIC QUESTION IN THIS FLOW" in block
+    assert 'collect_and_store(field="location"' in block
+    for value in ("alcester", "redditch"):
+        assert value in block, f"no stored value given for {value}"
+
+
+def test_the_phone_readback_shares_the_turn_with_the_clinic_ack():
+    """The dead-air shape, one step later.
+
+    "Right, Awlstuh." on its own is a bare acknowledgement with nothing for the
+    caller to answer — exactly what left three calls in silence at the ack.
+    """
+    block = _reschedule_block(_theorem_prompt())
+    assert "is that the number the appointment was booked under?" in block
+    assert "NEVER end turn 2 on the clinic acknowledgement alone" in block
+
+
+def test_the_appointment_beats_the_callers_memory():
+    """Both sources can now exist and disagree. The booking record wins."""
+    block = _reschedule_block(_theorem_prompt())
+    assert "WHEN BOTH SOURCES EXIST, THE APPOINTMENT WINS" in block
+    assert "Never move or cancel an appointment at a site it is not at" in block
 
 
 def test_prompt_does_not_promise_that_code_asks_for_the_number():
@@ -191,14 +220,23 @@ def test_use_this_number_is_not_injected_on_reschedule_or_cancel():
     )
 
 
-def test_location_gate_is_suppressed_for_reschedule_and_cancel():
+def test_exactly_one_asker_owns_the_clinic_question():
+    """The flow asks which clinic; the MODEL asks it, not code.
+
+    Either can ask. Both must not. When code owned it, the question arrived as
+    an injected turn and its re-queue collapsed the 00:08:43 call, and the
+    injection depended on literal-matching the model's ack, which left three
+    calls in dead air. The prompt now carries the question; this pins the code
+    side to silence so they cannot both fire.
+    """
     code = _handler_code()
     assert re.search(
         r'if _v3_gate_fired and _gate_intent in \(\s*\n?\s*"reschedule", "cancel"\s*\n?\s*\):',
         code,
-    ), "the location gate no longer has its reschedule/cancel suppression"
+    ), "the code location gate is asking on this flow again — it would double-ask"
     assert "Was your original appointment at" not in code, (
-        "the discarded clinic question is back in the location gate"
+        "the clinic question is back in the location gate; it belongs to the "
+        "prompt now, and two askers means the caller is asked twice"
     )
 
 

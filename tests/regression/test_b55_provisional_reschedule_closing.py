@@ -107,7 +107,11 @@ UNCHANGED_CLINIC_PROMPTS = {
     # ONE QUESTION PER TURN making ack-and-stop the global default, and the
     # new-booking flow's first step swallowing reschedule intent. theorem_v3
     # only; demo and theorem unchanged.
-    "theorem_v3": "c4d246b4eee2da27",
+    # Re-pinned 2026-08-05 (owner's call). The reschedule/cancel flow asks
+    # which clinic again, and asks it FIRST — the model asks it in the same
+    # turn as the ack, and stores the answer with collect_and_store. theorem_v3
+    # only; demo and theorem unchanged.
+    "theorem_v3": "1659806dbbe712e6",
 }
 
 OLD_CONFIRMED_WORDING = ("that's you rescheduled", "you're now in for")
