@@ -197,18 +197,38 @@ async def test_phone_keypad_mode_wins_over_location_keypad():
     )
 
 
-async def test_cancel_and_reschedule_continue_their_own_flow():
-    """After the clinic is known, cancel/reschedule must go to phone lookup —
-    not be dropped into the booking timing question."""
+async def test_cancel_and_reschedule_do_not_inject_a_phone_question():
+    """After the clinic is known, cancel/reschedule inject NOTHING (T-18).
+
+    This test previously asserted the opposite — that the keypad choice armed
+    `v3_awaiting_phone_confirm` and spoke 'Is the number you're calling on the
+    one associated with your booking? If so, just say "use this number".' That
+    was the code-driven contract, and it was replaced on 2026-08-05 by
+    latency-eval's model-driven one: the model reads the number back
+    digit-grouped in its own ack turn. Anything injected here asks a second
+    time, and arming the confirm flag would make the deterministic 'use this
+    number' intercept swallow the caller's plain 'yes' to that read-back.
+
+    Still asserted: the keypad choice is heard and acknowledged, so the caller
+    is not left in silence and the flow keeps its clinic.
+    """
     for intent in ("cancel", "reschedule"):
         session = {"v3_awaiting_location_dtmf": True, "v3_caller_intent": intent}
         h = _handler(session)
         await h._handle_dtmf({"dtmf": {"digit": "1"}})
 
-        assert session.get("v3_awaiting_phone_confirm") is True, (
-            f"{intent} did not advance to the phone step after the keypad choice"
+        assert session.get("v3_awaiting_phone_confirm") is not True, (
+            f"{intent} armed the deterministic phone-confirm intercept for a "
+            "question the model no longer asks"
         )
-        assert "use this number" in _spoken(h).lower()
+        spoken = _spoken(h).lower()
+        assert "use this number" not in spoken, (
+            f"{intent} is injecting the banned set-phrase question again"
+        )
+        assert "alcester" in spoken, (
+            f"{intent} did not acknowledge the keypad choice — the caller "
+            "pressed 1 and heard nothing back"
+        )
 
 
 # ── coverage of every context that asks the question ────────────────────────
@@ -223,8 +243,15 @@ def test_question_is_armed_for_booking_cancel_reschedule_and_faq():
         f"only {arms} site(s) arm the location question — a flow lost its "
         "fallback ladder"
     )
-    # cancel/reschedule get their own past-tense wording
-    assert "Was your original appointment at" in src
+    # The cancel/reschedule past-tense wording ("Was your original appointment
+    # at our Awlstuh or Redditch clinic?") was removed on 2026-08-05 — that
+    # flow has no clinic question at all, because its location comes from the
+    # lookup_patient result. Asserting the string is still present would now
+    # pass on the comments that explain its removal, which is worse than not
+    # asserting it. What matters is that BOOKING kept its question.
+    assert "Is this for our Awlstuh or Redditch clinic?" in conn._LOC_RUNG1_OPEN, (
+        "the booking flow's open two-choice clinic question is gone"
+    )
 
 
 def test_voice_still_resolves_without_touching_the_keypad():

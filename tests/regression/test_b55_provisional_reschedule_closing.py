@@ -89,7 +89,15 @@ UNCHANGED_CLINIC_PROMPTS = {
     # 20s answers because "don't volunteer information not asked about"
     # was present and ignored — hours + parking drew hours, parking, the
     # train-station walk and two competing offers.
-    "theorem_v3": "366ff482b1a93c27",
+    # Re-pinned 2026-08-05 (T-18). theorem_v3 only, again — demo and theorem
+    # are unchanged, which is the useful half: the RESCHEDULE / CANCEL FLOW
+    # was ported from latency-eval into _build_theorem_v3 and did not leak
+    # into the shared renderers. The flow used to be code-driven (the model
+    # acked, code injected the clinic and phone questions); the model now owns
+    # the opening turn, reads the caller-ID number back digit-grouped, and no
+    # code path literal-matches its speech. See
+    # tests/regression/test_reschedule_flow_is_model_driven.py.
+    "theorem_v3": "35695be4b9b356a8",
 }
 
 OLD_CONFIRMED_WORDING = ("that's you rescheduled", "you're now in for")

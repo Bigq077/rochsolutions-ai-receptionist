@@ -5513,13 +5513,28 @@ class WebSocketCallHandler:
                 _ack = f"{_disp}."
                 _intent = self.session.get("v3_caller_intent", "booking")
                 if _intent in ("reschedule", "cancel"):
-                    _next_q = (
-                        "Is the number you're calling on "
-                        "the one associated with your "
-                        "booking? If so, just say "
-                        "'use this number'."
-                    )
-                    self.session["v3_awaiting_phone_confirm"] = True
+                    # T-18 (2026-08-05) — one of seven sites that injected
+                    # 'Is the number you're calling on the one associated
+                    # with your booking? If so, just say "use this number".'
+                    # once a clinic was resolved.
+                    #
+                    # Two things are wrong with it. It is the set-phrase style
+                    # the owner banned on the other branches on 3 Aug — it asks
+                    # the caller to reason about a number they cannot hear. And
+                    # it belongs to a code-driven flow that no longer exists:
+                    # the ported RESCHEDULE / CANCEL FLOW has the model read
+                    # the number back digit-grouped in its own ack turn, so
+                    # anything injected here asks it a second time.
+                    #
+                    # These arms are mostly unreachable now (this flow no
+                    # longer asks the clinic question at all) but a caller who
+                    # arrives with booking intent and then pivots can still
+                    # land here, so they inject nothing rather than the wrong
+                    # thing. v3_awaiting_phone_confirm stays unset throughout:
+                    # it arms the deterministic "use this number" intercept,
+                    # which would swallow the caller's plain "yes" to the
+                    # model's readback.
+                    _next_q = None
                 else:
                     # FAQ-before-clinic: if the caller asked a clinic-specific
                     # FAQ (parking/hours/etc.) and we only asked the clinic in
@@ -8322,17 +8337,35 @@ class WebSocketCallHandler:
                             "v3_location_asked", False
                         )
 
-                        if _v3_gate_fired:
-                            _gate_intent = self.session.get(
-                                "v3_caller_intent", "booking"
+                        _gate_intent = self.session.get(
+                            "v3_caller_intent", "booking"
+                        )
+                        # T-18 (2026-08-05): the reschedule/cancel flow has no
+                        # clinic question. Its location comes from the
+                        # lookup_patient result's appointment_type — the prompt
+                        # has said so in a STRICT RULE the whole time, and says
+                        # explicitly that a location collected here is
+                        # discarded. So "Was your original appointment at our
+                        # Awlstuh or Redditch clinic?" cost the caller a turn to
+                        # produce an answer nothing reads, and its re-queue is
+                        # what collapsed the 00:08:43 call (T-17 / d9df18a).
+                        # The model now opens this flow itself with the ack and
+                        # the phone readback in one turn.
+                        if _v3_gate_fired and _gate_intent in (
+                            "reschedule", "cancel"
+                        ):
+                            _v3_gate_fired = False
+                            self.session["v3_location_asked"] = False
+                            self.session["v3_location_q_active"] = False
+                            logger.info(
+                                "[ms_conn v3] location gate suppressed — "
+                                "intent=%s owns its own location via "
+                                "lookup_patient",
+                                _gate_intent,
                             )
-                            if _gate_intent in ("reschedule", "cancel"):
-                                _loc_q = (
-                                    "Was your original appointment at "
-                                    "our Awlstuh or Redditch clinic?"
-                                )
-                            else:
-                                _loc_q = _LOC_RUNG1_OPEN
+
+                        if _v3_gate_fired:
+                            _loc_q = _LOC_RUNG1_OPEN
                             await self.tts_text_queue.put(_loc_q)
                             self.session["last_bot_prompt"] = _loc_q
                             self.session["last_question"] = _loc_q
@@ -8376,7 +8409,66 @@ class WebSocketCallHandler:
                                 or sig in _utt_lower_faq
                                 for sig in _FAQ_SIGNALS
                             )
-                            if _is_faq:
+
+                            # ── Intent pivot detection ────────────────────
+                            # The caller changed their mind while the location
+                            # gate was active. Evaluated only when the
+                            # utterance is not already an FAQ, which preserves
+                            # the precedence this had when it sat below the
+                            # FAQ block: "can you tell me the cancellation
+                            # policy?" stays an FAQ.
+                            #
+                            # T-18 (2026-08-05): a pivot used to inject "Was
+                            # your original appointment at our Awlstuh or
+                            # Redditch clinic?" and re-arm the gate. That is a
+                            # second copy of a question whose answer the
+                            # reschedule flow discards — its STRICT RULE takes
+                            # location from the lookup_patient result — so the
+                            # caller paid a turn to be ignored, and the re-armed
+                            # gate is the surface that collapsed the 00:08:43
+                            # call (T-17). The pivot now clears every location
+                            # flag and routes to run_turn on the FAQ path
+                            # below, where the model opens the RESCHEDULE /
+                            # CANCEL FLOW with its ack plus the phone readback.
+                            _RESCHEDULE_PIVOTS = {
+                                "reschedule", "rearrange", "move my",
+                                "change my",
+                            }
+                            _CANCEL_PIVOTS = {
+                                "cancel", "cancellation",
+                            }
+                            _pivot_intent = None
+                            if not _is_faq:
+                                if any(
+                                    w in _utt_lower_faq
+                                    for w in _RESCHEDULE_PIVOTS
+                                ):
+                                    _pivot_intent = "reschedule"
+                                elif any(
+                                    w in _utt_lower_faq
+                                    for w in _CANCEL_PIVOTS
+                                ):
+                                    _pivot_intent = "cancel"
+
+                            if _pivot_intent:
+                                self.session["v3_caller_intent"] = _pivot_intent
+                                self.session["v3_booking_intent"] = False
+                                self.session["v3_location_asked"] = False
+                                self.session["v3_location_q_active"] = False
+                                self.session[
+                                    "v3_awaiting_use_this_clinic"
+                                ] = False
+                                await save_session(
+                                    self.call_sid, self.session
+                                )
+                                logger.info(
+                                    "[ms_conn v3] intent pivot in loc gate:"
+                                    " %s from %r — loc gate cleared, handing"
+                                    " to the model-driven flow",
+                                    _pivot_intent, utterance[:60],
+                                )
+
+                            if _is_faq or _pivot_intent:
                                 logger.info(
                                     "[ms_conn v3] FAQ detected in loc gate "
                                     "— routing to run_turn: %r",
@@ -8540,71 +8632,6 @@ class WebSocketCallHandler:
                                         self.call_sid, self.session
                                     )
                                 continue
-
-                            # ── Intent pivot detection ────────────────────
-                            # If the caller changes their mind while the
-                            # location gate is active, detect the new
-                            # intent and re-route immediately.
-                            _RESCHEDULE_PIVOTS = {
-                                "reschedule", "rearrange", "move my",
-                                "change my",
-                            }
-                            _CANCEL_PIVOTS = {
-                                "cancel", "cancellation",
-                            }
-                            _utt_pivot = utterance.lower()
-                            _pivot_intent = None
-                            if any(
-                                w in _utt_pivot for w in _RESCHEDULE_PIVOTS
-                            ):
-                                _pivot_intent = "reschedule"
-                            elif any(
-                                w in _utt_pivot for w in _CANCEL_PIVOTS
-                            ):
-                                _pivot_intent = "cancel"
-
-                            if _pivot_intent:
-                                self.session["v3_caller_intent"] = (
-                                    _pivot_intent
-                                )
-                                self.session["v3_booking_intent"] = False
-                                self.session["v3_location_asked"] = False
-                                self.session[
-                                    "v3_awaiting_use_this_clinic"
-                                ] = False
-                                _pivot_loc_q = (
-                                    "Was your original appointment at "
-                                    "our Awlstuh or Redditch clinic?"
-                                )
-                                await self.tts_text_queue.put(_pivot_loc_q)
-                                self.session[
-                                    "last_bot_prompt"
-                                ] = _pivot_loc_q
-                                self.session[
-                                    "last_question"
-                                ] = _pivot_loc_q
-                                self.session[
-                                    "v3_location_q_active"
-                                ] = True
-                                # Re-arm location gate: we temporarily cleared
-                                # v3_location_asked above so the gate-fired
-                                # check (which reads it) is not confused, but
-                                # we immediately restore it so the NEXT
-                                # transcript correctly enters _v3_loc_answering.
-                                # Without this, the caller's location answer
-                                # after the pivot question falls through to the
-                                # free-form LLM path and is never intercepted.
-                                self.session["v3_location_asked"] = True
-                                await save_session(
-                                    self.call_sid, self.session
-                                )
-                                logger.info(
-                                    "[ms_conn v3] intent pivot in loc"
-                                    " gate: %s from %r — loc gate restored",
-                                    _pivot_intent, utterance[:60],
-                                )
-                                self._last_audio_or_transcript_ts = time.monotonic()
-                                return
 
                             if self.session.get(
                                 "v3_awaiting_use_this_clinic"
@@ -8931,12 +8958,10 @@ class WebSocketCallHandler:
                                         "v3_caller_intent", "booking"
                                     )
                                     if _intent in ("reschedule", "cancel"):
-                                        _next_q = (
-                                            "Is the number you're calling "
-                                            "on the one associated with "
-                                            "your booking? If so, just "
-                                            "say 'use this number'."
-                                        )
+                                        # T-18 — the model asks for the number
+                                        # itself now; see the long note at the
+                                        # DTMF location site.
+                                        _next_q = None
                                     else:
                                         # FAQ-before-clinic: re-queue a pending
                                         # clinic-specific FAQ now the clinic is
@@ -9017,10 +9042,12 @@ class WebSocketCallHandler:
                                     self.session[
                                         "v3_booking_intent"
                                     ] = False
-                                    if _intent in ("reschedule", "cancel"):
-                                        self.session[
-                                            "v3_awaiting_phone_confirm"
-                                        ] = True
+                                    # T-18 — v3_awaiting_phone_confirm is no
+                                    # longer armed here: it intercepts a "use
+                                    # this number" answer to a question this
+                                    # flow no longer asks, and would swallow
+                                    # the caller's "yes" to the model's own
+                                    # readback.
                                     await self.tts_text_queue.put(_ack)
                                     if _next_q is not None:
                                         await self.tts_text_queue.put(
@@ -9202,16 +9229,10 @@ class WebSocketCallHandler:
                                             "v3_caller_intent", "booking"
                                         )
                                         if _intent in ("reschedule", "cancel"):
-                                            _new_ret_q = (
-                                                "Is the number you're "
-                                                "calling on the one "
-                                                "associated with your "
-                                                "booking? If so, just "
-                                                "say 'use this number'."
-                                            )
-                                            self.session[
-                                                "v3_awaiting_phone_confirm"
-                                            ] = True
+                                            # T-18 — the model asks for the
+                                            # number itself now; see the long
+                                            # note at the DTMF location site.
+                                            _new_ret_q = None
                                         else:
                                             _sc_tp = (
                                                 self.session.get(
@@ -9569,13 +9590,10 @@ class WebSocketCallHandler:
                                         # next step based on intent and
                                         # whether time preference is known.
                                         if _intent in ("reschedule", "cancel"):
-                                            _h_next_q = (
-                                                "Is the number you're "
-                                                "calling on the one "
-                                                "associated with your "
-                                                "booking? If so, just "
-                                                "say 'use this number'."
-                                            )
+                                            # T-18 — the model asks for the
+                                            # number itself now; see the long
+                                            # note at the DTMF location site.
+                                            _h_next_q = None
                                             _h_tp = ""
                                         else:
                                             _h_sc = (
@@ -9614,10 +9632,9 @@ class WebSocketCallHandler:
                                         self.session[
                                             "v3_booking_intent"
                                         ] = False
-                                        if _intent in ("reschedule", "cancel"):
-                                            self.session[
-                                                "v3_awaiting_phone_confirm"
-                                            ] = True
+                                        # T-18 — v3_awaiting_phone_confirm is
+                                        # no longer armed here; see the note at
+                                        # the alias-match site above.
                                         await self.tts_text_queue.put(_ack)
                                         if _h_tp:
                                             # Time preference known — re-queue
@@ -11003,15 +11020,36 @@ class WebSocketCallHandler:
                                         " extracted: %s", _name_found,
                                     )
 
+                            # These are matched against _last_bot, which since
+                            # 2 Aug is the POST-Gate-5 text (see _record_turn in
+                            # llm_stream: "conversation_history stores what the
+                            # caller HEARD"). Gate 5's banned_opener rule strips
+                            # a leading "Of course, " / "Of course — ", so any
+                            # entry here that begins with one can never match.
+                            # "of course, let's get that moved" was exactly that
+                            # dead entry: the prompt mandated the phrase, the
+                            # gate deleted the opener, the ack went undetected,
+                            # and the reschedule flow opened with seven seconds
+                            # of dead air (T-18, call 00:34:13).
+                            #
+                            # Entries are therefore anchored on the part of the
+                            # phrase Gate 5 leaves alone. Do not add a phrase
+                            # that starts with a banned opener — check
+                            # turn_handler._GATE5_PATTERNS["banned_opener"]
+                            # before editing this tuple.
+                            # The three legacy "of course — …" entries were
+                            # removed with the same reasoning: all three were
+                            # dead, and the two long forms are already covered
+                            # by their un-prefixed equivalents below. A bare
+                            # "of course —" leaves nothing at all once Gate 5
+                            # has run, so it could never have matched anything.
                             _V3_ACK_PHRASES = (
-                                "right —",                                       # current scripted phrase (short ack)
-                                "of course —",                                  # legacy (keep during transition)
-                                "of course — let me get that sorted for you",  # legacy long form
-                                "of course — i'd be happy to sort that",        # legacy fallback
-                                "of course, let's get that moved",
-                                "of course — let's get that sorted",
-                                "no problem at all",
-                                "let me get that sorted",
+                                "right —",                       # current scripted phrase (short ack)
+                                "let's get that moved",          # reschedule ack
+                                "let's get that sorted",
+                                "no problem at all",             # cancel ack
+                                "let me get that sorted",        # legacy long form, de-prefixed
+                                "i'd be happy to sort that",     # legacy fallback, de-prefixed
                             )
                             # Spec P: once booking flow is active, suppress all
                             # further ack detection so mid-flow "Of course —"
@@ -11264,15 +11302,27 @@ class WebSocketCallHandler:
                                         "v3_caller_intent", "booking"
                                     )
                                     if _intent in ("reschedule", "cancel"):
-                                        _next_q = (
-                                            "Is the number you're calling "
-                                            "on the one associated with "
-                                            "your booking? If so, just "
-                                            "say 'use this number'."
-                                        )
-                                        self.session[
-                                            "v3_awaiting_phone_confirm"
-                                        ] = True
+                                        # T-18 (2026-08-05): no injected phone
+                                        # question on this path any more. It used
+                                        # to be 'Is the number you're calling on
+                                        # the one associated with your booking?
+                                        # If so, just say "use this number".' —
+                                        # the set-phrase style the owner banned
+                                        # on the other branches on 3 Aug, because
+                                        # it asks the caller to reason about a
+                                        # number they cannot hear.
+                                        #
+                                        # The ported RESCHEDULE / CANCEL FLOW
+                                        # makes the model read the number back
+                                        # digit-grouped in its own ack turn, so
+                                        # injecting anything here would ask twice.
+                                        # v3_awaiting_phone_confirm stays unset
+                                        # deliberately: it arms the deterministic
+                                        # "use this number" intercept, which
+                                        # assumes a question we no longer ask and
+                                        # would swallow the caller's plain "yes"
+                                        # to the readback.
+                                        _next_q = None
                                     else:
                                         # Always ask the timing question at the
                                         # booking ack.  We deliberately do NOT
@@ -11398,11 +11448,28 @@ class WebSocketCallHandler:
                                         "v3_soft_location_candidate"
                                     )
                                     if _loc_intent in ("reschedule", "cancel"):
-                                        _loc_q = (
-                                            "Was your original appointment "
-                                            "at our Awlstuh or Redditch "
-                                            "clinic?"
-                                        )
+                                        # T-18 (2026-08-05) — this is the site
+                                        # that fires immediately after the
+                                        # reschedule ack, and it used to ask
+                                        # "Was your original appointment at our
+                                        # Awlstuh or Redditch clinic?".
+                                        #
+                                        # The reschedule flow has no clinic
+                                        # question: its STRICT RULE takes
+                                        # location from the lookup_patient
+                                        # result's appointment_type and says in
+                                        # terms that the caller's preference is
+                                        # irrelevant. So the caller answered,
+                                        # the answer was discarded, and the
+                                        # re-queue of this very question is what
+                                        # collapsed the 00:08:43 call (T-17).
+                                        #
+                                        # None here means nothing is queued and
+                                        # no location flag is armed (see the
+                                        # `if _loc_q is not None` guard below),
+                                        # leaving the model's own turn — ack
+                                        # plus phone readback — to stand.
+                                        _loc_q = None
                                     elif _soft_cand:
                                         # Caller named a clinic during the
                                         # call — ask a targeted confirmation

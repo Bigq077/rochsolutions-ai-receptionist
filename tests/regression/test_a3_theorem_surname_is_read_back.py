@@ -237,7 +237,15 @@ def test_reschedule_and_cancel_readbacks_are_not_given_a_surname_rule():
         "different write family (B-36) and its name comes from a lookup."
     )
 
-    cancel = p[p.index("CANCEL READBACK RULES"):]
+    # The cancel branch no longer has a "CANCEL READBACK RULES" heading: the
+    # 2026-08-05 port of latency-eval's contract removed the second cancel
+    # read-back entirely. By the time it is reached the caller has confirmed
+    # the appointment is theirs AND chosen cancel over reschedule at the
+    # retention question, so asking again both is redundant and — because the
+    # reply contains the word "cancel" — loops on the read-back and never
+    # executes. The section is still the right place to look for a leaked
+    # surname rule, so the anchor moves to the branch itself.
+    cancel = p[p.index("• Cancel →"):]
     cancel = cancel[:cancel.index("→")] if "→" in cancel else cancel[:1500]
     assert "surname" not in cancel.lower(), (
         "A surname rule has leaked into the CANCEL read-back — same reasoning."

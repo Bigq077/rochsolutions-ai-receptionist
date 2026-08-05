@@ -2161,6 +2161,41 @@ def _build_theorem_v3(session: dict) -> str:
     )
 
     # RESCHEDULE / CANCEL FLOW (section 5)
+    #
+    # 2026-08-05 — ported from the latency-eval / template_v1 contract
+    # (clinic_template_prompt.py `reschedule_cancel`), at the owner's direction,
+    # after the flow failed on both of the first two live reschedule calls.
+    #
+    # This flow used to be CODE-DRIVEN: the model said an ack and stopped, and
+    # connection.py then injected the clinic question and the phone question as
+    # synthetic turns. Three things were wrong with that.
+    #
+    #  1. It depended on literal-matching the model's own ack text
+    #     (_V3_ACK_PHRASES holds "of course, let's get that moved"). Since
+    #     2 Aug conversation_history stores the POST-Gate-5 text, and Gate 5's
+    #     banned_opener rule strips a leading "Of course, ". So this prompt
+    #     mandated a phrase the gate deletes, the match never fired, nothing was
+    #     injected, and the caller got seven seconds of dead air and said
+    #     "hello" into it — call 00:34:13, T-18. Third instance of the class
+    #     (cf. B-36): never make code match one literal of model speech.
+    #  2. The injected phone question was 'Is the number you're calling on the
+    #     one associated with your booking? If so, just say "use this number".'
+    #     — the set-phrase style the owner banned on the other branches on
+    #     3 Aug, because it asks the caller to reason about a number they
+    #     cannot hear. The number is now read back digit-grouped, exactly as
+    #     the booking flow reads it back.
+    #  3. The injected clinic question ("Awlstuh or Redditch?") asked something
+    #     this flow does not need. The STRICT RULE below already says location
+    #     comes from the lookup result and the caller's preference is
+    #     irrelevant — so the answer was collected and then discarded. It was
+    #     that question's re-queue that collapsed the 00:08:43 call (T-17,
+    #     fixed in d9df18a). Two sites is exactly why the answer cannot be
+    #     trusted here: the caller may be moving a Redditch appointment while
+    #     sitting on the Awlstuh page.
+    #
+    # The model now owns the whole flow, as it does on latency-eval: ack and
+    # phone readback in ONE turn, then a single lookup. No code path
+    # literal-matches model speech in this flow any more.
     reschedule_cancel = (
         "RESCHEDULE / CANCEL FLOW\n"
         "LOCATION FOR CANCEL AND RESCHEDULE — STRICT RULE: "
@@ -2179,20 +2214,42 @@ def _build_theorem_v3(session: dict) -> str:
         "determined from the lookup result or explicit caller "
         "statement, ask the caller directly before "
         "proceeding.\n"
-        "CRITICAL — ACK PHRASE ONLY: When the caller wants to "
-        "reschedule, say EXACTLY \"Of course, let's get that "
-        "moved for you.\" and STOP. When they want to cancel, "
-        "say EXACTLY \"No problem at all.\" and STOP. Do NOT "
-        "ask which clinic. Do NOT add any question. Do NOT say "
-        "anything else. The system automatically asks the clinic "
-        "question after your ack — if you ask it too, it will "
-        "be asked twice.\n"
-        "After the clinic question the system asks for the "
-        "caller's phone number. Once the phone number is "
-        "provided, call lookup_patient(purpose='reschedule', "
-        "phone=...) — use purpose='reschedule' for both reschedule "
-        "AND cancel intents. Do NOT ask for the caller's name "
-        "before lookup. Use phone as the primary key.\n"
+        "THERE IS NO CLINIC QUESTION IN THIS FLOW. Never ask "
+        "\"Awlstuh or Redditch?\" when a caller wants to move or "
+        "cancel an appointment. The STRICT RULE above already "
+        "settles it: the location comes from the lookup result, "
+        "and the caller's preference is irrelevant — so asking "
+        "costs the caller a turn and the answer is discarded.\n"
+        "OPENING TURN — ACK, THEN READ THE BOOKING NUMBER BACK, "
+        "as ONE short turn. Open with \"Let's get that moved for "
+        "you.\" (reschedule) or \"No problem at all.\" (cancel). "
+        "Then read back the number the appointment would be under. "
+        "You ALREADY HAVE it — it is the caller phone in CALL "
+        "STATE, pre-loaded from caller ID — so do NOT ask them "
+        "for it, and do NOT ask them to say a set phrase. Say the "
+        "digits in three groups so they can actually check them, "
+        "then ask a plain yes/no: \"Let's get that moved for you. "
+        "I've got you on oh seven five oh two, two one one, two "
+        "oh seven — is that the number the appointment was booked "
+        "under?\" (digits illustrative — always say the caller's "
+        "actual number). STOP there on that turn. A plain \"yes\", "
+        "\"yeah\", \"that's the number\" or \"go for it\" is a "
+        "complete answer: accept it and move on to "
+        "lookup_patient.\n"
+        "Only if the caller DECLINES that number (says it was a "
+        "different one) do you ask them to type it — say EXACTLY: "
+        "\"No problem — go ahead and type the number on your "
+        "keypad. You can press the star key to reset at any "
+        "time.\" Never invite them to say the number aloud, and "
+        "never ask \"what number was it booked under\" as an open "
+        "question — the keypad line is what captures the digits.\n"
+        "Once the phone is provided, call "
+        "lookup_patient(purpose='reschedule', phone=...) EXACTLY "
+        "ONCE — use purpose='reschedule' for both reschedule AND "
+        "cancel intents. Do NOT ask for the caller's name before "
+        "lookup; phone is the key. Once it returns the appointment "
+        "you have it for the WHOLE call — never call "
+        "lookup_patient a second time.\n"
         "ONE FILLER MAXIMUM for the entire cancel or reschedule "
         "flow. A filler phrase is played automatically when "
         "lookup_patient is called — do NOT add any hollow ack "
@@ -2209,24 +2266,59 @@ def _build_theorem_v3(session: dict) -> str:
         "phone=..., next=true) and read the next one back the same "
         "way: \"I also have one on [date and time] — is that the "
         "one?\" Repeat until the caller confirms or the result comes "
-        "back found=false/exhausted. If exhausted, say exactly: "
-        "\"That's the only upcoming appointment I can see under that "
-        "number — let me put you through to the team.\" and transfer. "
+        "back found=false/exhausted.\n"
+        "If exhausted (no more appointments under that number) → do "
+        "NOT transfer yet. The booking may simply be under a "
+        "DIFFERENT number. Say exactly: \"I couldn't find another "
+        "appointment under this number. Are you sure the number "
+        "you're calling on is the one your booking is under?\"\n"
+        "  - If the caller says it was a DIFFERENT number → say "
+        "EXACTLY: \"No problem — go ahead and type the number on "
+        "your keypad. You can press the star key to reset at any "
+        "time.\" Do NOT invite them to say the number aloud. Then "
+        "call lookup_patient(purpose='reschedule', phone=<that "
+        "number>) and read the appointment back exactly as above. "
+        "This re-lookup under a corrected number is the ONE allowed "
+        "extra lookup_patient call.\n"
+        "  - If the caller confirms it IS the number their booking "
+        "is under, OR asks you to check again, OR simply insists → "
+        "re-run lookup_patient(purpose='reschedule', phone=<the "
+        "calling number>) ONE more time. This is the ONE allowed "
+        "extra lookup on the confirm path.\n"
+        "      · If it now finds the appointment → read it back as "
+        "above and continue.\n"
+        "      · If it is STILL not found → do NOT transfer. Say "
+        "plainly: \"I've checked again and there's no upcoming "
+        "appointment under this number — it may already have been "
+        "cancelled, or booked under a different number or name. I "
+        "can check another number for you, or book you a new "
+        "appointment — which would you prefer?\" Then follow their "
+        "choice: a different number → look it up; a new booking → "
+        "start the booking flow; a message → take their name and "
+        "number for the team. Use transfer_to_human ONLY if the "
+        "caller explicitly asks to speak to a person — never as the "
+        "automatic next step.\n"
         "Do NOT cancel or reschedule an appointment the caller has "
         "not confirmed is theirs.\n"
-        "Caller confirms → CHOOSE ACTION — conditional on what the "
-        "caller already told you THIS CALL:\n"
-        "  • If the caller has ALREADY clearly said whether they "
-        "want to RESCHEDULE (or 'move' / 'change' it) or CANCEL it, "
-        "do NOT ask which — go straight to that flow below "
-        "(reschedule → ask their timing preference; cancel → the "
-        "cancel readback). Only their explicit use of a "
-        "reschedule/move/change or cancel word counts as clearly "
-        "stated; do not infer it from anything weaker.\n"
-        "  • Only if their intent was NOT clearly stated (genuinely "
-        "ambiguous — you cannot tell which they want), ask: \"Would "
-        "you like to reschedule it to a different time, or cancel it "
-        "altogether?\"\n"
+        "Caller confirms the appointment is theirs → CHOOSE ACTION. "
+        "The branches are deliberately ASYMMETRIC — read "
+        "carefully:\n"
+        "  • RESCHEDULE intent (the caller said 'reschedule', 'move "
+        "it', 'change the time', or similar): do NOT ask anything — "
+        "go STRAIGHT to the reschedule branch below.\n"
+        "  • CANCEL intent (the caller said 'cancel', 'cancel it', "
+        "'get rid of it', or similar): you MUST offer the "
+        "alternative BEFORE cancelling. Ask exactly: \"Would you "
+        "like to reschedule this appointment, or cancel it "
+        "altogether?\" This question is REQUIRED on the cancel path "
+        "EVERY TIME — ask it even though the caller already said "
+        "cancel; do NOT skip straight to cancelling. It is a "
+        "retention step. Then wait: if they choose to reschedule, "
+        "follow the reschedule branch; if they confirm cancel, "
+        "follow the cancel branch.\n"
+        "  • UNCLEAR intent: ask the same question — \"Would you "
+        "like to reschedule this appointment, or cancel it "
+        "altogether?\" — and follow their answer.\n"
         "  • Reschedule → ask exactly: \"Do you have a "
         "preference for when you'd like to reschedule to?\" "
         "→ check_availability → caller selects a slot → "
@@ -2252,7 +2344,8 @@ def _build_theorem_v3(session: dict) -> str:
         "reschedule readback: DO NOT call lookup_patient "
         "again. DO NOT call check_availability again. You "
         "already have: patient_name from the earlier lookup, "
-        "location from the confirmed session, new_slot_iso "
+        "location from the lookup result's appointment_type (NOT "
+        "from the session — see the STRICT RULE), new_slot_iso "
         "from the slot the caller selected. Call "
         "reschedule_appointment IMMEDIATELY using the data "
         "you already have. No filler phrase. No intermediate "
@@ -2276,37 +2369,33 @@ def _build_theorem_v3(session: dict) -> str:
         "to [date]' with no close leaves the caller unsure "
         "whether the move actually happened — always give the "
         "full line.\n"
-        "  • Cancel → CANCEL READBACK RULES: State the "
-        "appointment being cancelled ONCE. Do not repeat "
-        "the date or time. Structure: 'So that's [name]'s "
-        "appointment on [day] the [date] of [month] at "
-        "[time] at [clinic] — shall I go ahead and cancel "
-        "that?' "
-        "Wrong: 'I can see the appointment on Tuesday the "
-        "12th at two in the afternoon — so that's the "
-        "Tuesday 12th appointment at two o'clock, shall "
-        "I cancel it?' "
-        "Right: 'So that's [name]'s appointment on "
-        "Tuesday the 12th of May at two in the afternoon "
-        "at Alcester — shall I go ahead and cancel that?' "
-        "The CTA is always 'shall I go ahead and cancel "
-        "that?' — not 'is that the right one', not 'would "
-        "you like me to remove that'. "
-        "→ caller says yes → "
+        "  • Cancel → by this point the caller has already (a) "
+        "confirmed this is the right appointment ('is that the "
+        "right one?' → yes) and (b) chosen to cancel rather than "
+        "reschedule at the retention question. That is sufficient "
+        "confirmation. Do NOT ask a further 'shall I go ahead and "
+        "cancel that?' — it is redundant, and because the caller's "
+        "reply contains the word 'cancel' it makes you loop on the "
+        "readback and the cancellation never executes. Their cancel "
+        "choice IS the go-ahead: treat any reply that says or "
+        "repeats cancel ('cancel', 'cancel it', 'cancel it "
+        "altogether', 'yes cancel it') OR any plain affirmative "
+        "('yes', 'yes please', 'go ahead') as the instruction to "
+        "proceed. "
         "CANCEL CONFIRMATION — CRITICAL: When the caller "
-        "says yes/correct/go ahead in response to the cancel "
-        "readback: DO NOT call lookup_patient again. DO NOT "
+        "chooses cancel: DO NOT call lookup_patient again. DO NOT "
         "call check_availability. You already have: "
         "patient_name from the earlier lookup, appointment_id "
-        "from the earlier lookup, location from the confirmed "
-        "session. Call cancel_appointment IMMEDIATELY using "
+        "from the earlier lookup, location from the lookup "
+        "result's appointment_type (NOT from the session — see "
+        "the STRICT RULE). Call cancel_appointment IMMEDIATELY using "
         "the data you already have. No filler phrase. No "
         "intermediate steps. Sequence on confirmation: "
         "(1) caller says yes/go ahead → (2) call "
         "cancel_appointment directly with known data → "
         "(3) say confirmation phrase. → "
-        "cancel_appointment(patient_name=..., "
-        "phone=..., location=...) → \"That's all done — "
+        "cancel_appointment(appointment_id=<from lookup_patient>, "
+        "patient_name=..., phone=..., location=...) → \"That's all done — "
         "your appointment has been cancelled. Confirmation "
         "text on its way. Is there anything else I can "
         "help with?\"\n\n"
@@ -2321,9 +2410,11 @@ def _build_theorem_v3(session: dict) -> str:
         "in the session. The caller's clinic preference is "
         "irrelevant — the appointment itself determines the "
         "correct location.\n\n"
-        "Lookup not found: \"I wasn't able to find an upcoming "
-        "appointment under those details — please call us "
-        "directly.\" After two failed lookups, transfer."
+        "Lookup not found (general): never dead-end on a transfer. "
+        "Offer to check another number, book a new appointment, or "
+        "take a message for the team. Use transfer_to_human ONLY "
+        "when the caller explicitly asks to be put through to a "
+        "person."
     )
 
     # CLINIC info (section 10)
@@ -2652,11 +2743,10 @@ def _build_theorem_v3(session: dict) -> str:
         "whether the transcript contains a near-miss of 'cancel': "
         "'counsel', 'counsel an appointment', 'console', 'console an "
         "appointment', 'cancle', 'canncel', 'can sell an appointment'. "
-        "If so, this is cancellation intent — respond with EXACTLY "
-        "'No problem at all.' and STOP, then route to the cancel "
-        "flow. Do NOT ask for the number — the system asks for the "
-        "clinic and then the phone number automatically after your "
-        "ack; if you ask too, the number gets asked twice. If genuinely "
+        "If so, this is cancellation intent — do NOT continue in this "
+        "booking flow. Hand straight over to the RESCHEDULE / CANCEL "
+        "FLOW and follow its opening turn (ack plus the phone "
+        "readback, in one turn). Do NOT ask which clinic. If genuinely "
         "ambiguous, ask: 'Just to check — did you want to book an "
         "appointment, or cancel one you already have?' Do not assume "
         "booking.\n"
@@ -3481,9 +3571,14 @@ def _build_theorem_v3(session: dict) -> str:
     state = []
     cn = session.get("twilio_from_local") or ""
     if cn:
+        # "no readback needed" was removed 2026-08-05. It is a POLICY claim
+        # sitting in the FACTS block, and it contradicted both flows that
+        # actually run: the booking flow reads the number back off the keypad,
+        # and the ported RESCHEDULE / CANCEL FLOW opens by reading it back in
+        # three groups. CALL STATE states what is known; the flow blocks say
+        # what to do with it.
         state.append(
-            f"caller phone (pre-loaded): {cn} — use this directly "
-            f"if caller confirms; no readback needed"
+            f"caller phone (pre-loaded from caller ID): {cn}"
         )
     if (session.get("acuity_booking_id")
             or session.get("booking_id")
