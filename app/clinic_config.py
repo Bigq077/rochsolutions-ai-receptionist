@@ -163,6 +163,13 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         "sms_name": "Theorem Health and Wellness",
         "phone":    "07870 166861",
 
+        # Number printed in the confirmation SMS. Deliberately NOT `phone`:
+        # 07380 841468 is the clinic's own inbound line (see PHONE_TO_CLINIC
+        # above) and the number the SMS is sent from, so "reply to this message"
+        # and "call us" reach the same place. `phone` above is the team's
+        # direct number and stays as what Susie quotes on a call.
+        "sms_phone": "07380 841468",
+
         # Fees / policy line on the in-clinic booking confirmation SMS.
         # Carried across from `main`, where it was hardcoded as FEES_NOTE with
         # the note "Wording confirmed by Mark/Quentin". The port to this branch

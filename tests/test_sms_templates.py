@@ -36,10 +36,13 @@ def _session(
 # 1. New patient → arrival note present
 # ---------------------------------------------------------------------------
 
-def test_new_patient_includes_first_visit_note():
+def test_new_patient_includes_first_visit_note(monkeypatch):
+    """The wording is gone (2026-08-05) but the NEW branch still selects the
+    note slot — see the _SENTINEL comment further down."""
     from app.sms_templates import build_sms
+    monkeypatch.setattr("app.sms_templates.FIRST_VISIT_NOTE", "[[FIRST-VISIT-NOTE]]")
     body = build_sms(_session(patient_type="NEW"))
-    assert "5 mins early" in body
+    assert "[[FIRST-VISIT-NOTE]]" in body
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +53,7 @@ def test_returning_patient_omits_first_visit_note():
     from app.sms_templates import build_sms
     body = build_sms(_session(patient_type="RETURNING"))
     assert "5 mins early" not in body
+    assert "[[FIRST-VISIT-NOTE]]" not in body
 
 
 # ---------------------------------------------------------------------------
@@ -128,41 +132,53 @@ def test_build_maps_link_empty_returns_empty():
 # clinic caller whose full name was captured gets it (a returning caller's
 # surname is just as vulnerable to a silent STT homophone).
 
-def test_booked_treatment_session_infers_returning():
+# The arrival note itself was removed from the message on 2026-08-05 at the
+# owner's instruction, so "5 mins early" is no longer in any body. The
+# new-vs-returning inference it used to reveal is still live and still worth
+# guarding, so these patch a sentinel into the note slot and assert on that
+# instead of on wording that a future copy edit can delete again.
+_SENTINEL = "[[FIRST-VISIT-NOTE]]"
+
+
+def test_booked_treatment_session_infers_returning(monkeypatch):
     from app.sms_templates import build_sms
+    monkeypatch.setattr("app.sms_templates.FIRST_VISIT_NOTE", _SENTINEL)
     session = {
         "collected": {"name": "Quinton Rock"},          # no patient_type
         "_booked_service": "msk_treatment_session",
         "selected_slot_label": "Thursday 23 July at 5:40pm",
     }
     body = build_sms(session)
-    assert "5 mins early" not in body, "returning follow-up got the first-visit note"
+    assert _SENTINEL not in body, "returning follow-up got the first-visit note"
 
 
-def test_booked_initial_assessment_stays_new():
+def test_booked_initial_assessment_stays_new(monkeypatch):
     from app.sms_templates import build_sms
+    monkeypatch.setattr("app.sms_templates.FIRST_VISIT_NOTE", _SENTINEL)
     session = {
         "collected": {"name": "Jane Smith"},
         "_booked_service": "msk_initial_assessment",
         "selected_slot_label": "Monday 20 July at 4:30pm",
     }
-    assert "5 mins early" in build_sms(session)
+    assert _SENTINEL in build_sms(session)
 
 
-def test_new_or_returning_session_key_respected():
+def test_new_or_returning_session_key_respected(monkeypatch):
     from app.sms_templates import build_sms
+    monkeypatch.setattr("app.sms_templates.FIRST_VISIT_NOTE", _SENTINEL)
     session = {
         "collected": {"name": "Jane Smith"},
         "new_or_returning": "returning",
         "selected_slot_label": "Monday 20 July at 4:30pm",
     }
-    assert "5 mins early" not in build_sms(session)
+    assert _SENTINEL not in build_sms(session)
 
 
-def test_no_signal_defaults_to_new():
+def test_no_signal_defaults_to_new(monkeypatch):
     from app.sms_templates import build_sms
+    monkeypatch.setattr("app.sms_templates.FIRST_VISIT_NOTE", _SENTINEL)
     body = build_sms({"collected": {"name": "Jane Smith"}})
-    assert "5 mins early" in body
+    assert _SENTINEL in body
 
 
 def test_returning_plan_with_full_name_does_not_raise():

@@ -63,10 +63,31 @@ def test_theorem_confirmation_names_the_clinic():
 
 def test_theorem_confirmation_gives_a_number_to_ring():
     body = _sms("theorem_v3", "alcester")
-    assert "call us on 07870 166861" in body
+    assert "call us on 07380 841468" in body
     assert "call us on ." not in body, (
-        "the reschedule line has no phone number in it — the exact live defect"
+        "the contact line has no phone number in it — the exact live defect"
     )
+
+
+def test_the_sms_number_is_the_line_the_sms_came_from():
+    """2026-08-05, owner instruction: wherever a patient-facing message says
+    "call us", it must be 07380 841468 — the clinic's own inbound line, which
+    is also the number the SMS is sent from, so "reply to this message" and
+    "call us" reach the same place. `phone` (07870 166861) is the team's direct
+    number and is still what Susie quotes on a call, so this is a separate
+    `sms_phone` key rather than a change to `phone`."""
+    assert get_clinic("theorem_v3").get("sms_phone") == "07380 841468"
+    assert "07870 166861" not in _sms("theorem_v3", "alcester"), (
+        "the SMS is quoting the team's direct number again"
+    )
+
+
+def test_clinics_without_an_sms_phone_are_untouched():
+    """`sms_phone` is Theorem-only; everyone else must still get `phone`."""
+    for clinic_id in ("jv_v1", "vital_edge"):
+        clinic = get_clinic(clinic_id)
+        assert not clinic.get("sms_phone")
+        assert f"call us on {clinic['phone']}" in _sms(clinic_id)
 
 
 @pytest.mark.parametrize("clinic_id", ["theorem_v3", "theorem", "jv_v1", "demo"])
@@ -150,6 +171,24 @@ def test_template_clinics_never_inherit_a_theorem_redirect():
 
 
 # ── the fees line carried over from `main` ──────────────────────────────────
+
+def test_the_arrival_note_is_gone():
+    """2026-08-05, owner instruction: the "arrive 5 mins early and bring any
+    relevant medical records" paragraph comes out of the confirmation. Pinned
+    so a future port from `main` (where it is hardcoded) doesn't put it back."""
+    body = _sms("theorem_v3", "alcester")
+    assert "arrive 5 mins early" not in body
+    assert "medical records or scan results" not in body
+
+
+def test_the_reschedule_wording_is_gone_but_a_contact_line_remains():
+    """The reply-to-reschedule wording came out; the number did not. A
+    confirmation with no way to reach the clinic would be a worse message than
+    the one this replaced."""
+    body = _sms("theorem_v3", "alcester")
+    assert "To reschedule" not in body
+    assert "Any questions, call us on 07380 841468." in body
+
 
 def test_theorem_carries_its_fees_note():
     """`main` had this hardcoded as FEES_NOTE, "Wording confirmed by

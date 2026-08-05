@@ -28,10 +28,12 @@ _LOCATION_SHORT_LINKS = {
     "redditch": MAPS_SHORT_URL_REDDITCH,
 }
 
-FIRST_VISIT_NOTE = (
-    "As it's your first visit, please arrive 5 mins early and bring any "
-    "relevant medical records or scan results.\n\n"
-)
+# Arrival / what-to-bring note. Removed from the confirmation SMS on
+# 2026-08-05 at the owner's instruction — the message was doing too much and
+# this was the paragraph to lose. Kept as an empty constant rather than ripped
+# out so the first_visit branch, its logging and its tests stay intact and the
+# wording can be restored in one line.
+FIRST_VISIT_NOTE = ""
 # Returning-on-plan patients: warm welcome-back, no arrival-time fuss
 RETURNING_PLAN_NOTE = "Great to have you back — see you at your appointment! 🙌\n\n"
 RETURNING_VISIT_NOTE = ""
@@ -46,7 +48,7 @@ BOOKING_CONFIRMATION_SMS = (
     "{fees_note}"
     "{full_name_request}"
     "Maps: {maps_link}\n\n"
-    "To reschedule, reply to this message or call us on {clinic_phone}.\n\n"
+    "Any questions, call us on {clinic_phone}.\n\n"
     "See you soon!\n— {clinic_name}"
 )
 
@@ -60,7 +62,7 @@ HOME_VISIT_CONFIRMATION_SMS = (
     "🏠 At your home address\n\n"
     "Please reply to this message with your full home address and postcode so "
     "we can finalise your visit.\n\n"
-    "To reschedule, reply to this message or call us on {clinic_phone}.\n\n"
+    "Any questions, call us on {clinic_phone}.\n\n"
     "See you soon!\n— {clinic_name}"
 )
 
@@ -74,7 +76,7 @@ REMOTE_CONFIRMATION_SMS = (
     "⏰ {appointment_time}\n"
     "💻 Video / phone consultation — {clinic_name} will be in touch at your "
     "appointment time with how to join.\n\n"
-    "To reschedule, reply to this message or call us on {clinic_phone}.\n\n"
+    "Any questions, call us on {clinic_phone}.\n\n"
     "See you soon!\n— {clinic_name}"
 )
 
@@ -251,7 +253,13 @@ def build_sms(session: dict) -> str:
         clinic_name  = (
             _clinic.get("sms_name") or _clinic.get("clinic_name") or clinic_name
         )
-        clinic_phone = _clinic.get("phone") or clinic_phone
+        # `sms_phone` wins where a clinic sets one: the number a patient should
+        # ring off the back of a text is the line the text came FROM, so that
+        # "call us" and "reply to this message" reach the same place. Falls back
+        # to `phone` for clinics that don't distinguish the two.
+        clinic_phone = (
+            _clinic.get("sms_phone") or _clinic.get("phone") or clinic_phone
+        )
 
         if _clinic.get("prompt_engine") == "template_v1":
             _is_template_clinic = True
