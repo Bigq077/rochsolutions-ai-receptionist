@@ -6646,10 +6646,20 @@ async def _exec_add_to_waitlist(args: dict, session: dict) -> dict:
     if not patient_name or not phone:
         return {"error": "Name and phone are required for the waitlist."}
 
+    # A waitlist entry is a promise that a human will make contact. Say so, or
+    # infer_call_outcome has nothing to read and falls through to "abandoned" —
+    # which sends the caller the "give us a call back and book" copy moments
+    # after Susie told them the clinic would ring *them*. Same flag
+    # transfer_to_human sets, because it is the same promise.
+    session["human_requested"] = True
+
     # Heads-up SMS to the clinic (transfer_phone, e.g. Marcus) so a waitlist /
     # coming-soon enquiry actually reaches a human — without this the entry just
     # sits in Redis and nobody follows up, so "the team will be in touch" is an
     # empty promise. Fire-and-forget, non-fatal, deduped to one per call.
+    # `_waitlist_pinged` also stands the cleanup staff-notify down: it targets
+    # the same transfer_phone, so without the dedupe the flag set above would
+    # earn the practitioner two texts about one caller.
     if not session.get("_waitlist_pinged"):
         try:
             from app.clinic_config import get_clinic
