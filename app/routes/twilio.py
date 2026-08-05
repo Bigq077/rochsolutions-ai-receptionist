@@ -435,7 +435,49 @@ async def status(request: Request) -> PlainTextResponse:
         session = await get_session(call_sid) or {}
     except Exception:
         session = {}
-    
+
+    # ── T-2: do not summarise a call this route knows nothing about ──────────
+    # 2026-08-05. Reproduced five times on the Theorem acceptance run:
+    #
+    #   📊 Row built — outcome=abandoned            name=None         phone=no
+    #   📊 Row built — outcome=reached_confirmation name=Quentin Rook phone=yes
+    #
+    # Two paths summarise every call. This one fires FIRST, against a session
+    # that the media-streams connection has not written back yet, so it reads
+    # an empty session and concludes the call was abandoned. The connection
+    # cleanup then writes the truthful row. Consequences, in order of how much
+    # they hurt: Mark's sheet shows every call twice, once as abandoned; the
+    # caller gets a second, wrong follow-up SMS; and `abandoned_call` is wired
+    # IMMEDIATE/sms in app/obs/alerts.py, so an operator is paged about a
+    # SUCCESSFUL booking. Alerts that fire on success get ignored within a
+    # week, which is how a real one gets missed.
+    #
+    # Absence of data is not evidence of abandonment. On a `completed` call the
+    # media-streams path owns the record and always runs its cleanup, so this
+    # route stands down. Dropped statuses (busy/no-answer/failed) are NOT
+    # skipped: no WebSocket ever opened for those, no cleanup will run, and the
+    # missed-call row is the only record there will be.
+    #
+    # The `call_summary_logged` check is the guard connection.py's comment has
+    # always claimed existed. It did not — this route set the flag and never
+    # read it — so it covers the reverse ordering too.
+    _session_has_substance = bool(
+        (session.get("collected") or {})
+        or session.get("conversation_history")
+        or session.get("stream_sid")
+        or session.get("selected_slot")
+    )
+    if session.get("call_summary_logged") or (
+        call_status == "completed" and not _session_has_substance
+    ):
+        logger.info(
+            "[T-2] /status standing down for %s (status=%s, already_logged=%s, "
+            "session_substance=%s) — media-streams cleanup owns this record",
+            call_sid, call_status,
+            bool(session.get("call_summary_logged")), _session_has_substance,
+        )
+        return PlainTextResponse("ok")
+
     # Add Twilio metadata to session
     ended_at = datetime.utcnow().isoformat() + "Z"
     session["call_sid"] = call_sid
