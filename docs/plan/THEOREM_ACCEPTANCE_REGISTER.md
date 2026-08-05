@@ -8,7 +8,40 @@ Build under test at open: `4dcad7d`.
 
 ---
 
-## T-0 — "Are you a real person?" → **"Yes."**  ⚠️ OPEN, NOT FIXED
+## Status as of 2026-08-05 — read this before citing any T-number
+
+Reconciled against the code at `d2a3338`, per `CLAUDE.md` §7: **where this file
+and the code disagree, the code wins.** This file had drifted in both directions —
+`T-0`'s heading still said OPEN four hundred lines above its own live
+verification, and `T-18` said "open" after being fixed three times in one night.
+
+| ID | Heading said | Actually |
+|---|---|---|
+| **T-0** — "are you a real person" → "Yes" | ⚠️ OPEN, NOT FIXED | ✅ **FIXED and verified live.** `susie_system_prompt.py:1838` mandates *"No — I'm Susie, Theorem Health's AI receptionist"* and bans answering "yes" outright. Confirmed on call A1 (see the A1 table). The heading below is stale and is left in place only so the original reasoning survives |
+| **T-18** — reschedule ack is a dead end | open | 🟡 **FIXED IN CODE, UNVERIFIED LIVE.** Three commits on 05-08: `a1c4593` (flow + code), `b4174bf`, `78fae2d`, and `5758b53` — the last being the one that mattered, because the first fix was defeated by *three other prompt blocks* still teaching ack-and-stop. Needs a live call. **That call is Sweep B2** in `DEMO_SWEEP_2026-08-05.md` |
+| **B-57** — cancel gate could never open | not in this file | ✅ **FIXED** `d2a3338`. Tracked in `REGISTER_B_U.md`. This is why "cancel remains completely untested" in Outstanding was **not** merely an absence of testing — the gate could not open on Theorem's own prompt wording |
+| **B-39 / B-40** | not in this file | ✅ **FIXED / MITIGATED** `d2a3338` |
+
+**The honest summary for Theorem: no known-open call-blocking defect, and three
+that are fixed in code but never dialled** — T-18, B-57 and B-40's cancel/
+reschedule fillers. Sweep B exists to convert those from "tested" to "verified".
+
+Still genuinely open, and none of them block a booking, a reschedule or a cancel:
+
+- **T-5** — long answers. 20.1 s on the worst turn; measured down to 5.2 s on
+  A1's identical question, so improved but not closed.
+- **T-3** — bare FAQ answers arm no watchdog when *no* question is outstanding.
+  Narrow; the backstop works whenever a question is genuinely pending.
+- **T-9** — Acuity calendar IDs for named practitioners. Config, not code.
+- **T-2** — the phantom Sheets row. Escalates to an operator, so it is visible.
+
+> ⚠️ **`1749165832` is still on Mark's calendar** — Wed 12 August, 15:00,
+> Alcester, from the reschedule that never completed. Sweep B3 can use it, but it
+> must not simply be left there.
+
+---
+
+## T-0 — "Are you a real person?" → **"Yes."**  ⚠️ ~~OPEN, NOT FIXED~~ → **FIXED, see the status table above**
 
 **Severity:** high — this is a disclosure failure, not a wording nit.
 **Status:** logged 2026-08-04 on owner instruction, deliberately **not** fixed
@@ -918,7 +951,26 @@ that produced a spoken result is by definition not a silent turn.
 
 ## T-18 — the reschedule acknowledgement is a dead end
 
-**Severity:** medium · **Status:** open · **B2, 00:07:51**
+**Severity:** medium — **raised to high in practice**, see below ·
+**Status:** 🟡 **fixed in code 2026-08-05, unverified live** ·
+**B2, 00:07:51**
+
+> **Fixed across four commits, and the sequence is the lesson.** `a1c4593` ported
+> the flow and fixed the code — and the dead air happened **twice more anyway**,
+> because what reaches the model is the union of every block in a 100k-char
+> prompt, and it obeys the most emphatic instruction it finds. `5758b53` found the
+> three blocks outside the reschedule flow that were still teaching ack-and-stop:
+> a banned-openers carve-out for this exact sentence, a ONE QUESTION PER TURN rule
+> that flatly contradicted the ACKNOWLEDGEMENT RULE, and the new-booking flow's
+> first step, which "reschedule my appointment" fell straight into. Its tests pin
+> the **class** rather than the three instances.
+>
+> **Severity in practice was higher than "medium".** Three separate callers hit
+> it, and the third hung up. It is the first thing a caller hears after asking to
+> move an appointment.
+>
+> **Verify on Sweep B2.** The pass condition is that *"Let's get that moved for
+> you"* is followed **in the same turn** by the timing question, not by silence.
 
 ```
 tts: "Let's get that moved for you."
