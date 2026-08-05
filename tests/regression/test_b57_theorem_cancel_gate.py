@@ -251,7 +251,11 @@ UNMOVED_PROMPTS = {
     "theorem": "b770bcbee81dd601",
     # Re-pinned 2026-08-05 — JOINT INJECTIONS usage rule (CA0f74573f).
     # Cancel wording untouched; this table is proving containment, and it is.
-    "theorem_v3": "126959e0311938cb",
+    # Re-pinned again 2026-08-05 — practitioner-request block (CA78d00884).
+    # Cancel wording untouched again. Note "theorem" above did NOT move: the
+    # edit is inside _build_theorem_v3, which only clinic_id "theorem_v3"
+    # renders, and that is the live patient line (+447380841468).
+    "theorem_v3": "407e7d43948b618c",
     "vital_edge": "706299246fa856dc",
 }
 
