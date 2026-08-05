@@ -97,7 +97,11 @@ UNCHANGED_CLINIC_PROMPTS = {
     # the opening turn, reads the caller-ID number back digit-grouped, and no
     # code path literal-matches its speech. See
     # tests/regression/test_reschedule_flow_is_model_driven.py.
-    "theorem_v3": "35695be4b9b356a8",
+    # Re-pinned 2026-08-05 again — joint injections, Mark's new service, added
+    # to _build_theorem_v3 from theoremhealth.co.uk/joint-injections. theorem_v3
+    # only; demo and theorem unchanged. See
+    # tests/regression/test_joint_injections_service.py.
+    "theorem_v3": "55c56801a6607042",
 }
 
 OLD_CONFIRMED_WORDING = ("that's you rescheduled", "you're now in for")
