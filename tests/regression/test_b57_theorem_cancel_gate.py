@@ -238,12 +238,16 @@ def test_consent_reads_the_uncapped_question_too():
 # leaked out of the gate. Re-baseline only with an owner-confirmed prompt change:
 #   python -c "from tests.regression.test_b57_theorem_cancel_gate import _sha; \
 #              print(_sha('theorem_v3'))"
+# Re-pinned 2026-08-05 for B-39: the retention question was scoped to the
+# cancel path and bounded to one ask, which moves jv_v1, vital_edge and
+# theorem_v3 deliberately. demo and theorem must NOT move — they are
+# FlowEngine clinics and render neither block.
 UNMOVED_PROMPTS = {
     "demo": "17c7162e49200716",
-    "jv_v1": "ef52a277a80a4799",
+    "jv_v1": "9d9bb58b69f88929",
     "theorem": "8565be9a48a7a9aa",
-    "theorem_v3": "f43d021df561b9b0",
-    "vital_edge": "cab7f27932dc5ee0",
+    "theorem_v3": "d5d26ee076213608",
+    "vital_edge": "102b1509d8665af3",
 }
 
 

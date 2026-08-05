@@ -2450,18 +2450,33 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "branches are deliberately ASYMMETRIC — read carefully:\n"
         "- RESCHEDULE intent (caller said 'reschedule', 'move it', 'change "
         "the time', or similar): do NOT ask anything — go STRAIGHT to the "
-        "RESCHEDULE branch below.\n"
+        "RESCHEDULE branch below. The retention question belongs to the CANCEL "
+        "path ONLY: never ask a caller who is moving an appointment whether "
+        "they would rather cancel it. You would be offering to cancel a "
+        "booking they are trying to keep.\n"
         "- CANCEL intent (caller said 'cancel', 'cancel it', 'get rid of it', "
         "or similar): you MUST offer the alternative BEFORE cancelling. Ask "
         "exactly: 'Would you like to reschedule this appointment, or cancel it "
-        "altogether?' This question is REQUIRED on the cancel path EVERY TIME "
-        "— ask it even though the caller already said cancel; do NOT skip "
-        "straight to cancelling. It is a retention step. Then wait: if they "
-        "choose to reschedule, follow the RESCHEDULE branch; if they confirm "
-        "cancel, follow the CANCEL branch.\n"
+        "altogether?' Ask it even though the caller already said cancel — it "
+        "is a retention step. Then wait: if they choose to reschedule, follow "
+        "the RESCHEDULE branch; if they confirm cancel, follow the CANCEL "
+        "branch.\n"
         "- UNCLEAR intent: ask the same question — 'Would you like to "
         "reschedule this appointment, or cancel it altogether?' — and follow "
-        "their answer.\n\n"
+        "their answer.\n"
+        # B-39 — three asks in 27 seconds, the third AFTER the caller had said
+        # 'cancel' plainly, and on CAe74ceae7 the question was re-emitted in the
+        # same turn as the cancellation was actioned: the caller heard the
+        # question, then immediately heard it being done. The instruction above
+        # used to read "REQUIRED on the cancel path EVERY TIME", which is true
+        # of the call and false of the turn — and "every time" is the reading
+        # that produces a loop. Stated as a count instead.
+        "ASK IT ONCE PER CALL. Once the caller has answered it in any form — "
+        "'cancel', 'cancel it altogether', 'yes cancel it', or a plain "
+        "affirmative — the retention step is DONE and must never be asked "
+        "again on that call. Do not re-ask it because the answer was short, do "
+        "not re-ask it to be sure, and never say it in the same turn as "
+        "actioning the cancellation.\n\n"
         "RESCHEDULE → ask exactly: 'Do you have a preference for when you'd "
         "like to reschedule to?' → check_availability for the new time → caller "
         "selects a slot → go STRAIGHT to the readback. You already looked the "
