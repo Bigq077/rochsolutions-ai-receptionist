@@ -123,6 +123,66 @@ def test_injection_is_in_the_named_treatment_redirect_list():
         )
 
 
+# ── 2b. The block is answers, not a script (CA0f74573f, 09:35) ─────────────
+#
+# First live injection call. The caller asked one question — "do you offer
+# knee injections?" — and got 21.6 seconds back: the whole three-step pathway
+# and "two hundred and thirty-five pounds in total", unasked.
+#
+# That is this block's fault. It was written as dense facts with no
+# instruction on how to use them, so the model read it as a script, and the
+# general rules — ANSWER ONLY WHAT WAS ASKED, the twenty-word sentence cap,
+# the owner's standing decision never to volunteer a price — lost to the sheer
+# volume of material supplied here. The usage rule has to live where the facts
+# live, which is what these pin.
+
+def test_the_block_tells_the_model_it_is_answers_not_a_script():
+    p = _prompt()
+    assert "HOW TO USE THIS SECTION" in p
+    assert "It is NOT a script" in p
+    assert "ONE or TWO short sentences" in p
+
+
+def test_the_price_is_never_volunteered():
+    """The owner's standing decision, restated where it kept being lost.
+
+    C2 was closed as not-a-defect on exactly this point: never force a price
+    the caller did not ask for.
+    """
+    p = _prompt()
+    assert "NEVER volunteer the price" in p
+    assert "has not asked what they cost" in p
+
+
+def test_the_pathway_is_not_recited_unprompted():
+    p = _prompt()
+    assert "Do NOT recite the three-step pathway unless asked" in p
+
+
+def test_the_target_answer_is_short_enough_to_say():
+    """A worked example the model can copy, and a length it can measure against.
+
+    The spoken answer on the failing call was ~406 characters. At the observed
+    rate that is over twenty seconds — four times too long for a one-question
+    FAQ turn.
+    """
+    p = _prompt()
+    start = p.index('A good answer to "do you do knee injections?" is: "')
+    start = p.index('"', start + 48) + 1
+    answer = p[start:p.index('"', start)]
+    assert len(answer) < 260, (
+        f"the worked example is {len(answer)} chars — it is meant to "
+        "demonstrate brevity, and the failing call spoke ~406"
+    )
+    assert "pounds" not in answer and "£" not in answer, (
+        "the worked example volunteers a price, which is the defect it exists "
+        "to prevent"
+    )
+    assert "book that assessment" in answer, (
+        "the example must still route to the assessment"
+    )
+
+
 # ── 3. Susie stays a receptionist ───────────────────────────────────────────
 
 @pytest.mark.parametrize("boundary", [

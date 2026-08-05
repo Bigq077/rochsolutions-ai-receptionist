@@ -114,7 +114,10 @@ UNCHANGED_CLINIC_PROMPTS = {
     # which clinic again, and asks it FIRST — the model asks it in the same
     # turn as the ack, and stores the answer with collect_and_store. theorem_v3
     # only; demo and theorem unchanged.
-    "theorem_v3": "baf8a8be151d5e23",
+    # Re-pinned 2026-08-05 after the first live injection call (CA0f74573f):
+    # the JOINT INJECTIONS block gained a HOW TO USE THIS SECTION rule after
+    # it was read as a script — 21.6s and an unasked £235. theorem_v3 only.
+    "theorem_v3": "16bba02393e9af60",
 }
 
 OLD_CONFIRMED_WORDING = ("that's you rescheduled", "you're now in for")

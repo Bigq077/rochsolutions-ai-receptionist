@@ -249,7 +249,9 @@ UNMOVED_PROMPTS = {
     "demo": "9d3beae14e4f2493",
     "jv_v1": "fe9fa898963dd95a",
     "theorem": "b770bcbee81dd601",
-    "theorem_v3": "7c7dd804b6bb0514",
+    # Re-pinned 2026-08-05 — JOINT INJECTIONS usage rule (CA0f74573f).
+    # Cancel wording untouched; this table is proving containment, and it is.
+    "theorem_v3": "126959e0311938cb",
     "vital_edge": "706299246fa856dc",
 }
 

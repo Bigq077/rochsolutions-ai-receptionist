@@ -2567,6 +2567,38 @@ def _build_theorem_v3(session: dict) -> str:
     # because that is both the only bookable thing and the correct thing.
     joint_injections = (
         "JOINT INJECTIONS\n"
+        # 2026-08-05, first live injection call (CA0f74573f, 09:35). The caller
+        # asked one question — "do you offer knee injections?" — and got a
+        # 21.6-second answer that recited the whole pathway and volunteered
+        # "two hundred and thirty-five pounds in total" to someone who had not
+        # asked what it cost.
+        #
+        # Both are this block's fault, not the model's. It was written as a
+        # dense set of facts with no instruction on how to USE them, so the
+        # model read it as a script. The general rules (ANSWER ONLY WHAT WAS
+        # ASKED, the twenty-word sentence cap, the standing owner decision
+        # never to volunteer a price) lost to the sheer density of material
+        # supplied here. The rule has to live where the facts live.
+        "HOW TO USE THIS SECTION. Everything below is an ANSWER to a "
+        "question somebody might ask. It is NOT a script and it is NOT "
+        "an introduction to the service. Answer the question you were "
+        "actually asked, in ONE or TWO short sentences, then stop.\n"
+        "NEVER volunteer the price. Not the assessment fee, not the "
+        "injection fee, not the £235 total — not even \"in total\", and "
+        "not as a reassurance. Say a price only when the caller asks "
+        "what it costs. A caller asking whether you DO injections has "
+        "not asked what they cost.\n"
+        "Do NOT recite the three-step pathway unless asked how it "
+        "works. That an injection follows an assessment is one clause, "
+        "not a paragraph: \"they're always given after an assessment\" "
+        "is the whole of it.\n"
+        "A good answer to \"do you do knee injections?\" is: \"Joint "
+        "injections are something Mark does himself at our Awlstuh "
+        "clinic — they're always given after an assessment, so he can "
+        "check it's the right thing for your knee. Would you like to "
+        "book that assessment?\" That is the LENGTH to aim for. The "
+        "same answer with the pathway and the price in it runs three "
+        "times as long and the caller stops listening.\n"
         "A service Mark offers at the Awlstuh clinic. Corticosteroid "
         "joint injections for the hip, shoulder and knee, delivered by "
         "Mark himself — an HCPC-registered physiotherapist, "
