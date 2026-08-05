@@ -837,3 +837,109 @@ question, and skip the gate when it hits.
   Bupa answer. Known, narrow.
 - The **backstop** fired correctly once, holding the outstanding clinic question
   after the parking answer.
+
+---
+
+# GO-LIVE RUN — Part B
+
+## B1 — FIRST REAL BOOKING ✅ (build `6901ffb`)
+
+```
+POST https://acuityscheduling.com/api/v1/appointments  200 OK
+Created booking in Acuity
+{"success": true, "acuity_booking_id": "1749165832",
+ "booked_slot": "Wednesday 12 August at 15:00", "location": "Alcester"}
+```
+
+`book_appointment` fired for the first time on this branch. Confirmation SMS
+201. Reminders scheduled (24 h and 2 h). Row `outcome=booked`.
+
+**Verified live in the same call:** T-13 · the two-rung keypad ladder (first
+time ever — *"um the ammon clinic"* → keypad on the FIRST re-ask, no biased
+confirm) · invalid-key re-prompt with the keypad staying armed · T-15 (bare
+*"afternoons"*) · T-7 · T-0 · T-4.
+
+**Standout:** the caller gave a different number by voice, was moved to the
+keypad, the typed number was committed (`typed, not caller ID`), read back
+digit by digit, and caller ID was then twice refused as an overwrite. That is
+the exact class that put a wrong surname on Mark's calendar twice.
+
+---
+
+## T-17 — a dead guard injected a synthetic turn on top of a live one
+
+**Severity:** HIGH · **Status:** open · **B2 reschedule, 00:08:43**
+
+The reschedule collapsed. `lookup_patient` ran twice, *"I can see an
+appointment on Wednesday the 12th…"* was spoken twice, *"Let me pull that up
+for you now"* and *"Bear with me just a moment…"* piled in behind it, five
+`stale tts_finished ignored` lines followed, and the caller hung up.
+
+**Root cause — a guard that cannot ever be false on this clinic.**
+`connection.py:10778`:
+
+```python
+if (_prev_was_loc_q
+    and self.session.get("v3_location_confirmed")
+    and not self.session.get("_turn_speech_emitted")):
+```
+
+`_turn_speech_emitted` is reset to `False` before every turn
+(`connection.py:10218`) and set back to `True` on a normal turn in exactly one
+place: `_TrackedQueue.put()` at `flow.py:3722`.
+
+`theorem_v3` never reaches FlowEngine — `connection.py:11600`:
+
+```python
+return  # CRITICAL: do not fall through to FlowEngine path
+# FlowEngine path — theorem and theorem_v2
+```
+
+So the flag is **permanently False** here and the third clause is a no-op. The
+re-queue fires whenever the first two hold, regardless of whether Susie spoke.
+
+The timestamps show it plainly: TTS synthesised at `00:08:43.639`, the code
+decided "no TTS emitted this turn" at `.676` — 37 ms later.
+
+**Fourth instance of the FlowEngine-bypass class** (see
+`flowengine-is-bypassed-on-every-live-clinic`): code that reads correct but is
+dead on the path that actually runs. The others were greps finding dead code;
+this one is worse — a *guard* that silently always passes.
+
+**Nothing was corrupted.** Both lookups returned the right appointment
+(`1749165832`), no write was attempted. This is conversation control, not data.
+
+**Fix shape:** the re-queue needs a real signal that the turn was silent.
+Either set `_turn_speech_emitted` on the v3 TTS path too, or — simpler and
+safer — do not re-queue at all when a tool call ran this turn, since a lookup
+that produced a spoken result is by definition not a silent turn.
+
+---
+
+## T-18 — the reschedule acknowledgement is a dead end
+
+**Severity:** medium · **Status:** open · **B2, 00:07:51**
+
+```
+tts: "Let's get that moved for you."
+[ms_watchdog] Spec W: turn asked nothing and no question is outstanding —
+  nothing to re-ask
+```
+
+Seven seconds of dead air. The caller had to say *"hello"* to restart the call.
+
+This is **T-3 on a real patient path** rather than on a bare FAQ answer, which
+is why it matters more than T-3's current "medium, narrow" rating suggests. The
+first thing a caller hears after asking to move an appointment is a statement
+with no question and no watchdog behind it.
+
+---
+
+## Outstanding
+
+- **Appointment `1749165832` is still on Mark's calendar** — Wednesday 12
+  August, 15:00, Alcester. The reschedule never completed and cancel never ran.
+  **Remove it.**
+- **Cancel remains completely untested.**
+- Judge scored the reschedule call **2**, the lowest of the sweep, and fired an
+  operator alert — the alerting is working as intended.
