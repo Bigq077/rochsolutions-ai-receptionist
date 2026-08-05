@@ -255,7 +255,13 @@ UNMOVED_PROMPTS = {
     # Cancel wording untouched again. Note "theorem" above did NOT move: the
     # edit is inside _build_theorem_v3, which only clinic_id "theorem_v3"
     # renders, and that is the live patient line (+447380841468).
-    "theorem_v3": "407e7d43948b618c",
+    # Re-pinned 2026-08-05 (same evening) — rota corrected to Thursday evenings
+    # only, plus the reschedule practitioner rule. That rule lives INSIDE the
+    # RESCHEDULE / CANCEL FLOW section, so unlike the earlier practitioner work
+    # this one does touch the block this table watches. The cancel *wording*
+    # is still untouched — the assertions above are what prove that, and they
+    # pass; this hash moving is expected, not a containment failure.
+    "theorem_v3": "6b8618bd86e8570e",
     "vital_edge": "706299246fa856dc",
 }
 

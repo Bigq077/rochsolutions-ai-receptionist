@@ -122,7 +122,12 @@ UNCHANGED_CLINIC_PROMPTS = {
     # practitioner block now teaches that a named person cannot be booked, only
     # a day, and that the rota is the mechanism. See
     # tests/regression/test_theorem_practitioner_request.py. theorem_v3 only.
-    "theorem_v3": "34abbfaff2e39524",
+    # Re-pinned 2026-08-05 (same evening). Mark confirmed the rota: Leanne is
+    # Awlstuh THURSDAY EVENINGS ONLY, Friday is his. The previous pin carried
+    # the wrong version — Thu/Fri — so Susie was offering Fridays for a physio
+    # who does not work them. Also adds the reschedule rule after CAe0f8d2d6
+    # moved a Leanne Thursday onto a Mark Wednesday in silence.
+    "theorem_v3": "da07d0352e792ffa",
 }
 
 OLD_CONFIRMED_WORDING = ("that's you rescheduled", "you're now in for")

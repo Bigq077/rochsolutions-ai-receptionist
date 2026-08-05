@@ -37,8 +37,30 @@ def prompt() -> str:
 
 
 def test_the_rota_is_still_stated(prompt):
-    assert "Leanne (BSc Hons HCPC) at Awlstuh Thu/Fri only" in prompt
-    assert "Mark Dyer at Awlstuh Mon/Tue/Wed and Redditch Thu" in prompt
+    """Corrected 2026-08-05 after Mark confirmed: Thursday evenings ONLY.
+
+    The rota first shipped here said Leanne was Awlstuh Thu/Fri, copied from the
+    live prompt. Live Acuity said otherwise — over 30 days, Alcester Fridays
+    carried 4–6 slots each like Mark's other days, while Thursdays were empty
+    but for one 17:00 slot. canonical.py had it right all along ("Alcester
+    Thursday evenings only"), and Mark confirmed it. Friday is Mark's."""
+    assert "Leanne (BSc Hons HCPC) at Awlstuh THURSDAY EVENINGS ONLY" in prompt
+    assert "Mark Dyer at Awlstuh Mon/Tue/Wed/Fri and Redditch Thu" in prompt
+
+
+def test_friday_is_explicitly_marks(prompt):
+    """The Friday claim is called out separately because it is the one the
+    previous version got wrong, and a caller asking for Leanne on a Friday is
+    the case that would have reproduced the original defect."""
+    assert "Friday at Awlstuh is MARK, not Leanne" in prompt
+    assert "Never offer a Friday to a caller who asked for Leanne" in prompt
+
+
+def test_scarcity_does_not_become_a_reason_to_substitute(prompt):
+    """Thursday evenings are genuinely thin — one free slot in 30 days when this
+    was written. A model with nothing to offer is exactly the one tempted to
+    reach for a Mark day, so say the honest thing instead."""
+    assert "Do NOT quietly move them onto one of Mark's" in prompt
 
 
 def test_the_bare_honour_requests_promise_is_gone(prompt):
@@ -55,7 +77,41 @@ def test_the_model_is_told_it_cannot_book_a_person(prompt):
 
 def test_the_days_are_given_as_the_mechanism(prompt):
     assert "check availability for THEIR days and offer only" in prompt
-    assert "Caller wants Leanne: offer Awlstuh Thursday or Friday" in prompt
+    assert "Caller wants Leanne: offer Awlstuh Thursday, evening slots" in prompt
+
+
+# ── Reschedule must not change the practitioner in silence ───────────────────
+# CAe0f8d2d6adc755ff4015ba99a5887273, 2026-08-05 21:01. The caller had the
+# Thursday 20 August Leanne appointment from the call before. He rescheduled,
+# was offered Mon/Tue/Wed, took Wednesday 12 August — a Mark day — and was told
+# nothing. He booked with Leanne and now has Mark.
+#
+# The booking-side rule could not catch it: this was a fresh call, the caller
+# never said "Leanne", and the model has no cross-call memory. But the fact was
+# in front of it — lookup_patient returned the Thursday-evening appointment
+# before any new day was offered. The day is the tell.
+
+def test_reschedule_announces_a_change_of_practitioner(prompt):
+    assert "MOVING OFF A PRACTITIONER'S DAY — SAY IT OUT LOUD" in prompt
+    assert "Never let that happen" in prompt
+
+
+def test_the_day_is_named_as_the_tell(prompt):
+    """lookup_patient returns no practitioner — only a time and a clinic. The
+    day is the only signal available, which is why it has to be spelled out."""
+    assert "an Awlstuh THURSDAY EVENING is Leanne" in prompt
+
+
+def test_it_offers_to_keep_leanne_rather_than_just_warning(prompt):
+    """A warning the caller cannot act on is only half a fix."""
+    assert "would you rather I looked" in prompt
+    assert "offer a callback rather than" in prompt
+
+
+def test_the_rule_runs_in_both_directions(prompt):
+    """Moving a Mark appointment ONTO a Thursday evening also changes who they
+    see. Someone who booked with Mark deserves the same warning."""
+    assert "This cuts both ways" in prompt
 
 
 def test_offering_outside_the_days_is_forbidden(prompt):
