@@ -8224,8 +8224,17 @@ class WebSocketCallHandler:
                             if _phone_confirm_is_yes(utterance):
                                 # Caller confirmed → use calling number
                                 self.session["lookup_phone"] = _calling_number
+                                # Producer A of three. This one fires the
+                                # instant the number is confirmed; the LLM
+                                # turn's own ack filler follows ~1.8s later and
+                                # the tool filler ~1.6s after that. Record it so
+                                # those two can see it (CA8cf0aaea).
+                                from app.filler_phrases import (
+                                    note_filler_played as _note_filler,
+                                )
                                 _filler = _random.choice(FILLER_PHRASES)
                                 await self.tts_text_queue.put(_filler)
+                                _note_filler(self.session)
                                 self.session["last_bot_prompt"] = _filler
                                 await save_session(
                                     self.call_sid, self.session
