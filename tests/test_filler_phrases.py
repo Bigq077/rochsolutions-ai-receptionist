@@ -192,6 +192,22 @@ class TestWithFillerSlowAPI:
         assert spoken[1] in THINKING_FILLERS_SECONDARY
 
 
+def _expire_filler_cooldown(session: dict) -> None:
+    """Age the shared filler cooldown so the next filler is allowed.
+
+    Added 2026-08-05 with FILLER_COOLDOWN_S. Production suppresses a filler
+    queued within 3s of the previous one; these tests fire them in a tight loop
+    with no wall-clock gap, so without this they would measure the cooldown
+    instead of the rotation they are named for.
+    """
+    import time as _t
+
+    from app.filler_phrases import FILLER_COOLDOWN_S
+
+    if session.get("_last_filler_ts") is not None:
+        session["_last_filler_ts"] = _t.monotonic() - (FILLER_COOLDOWN_S + 0.1)
+
+
 class TestWithFillerUsedTracking:
     def test_used_fillers_not_repeated_across_calls(self):
         """Phrases used in one with_filler call are not repeated in the next."""
@@ -206,6 +222,11 @@ class TestWithFillerUsedTracking:
 
         async def _run():
             await with_filler(fast_api(), THINKING_FILLERS_PRIMARY, session, tts_fn)
+            # Let the shared filler cooldown lapse. Back-to-back calls with no
+            # elapsed time are now suppressed on purpose (CA8cf0aaea — three
+            # hold phrases in 3.4s); this test is about ROTATION, so it has to
+            # get past the cooldown to exercise it.
+            _expire_filler_cooldown(session)
             await with_filler(fast_api(), THINKING_FILLERS_PRIMARY, session, tts_fn)
 
         asyncio.run(_run())
@@ -229,6 +250,7 @@ class TestWithFillerUsedTracking:
             # Exhaust + 1 more
             n = len(THINKING_FILLERS_PRIMARY) + 1
             for _ in range(n):
+                _expire_filler_cooldown(session)
                 await with_filler(fast_api(), THINKING_FILLERS_PRIMARY, session, tts_fn)
 
         asyncio.run(_run())
