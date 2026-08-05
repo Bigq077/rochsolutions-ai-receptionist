@@ -1,6 +1,6 @@
 # Susie Verification Run — 2026-07-26
 
-**Run sheet:** `docs/plan/JULES_SWEEP_2026-07-26.md`. **Code under test:** `de426a6`.
+**Run sheet:** `docs/plan/archive/JULES_SWEEP_2026-07-26.md`. **Code under test:** `de426a6`.
 **Outcome:** Block A gate FAILED on the first calls → sweep halted per the gate rule
 → root-caused → **fixed** (Quentin green-lit fixing in-window) → to be re-verified,
 then the sweep restarts from 0.

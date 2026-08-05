@@ -4969,7 +4969,7 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
     # Same shape as the screening backstop above: hold the tool boundary for
     # the two collection steps that are otherwise enforced by the prompt alone.
     #
-    # Evidence — docs/plan/FIX_QUEUE_PRE_DEMO.md A1/A2, call
+    # Evidence — docs/plan/archive/FIX_QUEUE_PRE_DEMO.md A1/A2, call
     # CA4969580082db5e757c3b1d04dd38e7ae: the booking completed with
     # collected.reason=None (the reason was asked AFTER the slots and never
     # answered), and a turn was spent asking for a number we already had from

@@ -3,7 +3,7 @@
 A1 / A2 — `book_appointment` completed without a reason and without a confirmed
 phone number.
 
-Evidence: `docs/plan/FIX_QUEUE_PRE_DEMO.md` (A1, A2) and the verification call
+Evidence: `docs/plan/archive/FIX_QUEUE_PRE_DEMO.md` (A1, A2) and the verification call
 `CA4969580082db5e757c3b1d04dd38e7ae`, which booked successfully with
 `collected.reason = None`, having asked the reason *after* the slots were offered
 (the caller never answered it), and having spent a turn asking for a number it

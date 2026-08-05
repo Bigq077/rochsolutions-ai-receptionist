@@ -1,170 +1,92 @@
-# docs/plan — reading order
+# docs/plan — what's live
 
-Written 21 Jul 2026. Ten-day window to the Hands On Money meeting.
+Housekeeping pass **2026-08-05**: dated session briefs, expired countdown docs,
+and one-off verify scripts moved to [`archive/`](archive/). If you need them,
+they're there — they are not the working set.
 
-**Read in this order:**
-
-| # | Document | What it is |
-|---|---|---|
-| 1 | `../../CLAUDE.md` | Repo context, architecture map, hazards, working conventions. Start here. |
-| 2 | `BRANCH_DECISION.md` | **Open question. Must be settled before Phase 0 runs.** Which branch is the production base. |
-| 3 | `PRODUCTION_READINESS_PLAN.md` | The 10-day phased plan with gates and triage rules. |
-| 4 | `FAILURE_MODE_REGISTER.md` | Ranked risk register. Tier 1 must be closed before any clinic goes live. |
-| 4a | `REGISTER_B_U.md` | The `B-nn` sweep defects and `U-nn` unverified-on-a-call items, with tracks. **Note the ID collision warning at the top** — `DEFECT_REGISTER.md`'s `B1`/`B2`/`B3` are unrelated to `B-01`…`B-20`. |
-| 5 | `SKILL_PLAYBOOK.md` | Which engineering skill to invoke at which phase, and which to skip. |
-| 6 | `KICKOFF_PROMPT.md` | Paste-ready first message for Claude Code. |
-
-**Phase 0 produces these** (templates provided, to be filled):
-
-- `TEST_BASELINE.md`
-- `DELETED_TEST_TRIAGE.md`
-- `LATENCY_BASELINE.md` — note: substantial prior work already exists in
-  `LATENCY.md`, `LATENCY_HARNESS.md`, `LATENCY_WS-C.md` and
-  `app/media_streams/latency_timing.py` on `latency-eval`. Read those first;
-  this is a mapping exercise, not a fresh measurement.
-- `DEPLOYMENT_INVENTORY.md`
+**If these documents and the code disagree, the code wins.** Record a correction
+in §Corrections below.
 
 ---
 
-## Provenance and known corrections
+## Start here
 
-These documents were drafted from a read of the repo on 21 Jul 2026 and then
-corrected twice. Corrections already folded in:
+| # | Document | What it is |
+|---|---|---|
+| 1 | [`../../CLAUDE.md`](../../CLAUDE.md) | Repo context, architecture, hazards, conventions |
+| 2 | [`BRANCH_DECISION.md`](BRANCH_DECISION.md) | Which branch is the production base (ADR) |
+| 3 | [`PRODUCTION_READINESS_PLAN.md`](PRODUCTION_READINESS_PLAN.md) | Phased plan with gates |
+| 4 | [`FAILURE_MODE_REGISTER.md`](FAILURE_MODE_REGISTER.md) | Ranked risk register (FM-nn) |
+| 5 | [`REGISTER_B_U.md`](REGISTER_B_U.md) | **Live defect queue** — `B-nn` / `U-nn` |
+| 6 | [`SKILL_PLAYBOOK.md`](SKILL_PLAYBOOK.md) | Which engineering skill when |
+| 7 | [`KICKOFF_PROMPT.md`](KICKOFF_PROMPT.md) | Paste-ready first message |
 
-1. **Observability is not missing.** `app/obs/` has 18 modules on `latency-eval`,
-   flag-gated off via `OBS_CAPTURE_ENABLED` / `OBS_JUDGE_ENABLED` /
-   `OBS_ALERTS_ENABLED` / `OBS_DIGEST_ENABLED`. Phase 2 is activation, not
-   integration. Do not merge the `feat/obs-*` branches.
-2. **SMS is not missing.** `SMS_ENABLED` defaults `false` in
-   `app/notifications/booking_sms.py`. Phase 4 is a flag, not a build.
-3. **Latency baseline work already exists** (see above). Phase 0 item 3 shrinks
-   to a few hours.
-4. **30 test files** differ between `main` and `latency-eval`, not the 7
-   originally named. Triage scope is wider than first written.
+Phase 0 templates (fill / keep current): `TEST_BASELINE.md`,
+`DELETED_TEST_TRIAGE.md`, `LATENCY_BASELINE.md`, `DEPLOYMENT_INVENTORY.md`.
 
-**Branch question:** `BRANCH_DECISION.md` now carries a recommendation (ADR-001) —
-**Option A, adopt the `latency-eval` engine as the production trunk** (re-chartered,
-levers OFF, deploy per-clinic from a `release/*` cut) — pending owner confirmation
-and the Render dashboard facts. **Not yet Accepted; Phase 0 stays blocked.**
+> ⚠️ **ID collision.** `archive/DEFECT_REGISTER.md` uses `B1`/`B2`/`B3` (no
+> hyphen) for an older obs sweep. Those are **unrelated** to `B-01`… in
+> `REGISTER_B_U.md`. Always write the hyphen.
 
-## Corrections added 21 Jul (branch-decision analysis, all measured on `origin/*`)
+---
 
-5. **Two divergent clones.** These plan docs live only in the
-   `…/OneDrive/Documents/Claude code free/…` clone at `jv-v1-onboarding@4630dda`,
-   which is **unpushed**; that clone's `main`/`latency-eval`/`vitaledge` branches are
-   1–8 days behind origin. Render deploys from origin. **Measure `origin/*`, never
-   that clone's local branches** — doing so already produced `app/obs/` on `jv-v1`
-   = 0 vs the true 2. Compounds FM-20.
-6. **Divergence counts.** `latency-eval` is **200 ahead / 149 behind** `origin/main`
-   (docs said 189 / 142); **53 / 6** vs `vitaledge`; **81 / 6** vs `jv-v1` — a
-   near-superset of both live onboarding branches.
-7. **Observability is not `latency-eval`-unique.** Full obs (18 modules) is on
-   `vitaledge` too; `main` has 17; **`jv-v1` has 2**. Only `jv-v1` is bare.
-8. **`clinical_screening.py` is 466 lines** (FM-04 says 299) and is referenced
-   **only on `latency-eval`** (0 refs on `vitaledge`/`jv-v1`) — the live branches
-   ship no clinical red-flag module at all. Raises FM-04's urgency.
-9. **`flow.py` is byte-identical** across `latency-eval`/`vitaledge`/`jv-v1`. The
-   engine divergence is entirely in the supporting modules, not `handle_transcript`.
-10. **Tests differing `main`↔`latency-eval` = 38** (8 added / 20 deleted / 10
-    modified), not "~30" — an approximation, not an error.
-11. **`except`-clause counts disagree between the docs** (plan §0: 81/97; FM-01 &
-    `CLAUDE.md`: 87/104). Re-measure in Phase 1 before citing a number.
-12. Minor: this note said "corrected twice"; `CLAUDE.md` and the brief say three
-    times. `BRANCH_DECISION.md`'s "how to decide" list omitted `jv-v1`; the ADR
-    compares all four.
+## Today / this week
 
-## Correction added 26 Jul
+| Document | What it is |
+|---|---|
+| [`DEMO_SWEEP_2026-08-05.md`](DEMO_SWEEP_2026-08-05.md) | Demo call script — Sweep A (JV) + Sweep B (Theorem) |
+| [`SESSION_2026-08-05.md`](SESSION_2026-08-05.md) | Today's synthesis — fixes + **Sweep A 6/6 PASS** |
 
-13. **The CONFIRM_PHONE phone-gate failure was a defect, not drift.**
-    `TEST_BASELINE.md` diagnosed it on 21 Jul as *"DRIFT — gate intact, stricter
-    than the test… re-point/quarantine the test"*, on the grounds that a bare
-    "yes" is deliberately ambiguous and no booking can fire on an unconfirmed
-    number. The safety half of that is right; the conclusion is not. Reproduced
-    on 26 Jul: the gate asks a **plain yes/no question** — *"Just to check — is
-    that 0 7 7 0 0, 9 0 0, 4 5 6?"* — and the ambiguous branch it fell into
-    re-emits that identical question with **no retry counter, no escalation and
-    no transfer**, so a caller who answers "yes" is asked the same thing for the
-    rest of the call and never books. Bare `\bno\b` *was* matched, so the gate
-    accepted a bare no and refused a bare yes on a yes/no question.
-    Root cause: `5c7ea4e` (24 Apr) replaced yes/no phone confirmation with
-    explicit phrase commands; `3bbe4f0` (10 Jun) reversed that on the LLM path
-    (`connection.py._PHONE_CONFIRM_AFFIRMATIVES`) for exactly this reason and left
-    the deterministic gate behind. It is the surviving cause of
-    `FIX_QUEUE_PRE_DEMO.md` A1's magic-phrase friction (Jules rows 17/19/21:
-    150–261 s, no booking). Fixed in `flow.py` behind `phone_confirm_armed`, with
-    `tests/regression/test_confirm_phone_bare_yes.py`. **Baseline is now 95, not
-    96** — `test_critical_flows.py` is green and its row in `TEST_BASELINE.md`
-    should be struck. Note the ID collision: FM-21 in
-    `FAILURE_MODE_REGISTER.md` is *screening double-ask*, a different thing; this
-    one has no FM number.
+---
 
-## Correction added 1 Aug
+## Clinic work in flight
 
-14. **A4's root-cause writeup was wrong about the deterministic gate.**
-    `DEFECT_REGISTER.md` claimed, of *"um yes that's a good number"*: "The
-    parallel gate `flow._HG_YES` (flow.py:10614) **also** misses this phrase, so
-    this is not only the known list-divergence — it is a genuine vocabulary gap
-    in every copy." The second half is false. `_HG_YES` is only one of three
-    accept routes at that gate; `_hg_bare_yes` is a **word-bounded regex** for
-    `yes|yeah|yep|yup` anywhere in the turn, so it matches the "yes" in turn 18
-    and the gate accepts. Verified by running both predicates against the literal
-    transcript: flow accepts, `connection._is_use_this_number` rejects.
-    **The A4 defect was confined to the LLM path.** That matters for more than
-    tidiness — it means the deterministic gate already had the right shape
-    (affirmative token anywhere, guarded by negatives) and the LLM path was the
-    one that had drifted, which is the opposite of the 26 Jul correction above.
-    What flow *did* miss is the same phrase with no affirmative word at all
-    ("that's a good number"), which `_SEMANTIC_YES_PHRASES` now covers.
-    Fixed 1 Aug; see `tests/regression/test_phone_confirm_adjective_slot.py`,
-    which asserts BOTH gates and asserts they agree.
+| Document | Clinic |
+|---|---|
+| [`THEOREM_PORT_PLAN.md`](THEOREM_PORT_PLAN.md) | Theorem → current engine |
+| [`THEOREM_ACCEPTANCE_REGISTER.md`](THEOREM_ACCEPTANCE_REGISTER.md) | Theorem live defects / acceptances |
+| [`VITALEDGE_PORT_PLAN.md`](VITALEDGE_PORT_PLAN.md) | Vital Edge convergence |
+| [`VITALEDGE_ACCEPTANCE_SUITE.md`](VITALEDGE_ACCEPTANCE_SUITE.md) | VE accept cases |
 
-## Correction added 2 Aug
+---
 
-15. **`latency-eval` is not a live line.** `CLAUDE.md` §2 carried a ⚠️ block
-    stating that a push to `latency-eval` "is a live deploy", to be done outside
-    call hours, with a revert commit in hand, and coordinated first. Confirmed
-    wrong by the repo owner on 2026-08-02. Corrected in place.
+## Archive
 
-    Unlike corrections 1–14 this one was not resolvable by reading the code —
-    which branch a Render service tracks is set in the Render dashboard, not in
-    `render.yaml` (which declares one service with `autoDeploy: true` and **no
-    branch pin**). So the usual "the code wins" tie-break had nothing to bite on
-    and the false warning survived every previous audit.
+[`archive/`](archive/) — Jules briefs, old call suites, pre–5 Aug countdown docs,
+superseded queues (`FIX_QUEUE_PRE_DEMO`, `DEFECT_REGISTER`). See
+[`archive/README.md`](archive/README.md).
 
-    It was not harmless. Finished, suite-verified engine work was staged
-    overnight for a deploy window that does not exist, and the caution leaked
-    into how risk was argued about — a change gets held for more evidence
-    because pushing feels expensive, not because the evidence is thin.
+---
 
-    The genuinely gated branches are the two **deployment** branches,
-    `jv-v1-onboarding` and `vitaledge-onboarding`, which serve live clinics.
-    Out-of-hours timing, a revert in hand and coordination belong there.
+## Corrections log
 
-    Watch for the same class of error elsewhere in these documents: any claim
-    about **deployment topology** (which service tracks which branch, what
-    auto-deploys, which env vars are set where) is unverifiable from the repo
-    and should be treated as unconfirmed until a human says otherwise.
-    `DEPLOYMENT_INVENTORY.md` is the right home for the answers.
+Kept so the next reader does not re-learn these the hard way. Older entries that
+only mattered during drafting stay; the actionable ones are bolded.
 
-## Corrections added 3 Aug
+### Provenance (21 Jul 2026)
 
-16. **`FIX_QUEUE_PRE_DEMO.md` is stale and must not be used for scheduling.** It
-    is headed *"2026-07-26 → Hands On Money demo, Wed 29 July"* and its "Monday
-    shortlist" is a week out of date; the demo is **Wed 5 Aug**. Several rows in
-    it have since been closed, re-scoped or withdrawn elsewhere. Left in place as
-    a record of how that week was argued — it is a good document, just expired.
-    **`REGISTER_B_U.md` is the live queue.**
+Drafted from a repo read, then corrected repeatedly. Big ones already folded in:
 
-17. **`/health` cannot tell you which commit is running.** It returns a
-    hardcoded `"version": "1.0.0"`. Two separate documents implied otherwise
-    (`healthy.py`'s docstring claims it "prints git_commit to confirm which
-    deploy is live"; `write_version.py` says it is run by `render.yaml`'s
-    `buildCommand`, which is just `pip install`). Neither is true. The **only**
-    place the running SHA appears is `[build_info] running build <sha>`, logged
-    to the Render log at call cleanup. Verified 3 Aug against build
-    `ab39553809fc`. This is the deployment-topology class of error that
-    correction 15 warned about, and it cost a deploy verification that had to be
-    done by watching for a restart instead.
+1. **Observability is not missing** — `app/obs/` exists, flag-gated off. Do not
+   merge `feat/obs-*`.
+2. **SMS is not missing** — `SMS_ENABLED` defaults `false`.
+3. **Latency baseline work already exists** — map it, don't re-measure from zero.
+4. **`latency-eval` is THE engine branch** (settled); clinic branches inherit by
+   cherry-pick.
 
-If you find another contradiction between these documents and the code, the code
-wins. Record the correction here.
+### Later corrections (abridged)
+
+| # | Date | Finding |
+|---|---|---|
+| 13 | 26 Jul | CONFIRM_PHONE bare-yes was a defect, not drift |
+| 14 | 1 Aug | A4 phone-confirm was LLM-path only; flow already accepted |
+| 15 | 2 Aug | **`latency-eval` is not a live deploy** — gated branches are the clinic ones |
+| 16 | 3 Aug | **`FIX_QUEUE_PRE_DEMO` is stale** — live queue is `REGISTER_B_U.md` (now in archive) |
+| 17 | 3 Aug | **`/health` is useless for SHA** — only `[build_info] running build <sha>` |
+| 18 | 5 Aug | **Standing "~95 failures" baseline is stale** — measure your own; see `SESSION_2026-08-05.md` |
+| 19 | 5 Aug | **Housekeeping** — dated session docs → `archive/` |
+
+Full original correction prose for #5–#14 lived in earlier README revisions; git
+history has it. Do not re-expand this file into another dump.
+
+If you find another contradiction, the code wins — add a row above.

@@ -2,7 +2,7 @@
 
 **Status:** PARTIAL — Block 1 complete + Block 2a calls 7–15 done. **Remaining:** Block 2a
 #16–18 (C7b, C18, C24), Block 3 (6 calls). Sweep paused; to be resumed before Quentin
-batches fixes. Run sheet: `docs/plan/JULES_SWEEP_2026-07-25.md`. Raw logs: `logs/sweep/`
+batches fixes. Run sheet: `docs/plan/archive/JULES_SWEEP_2026-07-25.md`. Raw logs: `logs/sweep/`
 (gitignored — PII). Aggregator: `python scripts/analyse_calls.py logs/sweep/`.
 
 **Delivery caveat:** C23 (turn boundary) FAILED → per run-sheet S2, all calls from #2 on were
