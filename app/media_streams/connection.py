@@ -13039,13 +13039,75 @@ class WebSocketCallHandler:
                             _last_sent_w[:40], _outstanding_q_w[:60],
                         )
                     else:
-                        # Promoted from debug: this branch is the dead-end that
-                        # cost the 02:30 call and it was invisible at INFO.
-                        logger.info(
-                            "[ms_watchdog] Spec W: turn asked nothing and no"
-                            " question is outstanding — nothing to re-ask: %r",
-                            _last_sent_w[:60],
-                        )
+                        # ── T-3: a bare FAQ answer used to arm nothing ────────
+                        # This branch is reached when the turn ended on a
+                        # statement AND no question is outstanding — i.e. Susie
+                        # answered something and stopped. Until 2026-08-05 it
+                        # only logged, so the call sat in silence until the
+                        # caller spoke again or hung up. Observed on
+                        # CA281dab02, 09:53:46: "Generally a maximum of three in
+                        # a single joint within a twelve-month period." — a
+                        # correct, complete answer, followed by nothing at all.
+                        #
+                        # A receptionist who has just answered a question and
+                        # hears silence says something. Note this is NOT the
+                        # banned closer: Gate 5b strips "is there anything else
+                        # I can help with" because a premium receptionist ends
+                        # an ANSWER with the answer, not a scripted sign-off.
+                        # Breaking a silence that has already happened is a
+                        # different act, and it is the one thing that stops a
+                        # complete answer reading as a dropped call. The wording
+                        # deliberately avoids that literal so the two rules do
+                        # not contradict each other.
+                        #
+                        # Seeds both the session and the handler because the
+                        # fire path prefers _sess["last_question"] and falls
+                        # back to self.last_question. It is phrased as a
+                        # question so _prompt_contains_question passes and Spec
+                        # Z Gate 2 inside _restart_timer agrees by construction
+                        # — the same predicate the BACKSTOP above tests.
+                        #
+                        # Bounded by the existing machinery: once per q_gen, the
+                        # attempt cap still applies, and _watchdog_has_retired
+                        # is required False by the enclosing guard. So this can
+                        # speak once into a silence; it cannot nag.
+                        # Scoped to turns that ANSWERED something. A bare
+                        # acknowledgement must stay silent here: "Right —" is
+                        # the booking flow's step 1, where the next question is
+                        # injected by code, and its correct recovery is that
+                        # question — not an open invitation that walks the
+                        # caller out of the booking. That is the 02:30 incident
+                        # in test_questionless_turn_backstop.py, and the
+                        # BACKSTOP above is its fix.
+                        #
+                        # Four words is the proxy for "this was an answer".
+                        # Deliberately conservative: it leaves terse answers
+                        # ("It's £75.") on the existing 10s safety net, which
+                        # recovers them badly but does recover them. Widening
+                        # this should be done on evidence, not by lowering the
+                        # number.
+                        _substantive_w = len(_last_sent_w.split()) >= 4
+                        if _substantive_w:
+                            _nudge_w = "Anything else you'd like to know?"
+                            _sh_w.last_question = _nudge_w
+                            _sh_w._last_question_set_at = time.time()
+                            _sess_w = getattr(self, "session", None)
+                            if isinstance(_sess_w, dict):
+                                _sess_w["last_question"] = _nudge_w
+                            _sh_w._restart_timer()
+                            logger.info(
+                                "[ms_watchdog] T-3 nudge armed — turn answered"
+                                " but asked nothing and none was outstanding"
+                                " (%r); armed %r rather than leaving the"
+                                " caller in silence",
+                                _last_sent_w[:60], _nudge_w,
+                            )
+                        else:
+                            logger.info(
+                                "[ms_watchdog] Spec W: turn asked nothing and no"
+                                " question is outstanding — nothing to re-ask: %r",
+                                _last_sent_w[:60],
+                            )
             # ── end Spec W ────────────────────────────────────────────────────
 
             self._tts_audio_done_at = time.monotonic()
