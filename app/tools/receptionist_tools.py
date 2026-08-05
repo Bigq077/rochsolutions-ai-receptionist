@@ -2530,6 +2530,48 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
 # Acuity executor: book_appointment
 # ---------------------------------------------------------------------------
 
+async def _alert_owner_acuity_book_failed(
+    args: Dict[str, Any], session: Dict[str, Any], reason: str
+) -> None:
+    """
+    Text the owner when an Acuity write fails, so a caller who wanted an
+    appointment and could not get one reaches a human.
+
+    Why this exists (2026-08-05): the `manual_followup` owner alert lives only in
+    the Google-Calendar no-calendar branch of `_exec_book_appointment`. Theorem
+    short-circuits to the Acuity executors before that branch is ever reached, so
+    an Acuity failure alerted nobody — it only returned success=False to the
+    model. Enabling `manual_followup` in clinic config does not fix that on its
+    own; there was no call site to enable.
+
+    Note the failure shape here is NOT a phantom booking: the tool returns an
+    error, so the model tells the caller it could not book. Nobody is falsely
+    confirmed. What was missing is the other half — the clinic learning that a
+    patient tried and failed, while Susie was still on the line with them.
+
+    SlotUnavailable is deliberately excluded: the slot was taken between the
+    availability check and the write, the model offers another time, and the call
+    continues normally. That is routine contention, not a system failure, and
+    alerting on it would train the owner to ignore the alert.
+    """
+    from app.notifications.owner_alert import notify_owner
+
+    _phone = (args.get("phone") or "").strip()
+    _when = (args.get("slot_iso") or "").strip()
+    await notify_owner(
+        session,
+        event="manual_followup",
+        patient_name=args.get("patient_name") or "",
+        when_label=_when,
+        service=args.get("service") or "",
+        location=args.get("location") or "",
+        note=(
+            f"Acuity write FAILED ({reason}) — caller was told we could not book. "
+            f"Please call them back on {_phone or 'the number in the call log'}."
+        ),
+    )
+
+
 async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     """book_appointment via Acuity Scheduling (Theorem clinic)."""
     from app.booking.booking.models import BookingRequest, InsuranceInfo
@@ -2539,6 +2581,11 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
 
     adapter = _get_acuity_adapter()
     if not adapter:
+        # No adapter means no Acuity credentials at all — every booking on this
+        # deploy is failing, not just this one. That is the loudest thing the
+        # owner can be told, so it alerts on the same path as a write failure.
+        logger.error("[BOOKING FAILED] Acuity adapter unavailable — no credentials?")
+        await _alert_owner_acuity_book_failed(args, session, "booking system not configured")
         return {"success": False, "error": "Booking system not configured."}
 
     try:
@@ -2818,6 +2865,7 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
         logger.error(
             "[BOOKING FAILED] ProviderAuthError (Acuity credentials wrong or expired): %r", e,
         )
+        await _alert_owner_acuity_book_failed(args, session, "booking system auth error")
         return {
             "success": False,
             "error": "Booking system authentication error. Please ask the caller to call the clinic directly.",
@@ -2832,6 +2880,7 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
             session.get("_acuity_practitioner_id"),
             e, exc_info=True,
         )
+        await _alert_owner_acuity_book_failed(args, session, str(e))
         return {"success": False, "error": str(e)}
 
 
@@ -3378,6 +3427,41 @@ async def _cancel_reminders_for(
         logger.warning("reminder cancellation failed (non-fatal): %r", e)
 
 
+async def _alert_owner_acuity_cancelled(
+    args: Dict[str, Any], session: Dict[str, Any], appt_type: str, appt_time_str: str
+) -> None:
+    """
+    Owner heads-up that an appointment was cancelled on the Acuity path.
+
+    The equivalent alert existed only on the Google-Calendar path, whose own
+    comment said "JV only: Theorem routes to the Acuity path above" — accurate,
+    and the reason a Theorem cancellation reached nobody. A slot freeing up is
+    something the clinic wants to know while it is still fillable.
+
+    Suppressed during a reschedule (`_suppress_sms`) for the same reason the
+    patient SMS is: the reschedule sends its own single alert, so the owner is
+    not buzzed twice for one appointment moving.
+    """
+    if args.get("_suppress_sms"):
+        return
+    _when = appt_time_str or ""
+    if _when:
+        try:
+            _when = datetime.fromisoformat(
+                _when.replace("Z", "+00:00")
+            ).strftime("%A %d %B at %H:%M")
+        except (ValueError, TypeError):
+            pass  # unparseable — send the raw string rather than nothing
+    from app.notifications.owner_alert import notify_owner
+    await notify_owner(
+        session,
+        event="cancellation",
+        patient_name=(args.get("patient_name") or session.get("reschedule_appt_name") or ""),
+        when_label=_when,
+        service=appt_type or "",
+    )
+
+
 async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     """cancel_appointment via Acuity Scheduling (Theorem clinic)."""
     from datetime import date as _date
@@ -3445,6 +3529,7 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
                 appt_type, appt_time_str,
             )
             await _cancel_reminders_for(session, args, appt_time_str)
+            await _alert_owner_acuity_cancelled(args, session, appt_type, appt_time_str)
             return {"success": True, "cancelled": appt_type, "was_at": appt_time_str}
         # End RC fast-path — fall through to legacy name-search below
 
@@ -3490,6 +3575,7 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
                 _explicit_appt_id, _appt_time_str,
             )
             await _cancel_reminders_for(session, args, _appt_time_str)
+            await _alert_owner_acuity_cancelled(args, session, _appt_type, _appt_time_str)
             return {"success": True, "cancelled": _appt_type, "was_at": _appt_time_str}
 
         patient_name_lower = (args.get("patient_name") or "").strip().lower()
@@ -3552,6 +3638,7 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
             appt_type, appt_time_str,
         )
         await _cancel_reminders_for(session, args, appt_time_str)
+        await _alert_owner_acuity_cancelled(args, session, appt_type, appt_time_str)
         return {
             "success": True,
             "cancelled": appt_type,
@@ -3802,6 +3889,24 @@ async def _reschedule_appointment_acuity(args: Dict[str, Any], session: Dict[str
         logger.warning("_reschedule_appointment_acuity SMS failed (non-fatal): %r", e)
 
     session["confirmation_sms_sent"] = True
+
+    # STEP 4: single owner heads-up. The Google-Calendar path has had this since
+    # JV; Theorem short-circuits to the Acuity executors above it, so a Theorem
+    # reschedule alerted nobody. Exactly ONE alert fires for the whole move: the
+    # inner book and cancel both carry `_suppress_sms`, which gates their own
+    # owner alerts, so there is no double-buzz. Never fatal — notify_owner
+    # swallows its own errors, and a failed alert must not fail the reschedule.
+    from app.notifications.owner_alert import notify_owner as _notify_owner_alert
+    await _notify_owner_alert(
+        session,
+        event="reschedule",
+        patient_name=_resched_name,
+        when_label=book_result.get("booked_slot") or "",
+        service=session.get("reschedule_appt_type", "") or "",
+        location=_normalize_location(
+            args.get("location") or session.get("selected_location", "")
+        ),
+    )
 
     return {
         "success":           True,

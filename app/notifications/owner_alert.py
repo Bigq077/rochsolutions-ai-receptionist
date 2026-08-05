@@ -9,7 +9,13 @@ booking needs manual entry.
 Self-gating and data-driven: does NOTHING unless the clinic's config carries an
 ``operational.owner_alerts`` block (flattened onto the clinic contract as
 ``clinic["owner_alerts"]``) that enables the given event. Clinics without the
-block (e.g. Theorem) are unaffected — every call is a no-op for them.
+block are unaffected — every call is a no-op for them.
+
+Theorem is no longer one of those clinics: it gained the block on 2026-08-05,
+and the Acuity executors gained the call sites to go with it. Enabling an event
+in config is only half the wiring — check there is a ``notify_owner`` call on
+the executor the clinic actually runs. Theorem short-circuits to the Acuity
+executors before the Google-Calendar ones, so for a long time it had neither.
 
 Config shape (in clinic.json → operational.owner_alerts):
     {
