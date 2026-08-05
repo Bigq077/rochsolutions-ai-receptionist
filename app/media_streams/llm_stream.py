@@ -1333,15 +1333,73 @@ def _booking_confirmation_asked(last_bot_prompt: str) -> bool:
 
 
 def _cancel_retention_asked(last_bot_prompt: str) -> bool:
-    """True when the bot's last turn asked the CANCEL retention question.
+    """True when the bot's last turn asked FOR CONSENT TO CANCEL.
 
-    Extracted verbatim, second arm included: `"altogether"` alone already
-    subsumes `"cancel it altogether"`. Kept as written rather than simplified —
-    behaviour-preserving extraction only, and the redundancy is a record of what
-    the gate actually tests.
+    Two shapes, because the three prompts in this repo mandate two different
+    ones:
+
+      * the RETENTION question — "would you like to reschedule this
+        appointment, or cancel it altogether?" — which `clinic_template_prompt`
+        requires and which the `"altogether"` arm has always covered;
+      * a DIRECT cancel CTA — "shall I go ahead and cancel that?" — which
+        `susie_system_prompt`'s theorem_v3 branch mandates *by name* ("the CTA
+        is always 'shall I go ahead and cancel that?'"), and which contains no
+        `"altogether"` at all.
+
+    `B-57`: on Theorem the gate could therefore never open, so
+    `cancel_appointment` was refused every time the model obeyed its own prompt.
+    Same defect and same repair as `_booking_confirmation_asked` (R6) and
+    `_move_confirmation_asked` — a single-phrasing gate against a sentence the
+    model composes.
+
+    The ask-shape arm requires BOTH an ask shape and a cancel verb, so a
+    statement ("I'm cancelling that for you") is not treated as having asked —
+    that sentence is the claim Gate 5f exists to strip, not the question. The
+    booking and reschedule re-steers carry an ask shape but no cancel verb, so
+    neither can arm this gate; `test_b36_gate5f_write_families` asserts that
+    directly and it is the leak that must not reopen.
+
+    Widening the CTA arm cannot by itself cancel anything:
+    `_cancel_reply_consents` still has to pass independently, and that is the
+    condition doing the safety work.
     """
     lbp = (last_bot_prompt or "").lower()
-    return "cancel it altogether" in lbp or "altogether" in lbp
+    if not lbp:
+        return False
+    # The retention question, in any wording. Kept as the first arm because it
+    # is what the template prompt mandates and what the cancel re-steer says.
+    if "altogether" in lbp:
+        return True
+    return _direct_cancel_cta(lbp)
+
+
+def _direct_cancel_cta(last_bot_prompt: str) -> bool:
+    """True for a cancel CTA that offers ONE action, not a choice.
+
+    The distinction matters to consent, not to arming. Against the retention
+    question a bare "yes" identifies nothing — it answers an OR — which is why
+    `_cancel_reply_consents` demands an explicit cancel token. Against "shall I
+    go ahead and cancel that?" a "yes" is unambiguous, and `B-57` recorded what
+    demanding the token costs there: the re-steer asks a question whose natural
+    answer blocks the write, and `B-44` has a caller stating the intention to
+    cancel four times across 89 seconds.
+
+    Anything offering the caller an alternative is excluded, so the retention
+    question and the cancel re-steer both fall out here rather than becoming
+    yes-cancellable.
+    """
+    lbp = (last_bot_prompt or "").lower()
+    if not lbp:
+        return False
+    if any(alt in lbp for alt in ("altogether", "reschedul", "keep this", "move it")):
+        return False
+    _ask_shapes = (
+        "shall i go ahead", "shall i cancel", "would you like me to cancel",
+        "want me to cancel", "happy for me to cancel", "ok to cancel",
+        "okay to cancel", "shall i remove",
+    )
+    _cancel_verbs = ("cancel", "cancelling")
+    return any(a in lbp for a in _ask_shapes) and any(v in lbp for v in _cancel_verbs)
 
 
 def _move_confirmation_asked(last_bot_prompt: str) -> bool:
@@ -1397,7 +1455,7 @@ def _move_confirmation_asked(last_bot_prompt: str) -> bool:
     return any(a in lbp for a in _ask_shapes) and any(v in lbp for v in _move_verbs)
 
 
-def _cancel_reply_consents(messages) -> bool:
+def _cancel_reply_consents(messages, session: Optional[dict] = None) -> bool:
     """FM-23: cancel_appointment is DESTRUCTIVE — it may fire only on an EXPLICIT
     cancel instruction, in the template cancel-retention context. The confirm is
     the retention question ("...reschedule this appointment, or cancel it
@@ -1406,6 +1464,22 @@ def _cancel_reply_consents(messages) -> bool:
     cancelling: a bare "yes"/"ok"/"go ahead" is ambiguous against the OR-question
     and must not cancel; a reschedule word, "keep/leave it", "don't cancel", or a
     bare "no" all block. Only an explicit "cancel" token allows.
+
+    `B-57`, second half: that reasoning is sound for an OR-question and wrong for
+    a single-action CTA. Theorem's prompt mandates "shall I go ahead and cancel
+    that?", to which "yes please" is the natural and unambiguous answer — and
+    requiring the token there means a caller can be unable to complete a cancel
+    at all. So when `session` shows the CTA was a DIRECT cancel ask, a clear
+    affirmative counts.
+
+    Deliberately narrow, in three ways. The affirmative is judged by
+    `_book_verdict_deterministic`, which settles negation and correction BEFORE
+    the yes ("don't cancel it", "yes but hang on") and returns 'unsure' rather
+    than guessing — no classifier, no network, and 'unsure' blocks. The
+    alternative-offering shapes are excluded by `_direct_cancel_cta`, so the
+    retention question and the cancel re-steer still demand the token. And
+    everything below still applies first: any negation, any reschedule word, or
+    "keep/leave it" blocks regardless of what was asked.
     """
     text = _last_user_text(messages or []).lower()
     if not text:
@@ -1423,7 +1497,16 @@ def _cancel_reply_consents(messages) -> bool:
         return False
     # Consent requires an explicit cancel token — a bare yes/ok is ambiguous
     # against the "reschedule, or cancel?" OR-question and must not delete.
-    return "cancel" in text
+    if "cancel" in text:
+        return True
+    # B-57 — unless the question named one action, in which case the yes is not
+    # ambiguous. Read through _cta_asked so the uncapped `last_question` is
+    # consulted too: a cancel read-back naming service, practitioner and site
+    # runs past last_bot_prompt's 200-char cap (B-38), and the truncated form
+    # would silently fall back to demanding the token.
+    if session is not None and _cta_asked(session, _direct_cancel_cta):
+        return _book_verdict_deterministic(text) == "yes"
+    return False
 
 
 # Phrases the assistant SPEAKS during the phone step (Step 8) — offering the
@@ -3663,7 +3746,7 @@ class LLMStream:
                     }
                 elif tool_name == "cancel_appointment" and not (
                     _cta_asked(session, _cancel_retention_asked)
-                    and _cancel_reply_consents(messages)
+                    and _cancel_reply_consents(messages, session)
                 ):
                     # FM-23: cancel is DESTRUCTIVE. The template cancel flow's confirm
                     # is the retention question ("...or cancel it altogether?") and the
@@ -3681,12 +3764,16 @@ class LLMStream:
                     result = {
                         "status": "cancellation_confirmation_required",
                         "message": (
-                            "cancel_appointment cannot fire yet. Ask the retention "
-                            "question — 'Would you like to reschedule this "
-                            "appointment, or cancel it altogether?' — and only "
-                            "cancel when the caller explicitly says cancel. Do not "
-                            "cancel on a bare 'yes', a reschedule request, or an "
-                            "ambiguous, negative, or absent reply."
+                            "cancel_appointment cannot fire yet. Ask for consent in "
+                            "the wording your instructions give you — either "
+                            "'Shall I go ahead and cancel that?' or the retention "
+                            "question 'Would you like to reschedule this "
+                            "appointment, or cancel it altogether?' — and wait for "
+                            "a clear answer. After the retention question only an "
+                            "explicit 'cancel' counts, because a bare 'yes' does "
+                            "not say which option was chosen. Do not cancel on a "
+                            "reschedule request, or on an ambiguous, negative or "
+                            "absent reply."
                         ),
                     }
                 elif tool_name == "escalate_to_claude":
