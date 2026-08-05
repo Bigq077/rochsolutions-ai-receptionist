@@ -3074,6 +3074,8 @@ class LLMStream:
             THINKING_FILLERS_PRIMARY,
             BOOKING_WRITE_FILLERS,
             LOOKUP_FILLERS,
+            CANCEL_WRITE_FILLERS,
+            RESCHEDULE_WRITE_FILLERS,
         )
 
         # Tools that get filler phrases → list to draw from
@@ -3084,6 +3086,12 @@ class LLMStream:
             # runs both when finding an appointment AND on the cancel/reschedule
             # confirmation wait, where "checking the diary" wording is wrong (P17).
             "lookup_patient":     LOOKUP_FILLERS,
+            # The two destructive/anxious writes had no filler at all, so the
+            # calendar round-trip after the caller's go-ahead was silence. B-40
+            # measured 11.1 s of it on a cancel. A gate refusal returns above
+            # this branch, so neither can be spoken over a blocked write.
+            "cancel_appointment":     CANCEL_WRITE_FILLERS,
+            "reschedule_appointment": RESCHEDULE_WRITE_FILLERS,
         }
 
         result_blocks: List[dict] = []

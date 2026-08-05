@@ -548,11 +548,20 @@ BAD_LINE_PHRASE = "Sorry about that — could you say that again for me?"
 
 # Played while LLM is generating (if first chunk exceeds LLM_FIRST_CHUNK_TIMEOUT_MS).
 # Multiple phrases — llm_stream picks one at random each turn.
+#
+# 2026-08-05, owner instruction: these fire on ANY slow turn, including the
+# cancel and reschedule turns, and a clipped "Just a second…" during a
+# cancellation reads as being made to wait rather than being helped. Reworded to
+# carry a little warmth without getting longer — length matters here, because
+# this plays exactly when the turn is already late.
+#
+# "Just a second…" is dropped outright: it is the phrase the owner named, and it
+# is also the closest of the four to `SILENCE_RULE`'s banned "just a moment".
 FILLER_PHRASES = [
-    "Give me a moment…",
+    "Just getting that for you…",
     "Right with you…",
     "One moment…",
-    "Just a second…",
+    "Let me just check that…",
 ]
 # Keep the singular alias so any other import of FILLER_PHRASE still compiles.
 FILLER_PHRASE = FILLER_PHRASES[0]
