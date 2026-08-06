@@ -454,14 +454,31 @@ class AudioChunkBuffer:
 def _is_garbage_transcript(text: str) -> bool:
     """Return True if transcript contains no recognisable words.
 
-    Phone numbers, postcodes and dates are digit-heavy — allow them through
-    rather than silently discarding.  3+ consecutive digits is a reliable
-    signal that the caller said something meaningful (not just noise).
+    ANY digit means the caller said something meaningful.  This used to require
+    three consecutive digits, a rule written for phone numbers and postcodes —
+    and a slot answer is one or two digits, so it failed that test, and having
+    no letters it failed the word test too.  Every bare digit answer, "1"
+    through "12", plus "2:30", was destroyed here at the socket boundary before
+    connection.py ever saw it.
+
+    Live on theorem_v3, 2026-08-06 17:16:44, a caller offered
+    "Number 1, three in the afternoon / Number 2, five in the evening":
+
+        [ms_stt] garbage transcript: '3'
+
+    They then said "3 o'clock" three times, which died one filter further on
+    (connection.py single_char_word), and hung up.  Four clear answers, nothing
+    heard.
+
+    The asymmetry that makes widening correct: a false negative here silently
+    deletes a caller's turn, while a false positive costs one cheap classifier
+    pass downstream.  Digits are never mouth-noise — STT does not hallucinate
+    "3" out of a cough — so there is no noise case this readmits.
     """
     if not text.strip():
         return True
-    # Allow digit-heavy input (phone fragments, postcodes, dates, etc.)
-    if re.search(r'\d{3,}', text):
+    # Any digit at all: slot picks ("3"), phone fragments, postcodes, dates.
+    if re.search(r'\d', text):
         return False
     words = re.findall(r"[a-zA-Z]{2,}", text.lower())
     real_words = [w for w in words if w not in NOISE_ONLY_WORDS]
