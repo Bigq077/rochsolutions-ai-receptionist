@@ -391,7 +391,41 @@ _SLOT_SIGNALS: frozenset = frozenset({
     # a day off the offered list must reach the LLM, which resolves it against
     # the slots actually offered (and says so when the day is not among them).
     "saturday", "sunday", "today", "tomorrow",
+    # Number homophones — what the recogniser writes when it mishears a spoken
+    # number.  "three" as "free" is th-fronting and is extremely common in UK
+    # speech; it cost a caller four attempts on CA1eb29e39 (see the module note
+    # on _SLOT_HOMOPHONE_NOTE below).  These carry no other meaning a caller
+    # would use while picking a slot, so admitting them costs nothing.
+    #
+    # NOT included, deliberately: "to"/"too" (two) and "for" (four).  They are
+    # too common in ordinary English — every "I'd like to move to a video call"
+    # would become a slot pick, which would bypass the modality-switch and
+    # clarify branches below this gate.  The "i said" rule in
+    # _is_slot_selection_candidate covers the repeat case for those instead,
+    # which is when a mishearing actually shows itself.
+    "free", "tree",     # three
+    "won",              # one
+    "ate",              # eight
+    "fife",             # five
 })
+
+# Why the homophones above exist, in one place so it is not re-litigated:
+#
+# CAecb1eb29e39656e947f4a81eb0689947, 2026-08-06, offered
+# {1: three in the afternoon, 2: five in the evening}.  The caller said "three"
+# and AssemblyAI wrote "free" three times running:
+#
+#   22:11:11  'uh yeah free'       → open-availability continuation suppressed
+#   22:11:26  'i said free'        → slot fragment ignored — re-arming
+#   22:11:36  'hello i said free'  → open-availability continuation suppressed
+#   22:11:52  "i said 3 o'clock"   → accepted, because it contained a digit
+#
+# The word did not merely fail to match.  'free' is also a bare substring in
+# _OPEN_AVAILABILITY_SIGNALS (there to catch "I'm free all week"), so the
+# misheard pick was actively reinterpreted as "I have no preference" and then
+# suppressed as a redundant continuation.  The caller says "three"; the system
+# hears "I don't mind" and says nothing back.
+_SLOT_HOMOPHONE_NOTE = None  # documentation anchor only
 
 # Clock times, bare numbers and date ordinals, which no allowlist can enumerate.
 # A caller picking off a spoken slot list says "3pm" or "half two" or "the 21st"
@@ -434,8 +468,24 @@ def _is_slot_selection_candidate(transcript: str) -> bool:
       * clock and ordinal forms — "3pm", "2:30", "the 21st" (the docstring's
         own example) matched nothing
       * weekend and relative days — "Saturday", "tomorrow" matched nothing
+      * number homophones — "free" for "three" (see _SLOT_HOMOPHONE_NOTE)
     """
-    for raw in transcript.lower().split():
+    low = transcript.lower()
+
+    # A caller repeating themselves is proof we already got it wrong once.
+    # "I said …" means the previous turn was misheard or ignored, and whatever
+    # follows must reach the LLM whether or not any word in it is recognised.
+    # This is the general safety net behind the homophone list: it catches the
+    # mishearings nobody has enumerated yet, including the ones deliberately
+    # left out of _SLOT_SIGNALS for being ordinary English ("to", "for").
+    #
+    # It would have caught two of the three losses on CAecb1eb29e39 by itself:
+    # 'i said free' and 'hello i said free'.  Failing to hear someone the first
+    # time is bad luck; doing it again after they tell you is the defect.
+    if "i said" in low or "i say" in low:
+        return True
+
+    for raw in low.split():
         word = raw.strip(_SLOT_TOKEN_STRIP)
         if not word:
             continue
@@ -5453,6 +5503,32 @@ class WebSocketCallHandler:
         # strictly in order.  Reset to 0.0 on barge-in (Twilio buffer cleared).
         self._tts_playout_end_mono: float = 0.0
 
+        # μ-law bytes sent for the TTS utterance currently in flight.  Divided
+        # by 8000 to get its play duration, which is what schedules the finish
+        # callback and therefore when the watchdog re-arms.
+        #
+        # An INSTANCE attribute, not a local in _tts_loop, and that is the whole
+        # point.  It used to be a local, so it was zeroed only when a done
+        # sentinel was consumed — and barge-in drains audio_out_queue, which
+        # takes the sentinel with it.  The interrupted utterance's bytes then
+        # stayed on the counter and were added to the NEXT completed utterance,
+        # whose callback was scheduled that much further into the future.  The
+        # barge-in handlers reset _tts_playout_end_mono right beside this but
+        # could not touch a local in another coroutine.
+        #
+        # Measured live, CA1747c2d9 on 2026-08-06, after six barge-ins:
+        #     20:52:36  [ms_silence] tts_finished in 29.1s: 'No problem at all
+        #               — on your keypad, just press 1 for Awlstuh'
+        # An 80-character phrase takes about five seconds to say.  The caller
+        # then got 25 seconds of silence, because the watchdog was armed off
+        # that scheduled instant.  The same call shows the identical 80-char
+        # phrase scheduled at 4.2s earlier and 7.3s later — same text, different
+        # answer, the difference being how much the caller had interrupted.
+        #
+        # The property this created is the dangerous one: the more the caller
+        # talks over Susie, the more dead air they are given.
+        self._tts_bytes_sent: int = 0
+
         # ── Global 10-second silence safety net ───────────────────────────
         # _last_audio_or_transcript_ts is updated at TTS start and on every
         # accepted transcript so _silence_safety_net() can detect genuine
@@ -8118,6 +8194,16 @@ class WebSocketCallHandler:
                                 "[ms_conn] slot fragment ignored — re-arming: %r",
                                 utterance,
                             )
+                            # Count it.  _note_utterance_lost's own docstring
+                            # says "every guard that drops a real final
+                            # transcript calls this" — these two slot guards
+                            # never did, so a call that discarded the caller's
+                            # answer three times still reported
+                            # lost_total=0 by_reason={} (CAecb1eb29e39,
+                            # 2026-08-06).  The metric said the call was clean.
+                            self._note_utterance_lost(
+                                "slot_fragment", utterance,
+                            )
                             _last_q = self.session.get("last_question", "")
                             if _last_q:
                                 self._silence_handler.set_state(self.session.get("state", "default"))
@@ -8210,6 +8296,13 @@ class WebSocketCallHandler:
                                     " suppressed — slots already presented"
                                     " this turn: %r",
                                     utterance,
+                                )
+                                # Counted for the same reason as the slot
+                                # fragment above: this guard discarded two of
+                                # the three lost answers on CAecb1eb29e39 and
+                                # contributed nothing to lost_total.
+                                self._note_utterance_lost(
+                                    "open_availability_suppressed", utterance,
                                 )
                                 # Re-arm the question timer so a suppressed
                                 # continuation gets an IMMEDIATE re-ask instead
@@ -12977,7 +13070,10 @@ class WebSocketCallHandler:
         Updates _last_audio_at on every successful send (used by watchdog).
         If the WebSocket closes mid-call, drain the queue and exit.
         """
-        _tts_bytes_sent: int = 0  # mulaw bytes sent for the current TTS utterance
+        # Byte counter lives on self (see __init__) so barge-in can zero it.
+        # A local here survived the drain that removes the done sentinel, and
+        # leaked the interrupted utterance's bytes into the next one.
+        self._tts_bytes_sent = 0
         # Latency-eval: True once the content-boundary marker for the current
         # turn has been dequeued → the next media frame is the first REAL content
         # audio. Reset after it's consumed so the next turn's marker re-arms it.
@@ -13026,8 +13122,8 @@ class WebSocketCallHandler:
                     self._tts_pending_chunk_start_ts = 0.0
                     self._tts_pending_q_gen = -1
                     self._tts_pending_chunk_seq = 0
-                    play_secs = _tts_bytes_sent / 8000.0
-                    _tts_bytes_sent = 0
+                    play_secs = self._tts_bytes_sent / 8000.0
+                    self._tts_bytes_sent = 0
                     # Only arm the silence timer if audio was actually delivered.
                     # If ElevenLabs failed (0 bytes sent), play_secs == 0 and we
                     # must NOT arm the timer — doing so triggers a spurious 26-second
@@ -13095,7 +13191,7 @@ class WebSocketCallHandler:
                     self.session["last_audio_sent_at"] = _iso_now()
                     # Count raw mulaw bytes for play-duration estimate.
                     # base64 encodes 3 bytes as 4 chars → multiply by 0.75.
-                    _tts_bytes_sent += int(len(b64_payload) * 0.75)
+                    self._tts_bytes_sent += int(len(b64_payload) * 0.75)
 
                 except WebSocketDisconnect:
                     logger.info("[ms_conn] send_loop: WS closed")
@@ -13608,6 +13704,12 @@ class WebSocketCallHandler:
         # the next response schedules from `now`, not the cancelled audio's
         # future playout-end (mirrors the barge-in reset).
         self._tts_playout_end_mono = 0.0
+        # …and the byte counter with it.  _drain_queue above just removed the
+        # done sentinel that would have zeroed it, so without this the cancelled
+        # audio's bytes are charged to the next utterance and pad its scheduled
+        # playout-end — the clock reset above would be undone on the very next
+        # chunk.  These two must always be cleared together.
+        self._tts_bytes_sent = 0
 
         if self.stream_sid:
             try:
@@ -13735,6 +13837,12 @@ class WebSocketCallHandler:
             # interrupted response's stale (future) playout-end, adding phantom
             # delay before its finish callback / watchdog arming.
             self._tts_playout_end_mono = 0.0
+            # The byte counter must go with it — see __init__.  The interrupted
+            # utterance's sentinel is drained away, so its bytes would otherwise
+            # be added to the next completed utterance and reintroduce exactly
+            # the phantom delay the line above removes.  29.1s scheduled for a
+            # five-second phrase, and 25s of dead air, on CA1747c2d9.
+            self._tts_bytes_sent = 0
             # Inhibit _tts_loop from speaking any LLM chunks that arrive after
             # the barge-in until the new turn completes (Bug 5 — stale output).
             self.session["tts_inhibit"] = True
