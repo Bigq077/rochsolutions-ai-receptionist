@@ -261,7 +261,12 @@ UNMOVED_PROMPTS = {
     # this one does touch the block this table watches. The cancel *wording*
     # is still untouched — the assertions above are what prove that, and they
     # pass; this hash moving is expected, not a containment failure.
-    "theorem_v3": "6b8618bd86e8570e",
+    # Re-pinned 2026-08-06 — CALL STATE now says in words when there is NO
+    # caller ID, instead of omitting the line. This fixture renders with no
+    # twilio_from_local and no collected phone, so it takes exactly that new
+    # branch; the move is the addition and nothing else. Cancel wording is
+    # again untouched, and the assertions above prove it.
+    "theorem_v3": "909fee2fce4b5519",
     "vital_edge": "706299246fa856dc",
 }
 

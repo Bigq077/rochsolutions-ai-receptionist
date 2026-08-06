@@ -3824,6 +3824,26 @@ def _build_theorem_v3(session: dict) -> str:
         state.append(
             f"caller phone (pre-loaded from caller ID): {cn}"
         )
+    elif not (session.get("collected") or {}).get("phone"):
+        # NO caller ID — withheld number, or a carrier that sent a word instead
+        # of one ("anonymous"), which connection.py blanks at call start.
+        #
+        # Say so explicitly. Omitting the line is not an instruction: on
+        # CA4ab554ce (2026-08-06) the line was correctly absent and the model
+        # ran its scripted phone step anyway — "is the number you're calling
+        # from the best one for the booking? If so, just say use this number" —
+        # offering a number that does not exist. The caller said "use this
+        # number", and the call proceeded to the booking readback holding no
+        # phone number at all.
+        state.append(
+            "NO caller ID on this call — the caller's number is withheld or "
+            "unavailable, and you do NOT have a number for them. Never offer "
+            "to use \"the number you're calling from\", never say \"just say "
+            "use this number\", and never ask whether the calling number is "
+            "the best one: there is nothing to offer and the caller cannot "
+            "answer it. At the phone step ask instead: \"Could you type the "
+            "number on your keypad?\""
+        )
     if (session.get("acuity_booking_id")
             or session.get("booking_id")
             or session.get("calendar_status") == "created"):

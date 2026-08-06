@@ -7743,6 +7743,74 @@ class WebSocketCallHandler:
                                 _bk_caller_num, utterance[:60],
                             )
                             # Fall through to run_turn — phone now in CALL STATE.
+                        elif _bk_phone_step:
+                            # YES to the phone question, but there is no number
+                            # to say yes to — the caller withheld their caller
+                            # ID, so twilio_from was blanked at call start and
+                            # _confirm_caller_number() is empty.
+                            #
+                            # The guard above already refuses to store nothing.
+                            # What it does not do is TELL anyone: the turn fell
+                            # through to run_turn, the model carried on to the
+                            # booking readback, and phone_confirmed stayed unset
+                            # while the caller believed the number was handled.
+                            #
+                            # CA4ab554ce, 2026-08-06:
+                            #   22:30:51  "…is the number you're calling from
+                            #             the best one? If so, just say use
+                            #             this number."   ← no number exists
+                            #   22:31:01  caller: "um use this number"
+                            #   22:31:03  straight to readback, then "shall I go
+                            #             ahead and book that in?"  phone=no
+                            #
+                            # One "yes" from a booking with no phone number, and
+                            # the book_appointment backstop would NOT have caught
+                            # it: that blocks only when phone_confirmed is unset
+                            # AND the phone question was never asked. She had
+                            # asked it, so the second condition was already False.
+                            #
+                            # The unsettled ladder below does not catch it
+                            # either — it fires on a verdict of "unsure", and
+                            # "use this number" verdicts as "yes".
+                            #
+                            # Take the turn and ask for the keypad. Wording
+                            # carries "type the number" so the phone step still
+                            # registers as asked downstream.
+                            _no_cli_ask = (
+                                "I haven't got a number showing for this call — "
+                                "could you type the number you'd like us to use "
+                                "on your keypad?"
+                            )
+                            logger.warning(
+                                "[ms_conn v3] caller confirmed the calling "
+                                "number but NO caller ID is held — asking for "
+                                "keypad entry instead of proceeding: %r",
+                                utterance[:60],
+                            )
+                            self.session["v3_phone_dtmf_active"] = True
+                            self.session["phone_awaiting_dtmf"] = True
+                            self.session["phone_dtmf_buffer"] = ""
+                            self.session["last_bot_prompt"] = _no_cli_ask
+                            self.session["last_question"] = _no_cli_ask
+                            self.session.setdefault(
+                                "conversation_history", []
+                            ).append({
+                                "role": "assistant",
+                                "content": _no_cli_ask,
+                            })
+                            await save_session(self.call_sid, self.session)
+                            await self.tts_text_queue.put(_no_cli_ask)
+                            if self._silence_handler is not None:
+                                self._silence_handler.on_question_asked(
+                                    _no_cli_ask
+                                )
+                            # No on_llm_finished() mirror here, unlike the slot
+                            # intercepts further down: on_llm_started() does not
+                            # fire until line ~8087, well after this branch, so
+                            # llm_in_flight / _llm_busy are still False and there
+                            # is nothing to unwind.
+                            continue
+
                     # Bound the verbal phone confirm (CAcb4a11b90, 2 Aug 2026).
                     #
                     # The block above handles a recognised YES. A recognised NO
