@@ -94,10 +94,20 @@ def _guard_call_sites(src: str) -> list:
     strings wrap across source lines and any test that spells them out breaks
     on reformatting rather than on behaviour.
     """
+    # Only calls made by the HANDLER are guards. Module-level helpers use the
+    # same flag as a FILTER — _primary_location() picks the first bookable site
+    # and _other_bookable_locations() lists the rest — and a filter has no
+    # caller in front of it to redirect. Scoping to the handler's own source
+    # keeps that distinction structural rather than a hardcoded name list, so a
+    # new guard anywhere in the handler is still caught.
+    _handler = inspect.getsource(c.WebSocketCallHandler)
+    _start = src.find(_handler)
+    _end = _start + len(_handler)
     return [
         i for i in range(len(src))
         if src.startswith("_location_is_bookable(", i)
         and not src[max(0, i - 4):i].strip().endswith("def")
+        and _start <= i < _end
     ]
 
 

@@ -983,6 +983,45 @@ _NOT_BOOKABLE_REDIRECT: str = (
 )
 
 
+def _primary_location(clinic_id: str) -> str:
+    """The clinic's default location id — the first bookable one in config.
+
+    Config-driven rather than named here: clinic.json lists `locations` in
+    priority order, so "the first one we can actually book" is the clinic's
+    own statement of which site is primary. Returns "" when the clinic has no
+    usable locations, which the caller must treat as "do not default".
+    """
+    try:
+        from app.clinic_config import get_clinic
+        for _loc in (get_clinic(clinic_id) or {}).get("locations") or []:
+            _id = (_loc.get("id") or "").lower().strip()
+            if _id and _location_is_bookable(clinic_id, _id):
+                return _id
+    except Exception:
+        pass
+    return ""
+
+
+def _other_bookable_locations(clinic_id: str, exclude: str) -> list:
+    """Display names of the clinic's other bookable locations.
+
+    Used to offer the caller a correction when we have defaulted their clinic
+    for them — "just say Redditch if you'd rather that one".
+    """
+    _out: list = []
+    try:
+        from app.clinic_config import get_clinic
+        for _loc in (get_clinic(clinic_id) or {}).get("locations") or []:
+            _id = (_loc.get("id") or "").lower().strip()
+            if not _id or _id == (exclude or "").lower().strip():
+                continue
+            if _location_is_bookable(clinic_id, _id):
+                _out.append(_loc.get("name") or _id.capitalize())
+    except Exception:
+        pass
+    return _out
+
+
 def _location_is_bookable(clinic_id: str, location: str) -> bool:
     """False only for a Theorem location explicitly flagged bookable=False.
 
@@ -10189,6 +10228,62 @@ class WebSocketCallHandler:
                                         )
                                         _resolved = "unknown"
 
+                                    # ── Default an unresolvable answer ───────
+                                    # Owner decision 2026-08-06. This REVERSES
+                                    # the "TWO RUNGS ONLY / straight to the
+                                    # keypad" instruction of 2026-08-04, still
+                                    # recorded at the keypad site below — read
+                                    # that comment before changing this back.
+                                    #
+                                    # What changed is the evidence. On the
+                                    # first day of real traffic the clinic
+                                    # question was the single biggest source of
+                                    # friction: four of five booking attempts
+                                    # reached the keypad ladder, each costing
+                                    # 10-25s, and callers answered it with
+                                    # 'ofter', 'okej', "i'll send me" and
+                                    # 'uh your oosterkliniek'.
+                                    #
+                                    # The failure is asymmetric. "Redditch" is
+                                    # phonetically distinctive and survives STT
+                                    # — 'gedditch' resolved correctly at
+                                    # 17:14:03. "Alcester" is the one that gets
+                                    # destroyed, so an unresolvable answer is
+                                    # far more likely to have been the primary
+                                    # site than the secondary one.
+                                    #
+                                    # SAFETY: this defaults OUT LOUD. The ack
+                                    # below names the clinic and offers the
+                                    # alternative, so a Redditch caller whose
+                                    # answer was garbled hears "Alcester" and
+                                    # can correct it in one word. A silent
+                                    # default would send them 20 miles to the
+                                    # wrong site — that is the risk the 08-04
+                                    # instruction was protecting against, and
+                                    # the audible ack is what makes reversing
+                                    # it safe.
+                                    #
+                                    # Questions are excluded: they still route
+                                    # to the LLM via the guard further down.
+                                    _loc_defaulted = False
+                                    if (
+                                        _resolved == "unknown"
+                                        and not _transcript_is_question(utterance)
+                                    ):
+                                        _primary = _primary_location(
+                                            self.session.get("clinic_id", "")
+                                        )
+                                        if _primary:
+                                            logger.info(
+                                                "[ms_conn v3] location unresolved"
+                                                " %r → defaulting to primary"
+                                                " site %r (audible, caller can"
+                                                " correct)",
+                                                utterance[:60], _primary,
+                                            )
+                                            _resolved = _primary
+                                            _loc_defaulted = True
+
                                     if _resolved != "unknown" and not (
                                         _location_is_bookable(
                                             self.session.get("clinic_id", ""),
@@ -10237,6 +10332,25 @@ class WebSocketCallHandler:
                                     if _resolved != "unknown":
                                         _disp = _resolved.capitalize()
                                         _ack = f"{_disp}."
+                                        if _loc_defaulted:
+                                            # We chose for them, so say so and
+                                            # name the way out. "Alcester" is
+                                            # re-spelled to "Awlstuh" by the
+                                            # TTS pronunciation map, so build
+                                            # the phrase from the id as normal.
+                                            _alts = _other_bookable_locations(
+                                                self.session.get("clinic_id", ""),
+                                                _resolved,
+                                            )
+                                            if _alts:
+                                                _ack = (
+                                                    f"I'll put you down for "
+                                                    f"{_disp} — just say "
+                                                    f"{_alts[0]} if you'd "
+                                                    f"rather that one."
+                                                )
+                                            else:
+                                                _ack = f"{_disp}."
                                         _intent = self.session.get(
                                             "v3_caller_intent", "booking"
                                         )
