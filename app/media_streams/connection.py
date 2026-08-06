@@ -272,6 +272,12 @@ _V3_PRESERVE: frozenset = frozenset({
     # spoken digit slot-selection words (callers say "one", "two", etc.)
     "one", "two", "three", "four", "five",
     "six", "seven", "eight", "nine", "ten",
+    # …and the same answers as digits. STT writes a spoken "three" as "3" about
+    # as often as "three", and this list protected only the spelled form — the
+    # same digit blind spot as _is_garbage_transcript and single_char_word, in
+    # a third place. Kept in step with _SCHEDULING_SINGLES, which already
+    # carries "1"–"12".
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
 })
 
 # SCHEDULING_SINGLES — single words that carry genuine scheduling intent and
@@ -8178,16 +8184,34 @@ class WebSocketCallHandler:
 
                         # Condition 1 extension — 2-word fragments with a
                         # single-character word (e.g. "r clinic", "a there").
-                        # A single letter/digit among two words is hallmark STT
+                        # A single stray LETTER among two words is hallmark STT
                         # noise; discard before the location resolver and DTMF
                         # fallback.  Uses the same re-arm pattern as single-word
                         # drops so silence recovery still fires after the discard.
                         # Exemption: single-char words in _SINGLE_CHAR_PRONOUNS
                         # ('i', 'a') are valid English and must not trigger this
                         # discard — e.g. "i believe", "a moment" must pass through.
+                        #
+                        # Digits are exempt too, and that is the whole point of
+                        # this guard's second exemption.  The rule originally
+                        # read "letter/digit", which made every clock-time answer
+                        # a discard: "3 o'clock", "9 am", "2 pm" are all two
+                        # words with a single-character first word.  Live on
+                        # theorem_v3, 2026-08-06, a caller answered a slot list
+                        # with "3 o'clock" three times:
+                        #
+                        #   17:17:03  fragment discarded (single_char_word)  #1
+                        #   17:17:18  fragment discarded (single_char_word)  #2
+                        #   17:17:36  fragment discarded (single_char_word)  #3
+                        #   17:17:48  lost_total=3 {'single_char_word': 3}
+                        #
+                        # …and hung up.  A digit is never mouth-noise; "r clinic"
+                        # is the case this guard exists for, and it still fires.
                         _non_pronoun_singles = [
                             w for w in _utt_words
-                            if len(w) == 1 and w not in _SINGLE_CHAR_PRONOUNS
+                            if len(w) == 1
+                            and w not in _SINGLE_CHAR_PRONOUNS
+                            and not w.isdigit()
                         ]
                         if (
                             len(_utt_words) == 2
