@@ -51,7 +51,7 @@ import logging
 import os
 import re
 import time
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import httpx
 import websockets
@@ -423,14 +423,50 @@ async def _exec_escalate_to_claude(args: Dict[str, Any], session: Dict[str, Any]
 # Transfer helper  (unchanged — Twilio REST API, can't return TwiML mid-stream)
 # ---------------------------------------------------------------------------
 
+def resolve_transfer_target(session: Dict[str, Any]) -> Optional[str]:
+    """
+    The dial target a transfer would actually use, or None if no leg can be placed.
+
+    Callers that *announce* a transfer before initiating one must consult this
+    FIRST and stay on the line when it returns None.  Promising "transferring
+    you now" and then placing no leg leaves the caller in dead air until they
+    hang up — the worst outcome this system can produce, because it sounds like
+    success.  Two ways that happens:
+
+      * TRANSFER_DISABLED is set (a sweep kill-switch left on, or set in the
+        wrong environment) — _handle_transfer returns without dialing.
+      * No dial target: the clinic has no 'transfer_phone' and
+        TRANSFER_FALLBACK_NUMBER is empty/whitespace, which yields <Dial></Dial>
+        and drops the caller instantly.
+
+    Theorem is exposed to the second one: theorem/clinic.json carries no
+    'transfer_phone', so the env var is the only source.
+
+    Deliberately reads app.config through the module rather than by `from`
+    import, so a monkeypatched/reloaded flag is honoured at call time.
+    """
+    import app.config as _cfg
+    from app.clinic_config import get_clinic
+
+    if _cfg.TRANSFER_DISABLED:
+        return None
+
+    try:
+        clinic = get_clinic(session.get("clinic_id")) or {}
+    except Exception:
+        clinic = {}
+
+    target = (clinic.get("transfer_phone") or _cfg.TRANSFER_FALLBACK_NUMBER or "").strip()
+    return target or None
+
+
 async def _handle_transfer(call_sid: str, session: Dict[str, Any]) -> None:
     """
     Inject <Say><Dial> into the live call using the Twilio REST API.
     Runs in a background thread so it doesn't block the event loop.
     """
     from twilio.rest import Client as TwilioClient
-    from app.clinic_config import get_clinic
-    from app.config import TRANSFER_FALLBACK_NUMBER, TRANSFER_DISABLED
+    from app.config import TRANSFER_DISABLED
 
     # Safety kill-switch (test sweeps): suppress the live dial entirely — no call
     # leg is placed to anyone. Production leaves TRANSFER_DISABLED unset, so this
@@ -442,8 +478,17 @@ async def _handle_transfer(call_sid: str, session: Dict[str, Any]) -> None:
         )
         return
 
-    clinic = get_clinic(session.get("clinic_id"))
-    transfer_phone = clinic.get("transfer_phone") or TRANSFER_FALLBACK_NUMBER
+    transfer_phone = resolve_transfer_target(session)
+    if not transfer_phone:
+        # No dial target at all. Emitting <Dial></Dial> would drop the caller
+        # mid-call; refusing to redirect at least leaves them with Susie.
+        logger.error(
+            "[realtime] transfer ABORTED — no dial target "
+            "(clinic has no transfer_phone and TRANSFER_FALLBACK_NUMBER is empty) "
+            "call_sid=%s",
+            call_sid,
+        )
+        return
 
     # Action URL fires when the <Dial> finishes (answered/no-answer/busy/failed).
     # Without it, a missed transfer just drops the caller silently — the handler
