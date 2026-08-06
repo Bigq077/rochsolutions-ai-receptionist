@@ -133,3 +133,90 @@ def test_both_slot_guards_report_the_loss():
             f"the {marker!r} guard still discards silently"
         )
         assert reason in window, f"expected reason tag {reason!r}"
+
+
+# ── reaching the LLM is not enough — the word has to be a number ───────────
+#
+# CA4ab554ce0dd8530e40df3cb8f7e28588, 2026-08-06, the SECOND call of the same
+# shape. Same offer, same mishearing, five losses across four guards:
+#
+#   22:29:46  'uh yeah free'          → open-availability suppressed
+#   22:30:03  'uh free works'         → slot fragment ignored
+#   22:30:04  'free'                  → slot fragment ignored
+#   22:30:20  'i said free'           → slot fragment ignored
+#   22:30:24  'i want it free'        → same_breath_straggler
+#
+# and one that did NOT lose:
+#
+#   22:30:22  'the free the free one' → reached the LLM ("one" is a signal)
+#                                     → "Sorry, I didn't quite catch that."
+#
+# That last line is the proof that the signal list alone is insufficient. The
+# model saw the utterance and could not resolve it, because it was handed the
+# word "free". The fix is to rewrite the transcript at the door, inside the
+# slot window, so everything downstream sees a real number.
+
+from app.media_streams.connection import _apply_slot_day_aliases
+
+
+@pytest.mark.parametrize("heard,expected", [
+    ("uh yeah free",          "uh yeah three"),
+    ("uh free works",         "uh three works"),
+    ("free",                  "three"),
+    ("i said free",           "i said three"),
+    ("i want it free",        "i want it three"),
+    ("the free the free one", "the three the three one"),
+])
+def test_every_lost_utterance_becomes_a_number(heard, expected):
+    assert _apply_slot_day_aliases(heard) == expected
+
+
+def test_the_one_that_reached_the_llm_now_carries_a_number():
+    """
+    'the free the free one' was never discarded — it was answered with
+    "Sorry, I didn't quite catch that". Routing it was already working; what
+    was missing was giving the model something resolvable.
+    """
+    rewritten = _apply_slot_day_aliases("the free the free one")
+    assert "free" not in rewritten
+    assert "three" in rewritten
+
+
+def test_the_day_aliases_still_work():
+    """The rewrite this function was built for must survive the extension."""
+    assert _apply_slot_day_aliases("first year") == "thursday"
+    assert _apply_slot_day_aliases("the firs year one") == "the thursday one"
+
+
+@pytest.mark.parametrize("question", [
+    "is parking free?",
+    "is the parking free",
+    "do you have free parking",
+    "is the first appointment free",
+    "how much is it, is it free",
+    # Not shaped like a question, but still asking one — the copula guard.
+    "just wondering if the parking is free",
+    "i was told the first one is free",
+])
+def test_a_genuine_question_about_free_is_left_alone(question):
+    """
+    "free" is a real English word in a way "firs year" is not. Asking whether
+    parking is free during slot selection is an ordinary FAQ, and rewriting it
+    to "is parking three?" would answer nothing. Slot picks do not arrive as
+    questions.
+    """
+    assert _apply_slot_day_aliases(question) == question
+
+
+def test_to_and_for_are_never_rewritten():
+    """
+    Deliberately excluded from the alias table: rewriting them would corrupt
+    ordinary sentences ("I want to book" → "I want two book"). The "i said"
+    rule carries the genuine-mishearing case instead.
+    """
+    for sentence in (
+        "i'd like to move to a video call",
+        "can you do it for me",
+        "i want to book",
+    ):
+        assert _apply_slot_day_aliases(sentence) == sentence
