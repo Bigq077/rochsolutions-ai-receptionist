@@ -5783,6 +5783,41 @@ class WebSocketCallHandler:
             if self.session.get("v3_intro_dtmf_active"):
                 self.session["v3_intro_dtmf_active"] = False
                 if digit == "1":
+                    # Check before promising.  The announcement below is spoken
+                    # straight to TTS and cannot be retracted, so a transfer that
+                    # is then never placed — kill-switch left on, or no dial
+                    # target configured — strands the caller in dead air after
+                    # being told they were being put through.  Resolve the target
+                    # first and stay on the line if there isn't one, rather than
+                    # trusting the config to be right.
+                    from app.routes.realtime import resolve_transfer_target
+                    _target = resolve_transfer_target(self.session)
+                    if not _target:
+                        logger.error(
+                            "[ms_conn] theorem_v3: intro digit=1 but NO transfer "
+                            "target — staying on the line instead of promising a "
+                            "transfer that cannot happen"
+                        )
+                        _fallback_q = (
+                            "I can't put you through to Mark right now — "
+                            "but I can help you here, or take a message for him. "
+                            "What's it about?"
+                        )
+                        # Keep the LLM's view of the call consistent: it must see
+                        # that this question was asked, or the next turn re-opens
+                        # the greeting.
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _fallback_q}
+                        )
+                        self.session["last_bot_prompt"] = _fallback_q
+                        await save_session(self.call_sid, self.session)
+                        await self.tts_text_queue.put(_fallback_q)
+                        # Arm the watchdog for the question just asked. DTMF never
+                        # reaches on_transcript_received, so without this a silent
+                        # caller gets the dead air this whole guard exists to stop.
+                        if self._silence_handler is not None:
+                            self._silence_handler.on_question_asked(_fallback_q)
+                        return
                     logger.info("[ms_conn] theorem_v3: intro digit=1 — transferring to Mark")
                     await self.tts_text_queue.put(
                         "Transferring you to Mark now — one moment."
