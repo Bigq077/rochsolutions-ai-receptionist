@@ -2498,7 +2498,12 @@ _PHONE_STEP_MARKERS: Tuple[str, ...] = (
     "number you're calling on",
     "number you're calling from",
     "number you're ringing",
-    "on your keypad",
+    # "on your keypad" deliberately omitted — it also appears in the LOCATION
+    # rung-3 prompt ("on your keypad, just press 1 for Awlstuh"), so it made a
+    # clinic question count as the phone question having been asked, which
+    # disarms the book_appointment phone backstop. Every real phone prompt says
+    # "type the number on your keypad" and still matches below. Kept in sync
+    # with llm_stream._PHONE_STEP_MARKERS, which carries the full reasoning.
     "type the number",
 )
 
