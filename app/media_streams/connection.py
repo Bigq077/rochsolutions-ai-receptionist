@@ -5748,7 +5748,23 @@ class WebSocketCallHandler:
             # theorem_v3 intro: digit 1 → transfer to Mark; any other digit is
             # swallowed (caller mis-pressed).  Clears the flag regardless so it
             # never leaks into subsequent turns.
-            if self.session.get("v3_intro_dtmf_active"):
+            #
+            # Second condition is the precedence guard.  This branch sits above
+            # the slot handler below, so while the flag is set it consumes every
+            # digit — and the flag used to survive the entire call.  A caller
+            # picking slot 1 off a list got a transfer to Mark instead of their
+            # appointment, and 2 or 3 vanished with no reply at all.  The window
+            # now also closes on the caller's first words (see the transcript
+            # path), so this is belt and braces: if a slot map is live, the
+            # digit is a slot choice, full stop.  Deliberately expressed as a
+            # condition rather than by reordering the branches — this handler is
+            # a chain of early returns and moving a block risks more than it
+            # fixes.
+            if (
+                self.session.get("v3_intro_dtmf_active")
+                and not self.session.get("v3_dtmf_slot_map")
+                and not self.session.get("v3_awaiting_location_dtmf")
+            ):
                 self.session["v3_intro_dtmf_active"] = False
                 if digit == "1":
                     # Check before promising.  The announcement below is spoken
@@ -8080,6 +8096,22 @@ class WebSocketCallHandler:
                             # pop() below clears it after LLM fires).
                     # Caller is responding — slot selection window has closed.
                     self.session.pop("v3_awaiting_slot_selection", None)
+
+                    # …and so has the intro window.  "Press 1 to speak to Mark"
+                    # is an offer made in the greeting and it must expire the
+                    # moment the caller answers it with words instead, or the
+                    # flag survives the whole call: it is set once at the
+                    # greeting and was otherwise cleared only by a digit
+                    # arriving.  A caller who then pressed 1 to pick the FIRST
+                    # SLOT was transferred out of their own booking, and a 2 or
+                    # 3 was swallowed silently by the same branch.
+                    if self.session.pop("v3_intro_dtmf_active", None):
+                        logger.info(
+                            "[ms_conn v3] intro DTMF window closed — caller "
+                            "spoke; a later digit now belongs to the question "
+                            "on the table, not to the transfer offer"
+                        )
+
                     await save_session(self.call_sid, self.session)
 
                     logger.info(

@@ -115,7 +115,10 @@ def _intro_dtmf_source():
     from app.media_streams import connection
 
     src = inspect.getsource(connection)
-    start = src.index('if self.session.get("v3_intro_dtmf_active"):')
+    # Anchored on the branch's comment, not on the `if` itself: the condition
+    # grew a precedence guard (slot map / location keypad) and any anchor that
+    # spells out the expression breaks the next time it changes.
+    start = src.index("theorem_v3 intro: digit 1")
     end = src.index("theorem_v3 slot / time selection", start)
     return src[start:end]
 
