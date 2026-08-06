@@ -336,18 +336,64 @@ _SLOT_SIGNALS: frozenset = frozenset({
     # share a band) instead of being discarded as a meaningless fragment — the
     # cause of a caller having to repeat a clear pick several times (2026-06-17).
     "morning", "afternoon", "evening", "midday", "noon", "o'clock",
+    # Weekend days and relative days. These are already blessed as genuine
+    # scheduling answers by _SCHEDULING_SINGLES, but were missing here — so
+    # "Saturday" was a valid answer to "when would you like to come in?" and a
+    # dropped fragment when answering "which of those suits?". A caller picking
+    # a day off the offered list must reach the LLM, which resolves it against
+    # the slots actually offered (and says so when the day is not among them).
+    "saturday", "sunday", "today", "tomorrow",
 })
+
+# Clock times, bare numbers and date ordinals, which no allowlist can enumerate.
+# A caller picking off a spoken slot list says "3pm" or "half two" or "the 21st"
+# at least as often as "three", and STT writes those as single tokens that match
+# no word in _SLOT_SIGNALS.
+_SLOT_NUMERIC_RE = re.compile(
+    r"^(?:"
+    r"\d{1,2}(?::\d{2})?(?:\s?[ap]\.?m\.?)?"   # 3, 3:30, 3pm, 9am, 2:30pm
+    r"|\d{1,2}(?:st|nd|rd|th)"                 # 21st, 3rd — dates off the list
+    r")$"
+)
+
+# Punctuation that STT attaches to a word and that must not hide the signal.
+# AssemblyAI returns formatted, punctuated text, so the single most common
+# reply to a slot list — one word — arrives as "Three." and matched nothing.
+_SLOT_TOKEN_STRIP = ".,!?;:\"'()[]-–—"
 
 
 def _is_slot_selection_candidate(transcript: str) -> bool:
-    """Return True if *transcript* contains at least one slot-signal word.
+    """Return True if *transcript* carries any slot-selection signal.
 
     Hard constraints (per Spec H):
-    - 'with me', 'suits me', 'that one', 'yes please' → False (re-arm)
+    - 'with me', 'suits me', 'yes please' → False (re-arm)
     - 'number three', 'thursday', 'the 21st', 'first one' → True (proceed)
+
+    Spec H also lists 'that one' as False.  It has never been: "one" is a slot
+    signal, so 'that one' passed here before this change too.  Left as-is
+    deliberately — a caller answering "that one" to an offered slot is picking
+    it, and dropping that would be the defect, not the spec compliance.
+
+    Matching is deliberately generous in one direction only.  A False here
+    discards the caller's answer and re-arms the silence timer, so a miss costs
+    the caller their turn and can strand them in the recovery ladder; a False
+    positive costs one LLM call, and the LLM resolves the utterance against the
+    slots actually offered.  Same reasoning as B-37 at the call site below:
+    dropping is the dangerous act, passing to the LLM is safe.
+
+    Three things defeated the plain `w in _SLOT_SIGNALS` test this replaces:
+      * trailing punctuation — "Three." matched nothing
+      * clock and ordinal forms — "3pm", "2:30", "the 21st" (the docstring's
+        own example) matched nothing
+      * weekend and relative days — "Saturday", "tomorrow" matched nothing
     """
-    words = transcript.lower().split()
-    return any(w in _SLOT_SIGNALS for w in words)
+    for raw in transcript.lower().split():
+        word = raw.strip(_SLOT_TOKEN_STRIP)
+        if not word:
+            continue
+        if word in _SLOT_SIGNALS or _SLOT_NUMERIC_RE.match(word):
+            return True
+    return False
 
 
 # Spec J — phrases that indicate the LLM has asked for the patient's name.
