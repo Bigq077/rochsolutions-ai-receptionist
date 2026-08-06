@@ -2767,6 +2767,33 @@ _V3_SLOT_DAY_ALIASES: dict[str, list[str]] = {
     ],
 }
 
+# Number homophones — what the recogniser writes when it mishears a spoken
+# number while the caller is picking a slot.  Rewritten to the number itself,
+# not merely admitted as a signal, and that distinction is the whole point:
+#
+# CA4ab554ce, 2026-08-06, offered {1: three in the afternoon, 2: five in the
+# evening}.  The caller said "three" five times and AssemblyAI wrote "free"
+# every time.  One of those attempts — 'the free the free one' — DID reach the
+# LLM, because "one" is already a slot signal, and the model still answered
+# "Sorry, I didn't quite catch that."  Getting the utterance past the gates is
+# necessary and not sufficient; the model has to be handed a number.
+#
+# NOT included, and this is deliberate: "to"/"too" (two) and "for" (four).
+# Rewriting those would turn "I want to book" into "I want two book".  They are
+# handled by the "i said" rule in _is_slot_selection_candidate, which gets the
+# repeat to the model without corrupting the sentence.
+#
+# Kept in a separate dict from the day aliases because they are applied under
+# an extra condition — see _apply_slot_day_aliases.  "free" is a real English
+# word ("is parking free?") in a way that "firs year" is not, so rewriting it
+# inside a question would corrupt a genuine FAQ.
+_V3_SLOT_NUMBER_ALIASES: dict[str, list[str]] = {
+    "three": ["free", "tree"],
+    "one":   ["won"],
+    "eight": ["ate"],
+    "five":  ["fife"],
+}
+
 # Compile one regex per canonical day: longest alias first so multi-word
 # entries win over any shorter overlap.
 _V3_SLOT_DAY_ALIAS_RES: dict[str, re.Pattern] = {
@@ -2779,16 +2806,69 @@ _V3_SLOT_DAY_ALIAS_RES: dict[str, re.Pattern] = {
     for day, variants in _V3_SLOT_DAY_ALIASES.items()
 }
 
+_V3_SLOT_NUMBER_ALIAS_RES: dict[str, re.Pattern] = {
+    number: re.compile(
+        r"\b(?:" + "|".join(
+            re.escape(v) for v in sorted(variants, key=len, reverse=True)
+        ) + r")\b",
+        re.IGNORECASE,
+    )
+    for number, variants in _V3_SLOT_NUMBER_ALIASES.items()
+}
+
+# A slot-window utterance that is shaped like a question is left alone by the
+# NUMBER rewrite. "is parking free?" during slot selection is a real FAQ, and
+# turning it into "is parking three?" would answer nothing. Slot picks do not
+# arrive as questions — "uh yeah free", "i said free", "the free one" — so the
+# rewrite still fires on every form seen on CA4ab554ce.
+_V3_QUESTION_SHAPE_RE = re.compile(
+    r"\?|^\s*(?:is|are|do|does|can|could|would|will|how|what|when|where|why|"
+    r"who|whose|which)\b",
+    re.IGNORECASE,
+)
+
+# …and so is a predicate use of the word, which is how the question gets asked
+# when it is not shaped like one: "just wondering if parking is free", "the
+# consultation's free isn't it". A number never follows a copula in a slot pick
+# — "yeah three", "the three one", "i said three" — so suppressing on this
+# costs nothing in the direction that loses bookings.
+_V3_NUMBER_PREDICATE_RE = re.compile(
+    r"\b(?:is|are|was|were|it's|its|that's|thats)\s+(?:it\s+)?"
+    r"(?:free|won|ate|fife|tree)\b",
+    re.IGNORECASE,
+)
+
 
 def _apply_slot_day_aliases(text: str) -> str:
     """
-    Replace STT day-name mishearings with the canonical day name.
+    Replace STT mishearings with the canonical day name or number.
 
-    Only called when v3_awaiting_slot_selection is active, so false
-    positives in other parts of the call are impossible.  Word-boundary
-    matching means "first year" inside longer text is replaced cleanly
-    while preserving surrounding words.
+    Only called when v3_awaiting_slot_selection is active, so false positives
+    elsewhere in the call are impossible. Word-boundary matching means "first
+    year" inside longer text is replaced cleanly while preserving surrounding
+    words.
+
+    DAY aliases are applied unconditionally — "firs year" is not English and
+    means nothing else. NUMBER aliases are skipped on question-shaped text and
+    on predicate use, because "free" IS English: see _V3_QUESTION_SHAPE_RE and
+    _V3_NUMBER_PREDICATE_RE.
+
+    Name kept for the day aliases it started with; it now carries number
+    homophones too. Renaming it would touch the call site and buy nothing.
     """
+    if not (
+        _V3_QUESTION_SHAPE_RE.search(text or "")
+        or _V3_NUMBER_PREDICATE_RE.search(text or "")
+    ):
+        for number, pattern in _V3_SLOT_NUMBER_ALIAS_RES.items():
+            replaced = pattern.sub(number, text)
+            if replaced != text:
+                logger.info(
+                    "[ms_stt] slot number alias applied: %r → %r",
+                    text[:80], replaced[:80],
+                )
+                text = replaced
+
     for day, pattern in _V3_SLOT_DAY_ALIAS_RES.items():
         replaced = pattern.sub(day, text)
         if replaced != text:
@@ -7692,7 +7772,6 @@ class WebSocketCallHandler:
                                 _bk_caller_num, utterance[:60],
                             )
                             # Fall through to run_turn — phone now in CALL STATE.
-
                     # Bound the verbal phone confirm (CAcb4a11b90, 2 Aug 2026).
                     #
                     # The block above handles a recognised YES. A recognised NO
