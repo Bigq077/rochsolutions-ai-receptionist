@@ -104,6 +104,12 @@ _ADDED_COLUMNS = {
     "evidence": "TEXT",
     "rubric_version": "VARCHAR(16)",
     "judged_at": "TIMESTAMP",
+    # 2026-08-06 — per-call cost of goods (app/obs/cost.py). Integer pence, never
+    # float. NULL means "not costed" (rates unconfigured, or a pre-2026-08 row),
+    # which is distinct from 0 — see cost.estimate_call_cost().
+    "cost_pence": "INTEGER",
+    "cost_breakdown": "JSON",
+    "cost_version": "VARCHAR(16)",
 }
 
 
@@ -136,9 +142,35 @@ def _parse_dt(value: Any) -> Optional[datetime]:
         return None
 
 
+def _cost_fields(record: Dict[str, Any], turns: List[Dict[str, str]]) -> Dict[str, Any]:
+    """Per-call COGS. Deterministic from data already in hand, so it is computed
+    at capture rather than deferred to the worker.
+
+    Wrapped defensively on top of cost.estimate_call_cost()'s own guard: this
+    runs at teardown on every call, and a pricing bug must never cost us a call
+    record. Failure leaves the three columns NULL.
+    """
+    try:
+        from app.obs import cost as _cost
+        result = _cost.estimate_call_cost(
+            duration_s=record.get("duration_s"),
+            transcript=turns,
+            llm_usage=record.get("llm_usage"),
+        )
+        return {
+            "cost_pence": result.get("total_pence"),
+            "cost_breakdown": result.get("breakdown"),
+            "cost_version": result.get("version"),
+        }
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.warning("[obs.store] cost fields skipped: %r", exc)
+        return {"cost_pence": None, "cost_breakdown": None, "cost_version": None}
+
+
 def _row_from_record(record: Dict[str, Any], turns: List[Dict[str, str]]) -> Call:
     """Build a Call row from a CallLogger record + the ordered transcript turns."""
     return Call(
+        **_cost_fields(record, turns),
         call_sid=record.get("call_sid"),
         clinic_id=record.get("clinic_id"),
         build_sha=record.get("build_sha"),

@@ -118,6 +118,17 @@ class Call(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # --- Per-call cost of goods (app/obs/cost.py, 2026-08-06) -----------------
+    # Integer pence — money is never stored as float. NULL means "not costed"
+    # (rates unconfigured, or a row written before this column existed), which
+    # is deliberately distinct from 0: zero is a real cost, absence is not, and
+    # the margin report must be able to tell them apart.
+    # cost_version pins the RATE_TABLE_VERSION used, so a price change is a
+    # version bump plus a recompute rather than a silently-mixed average.
+    cost_pence: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
+    cost_breakdown: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    cost_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
     def to_dict(self) -> dict:
         """Plain-dict view used by the replay harness and later phases."""
         return {
@@ -154,4 +165,8 @@ class Call(Base):
             "evidence": self.evidence,
             "rubric_version": self.rubric_version,
             "judged_at": self.judged_at.isoformat() if self.judged_at else None,
+            # Cost fields
+            "cost_pence": self.cost_pence,
+            "cost_breakdown": self.cost_breakdown,
+            "cost_version": self.cost_version,
         }
