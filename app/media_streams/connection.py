@@ -951,6 +951,61 @@ def _loc_rung2_confirm(clinic_disp: str = "Awlstuh") -> str:
 # Convenience alias for the Awlstuh-constant sites (watchdog / silence / seeds).
 _LOC_RUNG2_CONFIRM: str = _loc_rung2_confirm("Awlstuh")
 
+# ── Non-bookable clinic redirect ────────────────────────────────────────────
+# THEOREM_LOCATIONS['redditch']['bookable'] = False (Mark, 2026-07-08) is the
+# single toggle for the Redditch redirect.  Two things already honour it: the
+# prompt block in susie_system_prompt.py, and _location_not_bookable() in
+# llm_stream.py, which refuses check_availability / book_appointment.
+#
+# Neither covers the deterministic location path.  When the caller answers the
+# clinic question, connection.py resolves the location itself — by alias, by
+# Haiku, or by keypad — acks it and asks the day/time question, all without
+# calling the LLM ("location answer intercepted — ack-only, no run_turn").  So
+# the prompt never gets a turn in which to redirect, and the tool guard never
+# fires because no tool is attempted.
+#
+# CAf779a697, 2026-08-06:
+#   17:14:03  'gedditch' → Haiku resolved location: redditch
+#   17:14:04  "Redditch."  +  "Is there a particular day or time…?"
+#   17:14:12  caller: "tuesdays and fridays"
+#   17:14:15  a 10.7-second correction monologue
+#   17:14:28  caller hangs up, 1.7s after it ends
+#
+# The prompt block even anticipates this exact case — "including when they
+# choose Redditch at the clinic question or press 2" — but it is advice to a
+# model that was never consulted.  The sentence below is copied verbatim from
+# that block so the code and the prompt say the same words.
+_NOT_BOOKABLE_REDIRECT: str = (
+    "Unfortunately I can't book the Redditch clinic myself at the moment — "
+    "but I can book you straight in at our Awlstuh clinic if that suits, or "
+    "I can put you straight through to Mark, who can book you in at "
+    "Redditch. Which would you prefer?"
+)
+
+
+def _location_is_bookable(clinic_id: str, location: str) -> bool:
+    """False only for a Theorem location explicitly flagged bookable=False.
+
+    Mirrors llm_stream._location_not_bookable so there is one source of truth
+    for the answer and one place to flip it.  Fails OPEN — an unknown clinic,
+    an unknown location or a missing flag is treated as bookable, because
+    wrongly refusing to book is worse than the redirect not firing.
+    """
+    if clinic_id != "theorem_v3":
+        return True
+    loc = (location or "").lower().strip()
+    if not loc:
+        return True
+    try:
+        from app.clinic_config import THEOREM_LOCATIONS
+    except Exception:
+        return True
+    entry = THEOREM_LOCATIONS.get(loc)
+    if not entry:
+        return True
+    return bool(entry.get("bookable", True))
+
+
 _LOC_RUNG3_DTMF: str = (
     "No problem at all — on your keypad, just press 1 for Awlstuh, "
     "or 2 for Redditch."
@@ -5692,6 +5747,38 @@ class WebSocketCallHandler:
 
                 # Valid digit — resolve location
                 self.session["v3_awaiting_location_dtmf"] = False
+
+                # Non-bookable clinic: redirect instead of opening a booking.
+                # Our own keypad prompt offers "or 2 for Redditch", so this is
+                # a documented route into a clinic the owner has switched off.
+                # Ack + day/time question here would start a booking that the
+                # tool guard refuses several turns later, after the caller has
+                # answered questions for nothing.
+                if not _location_is_bookable(
+                    self.session.get("clinic_id", ""), _loc_dtmf
+                ):
+                    logger.info(
+                        "[ms_conn v3] DTMF chose %s — NOT bookable, "
+                        "redirecting instead of asking for a day",
+                        _loc_dtmf,
+                    )
+                    self.session["v3_location_q_active"] = False
+                    self.session["last_bot_prompt"] = _NOT_BOOKABLE_REDIRECT
+                    self.session["last_question"] = _NOT_BOOKABLE_REDIRECT
+                    self.session.setdefault(
+                        "conversation_history", []
+                    ).append({
+                        "role": "assistant",
+                        "content": _NOT_BOOKABLE_REDIRECT,
+                    })
+                    await save_session(self.call_sid, self.session)
+                    await self.tts_text_queue.put(_NOT_BOOKABLE_REDIRECT)
+                    if self._silence_handler is not None:
+                        self._silence_handler.on_question_asked(
+                            _NOT_BOOKABLE_REDIRECT
+                        )
+                    return
+
                 self.session["selected_location"] = _loc_dtmf
                 self.session["v3_location_confirmed"] = True
                 self.session["v3_location_asked"] = False
@@ -9525,6 +9612,45 @@ class WebSocketCallHandler:
                                 _confirmed_loc = _v3_extract_location(
                                     utterance
                                 )
+                                if _confirmed_loc and not _location_is_bookable(
+                                    self.session.get("clinic_id", ""),
+                                    _confirmed_loc,
+                                ):
+                                    # Caller named a clinic the owner has
+                                    # switched off. Redirect here rather than
+                                    # acking it and asking for a day — this
+                                    # path never reaches the LLM, so the prompt
+                                    # redirect cannot fire, and the tool guard
+                                    # only catches it turns later.
+                                    logger.info(
+                                        "[ms_conn v3] alias resolved %s — NOT "
+                                        "bookable, redirecting", _confirmed_loc,
+                                    )
+                                    self.session["v3_location_q_active"] = False
+                                    self.session["last_bot_prompt"] = (
+                                        _NOT_BOOKABLE_REDIRECT
+                                    )
+                                    self.session["last_question"] = (
+                                        _NOT_BOOKABLE_REDIRECT
+                                    )
+                                    self.session.setdefault(
+                                        "conversation_history", []
+                                    ).append({
+                                        "role": "assistant",
+                                        "content": _NOT_BOOKABLE_REDIRECT,
+                                    })
+                                    await save_session(
+                                        self.call_sid, self.session
+                                    )
+                                    await self.tts_text_queue.put(
+                                        _NOT_BOOKABLE_REDIRECT
+                                    )
+                                    if self._silence_handler is not None:
+                                        self._silence_handler.on_question_asked(
+                                            _NOT_BOOKABLE_REDIRECT
+                                        )
+                                    continue
+
                                 if _confirmed_loc:
                                     _loc_label = _confirmed_loc.capitalize()
                                     _ack = f"{_loc_label}."
@@ -9915,6 +10041,51 @@ class WebSocketCallHandler:
                                             _loc_err,
                                         )
                                         _resolved = "unknown"
+
+                                    if _resolved != "unknown" and not (
+                                        _location_is_bookable(
+                                            self.session.get("clinic_id", ""),
+                                            _resolved,
+                                        )
+                                    ):
+                                        # THE reproduced path. CAf779a697,
+                                        # 17:14:03 — 'gedditch' resolved to
+                                        # redditch here, was acked, and the
+                                        # day/time question followed. The
+                                        # caller answered "tuesdays and
+                                        # fridays", got a 10.7s correction and
+                                        # hung up 1.7s after it finished.
+                                        logger.info(
+                                            "[ms_conn v3] Haiku resolved %s — "
+                                            "NOT bookable, redirecting instead "
+                                            "of asking for a day", _resolved,
+                                        )
+                                        self.session[
+                                            "v3_location_q_active"
+                                        ] = False
+                                        self.session["last_bot_prompt"] = (
+                                            _NOT_BOOKABLE_REDIRECT
+                                        )
+                                        self.session["last_question"] = (
+                                            _NOT_BOOKABLE_REDIRECT
+                                        )
+                                        self.session.setdefault(
+                                            "conversation_history", []
+                                        ).append({
+                                            "role": "assistant",
+                                            "content": _NOT_BOOKABLE_REDIRECT,
+                                        })
+                                        await save_session(
+                                            self.call_sid, self.session
+                                        )
+                                        await self.tts_text_queue.put(
+                                            _NOT_BOOKABLE_REDIRECT
+                                        )
+                                        if self._silence_handler is not None:
+                                            self._silence_handler.on_question_asked(
+                                                _NOT_BOOKABLE_REDIRECT
+                                            )
+                                        continue
 
                                     if _resolved != "unknown":
                                         _disp = _resolved.capitalize()
