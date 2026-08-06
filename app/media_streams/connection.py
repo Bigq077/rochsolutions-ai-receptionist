@@ -272,6 +272,11 @@ _V3_PRESERVE: frozenset = frozenset({
     # spoken digit slot-selection words (callers say "one", "two", etc.)
     "one", "two", "three", "four", "five",
     "six", "seven", "eight", "nine", "ten",
+    # "ta" — thanks. Two characters, so Condition 1 still discards it on shape,
+    # but it is in this clinic's STT keyterms prompt: priming the recogniser for
+    # a word and then deleting it is self-contradictory, and a caller who says
+    # it and hears nothing back has been ignored.
+    "ta",
     # …and the same answers as digits. STT writes a spoken "three" as "3" about
     # as often as "three", and this list protected only the spelled form — the
     # same digit blind spot as _is_garbage_transcript and single_char_word, in
@@ -1146,8 +1151,30 @@ def _single_word_filter_reason(word: str) -> str:
     stripped = word.strip().lower()
     alpha_only = "".join(c for c in stripped if c.isalpha())
 
+    # Condition 0 — ANY DIGIT.  A token containing a digit is never mouth-noise;
+    # STT does not hallucinate "3" out of a cough.  Without this, clock-time
+    # answers died two different ways: "3pm"/"9am"/"2pm" as too-short, and
+    # "12pm" as no-vowels (its alpha part is "pm").  Shape-based, so it cannot
+    # fail one number at a time the way an allowlist does.
+    if any(c.isdigit() for c in stripped):
+        return ""
+
     # Condition 1 — TOO SHORT.
-    if len(stripped) <= 3:
+    #
+    # Threshold is 2, not 3.  At 3 this deleted every three-letter English word
+    # a caller might say alone, and _V3_PRESERVE had been quietly growing to
+    # compensate — "yes", "no", "yep", "nah", "one", "two", "six", "ten" are all
+    # in that list only because this condition would otherwise eat them.  The
+    # words nobody had thought to add were deleted in silence: "aye" (a yes, and
+    # one we explicitly prime the STT for) and "owt", which was discarded live on
+    # 2026-08-06 20:53:19 while it sat in the keyterms prompt.
+    #
+    # Nothing is lost by lowering it. Genuine noise is caught by the conditions
+    # below on SHAPE, not length: "ing", "hmm", "er", "um", "uh" and the rest of
+    # _V3_NOISE_FRAGMENTS still discard, and every one- and two-character
+    # fragment still discards here. Verified in both directions by
+    # test_short_words_are_not_noise.py.
+    if len(stripped) <= 2:
         return "too-short"
     # Condition 2a — NO VOWELS.
     if alpha_only and not any(c in _V3_VOWELS for c in alpha_only):
@@ -11782,21 +11809,48 @@ class WebSocketCallHandler:
                                             else "queued",
                                         )
 
-                        # ── CODE SPEC AD: treatment bypass clinic question arm ────
-                        # When the treatment bypass fires pre-run_turn,
-                        # booking_flow_active is set True before run_turn()
-                        # executes.  This means _is_booking_ack is always False
-                        # on these turns (it gates on `not booking_flow_active`),
-                        # so v3_location_q_active is never armed by the booking
-                        # ack path — even though the LLM asks the clinic question
-                        # in its Prompt L response.
-                        # Fix: after run_turn, scan _last_bot for clinic-question
-                        # signals.  If found while v3_treatment_mentioned is True
-                        # and location is not yet confirmed, arm the gate so the
+                        # ── CODE SPEC AD: clinic question arm ────────────────
+                        # Originally the "treatment bypass" arm: when that bypass
+                        # fires pre-run_turn, booking_flow_active is True before
+                        # run_turn() executes, so _is_booking_ack is always False
+                        # (it gates on `not booking_flow_active`) and
+                        # v3_location_q_active is never armed by the ack path —
+                        # even though the LLM asks the clinic question in its
+                        # response.  Fix: after run_turn, scan _last_bot for
+                        # clinic-question signals and arm the gate, so the
                         # patient's next utterance is intercepted by the location
-                        # handler (alias resolution, DTMF fallback, preference Q)
-                        # exactly as in a normal booking flow.
-                        _treatment_loc_signals = (
+                        # handler (alias resolution, DTMF fallback, preference Q).
+                        #
+                        # The v3_treatment_mentioned precondition is REMOVED, and
+                        # that is the fix, not a loosening.  That flag is set only
+                        # by _is_treatment_specific_booking() — i.e. only when the
+                        # caller named a treatment or body part.  A caller who
+                        # says "I need to book an appointment for tomorrow" never
+                        # sets it, so the gate could not re-arm for them.
+                        #
+                        # Live consequence, CA1747c2d9 on 2026-08-06:
+                        #   20:52:36  keypad rung clears v3_location_q_active
+                        #   20:53:15  LLM re-asks "Which clinic were you thinking
+                        #             of — Awlstuh or Redditch?"  ← matches TWO
+                        #             signals below, but v3_treatment_mentioned
+                        #             was False, so the gate stayed shut
+                        #   20:53:20  'ofter'  → dropped, "no active question"
+                        #   20:53:34  'hello'  → dropped, "no active question"
+                        # The caller said "pardon" twice and "hello" once, heard
+                        # nothing back, and hung up.  The guard that dropped them
+                        # (the <=3-word "no active question" discard) carries a
+                        # comment asserting it "never fires here".  It fired three
+                        # times.
+                        #
+                        # What still bounds this: the gate will not arm if it is
+                        # already active, or if the clinic is confirmed.  Those
+                        # are the two conditions that matter.  Whether the caller
+                        # happened to mention a body part has no bearing on
+                        # whether a clinic question is outstanding — and if a
+                        # clinic question IS on the table, the system must be
+                        # listening for the answer.  Failing the other way deletes
+                        # the answer, which is the outcome above.
+                        _clinic_question_signals = (
                             "which clinic",
                             "awlstuh or redditch",
                             "alcester or redditch",
@@ -11804,12 +11858,11 @@ class WebSocketCallHandler:
                             "which location",
                         )
                         if (
-                            self.session.get("v3_treatment_mentioned")
-                            and not self.session.get("v3_location_q_active")
+                            not self.session.get("v3_location_q_active")
                             and not self.session.get("v3_location_confirmed")
                             and any(
                                 sig in _last_bot.lower()
-                                for sig in _treatment_loc_signals
+                                for sig in _clinic_question_signals
                             )
                         ):
                             self.session["v3_location_q_active"] = True
@@ -11818,7 +11871,7 @@ class WebSocketCallHandler:
                             await save_session(self.call_sid, self.session)
                             logger.info(
                                 "[ms_conn v3] v3_location_q_active = True "
-                                "(clinic question detected in treatment bypass response)"
+                                "(clinic question detected in assistant reply)"
                             )
 
                         # ── B2: deferred gate5 fallback emission ─────────────
