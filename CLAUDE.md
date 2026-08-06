@@ -13,17 +13,59 @@ clinic's real booking system.
 
 Real callers. Real bookings. A bug here is a missed patient, not a failed test.
 
-**Commercial context:** a partnership meeting with People to Hands On Money
-(~230–250 physiotherapy clinics) lands end of July 2026, followed by a webinar to
-roughly 100 clinics. The near-term goal is not scale — it is that a live demo
-call and the first onboarding cohort are flawless.
+**Commercial context (updated 2026-08-06):** the Hands On Money meeting
+**happened on 2026-08-05 and went well** — live demo landed, open invitation to
+their webinar mid-September. HOM is a financial-advice network of ~230–250
+physiotherapy clinics, ~100 on the webinar list, **taking no cut**.
+
+Client state:
+
+| Client | State |
+|---|---|
+| Theorem Health | **Live since 2026-08-05** — real patients |
+| Vital Edge | Live on voicemail; moving to its own number (decision taken) |
+| Joint Venture | Go-live slipped from 2026-08-03, client-side, no hard deadline |
+
+Plan: `docs/plan/COHORT_1_PLAN.md`. Planning number is **4–7 clinics** from the
+webinar, cohort **capped at 6** — the constraint is onboarding throughput, not
+demand. The near-term goal is not scale; it is that the first cohort is flawless,
+because in a 250-clinic network that talks constantly, one missed booking is
+contagious in a way one delighted clinic is not.
 
 ---
 
 ## 2. Canonical branch
 
-**`latency-eval` is THE engine branch.** Settled 2026-07-22 — no longer contested.
-`release/cohort-1` was merged into it and retired; there is now exactly one engine
+> ⚠️ **Changed 2026-08-06 by ADR-002.** If you are reading a `CLAUDE.md` that
+> says the branch decision is *"contested and must be settled before any work
+> starts"* — that is a **stale untracked 224-line copy** in the working tree.
+> This tracked file is the source of truth. Delete the other one.
+
+**`engine/converged` is the engine branch**, cut from `theorem-onboarding`.
+See `docs/plan/BRANCH_DECISION.md` (ADR-002) and
+`docs/plan/BRANCH_CONVERGENCE_ANALYSIS.md`.
+
+**Why it moved.** ADR-001 made `latency-eval` the trunk on 2026-07-21 under a
+canonical-first-by-cherry-pick rule. That mechanism failed: **33 engine commits
+landed on `theorem-onboarding` and never went to `latency-eval` first**, so
+`latency-eval` is no longer the superset the rule assumed. The T-2 and T-3 fixes
+were applied twice on 2026-08-05 with byte-identical `patch-id`s — the
+fix-once-per-branch tax, paid in the open. ADR-002 ratifies where the code
+actually went rather than replaying 33 commits backwards.
+
+**Do not reuse the name `release/cohort-1`.** It was cut per ADR-001, merged into
+`latency-eval`, and retired. A second branch under that name will be conflated
+with the first.
+
+**Canonical-first still applies until Stage 3 of `CONVERGENCE_RUNBOOK.md`
+lands** — engine fixes go to `engine/converged` first, clinics inherit. But treat
+it as a stopgap, not the destination: it is manual convergence performed by a
+human forever, it broke after two weeks at four clinics, and it will break again
+at six. One codebase + env-var tenancy is what retires it.
+
+### Superseded topology note (kept for context)
+
+The pre-ADR-002 arrangement was: one engine
 branch plus two deployment branches (`jv-v1-onboarding`, `vitaledge-onboarding`)
 that inherit engine fixes by cherry-pick **from** `latency-eval`. `main` is a
 separate historical lineage — leave it alone. See `docs/plan/BRANCH_DECISION.md`.
@@ -51,13 +93,22 @@ branch. Do not cite it as a reason to avoid basing work here.
 > clinic branches inherit them by cherry-pick.
 
 > ⚠️ **Check which branch and which worktree you are actually in before
-> measuring anything.** There are ~15 registered worktrees under
-> `AppData/Local/Temp/claude/`, most prunable. A previous session confidently
-> measured the wrong tree. Run `git worktree prune`, then
-> `git rev-parse --abbrev-ref HEAD`, before you trust a single number.
+> measuring anything.** **65** registered worktrees under
+> `AppData/Local/Temp/claude/` as of 2026-08-06 — not ~15, and
+> `git worktree prune` **fails on all of them** with *Permission denied*
+> (OneDrive file locking). Pause OneDrive sync and close editors first, or the
+> prune silently does nothing and the trap stays armed. Then
+> `git rev-parse --abbrev-ref HEAD` before you trust a single number.
+>
+> **Measure against `origin/*`, never local refs, and `git fetch --all` first.**
+> This has now produced a wrong number in three separate sessions. Most recently
+> (2026-08-06): `app/obs/` file counts taken from a stale *local* `latency-eval`
+> produced "four different versions of the observability engine" — false. The
+> three live branches carry an **identical 19-module `app/obs/`**.
 >
 > Note also: the plan documents in `docs/plan/` may be **untracked**. Git history
-> searches will not find them. Use `ls`.
+> searches will not find them. Use `ls`. Eleven were untracked on 2026-08-06,
+> including `STATUS.md` and the whole `JULES_*` handoff set.
 
 Two subsystems are deliberately switched off on this branch — they are **fully
 implemented and flag-gated**, not missing. This is much better news than it
@@ -65,11 +116,29 @@ sounds and it materially shrinks the work:
 
 | Subsystem | Code | Off switch |
 |---|---|---|
-| Observability | `app/obs/` — 18 modules (`store`, `judge`, `alerts`, `digest`, `regress`, `replay`, `dashboard`, `redact`, `migrate`, `worker`, …) | `OBS_CAPTURE_ENABLED`, `OBS_JUDGE_ENABLED`, `OBS_ALERTS_ENABLED`, `OBS_DIGEST_ENABLED` all default `false`; needs `OBS_DATABASE_URL` + `python -m app.obs.migrate` |
+| Observability | `app/obs/` — **19 modules** (`store`, `judge`, `alerts`, `digest`, `regress`, `replay`, `dashboard`, `redact`, `migrate`, `worker`, `cost`, …) — identical on `latency-eval`, `vitaledge-onboarding`, `theorem-onboarding` | `OBS_CAPTURE_ENABLED`, `OBS_JUDGE_ENABLED`, `OBS_ALERTS_ENABLED`, `OBS_DIGEST_ENABLED` all default `false`; needs `OBS_DATABASE_URL` + `python -m app.obs.migrate` |
 | SMS | `app/notifications/` — `booking_sms`, `smart_sms_router`, `templates`, `scheduler`, `sms`, `owner_alert`, `digest`, `email` | `SMS_ENABLED` defaults `false` in `booking_sms.py` (with an explicit in-code warning not to flip the default) |
 
 **Do not reimplement either, and do not merge the `feat/obs-*` branches into
 this one.** The work is enabling, provisioning and verifying — not building.
+
+> ⚠️ **`jv-v1-onboarding` has only 2 of the 19 obs modules** (`__init__`,
+> `alerts`) and **no `clinical_screening.py` at all.** It pages an operator on
+> hard failure but captures nothing: no call record, no quality score, no
+> digest. It contributes nothing to the improvement flywheel and has no
+> deterministic red-flag intercept.
+>
+> **Do not take Joint Venture live on `jv-v1-onboarding`.** It is 352 commits
+> behind with a tip dated 2026-07-24 (frozen per the old `STATUS.md` rule, while
+> Vital Edge was un-frozen and re-converged on 08-04 — JV was left behind by
+> omission, not decision). Go live on `engine/converged` instead:
+> `CONVERGENCE_RUNBOOK.md` Stage 4, which also makes JV the migration pilot.
+
+**Per-call cost of goods** (`app/obs/cost.py`, added 2026-08-06) estimates COGS
+in integer pence per call. **`RATES` are unfilled placeholders and the module
+refuses to produce a number until they are populated from real vendor
+invoices** — not list prices. See `docs/plan/COST_ROLLUP_SPEC.md`. This blocks
+the flat-vs-tiered pricing decision for cohort 1.
 
 ### Branch topology (do not merge blindly)
 
@@ -233,7 +302,16 @@ Anything that does not move one of those five is not on the critical path.
 Start at `docs/plan/README.md` — it gives the reading order and a log of
 corrections already applied.
 
-- `docs/plan/BRANCH_DECISION.md` — **open, blocks everything.**
+**Current, as of 2026-08-06 — read these first:**
+
+- `docs/plan/COHORT_1_PLAN.md` — what we sell, to how many, by when. Pricing,
+  the cap at 6, dated milestones. **Go/no-go on the webinar date: 2026-08-28.**
+- `docs/plan/BRANCH_CONVERGENCE_ANALYSIS.md` — measured branch topology. §8 is
+  the root cause of the repeated wrong-measurement errors.
+- `docs/plan/CONVERGENCE_RUNBOOK.md` — six stages, each gated, to one engine.
+- `docs/plan/COST_ROLLUP_SPEC.md` — per-call COGS. Code built, rates unfilled.
+- `docs/plan/BRANCH_DECISION.md` — ADR-001 (superseded) + **ADR-002 (proposed,
+  awaiting owner sign-off)**.
 - `docs/plan/PRODUCTION_READINESS_PLAN.md` — phased roadmap with gates.
 - `docs/plan/FAILURE_MODE_REGISTER.md` — ranked risk register.
 - `docs/plan/SKILL_PLAYBOOK.md` — which engineering skill to invoke when.
@@ -244,4 +322,9 @@ corrections already applied.
 Work the phases in order. Do not start a phase before its gate has passed.
 
 **If these documents and the code disagree, the code wins** — record the
-correction in `docs/plan/README.md`. They have already been wrong three times.
+correction in `docs/plan/README.md`. They have already been wrong five times.
+
+**And if two documents disagree, check which one is tracked.** On 2026-08-06 an
+untracked `CLAUDE.md` in the working tree contradicted the tracked one and cost
+a full session's analysis. `git ls-tree <branch> -- <file>` settles it. Trust
+tracked over untracked, and `origin/*` over local.

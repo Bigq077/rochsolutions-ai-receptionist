@@ -1,6 +1,17 @@
 # ADR-001 — Production base branch for the cohort-1 hardening window
 
-**Status:** Accepted (2026-07-21) — base = `release/cohort-1`, cut from `origin/latency-eval@022f816`.
+> ## ⛔ SUPERSEDED by ADR-002 (2026-08-06) — see the bottom of this file
+>
+> ADR-001's *decision* (latency-eval engine as trunk) was correct when taken and
+> is not being reversed on the merits. Its *mechanism* — canonical-first by
+> hand-cherry-pick — has since failed: **33 engine commits exist on
+> `theorem-onboarding` that never landed on `latency-eval` first.** ADR-002
+> ratifies where the code actually went and replaces the mechanism.
+>
+> Read ADR-001 for the reasoning, which still stands. Do not act on its branch
+> names — `release/cohort-1` was retired and the name must not be reused.
+
+**Status:** Superseded (2026-08-06). Was: Accepted (2026-07-21) — base = `release/cohort-1`, cut from `origin/latency-eval@022f816`.
 Deployment-reality dashboard facts (§ Deployment reality) remain pending; they affect migration
 sequencing, not the engine decision. Every later plan document assumes this answer.
 **Date:** 2026-07-21
@@ -318,3 +329,119 @@ copy and pre-fix `receptionist_tools.py`. If anyone ever reconciles `latency-eva
 `vitaledge-onboarding` (treating it as the canonical superset), it would silently revert
 `a1c2d70` + `475401e`. **Do not** do that without first cherry-picking these two commits up, or
 explicitly preserving them. This is a considered exception to canonical-first, not an oversight.
+
+---
+---
+
+# ADR-002 — One engine, `engine/converged`; retire canonical-first-by-cherry-pick
+
+**Status:** Proposed — awaiting owner confirmation.
+**Date:** 2026-08-06
+**Deciders:** Quentin (owner, sign-off) · Claude Code (analysis)
+**Supersedes:** ADR-001
+**Evidence:** `BRANCH_CONVERGENCE_ANALYSIS.md` (all figures `git`-measured against
+`origin/*` after `fetch`, 2026-08-06)
+
+---
+
+## Context
+
+ADR-001 settled the engine question on 2026-07-21 and `CLAUDE.md` recorded the
+governing convention:
+
+> *"Every engine fix commits to `latency-eval` first; the live clinics inherit
+> it. Never fix on a clinic branch and port up — that strands safety fixes at
+> convergence."*
+
+The rule is sound. **It has not been followed.**
+
+| Measurement | Value |
+|---|---|
+| Engine commits (`app/`) on `theorem-onboarding` never on `latency-eval` | **33** |
+| Total commits `theorem-onboarding` ahead of `latency-eval` | 54 |
+| Commits `latency-eval` ahead of `theorem-onboarding` | 19 (≈7 real engine work) |
+| Fixes applied twice, byte-identical `git patch-id` | **3** (T-2 `e6fed61`/`c585fff`, T-3 `9f69b91`/`f35ba8a`, + a doc) |
+
+`latency-eval` is therefore **no longer the superset the rule assumes.** The
+duplicate patch-ids are the mechanism failing in the open: a human applying the
+rule by hand, twice, on the same day (2026-08-05).
+
+Three further facts change the decision inputs since ADR-001:
+
+1. **Obs is no longer differentiating.** `latency-eval`, `vitaledge-onboarding`
+   and `theorem-onboarding` carry an **identical 19-module `app/obs/`**.
+   ADR-001's Option-D reasoning (obs as a discriminator) now applies only to
+   `jv-v1-onboarding`, which has 2 modules — `alerts` only, no capture, no
+   judge, no store.
+2. **`clinical_screening.py` is no longer latency-eval-only.** It is present
+   **and wired** on `theorem-onboarding` (`connection.py:7628`). ADR-001's
+   single strongest argument for Option A has expired. It is absent entirely on
+   `jv-v1-onboarding`.
+3. **The FM safety gates are everywhere.** FM-01/25/23 regression tests are
+   byte-identical (md5 `0dc9ff54` / `af338084` / `caf787d3`) across all four
+   branches. `STATUS.md`'s carry-forward warning is stale.
+
+## Decision
+
+**1. Ratify `theorem-onboarding` as the convergence base.** Cut
+**`engine/converged`** from it.
+
+Not on the merits of Theorem-vs-latency-eval, but because the 33 commits already
+exist, are already live, and unwinding them means replaying every one into files
+Theorem has since moved. Ratifying costs ~7 cherry-picks; unwinding costs 33
+re-merges. `theorem-onboarding` is also the engine answering a real clinic's
+phone since 2026-08-05.
+
+**2. Do not reuse the name `release/cohort-1`.** It was cut per ADR-001, merged
+into `latency-eval`, and retired. Reusing it guarantees a future reader
+conflates the two lineages.
+
+**3. Retire canonical-first-by-cherry-pick.** It is manual convergence performed
+by a human, forever. It broke after roughly two weeks at four clinics; it will
+break again at six regardless of care. Replace it with **one codebase, clinic
+identity by env var** (`CONVERGENCE_RUNBOOK.md` Stage 3). Until that lands, the
+rule stands — but as a stopgap, not the destination.
+
+**4. `main` is abandoned.** Tip 2026-07-24, 506 commits behind, and the only
+branch with **zero** FM safety-gate commits. It is also the default PR target.
+Retire it or reset it to `engine/converged`.
+
+## Consequences
+
+**Easier:** one commit deploys to every clinic; no per-branch re-verification;
+JV finally gains capture/judge/store and `clinical_screening.py`.
+
+**Harder / new:** three live-number migrations under change control; ~7
+cherry-picks with two flagged High-conflict; B-57 needs a human decision (fixed
+independently on both lineages — cherry-picking risks a double guard on the
+cancel path, meaning a caller who cannot cancel at all).
+
+**Not addressed:** full runtime multi-tenancy. Env-var tenancy is the 80% win in
+the time available; self-serve onboarding is post-cohort.
+
+## Why this was not caught sooner
+
+Two `CLAUDE.md` files disagree. The working tree holds an **untracked** 224-line
+copy still calling the branch decision *"contested"*; the tracked 247-line copy
+settled it on 2026-07-22. An agent starting work in that directory reads the
+stale one first — and did, producing a full analysis on a false premise before
+the discrepancy surfaced. `BRANCH_CONVERGENCE_ANALYSIS.md` §8 has the fix list.
+
+**This is the third logged instance of the same class of error** (see
+§ Measurement provenance above, and `README.md`'s corrections log). The warnings
+keep failing because they live in the document that is itself stale.
+
+## Action items
+
+1. [ ] **Owner: confirm or override.** Nothing below starts until this is Accepted.
+2. [ ] Replace the untracked working-tree `CLAUDE.md` with the tracked copy.
+3. [ ] Track `docs/plan/` — 11 documents including `STATUS.md` are untracked.
+4. [ ] Cut `engine/converged`; run `CONVERGENCE_RUNBOOK.md` Stages 0–3.
+5. [ ] Consolidate the two clones (FM-20); pin the branch per Render service.
+6. [ ] Re-point `PRODUCTION_READINESS_PLAN.md` and `STATUS.md` at ADR-002.
+
+## Decision record
+
+- **Decision:** _pending owner confirmation — recommended as written_
+- **Date:**
+- **Reasoning:** _the mechanism failed, not the choice; ratify reality_
