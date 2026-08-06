@@ -94,9 +94,29 @@ MECHANICAL_NOISE = [
     "oo",    # Condition 2b -- all vowels
     "ah",    # Condition 2b
     "ee",    # Condition 2b
-    "um",    # Condition 1 -- <=3 chars
-    "the",   # Condition 1
+    "um",    # Condition 1 -- <=2 chars
 ]
+
+# "the" was in the list above, dropped by Condition 1 when its threshold was 3.
+# It has been removed deliberately, not because the fix broke it.
+#
+# It does not belong in a list called MECHANICAL_NOISE. Every other member is
+# detectable by SHAPE -- no vowels, all vowels, one or two characters. "the" is
+# a correctly transcribed English word; the only thing that caught it was its
+# length. And no shape separates "the" from "aye", which is a yes, or from
+# "owt", which sits in this clinic's STT keyterms prompt and was discarded on a
+# live call (CA1747c2d9, 2026-08-06 20:53:19).
+#
+# So the threshold is a trade with no middle: at 3 it deletes "aye" and "owt"
+# and costs bookings; at 2 it lets a bare "the" through and costs one LLM call
+# on a fragment that min_turn_silence=600 makes rare, and that Condition 4's
+# rapid-continuation merge absorbs when it is genuinely mid-sentence.
+#
+# See test_short_words_are_not_noise.py, which pins the threshold at 2 and
+# re-asserts every genuine noise fragment.
+def test_a_bare_article_may_now_dispatch():
+    """Records the accepted cost of the Condition 1 threshold change."""
+    assert should_dispatch_single_word("the")
 
 
 def test_unlisted_real_words_dispatch():
