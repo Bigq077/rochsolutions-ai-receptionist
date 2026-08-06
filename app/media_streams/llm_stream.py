@@ -1527,7 +1527,27 @@ _PHONE_STEP_MARKERS: tuple = (
     "number you're calling on",
     "number you're calling from",
     "number you're ringing",
-    "on your keypad",
+    # "on your keypad" is deliberately NOT a marker. It also appears verbatim
+    # in the LOCATION rung-3 prompt — "No problem at all — on your keypad, just
+    # press 1 for Awlstuh, or 2 for Redditch" (connection.py _LOC_RUNG3_DTMF) —
+    # so keying on it treats a CLINIC question as the phone question having
+    # been asked. Two consequences, both live on theorem_v3 2026-08-06:
+    #
+    #   * the phone backstop below (book_appointment, ~line 3475) blocks only
+    #     when phone_confirmed is unset AND _phone_step_asked is False. A
+    #     caller who saw the location keypad flipped the second to True, so
+    #     the backstop was disarmed and a booking could be written with an
+    #     unconfirmed caller-ID number that nobody had read back;
+    #   * connection.py's phone-confirm-unsettled ladder fired against the
+    #     clinic question — 13:38:57 and 20:53:03 both logged "phone confirm
+    #     unsettled" and queued "go ahead and type the number" at a caller who
+    #     had been asked which clinic they wanted.
+    #
+    # Nothing is lost by omitting it: every genuine phone prompt says "type the
+    # number on your keypad" and so still matches "type the number" below.
+    # latency_timing._PHONE_QUESTION_MARKERS reached this same conclusion for
+    # B-15 and excluded it there; this is that decision applied to the list it
+    # was copied from.
     "type the number",
 )
 

@@ -198,16 +198,58 @@ def test_phone_markers_stay_a_subset_of_the_prompt_modules_list():
     )
 
 
-def test_only_the_keypad_marker_is_excluded_and_only_on_purpose():
-    """If _PHONE_STEP_MARKERS gains a member, this fails and someone has to
-    decide whether it is safe for phase classification — rather than the two
-    lists silently diverging."""
+def test_the_two_lists_now_agree_exactly():
+    """
+    They used to differ by one member. `_PHONE_QUESTION_MARKERS` excluded
+    "on your keypad" because it also appears in the LOCATION rung-3 prompt —
+    the right call, made for B-15 — but the list it was copied FROM kept it,
+    so the false positive stayed live everywhere else that reads it: the
+    book_appointment phone backstop and the phone-confirm-unsettled ladder.
+
+    Removing it from `_PHONE_STEP_MARKERS` collapses the difference. Any new
+    divergence now means someone edited one copy and not the other.
+    """
     from app.prompts.clinic_template_prompt import _PHONE_STEP_MARKERS
     from app.media_streams.latency_timing import _PHONE_QUESTION_MARKERS
 
     missing = set(_PHONE_STEP_MARKERS) - set(_PHONE_QUESTION_MARKERS)
-    assert missing == {"on your keypad"}, (
+    assert not missing, (
         f"unreviewed difference from the prompt module's list: {sorted(missing)}. "
-        "'on your keypad' is excluded because it also appears in the LOCATION "
-        "rung-3 prompt; anything else needs the same false-positive check."
+        "Each marker must be checked against the LOCATION rung-3 prompt and any "
+        "other keypad context before it is added to either list."
     )
+
+
+def test_the_location_keypad_prompt_is_not_a_phone_question():
+    """
+    The regression itself, stated against the two real prompts. The location
+    rung must not read as the phone step in EITHER list — that false positive
+    disarms the book_appointment backstop that blocks a phoneless booking.
+    """
+    from app.prompts.clinic_template_prompt import _PHONE_STEP_MARKERS
+    from app.media_streams.latency_timing import _PHONE_QUESTION_MARKERS
+    from app.media_streams.connection import _LOC_RUNG3_DTMF
+
+    location = _LOC_RUNG3_DTMF.lower()
+    for name, markers in (
+        ("_PHONE_STEP_MARKERS", _PHONE_STEP_MARKERS),
+        ("_PHONE_QUESTION_MARKERS", _PHONE_QUESTION_MARKERS),
+    ):
+        hit = [mk for mk in markers if mk in location]
+        assert not hit, (
+            f"{name} matches the LOCATION keypad prompt via {hit} — a clinic "
+            f"question counts as the phone question having been asked"
+        )
+
+
+def test_the_real_phone_prompt_still_matches_both_lists():
+    """Guard against removing so much that the phone step stops registering."""
+    from app.prompts.clinic_template_prompt import _PHONE_STEP_MARKERS
+    from app.media_streams.latency_timing import _PHONE_QUESTION_MARKERS
+
+    phone_prompt = (
+        "No problem — go ahead and type the number on your keypad. "
+        "You can press the star key to reset at any time."
+    ).lower()
+    assert any(mk in phone_prompt for mk in _PHONE_STEP_MARKERS)
+    assert any(mk in phone_prompt for mk in _PHONE_QUESTION_MARKERS)
