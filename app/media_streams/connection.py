@@ -896,6 +896,38 @@ _LOC_RUNG3_DTMF: str = (
 )
 
 
+# Values Twilio sends in `From` when the caller withheld their number. They are
+# truthy strings, so any `if twilio_from:` test treats them as a real number.
+# +266696687 is ANONYMOUS spelled on a telephone keypad — numeric, and still not
+# a number anyone can ring.
+_ANONYMOUS_CLI: frozenset = frozenset({
+    "anonymous", "unavailable", "restricted", "unknown", "private",
+    "withheld", "blocked", "+266696687", "266696687",
+})
+
+
+def _is_usable_caller_id(raw: str) -> bool:
+    """True if *raw* is a number the clinic could actually ring back.
+
+    Guards the one place a caller's phone number enters the system without a
+    human confirming it. A False here is safe — it routes to "collect the
+    number on the keypad", which is what should happen when the number is
+    genuinely unknown. A False POSITIVE is not safe: it writes an un-diallable
+    string into the booking and skips the phone step that would have caught it.
+
+    Deliberately conservative about length rather than about format: the check
+    is "does this reduce to enough digits to be a phone number", not "is this
+    valid E.164", so an international caller is not turned away.
+    """
+    from app.tools.receptionist_tools import _phone_key
+
+    text = (raw or "").strip()
+    if not text or text.lower() in _ANONYMOUS_CLI:
+        return False
+    # _phone_key strips to the UK core; a word reduces to "" and is rejected.
+    return len(_phone_key(text)) >= 9
+
+
 # Patience-phrase guard — if the LLM response is a hold/wait phrase the
 # caller has not expressed booking intent; suppress the booking ack handler.
 _PATIENCE_SIGNALS: frozenset = frozenset({
@@ -6546,6 +6578,37 @@ class WebSocketCallHandler:
         if "direct_ws" in _account_sid:
             initial["direct_ws_test"] = True
             logger.info("[ms_conn] direct_ws_test mode detected (accountSid=%s)", _account_sid)
+
+        # ── Non-numeric caller-ID guard ──────────────────────────────────
+        # Twilio does not always send a number in `From`. On a withheld call it
+        # sends a word — "anonymous", "unavailable", "restricted", "unknown" —
+        # or the sentinel +266696687, which is ANONYMOUS dialled on a keypad.
+        # Every one of those is truthy, so without this the word itself was
+        # written to collected["phone"] and phone_from_twilio was set True,
+        # which SKIPS the phone step entirely. Two consequences, both live on
+        # 2026-08-06:
+        #   * a completed booking would write "anonymous" into Acuity as the
+        #     patient's phone number, and lookup_patient keys on phone — so
+        #     every withheld caller collides on one record;
+        #   * the call-summary row logged phone=yes for two callers who could
+        #     not be contacted (17:13 and 17:15), so the CallSummaries sheet
+        #     overstates how many numbers the clinic actually holds.
+        # The SMS layer already rejects it ("Invalid phone number — SMS
+        # aborted: 'anonymous'"), which is the only reason this has not yet
+        # corrupted a real appointment. Acuity performs no such check.
+        #
+        # Blanking here — BEFORE the forwarded-call guard and before anything
+        # reads twilio_from — routes these callers down the existing
+        # "will collect manually" path, which is exactly right: the number is
+        # genuinely unknown and must be asked for.
+        if twilio_from and not _is_usable_caller_id(twilio_from):
+            logger.warning(
+                "[ms_conn] NON-NUMERIC caller-ID %r — treating as no caller-ID "
+                "and collecting the patient's number on the keypad instead",
+                twilio_from,
+            )
+            initial["nonnumeric_cli_suppressed"] = twilio_from
+            twilio_from = ""
 
         # ── Forwarded-call caller-ID guard ───────────────────────────────
         # On a call forwarded from the practitioner's own phone, some carriers
