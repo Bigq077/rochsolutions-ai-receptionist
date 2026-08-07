@@ -502,14 +502,21 @@ def _choose_template(
         return templates.format_reached_confirmation_sms(
             patient_name=patient_name, **ck)
 
-    # 12. ABANDONED — suppressed when caller already made substantial booking progress
-    if outcome == "abandoned" and _booking_has_progressed(session, collected):
-        logger.info(
-            "🛑 abandoned but booking progressed (name=%r reason=%r type=%r) "
-            "— suppressing SMS",
-            collected.get("name"), collected.get("reason"), collected.get("patient_type"),
-        )
-        return None
+    # NOTE — there is deliberately no "suppress when the booking progressed"
+    # branch here. One stood at this line until 2026-08-07 and it silenced the
+    # SMS for exactly the callers who had got furthest: name given, slot picked,
+    # number typed, dropped before the CTA (CA6e1024db, 2026-08-07 10:14–10:16).
+    #
+    # It was written to stop a duplicate going out alongside a confirmation, but
+    # nothing that sent a confirmation can reach this function. Every such call
+    # has already returned False upstream — `booked` (:290), `cancelled` (:295),
+    # `reschedule_failed` (:300) and the `confirmation_sms_sent` latch (:305).
+    # So the branch was unreachable for its stated purpose and reachable only
+    # for the failure it was hiding.
+    #
+    # If a duplicate ever does appear, fix it at the latch above. Do not
+    # reintroduce a rule that keys on how far the caller got: progress is the
+    # argument FOR the text, not against it.
 
     # 12. ABANDONED — with a clean condition label only (never raw speech)
     if outcome == "abandoned" and condition_label:
@@ -592,46 +599,8 @@ def _check_bupa_mention(faq_data: list, insurance_data: Dict, session: Dict) -> 
     return any("bupa" in t for t in _recent_user_texts(session))
 
 
-def _booking_has_progressed(session: Dict, collected: Dict) -> bool:
-    """
-    True if the call reached a meaningful operational stage in any flow.
-
-    Strong single-signal check (reschedule/cancel deep progress):
-      rc_appointment_confirmed — caller's existing appointment was found and confirmed
-      reschedule_confirmed     — caller verbally confirmed the new reschedule time
-      slots_offered            — availability was fetched and days/times offered
-      slot_pending_confirmation — a specific slot is awaiting caller confirmation
-      slot_confirmed           — slot confirmed by caller, not yet saved to calendar
-
-    Booking-intent soft check (requires ≥2 signals to filter shallow calls where
-    Twilio caller-ID pre-populates fields but caller said nothing meaningful).
-    """
-    # Strong signals — any one is sufficient
-    if (
-        session.get("rc_appointment_confirmed")    # reschedule/cancel: appt found
-        or session.get("reschedule_confirmed")     # reschedule: caller confirmed new time
-        or session.get("slots_offered")            # booking: availability offered
-        or session.get("slot_pending_confirmation") # booking: specific slot pending confirm
-        or session.get("slot_confirmed")           # booking: slot confirmed
-    ):
-        return True
-
-    # Booking soft signals — require 2+ to avoid shallow-call false positives
-    _intent_is_booking = "book" in str(
-        session.get("intent") or session.get("last_intent") or ""
-    ).lower()
-    _name_captured    = bool(collected.get("name") or session.get("name_fragment"))
-    _reason_captured  = bool(collected.get("reason"))
-    _type_captured    = bool(collected.get("patient_type"))
-    _phone_confirmed  = (
-        session.get("phone_confirmed") is True
-        and bool(collected.get("phone") or session.get("phone_number"))
-    )
-    active_signals = sum([
-        _intent_is_booking,
-        _name_captured,
-        _reason_captured,
-        _type_captured,
-        _phone_confirmed,
-    ])
-    return active_signals >= 2
+# _booking_has_progressed() was removed on 2026-08-07 with its only call site.
+# It answered "did this caller get far enough to matter?" and the answer was
+# used to send them nothing. See the note at the abandoned branch in
+# _choose_template. If a future rule needs the same question asked, it wants a
+# different verb than `return None`.
