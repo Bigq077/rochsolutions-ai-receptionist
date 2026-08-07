@@ -231,6 +231,7 @@ async def with_filler(
     filler_list: List[str],
     session: dict,
     tts_fn: Callable[[str], Coroutine],
+    skip_primary: bool = False,
 ) -> Any:
     """
     Run api_coro concurrently with a filler phrase on the TTS queue.
@@ -246,11 +247,46 @@ async def with_filler(
         filler_list: Primary filler list to draw from.
         session:     Call session dict — must contain "used_fillers" (list).
         tts_fn:      Async callable (text: str) -> coroutine — queues TTS text.
+        skip_primary: Suppress the opening phrase because the caller has ALREADY
+                     heard one — FillerGuard's pre-recorded clip. The 4-second
+                     secondary is deliberately kept: the clips cover roughly the
+                     first five seconds, and suppressing both would reopen the
+                     dead air on a slow Acuity round-trip that O-4 closed.
 
     Returns:
         Whatever api_coro returns.
     """
     used = session.setdefault("used_fillers", [])
+    # ── Reconcile, 2026-08-08 (Theorem -> Vital Edge port) ──────────────────
+    # Two independent fixes for the same defect meet here: this branch
+    # (Theorem 8ce4b74, the recorded clip already spoke) and the cooldown
+    # clock below (latency-eval 265d95e, another producer spoke recently).
+    # Both are kept. This one runs FIRST because FillerGuard does not call
+    # note_filler_played -- so if the cooldown ran first and the clip were
+    # ever wired into the clock, this branch's 4-second secondary would be
+    # skipped entirely and the dead air O-4 closed would reopen.
+    # FillerGuard has already spoken this turn. Its clip and this list say the
+    # same thing in different words — "Let me have a look at what we've got…"
+    # was verbatim THINKING_FILLERS_PRIMARY[0] — and because pick_filler()
+    # chooses at random it could even say the identical sentence twice. On
+    # CAa11b26a1 (2026-08-07 22:23:15–20) the caller heard four ways of saying
+    # it inside 4.6s: clip, second clip, this phrase, then the slot preamble.
+    #
+    # Before O-4 landed, FillerGuard held b"" and this was the only voice in the
+    # gap, which is why the redundancy was invisible until the clips shipped.
+    if skip_primary:
+        logger.info(
+            "[filler] primary suppressed — FillerGuard clip already spoke this turn"
+        )
+        api_task = asyncio.create_task(api_coro)
+        done, _pending = await asyncio.wait([api_task], timeout=4.0)
+        if not done:
+            secondary = pick_filler(THINKING_FILLERS_SECONDARY, used)
+            logger.info("[filler] API slow (>4s) — secondary filler: %r", secondary)
+            note_filler_played(session, is_write=is_write_filler(secondary))
+            await tts_fn(secondary)
+        return await api_task
+
     # Peek before picking: pick_filler mutates `used` in place, so choosing a
     # phrase we are about to suppress would burn it out of the rotation and
     # push the pool towards an early reset for nothing.

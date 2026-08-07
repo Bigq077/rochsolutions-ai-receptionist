@@ -3860,6 +3860,13 @@ class LLMStream:
                                 filler_list=_filler_list,
                                 session=session,
                                 tts_fn=_tts_fn,
+                                # FillerGuard arms at turn start and fires at
+                                # 350ms, before anyone knows a tool is coming.
+                                # If it spoke, the caller has already been told
+                                # to hold on and this list would say it again.
+                                skip_primary=bool(
+                                    session.get("_filler_clip_spoke_this_turn")
+                                ),
                             )
                         else:
                             result = await executor(args, session)
