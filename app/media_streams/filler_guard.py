@@ -29,6 +29,40 @@ from typing import Awaitable, Callable
 logger = logging.getLogger(__name__)
 
 
+def expect_slot_presentation(
+    *,
+    slot_map_active: bool,
+    name_collection_pending: bool,
+    phone_collection_active: bool,
+    location_question_active: bool,
+) -> bool:
+    """
+    True when this turn is the one moment the hold clip belongs to: the caller
+    has given a day/time preference and Susie is about to fetch and read out the
+    options.
+
+    A pure predicate on purpose. The gate used to be an inline boolean at the
+    arm() call site inside a 24k-line method, where the only way to check it was
+    to place a live call — which is how it went four turns wrong before anyone
+    noticed. Every argument is a plain bool so the caller owns reading the state
+    and this owns the rule.
+
+    Each exclusion marks a stage where the moment has passed or not yet come:
+
+      slot_map_active            options are already on the table; a re-lookup
+                                 here ends in a readback, not a presentation
+      name_collection_pending    collecting the name (no tool at all)
+      phone_collection_active    collecting the number (no tool at all)
+      location_question_active   still choosing a clinic
+    """
+    return not (
+        slot_map_active
+        or name_collection_pending
+        or phone_collection_active
+        or location_question_active
+    )
+
+
 class FillerGuard:
     """
     Filler guard gated on booking_flow_active.
@@ -84,13 +118,44 @@ class FillerGuard:
         self._task: "asyncio.Task | None" = None
         self._played: bool = False
 
-    async def arm(self, session: dict, delay_ms: int = 350) -> None:
+    async def arm(
+        self,
+        session: dict,
+        delay_ms: int = 350,
+        expect_lookup: bool = True,
+    ) -> None:
         """
         Start the filler timer.
 
         Guards:
           - session["booking_flow_active"] must be True; otherwise no-op.
+          - expect_lookup must be True; otherwise no-op.
           - clip must be loaded; otherwise no-op.
+
+        `expect_lookup` is the caller's answer to "is this the turn where slots
+        are about to be READ OUT?" — the caller has given a day/time preference
+        and Susie is going to fetch the options. Owner decision 2026-08-08: that
+        is the only moment in the whole call where this clip should fire.
+
+        booking_flow_active alone is far too coarse: it stays True for the WHOLE
+        booking, so the clip also fired on the name turn and the phone turn,
+        which call no tool at all. On CA1e755281 (2026-08-07 23:43:21 and
+        23:43:35) those turns answered in 2.5s and 1.9s — the clip is not
+        covering dead air there, it is padding an already-fast turn, and the
+        caller heard a hold phrase four times in a 90-second call.
+
+        Note that "a tool will run" is NOT the rule. At 23:43:02 the caller
+        narrowed to a specific time; that turn did call check_availability, but
+        it ended in a readback and a name request, not a slot presentation, so
+        the clip does not belong there either. Suppressing it is not silence:
+        `_filler_clip_spoke_this_turn` stays False, so with_filler speaks its
+        own TTS phrase at tool invocation.
+
+        The decision is the CALLER's because the state it needs is not all in
+        `session`: `post_slot_confirmation_pending` is an attribute on the
+        connection, and `session["post_slot_confirmation_pending"]` is never
+        assigned anywhere (the read at connection.py:10181 is always None).
+        Deciding it here would silently read a key that does not exist.
 
         Cancels any in-flight timer from a previous arm() call and resets
         has_played so every turn starts with a clean slate.
@@ -113,7 +178,15 @@ class FillerGuard:
         if not session.get("booking_flow_active"):
             return
 
-        # Gate 2: clip must be present.
+        # Gate 2: only fire on turns that plausibly hit Acuity. See the
+        # docstring — this is what stops the clip on name/phone collection.
+        if not expect_lookup:
+            logger.info(
+                "[ms_filler] not armed — turn is not an availability lookup"
+            )
+            return
+
+        # Gate 3: clip must be present.
         if not self._clip:
             return
 
