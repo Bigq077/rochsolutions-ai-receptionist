@@ -14465,6 +14465,47 @@ class WebSocketCallHandler:
                 "request_transfer":             self.session.get("request_transfer"),
             })
             return
+
+        # Would a leg actually be placed? cc385a8 asked this before the DTMF
+        # "press 1" announcement, but the spoken path arrives here having
+        # ALREADY promised the caller — the model streams "let me put you
+        # straight through" and only then calls transfer_to_human. If
+        # _handle_transfer then finds no target (TRANSFER_DISABLED set, or no
+        # transfer_phone and no TRANSFER_FALLBACK_NUMBER) it returns silently,
+        # and the caller sits in dead air after being told they were being put
+        # through. That is the worst outcome this system can produce, because it
+        # sounds like success.
+        #
+        # We cannot unsay the promise, so say the next true thing instead of
+        # nothing, and keep the caller with Susie.
+        from app.routes.realtime import resolve_transfer_target
+        if not resolve_transfer_target(self.session):
+            logger.error(
+                "[ms_conn] transfer authorised but NO dial target — the caller "
+                "has already been told they are being put through; recovering "
+                "in-line instead of leaving dead air call_sid=%s", self.call_sid,
+            )
+            _tr_fallback = (
+                "I'm sorry — I can't put you through right this second. "
+                "I can help you here, or take a message for the team "
+                "and someone will call you straight back. Which would you prefer?"
+            )
+            # The LLM must see that this question was asked, or the next turn
+            # re-opens as though nothing happened.
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": _tr_fallback}
+            )
+            self.session["last_bot_prompt"] = _tr_fallback
+            self.session["transfer_unavailable"] = True
+            await save_session(self.call_sid, self.session)
+            await self.tts_text_queue.put(_tr_fallback)
+            # Arm the watchdog for the question just asked — the tool path can
+            # reach here without a transcript event, and an unarmed watchdog
+            # reproduces the dead air this guard exists to stop.
+            if self._silence_handler is not None:
+                self._silence_handler.on_question_asked(_tr_fallback)
+            return
+
         logger.info("[ms_conn] transfer authorised — initiating")
         try:
             from app.routes.realtime import _handle_transfer
@@ -15013,14 +15054,25 @@ class WebSocketCallHandler:
         # status set earlier wins.
         self.session.setdefault("call_status", "completed")
 
-        # Drop-off callback safety net (provisional-booking clinics only).
+        # Drop-off callback safety net.
         # A caller who gave their name + number but hung up before
-        # add_to_waitlist / the provisional booking fired would otherwise be
-        # lost — the tool that pings the practitioner never ran (e.g. the call
-        # dropped at the phone-confirm step). For a clinic whose model is "the
-        # practitioner rings the client back", that warm lead MUST still reach
-        # them. Uses ONLY already-captured data, so it can never invent a wrong
-        # number. Deduped, fire-and-forget, non-fatal.
+        # add_to_waitlist / the booking fired would otherwise be lost — the tool
+        # that pings the practitioner never ran (e.g. the call dropped at the
+        # phone-confirm step). That warm lead MUST still reach a human. Uses
+        # ONLY already-captured data, so it can never invent a wrong number.
+        # Deduped, fire-and-forget, non-fatal.
+        #
+        # This was gated on booking_system == "google_calendar_provisional"
+        # until 2026-08-07, which is Vital Edge and nothing else. Theorem books
+        # into Acuity and JV into plain Google Calendar, so neither ever got the
+        # net — CA6e1024db (2026-08-07) gave a name, picked a slot and typed
+        # eleven digits, and no one was told. The reasoning behind the gate was
+        # about VE's ring-back business model, but a dropped booking is a lost
+        # patient at every clinic; the guards that matter are the ones below —
+        # details captured, nobody notified yet, not already sent.
+        #
+        # A clinic that genuinely does not want these sets
+        # "dropoff_callback_enabled": false in its clinic.json. Default is on.
         try:
             _dc_collected = self.session.get("collected") or {}
             _dc_name = (self.session.get("patient_name") or _dc_collected.get("name") or "").strip()
@@ -15038,7 +15090,7 @@ class WebSocketCallHandler:
                 _dc_name and _dc_phone
                 and not _dc_owner_notified
                 and not self.session.get("_dropoff_callback_sent")
-                and _dc_clinic.get("booking_system") == "google_calendar_provisional"
+                and _dc_clinic.get("dropoff_callback_enabled") is not False
             ):
                 _dc_tp = _dc_clinic.get("transfer_phone", "")
                 if _dc_tp:
