@@ -1497,6 +1497,12 @@ _PHONE_STEP_MARKERS: tuple = (
     # B-15 and excluded it there; this is that decision applied to the list it
     # was copied from.
     "type the number",
+    # "type YOUR number" — the model uses both. Susie said "could you type
+    # your number on your keypad?" on CA9758ceab and this list matched nothing,
+    # so the phone step was never recorded as asked. Safe to add: it does not
+    # appear in the LOCATION rung ("on your keypad, just press 1 for Awlstuh"),
+    # which is the collision that removed "on your keypad" from this list.
+    "type your number",
 )
 
 
