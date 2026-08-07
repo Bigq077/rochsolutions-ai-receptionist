@@ -2235,6 +2235,80 @@ def _build_theorem_v3(session: dict) -> str:
     # The model now owns the whole flow, as it does on latency-eval: ack and
     # phone readback in ONE turn, then a single lookup. No code path
     # literal-matches model speech in this flow any more.
+    # ── Turn 2 of the reschedule/cancel flow: reading the booking number back.
+    #
+    # This flow was written assuming a caller ID always exists — "You ALREADY
+    # HAVE the number … so do NOT ask them for it". For a caller who withholds
+    # their number, or whose caller ID is suppressed, that is false, and it
+    # CONTRADICTED the CALL STATE block, which correctly says "you do NOT have
+    # a number for them". The same prompt told the model both things, and which
+    # one won was a coin-flip on a live flow.
+    #
+    # It could not self-correct either: the keypad line below is gated behind
+    # "Only if the caller DECLINES that number", and no number was ever offered
+    # to decline. The model's remaining options were to invent digits, or to
+    # ask the open question the same paragraph forbids.
+    #
+    # lookup_patient keys on phone, so a caller with no number cannot reach
+    # their appointment at all — this is the difference between a withheld
+    # caller being able to cancel and not.
+    #
+    # Mirrors the (a)/(b) split the booking flow's step 8 already has.
+    _rc_cli = (
+        (session.get("twilio_from_local") or "")
+        or (session.get("twilio_from") or "")
+    ).strip()
+    if _rc_cli:
+        _rc_turn2_number = (
+            "acknowledge the clinic in two or three words and read back "
+            "the number the appointment would be under.\n"
+            "You ALREADY HAVE the number — it is the caller phone in "
+            "CALL STATE, pre-loaded from caller ID — so do NOT ask them "
+            "for it, and do NOT ask them to say a set phrase. Say the "
+            "digits in three groups so they can actually check them, "
+            "then ask a plain yes/no: \"Right, Awlstuh. I've got you on "
+            "oh seven five oh two, two one one, two oh seven — is that "
+            "the number the appointment was booked under?\" (digits "
+            "illustrative — always say the caller's actual number). "
+            "STOP there on that turn. A plain \"yes\", \"yeah\", "
+            "\"that's the number\" or \"go for it\" is a complete "
+            "answer: accept it and move on to lookup_patient.\n"
+            "NEVER end turn 2 on the clinic acknowledgement alone. "
+            "\"Right, Awlstuh.\" with no question leaves the caller in "
+            "silence with nothing to answer — the acknowledgement and "
+            "the number readback are one turn, always.\n"
+            "Only if the caller DECLINES that number (says it was a "
+            "different one) do you ask them to type it — say EXACTLY: "
+            "\"No problem — go ahead and type the number on your "
+            "keypad. You can press the star key to reset at any "
+            "time.\" Never invite them to say the number aloud, and "
+            "never ask \"what number was it booked under\" as an open "
+            "question — the keypad line is what captures the digits.\n"
+        )
+    else:
+        _rc_turn2_number = (
+            "acknowledge the clinic in two or three words and ask for the "
+            "booking number on the keypad, in that SAME turn.\n"
+            "You do NOT have a number for this caller — their caller ID is "
+            "withheld or unavailable, and CALL STATE says so. There is "
+            "nothing to read back. Do NOT say any digits, do NOT say \"the "
+            "number you're calling from\", do NOT ask them to say \"use this "
+            "number\", and do NOT ask an open question such as \"what number "
+            "was it booked under?\" — an open question invites them to say it "
+            "aloud, which is what the keypad exists to avoid.\n"
+            "Say EXACTLY: \"Right, Awlstuh. Could you type the number the "
+            "appointment is booked under on your keypad? You can press the "
+            "star key to reset at any time.\" (Substitute the clinic they "
+            "named.) STOP there on that turn.\n"
+            "NEVER end turn 2 on the clinic acknowledgement alone. \"Right, "
+            "Awlstuh.\" with no question leaves the caller in silence with "
+            "nothing to answer — the acknowledgement and the keypad request "
+            "are one turn, always.\n"
+            "The digits are captured, validated and read back to the caller "
+            "by the system before your next turn runs, so do not read them "
+            "back yourself.\n"
+        )
+
     reschedule_cancel = (
         "RESCHEDULE / CANCEL FLOW\n"
         "LOCATION FOR CANCEL AND RESCHEDULE — STRICT RULE: "
@@ -2297,30 +2371,7 @@ def _build_theorem_v3(session: dict) -> str:
         "silently register it: call collect_and_store(field=\"location\", "
         "value=\"alcester\") for Awlstuh, or value=\"redditch\" for "
         "Redditch. Say nothing about that call. In the SAME turn, "
-        "acknowledge the clinic in two or three words and read back "
-        "the number the appointment would be under.\n"
-        "You ALREADY HAVE the number — it is the caller phone in "
-        "CALL STATE, pre-loaded from caller ID — so do NOT ask them "
-        "for it, and do NOT ask them to say a set phrase. Say the "
-        "digits in three groups so they can actually check them, "
-        "then ask a plain yes/no: \"Right, Awlstuh. I've got you on "
-        "oh seven five oh two, two one one, two oh seven — is that "
-        "the number the appointment was booked under?\" (digits "
-        "illustrative — always say the caller's actual number). "
-        "STOP there on that turn. A plain \"yes\", \"yeah\", "
-        "\"that's the number\" or \"go for it\" is a complete "
-        "answer: accept it and move on to lookup_patient.\n"
-        "NEVER end turn 2 on the clinic acknowledgement alone. "
-        "\"Right, Awlstuh.\" with no question leaves the caller in "
-        "silence with nothing to answer — the acknowledgement and "
-        "the number readback are one turn, always.\n"
-        "Only if the caller DECLINES that number (says it was a "
-        "different one) do you ask them to type it — say EXACTLY: "
-        "\"No problem — go ahead and type the number on your "
-        "keypad. You can press the star key to reset at any "
-        "time.\" Never invite them to say the number aloud, and "
-        "never ask \"what number was it booked under\" as an open "
-        "question — the keypad line is what captures the digits.\n"
+        + _rc_turn2_number +
         "Once the phone is provided, call "
         "lookup_patient(purpose='reschedule', phone=...) EXACTLY "
         "ONCE — use purpose='reschedule' for both reschedule AND "

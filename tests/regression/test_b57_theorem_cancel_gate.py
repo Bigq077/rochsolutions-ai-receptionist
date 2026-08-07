@@ -266,7 +266,18 @@ UNMOVED_PROMPTS = {
     # twilio_from_local and no collected phone, so it takes exactly that new
     # branch; the move is the addition and nothing else. Cancel wording is
     # again untouched, and the assertions above prove it.
-    "theorem_v3": "909fee2fce4b5519",
+    # Re-pinned 2026-08-07 — RESCHEDULE / CANCEL FLOW turn 2 now branches on
+    # whether a caller ID exists. It previously asserted "You ALREADY HAVE the
+    # number … so do NOT ask them for it", which contradicted the CALL STATE
+    # line added the day before, and left a withheld caller unable to reach
+    # lookup_patient at all. This fixture renders with no twilio_from, so it
+    # takes the new no-caller-ID branch and the hash moves for that reason.
+    #
+    # The caller-ID branch is a verbatim copy of the old text and was proved
+    # byte-identical to d1639f0's render before this pin was updated — the
+    # change is an addition for one case, not an edit to the existing one.
+    # Cancel wording untouched; the assertions above are what prove that.
+    "theorem_v3": "e67a8d1316b97189",
     "vital_edge": "706299246fa856dc",
 }
 
