@@ -40,6 +40,8 @@ import pytest
 from app.media_streams.connection import _is_keypad_arming_line
 from app.media_streams.turn_handler import (
     _BOOKING_CTA_SENTENCE_RE,
+    _name_known,
+    _next_booking_question_for,
     _phone_question_for,
     sanitise_response,
 )
@@ -52,11 +54,77 @@ READBACK = (
 )
 
 
+# ── name before phone ──────────────────────────────────────────────────────
+#
+# The first version of this gate knew only about the phone. On CA36eb3f
+# (2026-08-07) BOTH the name and the phone were missing when the model reached
+# for the CTA; the gate substituted the phone question, the caller typed his
+# number, and only then was he asked his name — one question before the
+# booking, after he had already given the harder answer. The prompt orders
+# these (name step 7, phone step 8, readback step 9); the gate inverted them.
+
+def test_the_name_is_asked_before_the_phone():
+    """The reproduction: nothing collected yet, so the NAME comes first."""
+    out = sanitise_response(READBACK, {"booking_flow_active": True, "twilio_from": ""})
+    assert "first name and surname" in out
+    assert "keypad" not in out.lower()
+
+
+def test_the_phone_follows_once_the_name_is_in():
+    out = sanitise_response(
+        READBACK,
+        {"booking_flow_active": True, "twilio_from": "", "patient_name": "Quentin Rook"},
+    )
+    assert "keypad" in out.lower()
+    assert "first name and surname" not in out
+
+
+@pytest.mark.parametrize("session,expected", [
+    ({}, False),
+    ({"patient_name": "Quentin Rook"}, True),
+    ({"collected": {"full_name": "Quentin Rook"}}, True),
+    ({"collected": {"name": "Quentin"}}, True),
+    ({"patient_name": "   "}, False),          # whitespace is not a name
+    ({"collected": {"full_name": ""}}, False),
+])
+def test_name_known_reads_every_path_that_writes_it(session, expected):
+    """
+    Three keys because three paths write it: _v3_try_persist_name sets the
+    top-level patient_name, collect_and_store writes into collected under
+    either spelling. Missing one would re-ask a name we already have.
+    """
+    assert _name_known(session) is expected
+
+
+def test_the_name_question_does_not_delete_itself():
+    """Same trap as the phone question — it is re-scanned for a second CTA."""
+    assert not _BOOKING_CTA_SENTENCE_RE.search(_next_booking_question_for({}))
+
+
+def test_the_gate_fires_when_only_the_name_is_missing():
+    """
+    phone_confirmed alone is not enough to let the CTA through — the booking
+    needs both, so a confirmed phone with no name must still be held back.
+    """
+    out = sanitise_response(
+        READBACK, {"booking_flow_active": True, "phone_confirmed": True}
+    )
+    assert "shall i go ahead" not in out.lower()
+    assert "first name and surname" in out
+
+
 # ── the gate itself ────────────────────────────────────────────────────────
 
 def test_the_cta_is_replaced_when_no_phone_is_confirmed():
-    """The reproduction, with the caller-ID suppressed as it was on the call."""
-    out = sanitise_response(READBACK, {"booking_flow_active": True, "twilio_from": ""})
+    """
+    The reproduction, with the caller-ID suppressed as it was on the call.
+    Name present so this isolates the PHONE arm — the name arm is covered
+    above.
+    """
+    out = sanitise_response(
+        READBACK,
+        {"booking_flow_active": True, "twilio_from": "", "patient_name": "Mark Da'ya"},
+    )
     assert "shall i go ahead" not in out.lower()
     assert "book that in" not in out.lower()
     assert "keypad" in out.lower()
@@ -95,8 +163,13 @@ def test_spacing_survives_the_substitution():
 
 # ── it must not fire anywhere else ─────────────────────────────────────────
 
-def test_confirmed_phone_passes_through_untouched():
-    session = {"booking_flow_active": True, "phone_confirmed": True}
+def test_the_cta_passes_through_once_name_and_phone_are_both_in():
+    """Both are required — the booking cannot be written without either."""
+    session = {
+        "booking_flow_active": True,
+        "phone_confirmed": True,
+        "patient_name": "Mark Da'ya",
+    }
     assert sanitise_response(READBACK, session) == READBACK
 
 
