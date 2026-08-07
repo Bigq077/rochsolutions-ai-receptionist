@@ -282,6 +282,72 @@ async def judge_call(call: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Operator SMS
+# ---------------------------------------------------------------------------
+
+# How the call ended, in words, keyed on the flow-reported reason.
+_ENDING_PHRASE = {
+    "no_audio_close":  "Susie ended it after dead air — caller went quiet",
+    "caller_hung_up":  "caller hung up",
+    "graceful_exit":   "call closed normally",
+    "booked":          "ended on a confirmed booking",
+    "transferred":     "transferred to a human",
+    "pipeline_error":  "the call hit a pipeline error",
+}
+
+_QUOTE_CAP = 140
+
+
+def _last(turns: Any, role: str) -> Optional[str]:
+    if not isinstance(turns, list):
+        return None
+    for turn in reversed(turns):
+        if isinstance(turn, dict) and turn.get("role") == role:
+            text = (turn.get("text") or "").strip()
+            if text:
+                return text if len(text) <= _QUOTE_CAP else text[:_QUOTE_CAP - 1] + "…"
+    return None
+
+
+def build_callback_sms(call: Dict[str, Any], judgement: Dict[str, Any]) -> str:
+    """The operator's CALL BACK text. Pure — no I/O, so it is testable.
+
+    This used to be one line: a header plus the judge's free-text `evidence`
+    field, which the prompt asks for as "1-2 sentences quoting the turns". So
+    the whole of what an operator learned about a call was one model-written
+    sentence of interpretation — and on CAe2120b that sentence named a redundant
+    step Susie had not taken and an ending that had not happened.
+
+    The facts an operator actually needs to decide whether to ring someone back
+    are facts we hold: who, how far they got, what each side last said, how the
+    line ended. Those are built from the record here. `evidence` is kept, last,
+    labelled as the judge's opinion — useful colour, no longer the only content.
+    """
+    caller = call.get("caller_number") or "unknown number"
+    tags = ", ".join(judgement.get("failure_tags") or []) or "unresolved"
+    ending = _ENDING_PHRASE.get(call.get("reason")) or (call.get("reason") or "ended")
+    booked = "booked" if call.get("booking_confirmed") else "NOT booked"
+
+    lines = [
+        f"[Susie] CALL BACK — {call.get('clinic_id')} {caller} "
+        f"(score {judgement.get('quality_score')}/5, {booked})",
+    ]
+
+    said = _last(call.get("transcript"), "user")
+    if said:
+        lines.append(f'Caller last said: "{said}"')
+    heard = _last(call.get("transcript"), "assistant")
+    if heard:
+        lines.append(f'Susie last said: "{heard}"')
+
+    lines.append(f"Ended: {ending}.")
+
+    evidence = (judgement.get("evidence") or "").strip()
+    lines.append(f"Judge ({tags}): {evidence}" if evidence else f"Judge: {tags}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Orchestration: load → judge → store → alert
 # ---------------------------------------------------------------------------
 
@@ -307,14 +373,7 @@ async def run_and_store(call_sid: str) -> Optional[Dict[str, Any]]:
         if needs_callback(judgement):
             try:
                 from app.obs import alerts
-                tags = ", ".join(judgement.get("failure_tags") or []) or "unresolved"
-                caller = call.get("caller_number") or "unknown number"
-                evidence = (judgement.get("evidence") or "").strip()
-                await alerts.review_alert(
-                    f"[Susie] CALL BACK — {call.get('clinic_id')} caller {caller} "
-                    f"was left unresolved (score {judgement.get('quality_score')}/5, {tags}). "
-                    f"{evidence}"
-                )
+                await alerts.review_alert(build_callback_sms(call, judgement))
             except Exception as _al_exc:  # pragma: no cover - defensive
                 _log.error("[obs.judge] callback alert failed: %r", _al_exc)
         return judgement
