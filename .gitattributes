@@ -1,0 +1,9 @@
+# µ-law audio clips are binary. Without this, core.autocrlf=true (the default
+# on the Windows machines this repo is worked on) runs CRLF conversion over
+# them: every 0x0D byte that happens to precede a 0x0A is stripped on commit,
+# and the corruption is permanent in the object store.
+#
+# The clips committed on 2026-08-08 contained no 0x0D0A pairs and survived, but
+# that is luck — the byte pair is not rare in 8kHz µ-law speech, and the only
+# symptom would be a mangled hold phrase on a live patient call.
+*.ulaw binary
