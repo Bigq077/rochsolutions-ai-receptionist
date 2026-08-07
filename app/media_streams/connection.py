@@ -6186,15 +6186,41 @@ class WebSocketCallHandler:
         # v3_phone_dtmf_active.  Only fires when no slot map exists (slot map
         # takes priority for keypad detection above).
         from app.clinic_config import is_freeform_clinic as _is_freeform
+        # Two ways in. The last_bot_prompt test is the original and it is
+        # fragile: it survives silence but not a REPLY, because any turn Susie
+        # takes overwrites last_bot_prompt. On CA9758ceab she answered "okay
+        # i'll do that for you in a minute" with "No rush at all." — nine
+        # seconds before the caller typed — and that one sentence removed the
+        # only net under eleven digits.
+        #
+        # The state test does not care what was said in between: if we are in a
+        # booking and still have no number, a digit is a phone digit. The slot
+        # map is excluded above (a numbered slot list owns its own digits) and
+        # the location and intro branches have already returned before this
+        # point, so the only digits reaching here are ones no other handler
+        # wanted.
+        _phone_outstanding = bool(
+            self.session.get("booking_flow_active")
+            and not self.session.get("phone_confirmed")
+            and not self.session.get("phone_entered_by_keypad")
+        )
         if (
             _is_freeform(self.session.get("clinic_id"))
             and not self.session.get("v3_phone_dtmf_active")
             and not self.session.get("v3_dtmf_slot_map")
-            and _is_phone_keypad_prompt(self.session.get("last_bot_prompt", ""))
+            and (
+                _is_phone_keypad_prompt(self.session.get("last_bot_prompt", ""))
+                or _phone_outstanding
+            )
         ):
             logger.info(
                 "[ms_conn] theorem_v3: auto-activating v3_phone_dtmf_active "
-                "(last_bot_prompt is a phone-number keypad prompt)"
+                "(%s)",
+                "last_bot_prompt is a phone-number keypad prompt"
+                if _is_phone_keypad_prompt(
+                    self.session.get("last_bot_prompt", "")
+                )
+                else "booking in progress with no number on record",
             )
             self.session["v3_phone_dtmf_active"] = True
 
@@ -6208,6 +6234,12 @@ class WebSocketCallHandler:
             and not self.session.get("rc_kp_phone_pending")
             and not self.session.get("v3_phone_dtmf_active")
         ):
+            # Count it. A keypress no handler wanted IS a lost caller input,
+            # and this return was silent: CA9758ceab discarded eleven digits
+            # here and still finished with lost_total=0 by_reason={}. The
+            # summary row called that call clean. Three separate classes of
+            # loss have now been invisible to this metric in one day.
+            self._note_utterance_lost("dtmf_digit_discarded", digit)
             return
 
         buf = self.session.get("phone_dtmf_buffer", "") + digit
@@ -7960,12 +7992,48 @@ class WebSocketCallHandler:
                                         " DTMF mode — exiting: %r",
                                         utterance[:60],
                                     )
-                                self.session["v3_phone_dtmf_active"] = False
-                                logger.info(
-                                    "[ms_conn] v3_phone_dtmf_active = False"
-                                    " (exited — conversational speech /"
-                                    " name correction)"
-                                )
+                                # Only leave phone-collection mode when the
+                                # number is actually IN. The comment above says
+                                # "the patient is clearly not typing a number" —
+                                # but the commonest thing a caller says here is
+                                # that they are ABOUT to, and this branch fired
+                                # on exactly that.
+                                #
+                                # CA9758ceab, 2026-08-07:
+                                #   10:14:58  "could you type your number on
+                                #             your keypad?"   → armed
+                                #   10:14:58  caller: "okay i'll do that for you
+                                #             in a minute"    → DISARMED here
+                                #   10:15:10  eleven digits, every one logged
+                                #             v3_phone_dtmf_active=False and
+                                #             dropped — not one buf= line
+                                #   10:15:27  caller: "i just typed it in"
+                                # He typed his number into a closed keypad and
+                                # had to tell us he had done it.
+                                #
+                                # Staying armed on an EMPTY buffer costs
+                                # nothing: this branch falls through to normal
+                                # LLM dispatch either way, and transcript
+                                # suppression only applies once digits are
+                                # actually buffered.
+                                if (
+                                    self.session.get("phone_confirmed")
+                                    or self.session.get("phone_entered_by_keypad")
+                                ):
+                                    self.session["v3_phone_dtmf_active"] = False
+                                    logger.info(
+                                        "[ms_conn] v3_phone_dtmf_active = False"
+                                        " (exited — conversational speech /"
+                                        " name correction; number already on"
+                                        " record)"
+                                    )
+                                else:
+                                    logger.info(
+                                        "[ms_conn] phone DTMF STAYS ARMED — the"
+                                        " caller spoke but no number is on"
+                                        " record yet: %r",
+                                        utterance[:60],
+                                    )
                             # Fall through to normal LLM dispatch.
 
                     # ── CHANGE B: Name collection debounce ───────────────────
