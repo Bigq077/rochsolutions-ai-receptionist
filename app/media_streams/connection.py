@@ -108,6 +108,10 @@ from .latency_timing import (
     is_correction_lead as _lat_is_correction_lead,
     emit_cutoff as _lat_emit_cutoff,
 )
+# Observability transcript. Pure list manipulation on the session dict — no DB,
+# no config read, no import cost; the capture/judge flags gate what is DONE with
+# obs_turns, not whether it is built.
+from app.obs import turns as _obs_turns
 
 logger = logging.getLogger(__name__)
 
@@ -12298,6 +12302,14 @@ class WebSocketCallHandler:
                 # rather than the canonical spelling ("Alcester").
                 # synthesise_chunk applies the same substitution internally; the
                 # regex is idempotent so double-application is harmless.
+                #
+                # Keep the pre-substitution form for the obs transcript (recorded
+                # below, once this chunk has survived every remaining suppression
+                # check). The judge must not read "Awlstuh" — it is what the
+                # caller HEARD, but on the page it looks like Susie invented a
+                # place name, which is exactly the kind of thing the judge tags
+                # as a hallucination.
+                _obs_chunk_text = chunk_text
                 chunk_text = _apply_tts_subs(chunk_text)
 
                 # Bug 5: discard stale LLM chunks that arrived after a confirmed barge-in.
@@ -12387,6 +12399,16 @@ class WebSocketCallHandler:
                         chunk_text[:80],
                     )
                 _last_tts_chunk = chunk_text.strip()
+
+                # ── Obs transcript ────────────────────────────────────────────
+                # Recorded HERE and nowhere else. This is the one seam every
+                # utterance passes through — greeting, watchdog re-asks, the
+                # dead-air safety net's sign-off, DTMF questions, the transfer
+                # line, LLM replies — and it is past every suppression check
+                # above, so nothing the caller did not hear is stored. See
+                # app/obs/turns.py for what this cost when it lived in
+                # llm_stream._append_history instead (call CAe2120b).
+                _obs_turns.record_assistant(self.session, _obs_chunk_text)
 
                 # Change C: cancel filler timer; inject 100ms breath gap if
                 # the clip already fired this turn (one-shot: _filler_breath_injected

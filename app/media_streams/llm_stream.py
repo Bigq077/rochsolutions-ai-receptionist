@@ -68,6 +68,7 @@ from .config import (
     BOOK_CLASSIFIER_ENABLED,
     BOOK_CLASSIFIER_TIMEOUT_S as _BOOK_CLASSIFIER_TIMEOUT_S,
 )
+from app.obs import turns as _obs_turns
 from .chunker import ResponseChunker
 from .fast_path import try_fast_path
 from .session import save_session
@@ -1754,6 +1755,12 @@ class LLMStream:
           8. GPT-4.1-mini fallback on Claude 529/500
           9. Update conversation history and session
         """
+        # Obs transcript: mark where this caller turn begins. Everything spoken
+        # from here until _append_history runs belongs after the caller's line,
+        # and the assistant side is appended live from the TTS loop — so the
+        # caller's line has to be inserted back at this mark, not appended.
+        _obs_turns.mark_turn_start(session)
+
         # ── Step 1-3: Fast-path ──────────────────────────────────────────
         fp_result = try_fast_path(session, user_text)
         if fp_result is not None:
@@ -4202,47 +4209,24 @@ def _append_history(
         {"role": "assistant", "text": raw_text if raw_text is not None else assistant_text}
     )
 
-    # Both sides of the exchange, for the observability capture/judge (app/obs/**).
-    # The judge cannot score a call it can only half-hear, and session["turns"] on
-    # this branch holds the assistant side only.
+    # The CALLER side of the observability transcript (app/obs/**). The assistant
+    # side is no longer written here: it is recorded in connection.py's TTS loop,
+    # at the one seam every utterance passes through. Writing it here recorded the
+    # LLM turns and nothing else — no greeting, no watchdog re-ask, no dead-air
+    # sign-off — so the stored call ended wherever the last LLM turn did, and the
+    # judge filled in the ending itself. See app/obs/turns.py.
     #
-    # This is deliberately a SEPARATE key rather than a fix to session["turns"]:
-    # that list feeds the owner-facing actionable summary (_format_turns, max_turns=10)
-    # and the SMS router (last-8 window), which have always been tuned against the
-    # assistant-only shape. Adding caller turns there would halve those windows' real
-    # coverage and change a live clinic's summaries as a side effect of an
-    # observability port. Upstream `main` does fix session["turns"] in place; porting
-    # that here is its own change with its own testing — see the note in the PR.
+    # obs_turns stays a SEPARATE key from session["turns"]: that list feeds the
+    # owner-facing actionable summary (_format_turns, max_turns=10) and the SMS
+    # router (last-8 window), both tuned against an assistant-only shape. Adding
+    # caller turns there would halve those windows' real coverage and change a
+    # live clinic's summaries as a side effect of an observability fix.
     #
-    # Caller turn first, then the reply, preserving order. Skip empty/whitespace
-    # caller text (e.g. silence turns).
-    # The obs record stores what the CALLER HEARD (2026-07-29).
-    #
-    # It used to store `full_reply`, assembled from raw tokens — so a transcript
-    # could not distinguish "the model generated this" from "the caller heard
-    # this". Gate 5 runs per-chunk on the way to TTS, after that record is
-    # written, and strips a great deal. Two conclusions were drawn from these
-    # transcripts today and both were wrong in consequence: the A1 defect counts
-    # were an inference in BOTH directions (over-reporting text the gate caught,
-    # under-reporting severity where it caught nothing). Settling it needed the
-    # raw text replayed through the real chunker and the real gate.
-    #
-    # Recording the spoken form removes that whole class of error: every detector
-    # in scripts/detect_defects.py, the judge in app/obs/judge.py, and anyone
-    # reading a transcript now sees the call as the caller experienced it.
-    #
-    # SCOPE, deliberate: only this record changes. conversation_history above
-    # keeps the RAW reply because it is fed back to the model as its own prior
-    # turns — rewriting the model's memory of what it said is a behavioural
-    # change with its own risk, and is not part of an instrumentation fix.
-    # session["turns"] also keeps the raw form: it feeds the owner-facing summary
-    # and the SMS router for live clinics (see the note above). Both are worth
-    # revisiting, separately, with their own tests.
-    obs_turns = session.setdefault("obs_turns", [])
-    if user_text and user_text.strip():
-        obs_turns.append({"role": "user", "text": user_text})
+    # record_user inserts at the mark run_turn set on entry, not at the end —
+    # this runs at TURN END, by which point this turn's replies are already in
+    # the list, and a plain append would print every exchange backwards.
+    _obs_turns.record_user(session, user_text)
     _spoken = assistant_text if spoken_text is None else spoken_text
-    obs_turns.append({"role": "assistant", "text": _spoken})
 
     # C1 write-guard input: remember the date the caller was actually TOLD, taken
     # from the spoken form for the same reason obs uses it — the raw reply is not
