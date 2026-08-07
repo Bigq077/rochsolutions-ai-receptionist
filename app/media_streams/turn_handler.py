@@ -471,11 +471,26 @@ _BOOKING_OFFER_RE = re.compile(
 # tests to decide whether a caller's "yes" may open the write gate. Kept in step
 # with it by test_no_booking_cta_before_phone.py rather than by importing it:
 # llm_stream imports THIS module, so the dependency cannot run the other way.
+# Every alternative carries a BOOKING verb. "shall i go ahead" on its own is
+# NOT enough and must never be added: it is the shared opener for all three
+# write families — "shall I go ahead and move it for you?" (reschedule) and
+# "shall I go ahead and cancel that?" (cancel) both match it, and this gate
+# would replace a legitimate move or cancel confirmation with a request for a
+# phone number. Caught in review 2026-08-07 after the first version shipped
+# with the bare opener; test_reschedule_and_cancel_ctas_are_untouched pins it.
+#
+# Deliberately fails toward NOT firing. A booking CTA phrased in some way this
+# misses degrades to the previous behaviour, where book_appointment's phone
+# backstop still refuses the write. An over-match breaks a different flow
+# outright, which is strictly worse.
 _BOOKING_CTA_SENTENCE_RE = re.compile(
     r"[^.!?]*\b(?:"
-    r"shall i go ahead"
+    r"shall i go ahead and book"
     r"|book that in"
     r"|put that request through"
+    # NOT "booked in": that matches the phantom CLAIM "You're all booked in",
+    # which belongs to the false-confirmation guard further down and must be
+    # dropped to empty, not rewritten into a question.
     r")\b[^.!?]*[.!?]?",
     re.IGNORECASE,
 )
