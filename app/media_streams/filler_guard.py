@@ -101,6 +101,14 @@ class FillerGuard:
             self._task = None
         self._played = False
 
+        # Every turn starts with the clip unspoken. `with_filler` reads this to
+        # decide whether its own opening phrase would just be a second way of
+        # saying what the caller already heard — see
+        # `filler_phrases.with_filler(skip_primary=...)`. Reset here rather than
+        # in _fire() so a turn where the clip never fires clears the previous
+        # turn's flag.
+        session["_filler_clip_spoke_this_turn"] = False
+
         # Gate 1: only fire on booking_flow_active turns.
         if not session.get("booking_flow_active"):
             return
@@ -114,10 +122,16 @@ class FillerGuard:
         _clip           = self._clip
         _clip_2         = self._clip_2
         _send           = self._send_audio
+        _session        = session
 
         async def _fire() -> None:
             await asyncio.sleep(_delay_s)
             self._played = True
+            # Set at the moment audio actually goes out, not at arm() time: a
+            # turn whose LLM answers inside 350ms cancels this task before the
+            # sleep returns, and nothing was spoken, so with_filler must still
+            # be allowed its own phrase.
+            _session["_filler_clip_spoke_this_turn"] = True
             logger.info("[ms_filler] clip firing (delay=%dms)", delay_ms)
             await _send(_clip)
             # Wait to see if the LLM responds; if not, play second clip.
