@@ -104,6 +104,30 @@ def test_outside_a_booking_flow_passes_through_untouched():
     assert sanitise_response(READBACK, {}) == READBACK
 
 
+@pytest.mark.parametrize("cta", [
+    "So that is Tuesday the 12th at ten. Shall I go ahead and move it for you?",
+    "Shall I go ahead and cancel that for you?",
+    "Shall I go ahead and reschedule that?",
+    "Shall I go ahead and put you through to Mark?",
+])
+def test_reschedule_and_cancel_ctas_are_untouched(cta):
+    """
+    "shall i go ahead" is the shared opener for ALL THREE write families. The
+    first version of this gate matched it bare and replaced a reschedule
+    confirmation with a request for a phone number — a working flow broken by a
+    fix to a different one. Every alternative in the pattern must carry a
+    BOOKING verb.
+    """
+    session = {"booking_flow_active": True, "twilio_from": ""}
+    assert sanitise_response(cta, session) == cta
+
+
+def test_the_pattern_never_matches_the_bare_opener():
+    """Structural: the guard above is only as good as this staying true."""
+    assert not _BOOKING_CTA_SENTENCE_RE.search("Shall I go ahead?")
+    assert not _BOOKING_CTA_SENTENCE_RE.search("shall i go ahead and move it")
+
+
 def test_an_early_booking_offer_is_not_a_write_cta():
     """
     "Would you like to book?" early in a call is a legitimate offer and must
@@ -174,13 +198,29 @@ def test_the_cta_pattern_matches_the_write_gate_vocabulary():
     from app.media_streams import llm_stream
 
     src = inspect.getsource(llm_stream._booking_confirmation_asked)
-    for phrasing in ("shall i go ahead", "book that in", "put that request through"):
+
+    # Booking-specific phrasings: the write gate accepts them AND this gate
+    # holds them back.
+    for phrasing in ("book that in", "put that request through"):
         assert phrasing in src, (
             f"{phrasing!r} left the write gate — check this pattern still matches it"
         )
         assert _BOOKING_CTA_SENTENCE_RE.search(f"So that's Tom — {phrasing} for you?"), (
             f"{phrasing!r} opens the write gate but is not held back by Gate 5g"
         )
+
+    # The bare opener is a DELIBERATE gap, not an oversight. The write gate can
+    # afford it because it is only consulted for book_appointment, so the tool
+    # name disambiguates. This gate has no such context — it sees a sentence —
+    # and matching the bare opener would eat reschedule and cancel
+    # confirmations, which share it.
+    #
+    # The gap is safe: a booking CTA phrased as a bare "shall I go ahead?" is
+    # not held back here, but book_appointment's phone backstop still refuses
+    # the write while phone_confirmed is unset. Worst case is the behaviour
+    # that existed before this gate, not a booking on an unknown number.
+    assert "shall i go ahead" in src
+    assert not _BOOKING_CTA_SENTENCE_RE.search("So that's Tom — shall i go ahead for you?")
 
 
 def test_the_backstop_steer_uses_the_same_question():
