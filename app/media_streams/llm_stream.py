@@ -75,6 +75,7 @@ from .session import save_session
 from .tts_stream import _apply_tts_substitutions_elevenlabs as _apply_tts_subs
 from .turn_handler import (
     sanitise_response,
+    _phone_question_for,
     WRITE_FAMILY_BOOKING,
     WRITE_FAMILY_CANCEL,
     WRITE_FAMILY_RESCHEDULE,
@@ -3531,15 +3532,22 @@ class LLMStream:
                         "(phone_confirmed unset, phone question never asked) "
                         "call_sid=%s", call_sid,
                     )
+                    # The steer quotes the phone question that fits THIS caller.
+                    # It used to hardcode the calling-number offer — "Is the
+                    # number you're calling on the best one…" — which is a
+                    # question with no answer when the caller withheld their
+                    # number or the caller-ID was suppressed. _phone_question_for
+                    # is the same helper Gate 5g substitutes, so the steer and
+                    # the deterministic replacement cannot drift into two
+                    # different scripts.
                     result = {
                         "status": "phone_confirmation_required",
                         "message": (
                             "book_appointment cannot fire yet — the caller's "
                             "phone number has not been confirmed. Do NOT book "
                             "and do NOT assume the calling number. Ask the phone "
-                            "question as its own separate turn first: \"Is the "
-                            "number you're calling on the best one for your "
-                            "booking? If so, just say use this number.\" Wait "
+                            "question as its own separate turn first: "
+                            f"\"{_phone_question_for(session)}\" Wait "
                             "for the caller's answer, then read back the booking "
                             "summary and ask \"Shall I go ahead and book that "
                             "in?\" before calling book_appointment."
