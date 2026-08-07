@@ -67,7 +67,7 @@ from .config import (
     WS_C_SEMANTIC_ENDPOINT,
     ws_c_profile_for_phase,
 )
-from .filler_guard import FillerGuard
+from .filler_guard import FillerGuard, expect_slot_presentation
 from .reask_variants import classify_question, normalize_phrase, variant_for
 
 # Pre-slot TTS cancellation marker — mirrors PRE_SLOT_MARKER in llm_stream.py.
@@ -11106,8 +11106,70 @@ class WebSocketCallHandler:
 
                             # Change B: arm filler before LLM call.
                             # arm() is a no-op unless booking_flow_active is True.
+                            #
+                            # booking_flow_active alone is far too coarse — it
+                            # stays True for the whole booking, so the clip also
+                            # fired on the name turn and the phone turn, neither
+                            # of which calls a tool. Those turns answer in ~2s,
+                            # so the clip was padding an already-fast turn: four
+                            # hold phrases in a 90s call on CA1e755281.
+                            #
+                            # The clip covers exactly ONE moment: the caller has
+                            # just given a day/time preference and Susie is about
+                            # to fetch and read out the options. That is the only
+                            # turn in the call with a cold Acuity round trip and
+                            # nothing to say meanwhile. Owner decision 2026-08-08:
+                            # "this is the only moment in the whole call where
+                            # this should fire."
+                            #
+                            # Rather than predict the tool (impossible — the model
+                            # has not decided at arm() time), exclude every stage
+                            # where that moment has passed or not yet arrived:
+                            #
+                            #   slot_map_stage != NONE  options already on the
+                            #                           table — a re-lookup here
+                            #                           ends in a readback, not a
+                            #                           slot presentation
+                            #   post_slot_confirmation_pending  name collection
+                            #   v3_phone_dtmf_active            phone collection
+                            #   v3_location_q_active            still picking a
+                            #                                   clinic
+                            #
+                            # Suppressing the clip does NOT mean silence: with
+                            # the clip quiet, _filler_clip_spoke_this_turn stays
+                            # False, so with_filler speaks its own TTS phrase at
+                            # tool invocation. A re-lookup still gets a voice —
+                            # just a spoken one instead of a recorded one.
+                            #
+                            # Deliberately structural, not phrase-matched. The
+                            # watchdog's sibling check at line ~4116 sniffs
+                            # last_bot_prompt for "particular day or time" — that
+                            # is the failure mode this codebase has hit three
+                            # times, and last_bot_prompt is 200-char truncated.
+                            #
+                            # Note post_slot_confirmation_pending is read as an
+                            # ATTRIBUTE. session["post_slot_confirmation_pending"]
+                            # is never assigned anywhere in the repo, so the
+                            # session read at ~10181 is always None.
+                            _filler_expect_lookup = expect_slot_presentation(
+                                slot_map_active=(
+                                    self.slot_map_stage != SlotMapStage.NONE
+                                ),
+                                name_collection_pending=bool(
+                                    self.post_slot_confirmation_pending
+                                ),
+                                phone_collection_active=bool(
+                                    self.session.get("v3_phone_dtmf_active")
+                                ),
+                                location_question_active=bool(
+                                    self.session.get("v3_location_q_active")
+                                ),
+                            )
                             self._filler_breath_injected = False
-                            await self._filler.arm(self.session)
+                            await self._filler.arm(
+                                self.session,
+                                expect_lookup=_filler_expect_lookup,
+                            )
 
                             # B2 fix: establish a fresh per-turn speech flag and
                             # clear any stale deferred gate5 fallback before the
