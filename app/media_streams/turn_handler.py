@@ -458,6 +458,65 @@ _BOOKING_OFFER_RE = re.compile(
 )
 
 
+# ── Gate 5g support: the WRITE confirmation, and the question that must come
+# before it ─────────────────────────────────────────────────────────────────
+#
+# Deliberately NARROWER than _BOOKING_OFFER_RE above. That one matches any
+# booking OFFER ("would you like to book?"), which is a fine thing to say early
+# in a call. This one matches only the final WRITE confirmation — the sentence
+# whose "yes" fires book_appointment — because that is the only one that must
+# wait for a confirmed phone number.
+#
+# The three phrasings are the same vocabulary llm_stream._booking_confirmation_asked
+# tests to decide whether a caller's "yes" may open the write gate. Kept in step
+# with it by test_no_booking_cta_before_phone.py rather than by importing it:
+# llm_stream imports THIS module, so the dependency cannot run the other way.
+_BOOKING_CTA_SENTENCE_RE = re.compile(
+    r"[^.!?]*\b(?:"
+    r"shall i go ahead"
+    r"|book that in"
+    r"|put that request through"
+    r")\b[^.!?]*[.!?]?",
+    re.IGNORECASE,
+)
+
+
+def _phone_question_for(session: Dict[str, Any]) -> str:
+    """The phone question that should have been asked, in the caller's case.
+
+    Mirrors the (a)/(b) split the theorem_v3 prompt already specifies at its
+    phone step, so the deterministic substitution and the model's own wording
+    cannot diverge:
+
+      (a) a caller ID is held  → offer it, SPEAKING THE DIGITS. Never "is that
+          the number you're calling from?" — the caller has not heard what we
+          hold, so a blind yes can write a stranger's number to the booking.
+      (b) no caller ID         → straight to the keypad.
+
+    Both forms are checked by the sibling test against the two predicates that
+    consume them downstream: the keypad line must satisfy
+    connection._is_keypad_arming_line (or the typed digits land in a closed
+    keypad), and both must satisfy _PHONE_STEP_MARKERS (or the phone step does
+    not register as asked and book_appointment's backstop mis-fires).
+    """
+    _cli = (
+        (session.get("twilio_from_local") or "")
+        or (session.get("twilio_from") or "")
+    ).strip()
+    # NB "Before I do that", not "Before I book that in": the replacement is
+    # scanned by _BOOKING_CTA_SENTENCE_RE again to remove any SECOND CTA in the
+    # same chunk, and a replacement carrying the CTA vocabulary deletes itself.
+    if _cli:
+        return (
+            f"Before I do that — is {' '.join(_cli)} the best number "
+            "for you? If so, just say use this number."
+        )
+    return (
+        "Before I do that — could you type the number on your keypad? "
+        "You can press the star key to reset at any time."
+    )
+
+
 # Gate 5e — diagnostic assertions about the CALLER'S OWN case. Standard-tier
 # template clinics are non-diagnostic; if the model asserts what the caller
 # HAS, strip that sentence. Deliberately conservative: matches second-person
@@ -1179,6 +1238,58 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
                 session.get("v3_cta_count"),
             )
             result = _offer_cleaned
+
+    # ── Gate 5g: no booking CTA before the phone is confirmed ────────────────
+    # book_appointment's A1 gate requires phone_confirmed. Asking "shall I go
+    # ahead and book that in?" before that is asking a question we cannot act
+    # on — the caller says yes, the write is refused, and the whole
+    # readback-and-confirm procedure has to be run again after the number is
+    # collected.
+    #
+    # CA76b44ae9, 2026-08-07:
+    #   08:16:35  "So that's Mark Da'ya, Monday the 10th of August at five…
+    #              shall I go ahead and book that in?"      ← no phone yet
+    #   08:16:43  caller: "thank you yeah"                  ← he agreed HERE
+    #   08:16:45  "Just locking that in now…"
+    #   08:16:47  book_appointment BLOCKED — phone step skipped
+    #             (the model passed phone="unknown" rather than admit it had none)
+    #   08:16:49  "Before I lock that in — could you type your number…"
+    #   08:17:14  readback + CTA, 2nd time  → "thank you"  → classified no
+    #   08:17:27  CTA, 3rd time             → "yes please" → booked
+    #
+    # He agreed at 08:16:43 and it happened at 08:17:35 — 52 seconds and two
+    # extra confirmations later, on a 173-second call. He was told the booking
+    # was being made and then asked for more information.
+    #
+    # The theorem_v3 prompt already orders this correctly (phone is step 8, the
+    # readback step 9) and the model went to 9 anyway. That is why this is a
+    # deterministic gate and not more prompt text — and why it lives here, in
+    # the per-chunk sanitiser, rather than at the point that arms phone
+    # collection: that runs AFTER run_turn, by which time the CTA has been
+    # spoken.
+    #
+    # The readback is KEPT — it is useful and the caller should hear it. Only
+    # the question is replaced, with the one that should have been asked.
+    if (
+        session.get("booking_flow_active")
+        and not session.get("phone_confirmed")
+        and _BOOKING_CTA_SENTENCE_RE.search(result)
+    ):
+        _phone_ask = _phone_question_for(session)
+        # Leading space: the pattern's [^.!?]* swallows the space after the
+        # previous sentence, so a bare substitution yields "…evening.Before I".
+        # That text becomes last_bot_prompt and conversation_history, where
+        # sentence-splitting matchers read it.
+        _replaced = _BOOKING_CTA_SENTENCE_RE.sub(" " + _phone_ask, result, count=1)
+        # Any further CTA in the same chunk goes entirely — one question a turn.
+        _replaced = _BOOKING_CTA_SENTENCE_RE.sub("", _replaced)
+        _replaced = re.sub(r"\s{2,}", " ", _replaced).strip()
+        logger.info(
+            "[ms_gate5] booking CTA held back — phone not confirmed; asked for "
+            "the number instead: %r",
+            _phone_ask[:60],
+        )
+        result = _replaced
 
     # ── Booking-readback DATE enforcement ────────────────────────────────────
     # The final confirmation ("So that's <name>, <slot> — shall I go ahead and
