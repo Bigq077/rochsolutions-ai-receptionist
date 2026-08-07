@@ -132,6 +132,39 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def derive_call_outcome(session: dict) -> "tuple[bool, str]":
+    """How the call ended, as (success, reason), for the durable call record.
+
+    Module-level and pure so the one derivation has one home: this used to be
+    inline in _cleanup with a hand-copied mirror in
+    tests/regression/test_booking_confirmed_is_recorded.py, and the whole point
+    of that test was two halves of this logic disagreeing.
+
+    `no_audio_close` exists because the ladder used to end at "caller_hung_up"
+    for everything that was not booked, transferred or a graceful exit — so a
+    call that SUSIE ended, after the dead-air safety net gave up and played its
+    sign-off, was recorded as the caller hanging up. That is not a cosmetic
+    label: `reason` is fed verbatim to the obs judge (app/obs/judge.py
+    build_prompt), which then wrote an operator SMS asserting the caller hung
+    up on a call where the caller had gone silent and Susie said goodbye.
+    Call CAe2120b (2026-08-06). The safety net sets no_audio_close at
+    connection.py's second-fire branch; read it here rather than inferring.
+    """
+    success = bool(session.get("booking_confirmed")
+                   or session.get("confirmation_sms_sent"))
+    if session.get("graceful_exit"):
+        reason = "graceful_exit"
+    elif session.get("booking_confirmed"):
+        reason = "booked"
+    elif session.get("transfer_attempted"):
+        reason = "transferred"
+    elif session.get("no_audio_close"):
+        reason = "no_audio_close"
+    else:
+        reason = "caller_hung_up"
+    return success, reason
+
+
 async def _update_soft_context(session: dict, user_text: str, bot_text: str) -> None:
     """
     Use Haiku to extract caller context signals from a single turn and merge
@@ -14238,15 +14271,7 @@ class WebSocketCallHandler:
         call_logger = getattr(self, "_call_logger", None)
         if call_logger is not None:
             try:
-                success = bool(self.session.get("booking_confirmed") or self.session.get("confirmation_sms_sent"))
-                if self.session.get("graceful_exit"):
-                    reason = "graceful_exit"
-                elif self.session.get("booking_confirmed"):
-                    reason = "booked"
-                elif self.session.get("transfer_attempted"):
-                    reason = "transferred"
-                else:
-                    reason = "caller_hung_up"
+                success, reason = derive_call_outcome(self.session)
                 call_logger.complete(success=success, reason=reason)
                 await call_logger.flush()
 
