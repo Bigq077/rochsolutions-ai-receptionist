@@ -110,23 +110,16 @@ def test_provisional_path_is_deliberately_excluded():
 # The teardown derivation — mirrors connection.py, and is what actually broke
 # ─────────────────────────────────────────────────────────────────────────
 def _derive(session):
-    """Verbatim mirror of connection.py's teardown derivation (~:12691).
+    """The shipping derivation, imported — connection.derive_call_outcome.
 
-    Duplicated rather than imported because it is inline in a 12k-line file. If
-    connection.py changes and this drifts, that is worth knowing — the whole
-    defect was these two halves disagreeing.
+    This was a hand-copied mirror of the ladder that was inline in _cleanup.
+    The defect this file exists for WAS two halves of that logic disagreeing,
+    so keeping a copy here to guard against drift had it exactly backwards:
+    the copy was itself the drift risk. The ladder is now a module-level pure
+    function and these tests exercise the real one.
     """
-    success = bool(session.get("booking_confirmed")
-                   or session.get("confirmation_sms_sent"))
-    if session.get("graceful_exit"):
-        reason = "graceful_exit"
-    elif session.get("booking_confirmed"):
-        reason = "booked"
-    elif session.get("transfer_attempted"):
-        reason = "transferred"
-    else:
-        reason = "caller_hung_up"
-    return success, reason
+    from app.media_streams.connection import derive_call_outcome
+    return derive_call_outcome(session)
 
 
 def test_a_booked_session_derives_reason_booked():
