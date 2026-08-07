@@ -22,12 +22,20 @@ import os
 import sys
 from pathlib import Path
 
-VOICE_ID = "6fZce9LFNG3iEITDfqZZ"
+# Must match the voice the live TTS stream uses, or the filler is a different
+# person's voice cutting into Susie's turn. `app/media_streams/config.py:58`
+# reads ELEVENLABS_VOICE_ID with this same default; the value hardcoded here
+# until 2026-08-07 was 6fZce9LFNG3iEITDfqZZ, which is not it.
+VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "kBag1HOZlaVBH7ICPE8x")
 MODEL_ID = "eleven_flash_v2_5"
 
+# Written to the repo root, which is where connection.py's _AUDIO_CLIPS_DIR
+# reads them from. Both were CWD-relative and could disagree.
+_AUDIO_CLIPS_DIR = Path(__file__).resolve().parents[1] / "audio_clips"
+
 CLIPS = [
-    ("Let me have a look at what we've got…", Path("audio_clips/filler_checking.ulaw")),
-    ("Just one moment…",                       Path("audio_clips/filler_moment.ulaw")),
+    ("Let me have a look at what we've got…", _AUDIO_CLIPS_DIR / "filler_checking.ulaw"),
+    ("Just one moment…",                       _AUDIO_CLIPS_DIR / "filler_moment.ulaw"),
 ]
 
 
