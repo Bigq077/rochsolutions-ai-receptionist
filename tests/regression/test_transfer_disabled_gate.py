@@ -81,10 +81,45 @@ def test_headsup_sms_reads_the_switch():
     import inspect
     from app.tools import receptionist_tools
 
-    src = inspect.getsource(receptionist_tools)
-    assert "if transfer_phone and not TRANSFER_DISABLED:" in src, (
+    src = inspect.getsource(receptionist_tools._exec_transfer_to_human)
+    assert "TRANSFER_DISABLED" in src, (
         "the transfer heads-up SMS no longer honours TRANSFER_DISABLED"
     )
+
+
+async def test_headsup_sms_actually_stays_silent(monkeypatch):
+    """
+    The switch is only worth anything if no message leaves. This used to be a
+    string match on `if transfer_phone and not TRANSFER_DISABLED:`, which went
+    red on 2026-08-07 when the branch gained a third arm (no dial target → send
+    CALLBACK NEEDED instead of a false "call coming through now"). The property
+    was never broken; the literal was. Asserting the behaviour instead means a
+    future restructure is judged on whether a text escapes, and it also covers
+    the new arm — which must NOT become a hole in the kill-switch.
+    """
+    sent: list = []
+
+    async def _fake_send(to, message):
+        sent.append((to, message))
+
+    monkeypatch.setattr("app.notifications.sms.send_sms", _fake_send)
+    monkeypatch.setattr("app.config.TRANSFER_DISABLED", True)
+    monkeypatch.setattr("app.tools.handoff.send_to_sheet", lambda *a, **k: None)
+
+    from app.tools.receptionist_tools import _exec_transfer_to_human
+
+    await _exec_transfer_to_human(
+        {"reason": "sweep"},
+        {
+            "clinic_id": "theorem_v3",       # transfer_phone is Mark's real mobile
+            "collected": {"name": "Test", "phone": "+447700900456"},
+            "call_sid": "CA_test",
+        },
+    )
+    import asyncio
+    await asyncio.sleep(0)
+
+    assert sent == [], f"the switch was ON and an SMS still went out: {sent}"
 
 
 # ── 4. the legacy Gather dial ───────────────────────────────────────────────

@@ -6189,20 +6189,43 @@ async def _exec_transfer_to_human(args: Dict[str, Any], session: Dict[str, Any])
         from app.clinic_config import get_clinic
         from app.notifications.sms import send_sms
         from app.config import TRANSFER_DISABLED
+        from app.routes.realtime import resolve_transfer_target
         clinic = get_clinic(session.get("clinic_id"))
         transfer_phone = clinic.get("transfer_phone", "")
-        # TRANSFER_DISABLED (test-sweep kill-switch) suppresses the heads-up SMS
-        # so a run doesn't text a real staff number. No-op in production.
-        if transfer_phone and not TRANSFER_DISABLED:
-            caller_snippet = (
-                f" from {caller_phone}"
-                if (caller_phone and not caller_phone.startswith("client:"))
-                else ""
-            )
+        caller_snippet = (
+            f" from {caller_phone}"
+            if (caller_phone and not caller_phone.startswith("client:"))
+            else ""
+        )
+        # TRANSFER_DISABLED (test-sweep kill-switch) suppresses ALL outbound SMS
+        # here so a run doesn't text a real staff number. No-op in production,
+        # and it must stay fully silent — the recovery branch below is not an
+        # exception to it.
+        if TRANSFER_DISABLED:
+            pass
+        elif transfer_phone and resolve_transfer_target(session):
             asyncio.create_task(send_sms(
                 to=transfer_phone,
                 message=f"📞 Susie is transferring a patient{caller_snippet} — call coming through now.",
             ))
+        elif transfer_phone:
+            # No dial target, so _handle_transfer will place no leg. Telling the
+            # practitioner a call is "coming through now" when none is coming is
+            # a false alarm that also buries the real one: they wait for a ring
+            # instead of ringing back. Say what actually happened.
+            asyncio.create_task(send_sms(
+                to=transfer_phone,
+                message=(
+                    f"📞 CALLBACK NEEDED — {caller_name or 'a caller'} asked to be put "
+                    f"through but the transfer could not be placed. Please call them "
+                    f"back on {caller_phone or 'the number they called from'}. "
+                    f"Reason: {reason}."
+                ),
+            ))
+            logger.error(
+                "transfer_to_human: no dial target — sent CALLBACK NEEDED instead "
+                "of a transfer heads-up (clinic=%r)", session.get("clinic_id"),
+            )
     except Exception as e:
         logger.warning("transfer_to_human SMS alert failed (non-fatal): %r", e)
 
