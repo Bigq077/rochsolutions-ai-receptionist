@@ -222,6 +222,14 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         },
         "transfer_phone": "+447870166861",   # E.164 — Twilio dials this for live transfers
 
+        # Oversight relay: every inbound text to the clinic line is copied here
+        # verbatim, whichever inbound path handles it (name confirmation, home-
+        # visit address, general message). Read by app/routes/twilio.py. This is
+        # a monitoring copy, NOT a reply address — the patient conversation still
+        # belongs to `transfer_phone`. Set the SMS_RELAY_TO env var to override
+        # per-deployment; set it to an empty value to switch the relay off.
+        "sms_relay_to": "+447502211207",
+
         # Booking system / routing
         "booking_system": "acuity",
         "calendar_id": None,
@@ -1393,6 +1401,10 @@ def _map_json_to_clinic_contract(loaded: Dict[str, Any]) -> Dict[str, Any]:
     clinic["phone"] = op.get("phone", loaded.get("primary_phone", ""))
     if op.get("transfer_phone"):
         clinic["transfer_phone"] = op["transfer_phone"]
+    # Oversight relay target for inbound texts (see CLINICS["theorem"]). Absent
+    # from a clinic.json → no relay for that tenant, unless SMS_RELAY_TO is set.
+    if op.get("sms_relay_to"):
+        clinic["sms_relay_to"] = op["sms_relay_to"]
     clinic["booking_system"] = op.get("booking_system", "manual_handoff")
     clinic["calendar_id"] = op.get("calendar_id")
     clinic["digest"] = op.get("digest", {})  # end-of-day booking digest config

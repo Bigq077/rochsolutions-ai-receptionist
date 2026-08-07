@@ -1484,6 +1484,63 @@ async def _attach_address_to_event(
         return False
 
 
+def _sms_relay_target(clinic: dict) -> str:
+    """The number that receives a verbatim copy of every inbound text, in E.164.
+
+    Resolution order: SMS_RELAY_TO env var (per-deployment override; set it to an
+    empty string to switch the relay off entirely) → the clinic's `sms_relay_to`
+    key. Returns "" when no relay is configured.
+    """
+    _env = os.getenv("SMS_RELAY_TO")
+    raw = _env if _env is not None else (clinic.get("sms_relay_to") or "")
+    return raw.replace(" ", "").strip()
+
+
+async def _relay_inbound_sms(
+    *, sender: str, body: str, clinic: dict, send_sms,
+) -> None:
+    """Copy an inbound patient text to the oversight relay number.
+
+    Runs for EVERY inbound message, on both branches of the webhook — the
+    in-flow name confirmation as well as the general path — so the relay is a
+    complete record of what patients text the line, not just the subset that
+    reaches a human today. Entirely non-fatal: a relay failure must never change
+    what the patient or the practitioner receives.
+
+    Two things it deliberately does not do:
+      * It does not relay a message sent FROM the relay number. The copy arrives
+        from the clinic's own Twilio line, so replying to it lands right back on
+        this webhook — without this guard, the relay would echo itself.
+      * It does not fire when the relay number IS the practitioner's transfer
+        number. That person already receives the (richer, booking-labelled)
+        forward from _handle_general_inbound_sms; a second copy would be noise.
+    """
+    relay_to = _sms_relay_target(clinic)
+    if not relay_to:
+        return
+
+    staff_phone = (clinic.get("transfer_phone") or "").replace(" ", "").strip()
+    if relay_to == staff_phone:
+        logger.info("[SMS_RELAY] relay number is the practitioner number — skipping copy")
+        return
+
+    if (sender or "").replace(" ", "").strip() == relay_to:
+        logger.info("[SMS_RELAY] sender is the relay number — skipping (no echo)")
+        return
+
+    sms_name = (clinic.get("sms_name") or clinic.get("display_name")
+                or clinic.get("clinic_name") or "the clinic")
+    msg = (f"📨 Copy — text to {sms_name}\n"
+           f"From: {sender}\n"
+           f"\"{body}\"\n"
+           f"(monitoring copy — the patient does not see replies to this)")
+    try:
+        await send_sms(to=relay_to, message=msg)
+        logger.info("[SMS_RELAY] inbound copied to ***%s", relay_to[-4:])
+    except Exception as _re:
+        logger.warning("[SMS_RELAY] relay copy failed (non-fatal): %r", _re)
+
+
 async def _handle_general_inbound_sms(
     *, sender: str, norm_phone: str, body: str, message_sid: str,
     clinic: dict, send_sms,
@@ -1504,7 +1561,12 @@ async def _handle_general_inbound_sms(
     _is_opt_out     = body.strip().lower() in _SMS_OPT_OUT
 
     # Loop guard: never process a text that came FROM one of our own numbers.
-    _own = {p.replace(" ", "") for p in (staff_phone, reception_phone) if p}
+    # The relay number counts as one of ours: relay copies are sent from the
+    # clinic's Twilio line, so a reply to that thread arrives here. Forwarding
+    # it to the practitioner would push an operator's aside at the patient's
+    # clinician, and acking it would text the operator back.
+    _own = {p.replace(" ", "") for p in
+            (staff_phone, reception_phone, _sms_relay_target(clinic)) if p}
     if norm_phone and norm_phone.replace(" ", "") in _own:
         logger.info("[SMS_INBOUND] sender is a clinic number — skipping forward/ack")
         return
@@ -1629,6 +1691,15 @@ async def sms_inbound(request: Request) -> PlainTextResponse:
         from app.notifications.sms import send_sms
 
         norm_phone = normalize_phone(sender)
+
+        # Oversight relay FIRST, before the pending-name branch: every inbound
+        # text gets copied, including the name replies that never reach a human
+        # otherwise. Deliberately not inside either branch — one call site, one
+        # copy per message (the sid lock above already made this idempotent).
+        await _relay_inbound_sms(
+            sender=sender, body=body, clinic=_clinic, send_sms=send_sms,
+        )
+
         pending = await get_pending_name_confirmation(norm_phone)
 
         if not pending:
