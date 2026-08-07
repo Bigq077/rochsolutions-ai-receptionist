@@ -496,6 +496,43 @@ _BOOKING_CTA_SENTENCE_RE = re.compile(
 )
 
 
+def _name_known(session: Dict[str, Any]) -> bool:
+    """True once a patient name has actually been captured this call.
+
+    Three keys because three paths write it: _v3_try_persist_name sets the
+    top-level `patient_name`, and collect_and_store writes into `collected`
+    under either spelling depending on how the model labelled it.
+    """
+    _collected = session.get("collected") or {}
+    return bool(
+        (session.get("patient_name") or "").strip()
+        or (_collected.get("full_name") or "").strip()
+        or (_collected.get("name") or "").strip()
+    )
+
+
+def _next_booking_question_for(session: Dict[str, Any]) -> str:
+    """The question that should be asked instead of a premature booking CTA.
+
+    NAME BEFORE PHONE. The prompt orders these — name is step 7, phone step 8,
+    the readback step 9 — and the first version of Gate 5g knew only about the
+    phone. On CA36eb3f (2026-08-07) both were missing when the model reached
+    for the CTA; the gate substituted the phone question, the caller typed his
+    number, and only THEN was he asked his name — one question before the
+    booking, after he had already given the harder answer. It reads as the
+    system remembering something at the last second, because that is what it
+    is doing.
+
+    Asking whichever step is genuinely outstanding, in the prompt's own order,
+    puts the flow back the way it was written.
+    """
+    if not _name_known(session):
+        return (
+            "Before I do that — could I take your first name and surname?"
+        )
+    return _phone_question_for(session)
+
+
 def _phone_question_for(session: Dict[str, Any]) -> str:
     """The phone question that should have been asked, in the caller's case.
 
@@ -1285,24 +1322,32 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     #
     # The readback is KEPT — it is useful and the caller should hear it. Only
     # the question is replaced, with the one that should have been asked.
+    # Fires on a missing NAME as well as a missing phone. book_appointment
+    # needs both, and holding back only for the phone was what inverted the
+    # order on CA36eb3f: the caller typed his number and was asked his name
+    # afterwards, one question before the booking.
+    _booking_step_missing = (
+        not _name_known(session) or not session.get("phone_confirmed")
+    )
     if (
         session.get("booking_flow_active")
-        and not session.get("phone_confirmed")
+        and _booking_step_missing
         and _BOOKING_CTA_SENTENCE_RE.search(result)
     ):
-        _phone_ask = _phone_question_for(session)
+        _next_ask = _next_booking_question_for(session)
         # Leading space: the pattern's [^.!?]* swallows the space after the
         # previous sentence, so a bare substitution yields "…evening.Before I".
         # That text becomes last_bot_prompt and conversation_history, where
         # sentence-splitting matchers read it.
-        _replaced = _BOOKING_CTA_SENTENCE_RE.sub(" " + _phone_ask, result, count=1)
+        _replaced = _BOOKING_CTA_SENTENCE_RE.sub(" " + _next_ask, result, count=1)
         # Any further CTA in the same chunk goes entirely — one question a turn.
         _replaced = _BOOKING_CTA_SENTENCE_RE.sub("", _replaced)
         _replaced = re.sub(r"\s{2,}", " ", _replaced).strip()
         logger.info(
-            "[ms_gate5] booking CTA held back — phone not confirmed; asked for "
-            "the number instead: %r",
-            _phone_ask[:60],
+            "[ms_gate5] booking CTA held back — %s missing; asked for it "
+            "instead: %r",
+            "name" if not _name_known(session) else "phone",
+            _next_ask[:60],
         )
         result = _replaced
 
