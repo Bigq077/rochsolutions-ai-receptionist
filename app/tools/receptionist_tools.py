@@ -914,6 +914,67 @@ def _service_duration_minutes(
     return int(fallback)
 
 
+def _resolve_duration_minutes(
+    clinic: Dict[str, Any], service: str, args: Dict[str, Any],
+    session: Dict[str, Any], fallback: int,
+) -> int:
+    """The appointment length, with the CALLER's spoken choice outranking the
+    model's `duration_minutes` argument.
+
+    `CAbc6e6a96` (8 Aug 2026, Vital Edge, live): the caller said "90 minutes,
+    like the full package". The engine captured it
+    (`_service_duration_choice = 90`) and check_availability correctly gridded at
+    90m. Eight turns later book_appointment carried `duration_minutes: 60`, and
+    because the argument short-circuited the fallback, a 09:00-10:00 event went
+    into the diary — 30 minutes short of what the client had agreed, at the wrong
+    price, with the 10:00 that follows it still offerable to the next caller.
+
+    This is the SECOND time the same length was lost between the caller's mouth
+    and the calendar. `CA86c320ef` (4 Aug) is why
+    `duration_choice_from_utterance` exists at all, and its docstring already
+    states the rule this restores: the choice is captured in the engine, "not
+    inferred from a tool argument the model may or may not carry". Four call
+    sites then trusted the argument over the capture.
+
+    Precedence, highest first:
+      1. a captured caller choice that is a valid option for THIS service;
+      2. the model's `duration_minutes`;
+      3. the service's own length / first option (`_service_duration_minutes`).
+
+    Rule 1 can only bind on an options-service (60/90 massage), because
+    `duration_choice_from_utterance` only ever fires for one — so clinics whose
+    services declare a single `typical_duration_minutes` are untouched.
+
+    The model's argument also no longer OVERWRITES a captured choice. It used to,
+    so one wrong argument corrupted the caller's stated length for the rest of
+    the call — including any later availability re-check.
+    """
+    _svc = _find_service_def(clinic, service) or {}
+    _opts = [int(o) for o in (_svc.get("typical_duration_minutes_options") or [])]
+    _captured = session.get("_service_duration_choice")
+    _arg = args.get("duration_minutes")
+
+    if _captured and _opts and int(_captured) in _opts:
+        if _arg and int(_arg) != int(_captured):
+            logger.warning(
+                "[ms_tools] duration conflict on %r: the caller chose %s min but "
+                "the model passed %s — using the CALLER's %s. The slot grid was "
+                "built at the caller's length, so the argument would write an "
+                "event that does not match the slot they accepted.",
+                service, _captured, _arg, _captured,
+            )
+        return int(_captured)
+
+    if _arg:
+        # No captured choice to protect — the argument is the best signal there
+        # is. Latch it so a later turn in this call stays consistent with it.
+        if not _captured:
+            session["_service_duration_choice"] = int(_arg)
+        return int(_arg)
+
+    return _service_duration_minutes(clinic, service, fallback, preferred=_captured)
+
+
 def _service_supports_location(svc_def: Dict[str, Any], location: str) -> bool:
     """True if a service is bookable under the given booking location/modality,
     tolerant of the varied `available_as` token families in clinic.json
@@ -4255,14 +4316,8 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     # Latch a caller-chosen length (e.g. 30 vs 60 min massage) so it survives from
     # this check to the later book_appointment turn, and resolve via the shared
     # _options-aware helper so the slot grid and the booked event always agree.
-    if args.get("duration_minutes"):
-        session["_service_duration_choice"] = int(args["duration_minutes"])
-    duration_min = int(
-        args.get("duration_minutes")
-        or _service_duration_minutes(
-            clinic, _raw_service, _slot_minutes,
-            preferred=session.get("_service_duration_choice"),
-        )
+    duration_min = _resolve_duration_minutes(
+        clinic, _raw_service, args, session, _slot_minutes
     )
     # Re-anchor each day's closing bound to the service length. working_hours end
     # was baked as last_appointment + slot_minutes (config default 40). Shift it by
@@ -4635,14 +4690,8 @@ async def _check_availability_diary(
 
     _slot_minutes = int(clinic.get("slot_minutes") or 60)
     _break_min = int(clinic.get("slot_break_minutes") or 0)
-    if args.get("duration_minutes"):
-        session["_service_duration_choice"] = int(args["duration_minutes"])
-    duration_min = int(
-        args.get("duration_minutes")
-        or _service_duration_minutes(
-            clinic, _raw_service, _slot_minutes,
-            preferred=session.get("_service_duration_choice"),
-        )
+    duration_min = _resolve_duration_minutes(
+        clinic, _raw_service, args, session, _slot_minutes
     )
     # Same re-anchor as the gcal path: working_hours end was baked as
     # last_appointment + slot_minutes, so shift it to keep the LAST offered
@@ -4982,14 +5031,8 @@ async def _book_appointment_provisional(
     # duration_minutes. Falls back to the clinic slot length.
     _svc_def_prov = _find_service_def(clinic, service)
     svc_name = (_svc_def_prov or {}).get("name") or service
-    if args.get("duration_minutes"):
-        session["_service_duration_choice"] = int(args["duration_minutes"])
-    duration = int(
-        args.get("duration_minutes")
-        or _service_duration_minutes(
-            clinic, service, clinic.get("slot_minutes") or 60,
-            preferred=session.get("_service_duration_choice"),
-        )
+    duration = _resolve_duration_minutes(
+        clinic, service, args, session, clinic.get("slot_minutes") or 60
     )
 
     if not patient_name or not phone:
@@ -5539,14 +5582,8 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         # Event length = the service's own duration (services[].typical_duration_minutes),
         # matching the slot length offered in check_availability — so a 30-min treatment
         # books 30 min and a 60-min neuro assessment books 60, not a flat default.
-        if args.get("duration_minutes"):
-            session["_service_duration_choice"] = int(args["duration_minutes"])
-        _bk_dur = int(
-            args.get("duration_minutes")
-            or _service_duration_minutes(
-                clinic, service, clinic.get("slot_minutes") or 30,
-                preferred=session.get("_service_duration_choice"),
-            )
+        _bk_dur = _resolve_duration_minutes(
+            clinic, service, args, session, clinic.get("slot_minutes") or 30
         )
         end_dt = start_dt + timedelta(minutes=_bk_dur)
     except Exception as e:
