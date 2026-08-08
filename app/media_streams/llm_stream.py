@@ -2759,7 +2759,12 @@ class LLMStream:
                     # write-acknowledging filler ("Just locking that in now…")
                     # instead of the generic "Give me a moment…", which confuses
                     # a caller who just confirmed and can re-open the readback.
-                    from app.filler_phrases import confirm_write_filler
+                    from app.filler_phrases import (
+                        confirm_write_filler,
+                        is_write_filler as _is_write_filler,
+                        note_filler_played as _note_filler,
+                        should_play_filler as _should_filler,
+                    )
                     # FM-25: only speak a write-ack ("Just locking that in now…")
                     # when the caller actually confirmed — a "no"/ambiguous reply
                     # must fall back to a neutral filler, never a booking claim.
@@ -2767,12 +2772,27 @@ class LLMStream:
                         confirm_write_filler(session, _book_reply_is_affirmative(messages))
                         or random.choice(FILLER_PHRASES)
                     )
-                    logger.info(
-                        "[ms_llm] filler phrase triggered (background task): %r",
-                        _ack_filler_text[:40],
-                    )
-                    await tts_text_queue.put(ACK_FILLER_MARKER + _ack_filler_text)
-                    session["_ack_filler_active"] = True
+                    # Producer B of three (CA8cf0aaea). On the phone-confirm
+                    # path connection.py has already spoken ~1.8s earlier, and
+                    # the tool filler follows ~1.6s later — the caller heard
+                    # three hold phrases in 3.4 seconds. A write filler still
+                    # plays through the first suppression: the calendar
+                    # round-trip after "yes, go ahead" must never be silent.
+                    _ack_is_write = _is_write_filler(_ack_filler_text)
+                    if not _should_filler(session, is_write=_ack_is_write):
+                        logger.info(
+                            "[ms_llm] ack filler suppressed by cooldown — a "
+                            "filler is still in the caller's ear: %r",
+                            _ack_filler_text[:40],
+                        )
+                    else:
+                        logger.info(
+                            "[ms_llm] filler phrase triggered (background task): %r",
+                            _ack_filler_text[:40],
+                        )
+                        await tts_text_queue.put(ACK_FILLER_MARKER + _ack_filler_text)
+                        session["_ack_filler_active"] = True
+                        _note_filler(session, is_write=_ack_is_write)
                     self._last_filler_at = time.monotonic()
 
                     # ── B-19: re-arm ONCE ────────────────────────────────
