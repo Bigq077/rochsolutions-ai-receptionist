@@ -483,7 +483,7 @@ def _different_day_steer(session: Dict[str, Any], messages) -> str:
         return ""
     if not (session.get("last_offered_slots") or session.get("available_days")):
         return ""
-    if not _caller_requests_different_day(messages or []):
+    if not _caller_requests_different_day(messages or [], session):
         return ""
     return _DIFFERENT_DAY_STEER
 
@@ -510,7 +510,55 @@ def _spoken_day_phrase(iso_date: str) -> str:
     return f"{d.strftime('%A')} the {_ordinal(d.day)} of {d.strftime('%B')}"
 
 
-def _caller_requests_different_day(messages) -> bool:
+def _offered_day_vocabulary(session: Optional[Dict[str, Any]]) -> frozenset:
+    """The day-words that name a day ALREADY on the table — weekday and month
+    names for every date the caller has been offered or has agreed to.
+
+    Empty when nothing has been offered yet, or when session is None. An empty
+    result means the caller cannot be accepting anything, so every caller in
+    this module treats it as "cannot rule out a change request".
+    """
+    if not session:
+        return frozenset()
+
+    _isos: set = set()
+    for _d in (session.get("available_days") or []):
+        if isinstance(_d, dict) and _d.get("date"):
+            _isos.add(str(_d["date"])[:10])
+    for _s in (session.get("last_offered_slots") or []):
+        if isinstance(_s, dict) and _s.get("start"):
+            _isos.add(str(_s["start"])[:10])
+    for _k in ("last_spoken_slot_date", "v3_last_presented_date_hint"):
+        _v = str(session.get(_k) or "")[:10]
+        if _v:
+            _isos.add(_v)
+
+    from datetime import date as _date
+
+    _vocab: set = set()
+    for _iso in _isos:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", _iso):
+            continue
+        try:
+            _dt = _date(int(_iso[:4]), int(_iso[5:7]), int(_iso[8:10]))
+        except ValueError:
+            continue
+        _vocab.add(_dt.strftime("%A").lower())
+        _vocab.add(_dt.strftime("%B").lower())
+    return frozenset(_vocab)
+
+
+# Words that mark a SHIFT away from the day under discussion even when the
+# weekday named is the same one ("the saturday after", "next saturday"). Their
+# presence blocks the acceptance suppression below, so a caller asking for a
+# different week is never mistaken for one accepting this week.
+_DAY_SHIFT_WORDS: frozenset = frozenset({
+    "next", "after", "following", "another", "different", "instead",
+    "rather", "else", "other",
+})
+
+
+def _caller_requests_different_day(messages, session: Optional[Dict[str, Any]] = None) -> bool:
     """True if the caller's latest utterance names a DIFFERENT calendar day.
 
     CAc6b971ad (30 Jul 2026): the caller asked for Wednesday seven times after
@@ -518,19 +566,61 @@ def _caller_requests_different_day(messages) -> bool:
     check_availability and instructed the model to repeat the Tuesday
     confirmation verbatim, so she twice said "let me check Wednesday" and then
     re-read Tuesday back. He hung up without booking.
+
+    ── Naming the day you are ACCEPTING (CAb297555c, 8 Aug 2026) ─────────────
+    Susie offered "Saturday 15th August — eleven in the morning or midday". The
+    caller said "yeah 11 in the morning works for saturday" and this returned
+    True, because "saturday" is a weekday word and nothing here compared it
+    against the day already on the table. The steer fired, the model re-ran
+    check_availability for the day it had just offered, and the turn took 5.3s
+    against a ~2.3s baseline.
+
+    Accepting a day and requesting one are word-identical. The only thing that
+    separates them is what has already been offered, so `session` is now read.
+
+    ── Which way this fails ─────────────────────────────────────────────────
+    Deliberately asymmetric, because the two errors are not equally bad:
+
+      False negative — silent here when the caller DID want another day. That
+      is CAb81fe651: Wednesday asked four times, Tuesday served every time,
+      hung up unbooked.
+      False positive — fires on an acceptance. One wasted tool round trip,
+      ~3s of latency, and the caller still gets the right answer.
+
+    So suppression requires certainty on every count: a change PHRASE anywhere
+    ("next week", "another day") still returns True; a shift word still returns
+    True; an unresolvable or relative token ("tomorrow", "weekend" — no clock
+    here) still returns True; and every concrete day-word the caller used must
+    name a day already offered. Anything else fires.
+
+    `session` defaults to None, which reproduces the old behaviour exactly, so
+    a call site that has not been threaded stays conservative rather than
+    silently gaining the suppression.
     """
     txt = _last_user_text(messages).lower()
     if not txt:
         return False
     if any(p in txt for p in _DIFFERENT_DAY_PHRASES):
         return True
-    return bool(set(re.findall(r"[a-z']+", txt)) & _DIFFERENT_DAY_WORDS)
+
+    _named = set(re.findall(r"[a-z']+", txt)) & _DIFFERENT_DAY_WORDS
+    if not _named:
+        return False
+
+    _offered = _offered_day_vocabulary(session)
+    if not _offered:
+        return True
+    if set(re.findall(r"[a-z']+", txt)) & _DAY_SHIFT_WORDS:
+        return True
+    # Every day-word the caller used names a day already on the table, with
+    # nothing signalling a move away from it — they are accepting, not asking.
+    return not _named.issubset(_offered)
 
 
-def _caller_requests_new_day_or_time(messages) -> bool:
+def _caller_requests_new_day_or_time(messages, session: Optional[Dict[str, Any]] = None) -> bool:
     """A different day OR a different time of day — i.e. the caller is still
     choosing when to come in, so the post-collect guard must stand down."""
-    if _caller_requests_different_day(messages):
+    if _caller_requests_different_day(messages, session):
         return True
     txt = _last_user_text(messages).lower()
     if not txt:
@@ -604,7 +694,7 @@ def _post_collect_readback_due(tool_name: str, session, messages) -> bool:
     # Bug B (2026-07-30): "the slot is already agreed" is only true while
     # nobody is trying to change it. CAc6b971ad hung up unbooked after asking
     # for Wednesday seven times behind this guard.
-    return not _caller_requests_new_day_or_time(messages or [])
+    return not _caller_requests_new_day_or_time(messages or [], session)
 
 
 def _caller_wants_new_slot(messages) -> bool:
@@ -3442,7 +3532,7 @@ class LLMStream:
                     # Same-day time requests ("anything later?") deliberately still
                     # come here: re-fetching leads with the earliest times again,
                     # which is what 368b4e0 (V5) exists to prevent.
-                    and not _caller_requests_different_day(messages or [])
+                    and not _caller_requests_different_day(messages or [], session)
                 ):
                     # V5: if the caller asked for later / an unspoken time, do NOT
                     # tell the model to re-present the already-spoken slots.
