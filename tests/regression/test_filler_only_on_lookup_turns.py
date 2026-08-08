@@ -52,8 +52,15 @@ from app.media_streams.filler_guard import FillerGuard, expect_slot_presentation
 # ── the rule itself, one case per firing in the call above ──────────────────
 
 def _stage(**over) -> bool:
-    """Default = the pre-slot moment; override one stage at a time."""
+    """Default = the pre-slot moment; override one stage at a time.
+
+    The two positive conditions were added 2026-08-08 (CAd34a122247) when the
+    predicate became an allow-list — the defaults here assert the moment this
+    file was always describing, so every case below still reads as it did.
+    """
     kw = dict(
+        timing_preference_known=True,
+        slots_already_presented=False,
         slot_map_active=False,
         name_collection_pending=False,
         phone_collection_active=False,
