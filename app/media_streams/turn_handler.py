@@ -64,6 +64,42 @@ _REASON_QUESTION_RE = re.compile(
 )
 
 
+# ── The run-up to the reason question ───────────────────────────────────────
+# _REASON_QUESTION_RE takes a whole sentence, which is right, but the model can
+# put the justification in one sentence and the question in the next. Stripping
+# only the question leaves the caller with "Just so we've got a reason on the
+# booking." and no question at all — see the call site for CA32440a92.
+#
+# Deliberately NARROW:
+#
+#  * it requires the admin framing ("a reason ON THE BOOKING", "for our
+#    records"), never the bare word "reason", so ordinary speech is untouched;
+#  * it must end in "." or "!" — never "?" — so a sentence that IS a question
+#    about the reason can never be taken by this pattern. That matters because
+#    Gate 5b-r is unconditional on this branch: there is no per-clinic opt-out
+#    here, so the pattern itself has to be the guard.
+# Two shapes, because the justification does not always name the reason:
+#
+#   A  "Just so we've got a reason on the booking."   reason + admin noun
+#   B  "Just for our records."                        admin framing alone
+#
+# B is here because A alone would have passed a test written from A's own
+# comment — the comment cited "for our records" as admin framing and the
+# pattern required the literal word "reason". Both end in [.!], never [?].
+_REASON_PREAMBLE_RE = re.compile(
+    r"[^.!?]*(?:"
+    r"\breason\b[^.!?]{0,40}?\b(?:on|for|to)\s+"
+    r"(?:the\s+|your\s+|our\s+|this\s+)?"
+    r"(?:booking|appointment|file|records?|notes?|system)\b"
+    r"|\bfor\s+(?:our|the|your)\s+(?:records?|file|notes?)\b"
+    r"|\bso\s+(?:we|i)\s+(?:have|['‘’]ve\s+got|can\s+note)\s+"
+    r"(?:it|that|something)\s+(?:on|for)\s+(?:the\s+)?"
+    r"(?:booking|appointment|file|records?|notes?)\b"
+    r")[^.!?]*[.!]",
+    re.IGNORECASE,
+)
+
+
 _BANNED_SENTENCE_RE = [
     # ── Markdown artefacts (A1, 2026-07-29) ─────────────────────────────────
     # CAbad8422e read a booking readback aloud as markdown: "**Patient name:**
@@ -1274,6 +1310,33 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     # is the common case rather than the corner.
     _reason_cleaned = _REASON_QUESTION_RE.sub("", result)
     if _reason_cleaned != result:
+        # The question is gone; its RUN-UP is not. _REASON_QUESTION_RE matches a
+        # whole sentence, which is correct — but the model does not always put
+        # the whole intent in one sentence. On CA32440a92 (2026-08-08 22:14) it
+        # split it, twice in the same call:
+        #
+        #     "Just so we've got a reason on the booking. What brings you in?"
+        #     "I need a reason on the booking. What's the appointment for?"
+        #
+        # Only the second sentence matched, so the caller heard the preamble
+        # alone — a justification for a question that no longer existed — then
+        # nothing. The T-3 nudge fired both times ("turn answered but asked
+        # nothing and none was outstanding"), and the caller came back with
+        # "hello you got cut off".
+        #
+        # Sentence boundaries are what decide whether this reproduces. The
+        # single-sentence form ("could I ask what brings you in?") empties the
+        # turn and the fallback below asks the outstanding step correctly —
+        # that is the same call, working, four minutes earlier.
+        #
+        # Runs ONLY inside this branch, i.e. only when a reason question was
+        # actually removed. A standalone "I've noted the reason on the booking"
+        # is a statement of fact and must survive; it is an orphan only when the
+        # thing it introduced has just been deleted.
+        _orphan = _REASON_PREAMBLE_RE.sub("", _reason_cleaned)
+        if _orphan != _reason_cleaned:
+            logger.info("[ms_gate5] removed orphaned reason preamble")
+            _reason_cleaned = _orphan
         _reason_cleaned = re.sub(r"\s{2,}", " ", _reason_cleaned).strip()
         if not _reason_cleaned:
             # Nothing survived — the turn WAS the reason question. Ask the step
