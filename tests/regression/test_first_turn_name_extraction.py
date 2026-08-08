@@ -101,12 +101,21 @@ def test_real_introductions_are_caught(utterance, expected):
 def test_pattern_matches_the_source():
     """These tests assert against a literal copy of the production pattern.
     If the source changes and this does not, the tests silently stop testing
-    anything real."""
-    src = conn.__file__
-    with open(src, encoding="utf-8") as fh:
+    anything real.
+
+    2026-08-08: the patterns moved OUT of connection.py and into
+    app/name_capture.py, the module that already owns name parsing, when a
+    third false name ("Free", from "i'm free all week") proved the inline
+    denylist could not be made to work. This assertion followed them. The
+    property being pinned is unchanged — the apostrophe must stay REQUIRED,
+    or possessive "its" matches the contraction and T-7 reopens.
+    """
+    import app.name_capture as _nc
+
+    with open(_nc.__file__, encoding="utf-8") as fh:
         text = fh.read()
     assert r"it[‘’']s" in text, (
-        "the required-apostrophe class is gone from connection.py — "
+        "the required-apostrophe class is gone from name_capture.py — "
         "possessive 'its' can match the contraction again"
     )
 
