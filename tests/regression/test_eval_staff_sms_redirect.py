@@ -23,6 +23,7 @@ from app.notifications import sms as sms_mod
 
 MARCUS = "+447586605462"      # jv_v1 transfer_phone / owner_notification_sms
 JONATHAN = "+447545862307"    # vital_edge
+MARK = "+447870166861"        # theorem — the practitioner THIS branch serves
 TESTER = "+447700900123"      # stand-in for the engineer's own mobile
 CALLER = "+447476952176"      # a patient who rang in
 
@@ -62,6 +63,48 @@ def test_every_configured_clinic_is_covered(monkeypatch):
     monkeypatch.setenv("EVAL_STAFF_SMS_TO", TESTER)
 
     assert sms_mod.redirect_staff_sms(JONATHAN) == TESTER
+
+
+def test_the_practitioner_this_branch_serves_is_covered(monkeypatch):
+    """Mark is the number that matters on theorem-onboarding.
+
+    The upstream file pins Marcus and Jonathan — the two clinics the source
+    branch cared about — and says nothing about Theorem. That left the one
+    practitioner this branch actually serves protected by inference only.
+
+    It matters more here than on the source branch: theorem-onboarding
+    defaults SMS_ENABLED to "true", so every owner alert and staff notify is
+    armed by default rather than opt-in.
+    """
+    monkeypatch.setenv("EVAL_STAFF_SMS_TO", TESTER)
+
+    assert sms_mod.redirect_staff_sms(MARK) == TESTER
+
+
+def test_marks_number_is_reachable_by_the_staff_scan():
+    """Fail loudly if the config move that hides Mark ever happens.
+
+    Deliberately asserts the SCAN RESULT, not the config shape, because the
+    config shape is not what it looks like. Mark's number reaches
+    _staff_numbers() from TWO independent keys in clinic_config.py:
+
+        owner_alerts["phone"]        (~line 215)
+        operational["transfer_phone"] (~line 223, flattened to the top level)
+
+    Renaming either one on its own changes nothing — verified by doing it,
+    after this test was first written against the transfer_phone path alone
+    and passed with that path removed. A test that names one route would go
+    on passing while the route it documents disappears.
+
+    So the assertion is the property that actually matters: he is in the set.
+    It fails only when EVERY source is gone, which is exactly when the
+    redirect stops covering him.
+    """
+    assert MARK in sms_mod._staff_numbers(), (
+        "Mark's number is no longer in the staff set — EVAL_STAFF_SMS_TO "
+        "would not protect him, and an eval or test run on this branch would "
+        "text the practitioner directly"
+    )
 
 
 def test_local_format_is_matched_too(monkeypatch):
