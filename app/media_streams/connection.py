@@ -11348,12 +11348,56 @@ class WebSocketCallHandler:
                             # _v3_try_persist_name also writes session["patient_name"]
                             # as a direct key so summaries can find it even if
                             # the collected dict path is not traversed.
-                            if _v3_try_persist_name(
+                            _name_persisted = _v3_try_persist_name(
                                 self.session,
                                 _last_bot,
                                 post_slot_pending=self.post_slot_confirmation_pending,
                                 caller_utterance=utterance,
+                            )
+                            # ── O-18: recover from Gate 5g's own rewrite ──────
+                            # _last_bot is the SPOKEN text. When Gate 5g deleted
+                            # a booking CTA because the name was missing, the
+                            # sentence it deleted was usually the model's
+                            # acknowledgement of the name the caller had just
+                            # given — the only place a first name is read from.
+                            # Nothing gets stored, _name_known stays False, and
+                            # the caller is asked again on the next turn, and the
+                            # next. CA041352eb: asked four times, then hung up.
+                            #
+                            # The raw generation survives in session["turns"]
+                            # (_append_history keeps raw_text there). Retry
+                            # against it, but ONLY on a turn Gate 5g actually
+                            # rewrote — outside that window the spoken text is
+                            # the right source and must stay so.
+                            if (
+                                not _name_persisted
+                                and self.session.pop(
+                                    "_gate5g_dropped_name_ack", False
+                                )
                             ):
+                                _raw_turns = self.session.get("turns") or []
+                                _raw_reply = ""
+                                for _t in reversed(_raw_turns):
+                                    if _t.get("role") == "assistant":
+                                        _raw_reply = _t.get("text", "") or ""
+                                        break
+                                if _raw_reply and _raw_reply != _last_bot:
+                                    _name_persisted = _v3_try_persist_name(
+                                        self.session,
+                                        _raw_reply,
+                                        post_slot_pending=(
+                                            self.post_slot_confirmation_pending
+                                        ),
+                                        caller_utterance=utterance,
+                                    )
+                                    if _name_persisted:
+                                        logger.info(
+                                            "[ms_conn v3] name recovered from the "
+                                            "raw reply — Gate 5g had deleted the "
+                                            "acknowledgement: %r",
+                                            self.session.get("patient_name"),
+                                        )
+                            if _name_persisted:
                                 await save_session(
                                     self.call_sid, self.session
                                 )
