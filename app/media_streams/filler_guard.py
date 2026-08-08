@@ -47,6 +47,8 @@ logger = logging.getLogger(__name__)
 
 def expect_slot_presentation(
     *,
+    timing_preference_known: bool,
+    slots_already_presented: bool,
     slot_map_active: bool,
     name_collection_pending: bool,
     phone_collection_active: bool,
@@ -63,14 +65,52 @@ def expect_slot_presentation(
     noticed. Every argument is a plain bool so the caller owns reading the state
     and this owns the rule.
 
-    Each exclusion marks a stage where the moment has passed or not yet come:
+    ── Why this is now an ALLOW-list (CAd34a122247, 2026-08-08) ──────────────
+    It used to be four exclusions and nothing else, which reads as "the moment
+    is anything that is not one of these four stages". On a single-site clinic
+    the location question auto-confirms at second one, so for most of a call
+    NONE of the four were active and every turn qualified. The caller heard a
+    hold phrase nine times in 123 seconds — on a 1.27s acknowledgement, on a
+    price FAQ, on a phone confirmation, on "yeah 9 in the morning works".
 
-      slot_map_active            options are already on the table; a re-lookup
-                                 here ends in a readback, not a presentation
+    Timing every LLM round trip in that call shows why no exclusion list could
+    have worked. Turn duration is bimodal with nothing in between: six turns
+    took ONE model iteration (1.3-3.1s) and two took THREE (7.05s, 8.68s). One
+    iteration costs ~2.3s all in. What separates the modes is whether a TOOL
+    runs — a tool is two iterations minimum, so ~4.6s before the provider even
+    answers. Stage is a proxy for that; a bare deny-list is a bad one.
+
+    So the moment has to be asserted, not merely not-denied:
+
+      timing_preference_known    a lookup needs something to look up. Before the
+                                 caller has expressed any day/time there is
+                                 nothing to fetch, so a hold phrase is covering
+                                 a turn that was only ever going to be one
+                                 model call.
+      slots_already_presented    options are on the table; what follows is a
+                                 readback, not a presentation. Distinct from
+                                 slot_map_active, which is only True for the
+                                 DTMF grid — on the call above slots were
+                                 offered conversationally and the grid was never
+                                 armed, so this was the state that mattered and
+                                 nothing was reading it.
+
+    Each exclusion still marks a stage where the moment has passed or not come:
+
+      slot_map_active            the DTMF grid is up
       name_collection_pending    collecting the name (no tool at all)
       phone_collection_active    collecting the number (no tool at all)
       location_question_active   still choosing a clinic
+
+    NOT a rule here, deliberately: "a tool will run". It cannot be known at
+    350ms, and firing later does not help — tool detection lands 2.1-2.5s into
+    the turn, by which point the caller has already had the silence the clip
+    exists to prevent. Early on few turns beats late on many.
     """
+    if not timing_preference_known:
+        return False
+    if slots_already_presented:
+        return False
     return not (
         slot_map_active
         or name_collection_pending
@@ -264,7 +304,25 @@ class FillerGuard:
             )
             return
 
-        # Gate 3: clip must be present.
+        # Gate 3: at most once per call. Owner rule — the recorded filler
+        # belongs to the one moment before options are read out, and a normal
+        # booking has one such moment.
+        #
+        # This is the gate that does not depend on getting the state read right.
+        # On CAd34a122247 every check_availability was BLOCKED and retried, so
+        # it returned no slots, so `slots_already_presented` never became True
+        # and the stage exclusions had nothing to bite on — Susie read the
+        # options out of her own text instead of a slot buffer. A predicate
+        # built only from booking state inherits every bug in that state. A
+        # latch does not: whatever else is wrong, the caller hears the clip
+        # once.
+        if session.get("_filler_clip_spoke_this_call"):
+            logger.info(
+                "[ms_filler] not armed — clip already spoke once this call"
+            )
+            return
+
+        # Gate 4: clip must be present.
         if not self._pool:
             return
 
@@ -297,8 +355,27 @@ class FillerGuard:
             # Set at the moment audio actually goes out, not at arm() time: a
             # turn whose LLM answers inside 350ms cancels this task before the
             # sleep returns, and nothing was spoken, so with_filler must still
-            # be allowed its own phrase.
+            # be allowed its own phrase. The once-per-call latch is set here for
+            # the same reason — a turn that never spoke must not spend the call's
+            # one clip.
             _session["_filler_clip_spoke_this_turn"] = True
+            _session["_filler_clip_spoke_this_call"] = True
+
+            # Register in the SHARED cooldown clock. Without this the clip is
+            # invisible to every other filler producer: on CAd34a122247 at
+            # 08:37:06.969 the clip said "Let me just check that for you…" and
+            # 1.46s later llm_stream's ack filler said "Right with you…" on top
+            # of it. `should_play_filler` existed precisely to stop that and had
+            # never been told the clip speaks. Imported here rather than at
+            # module scope — app.filler_phrases is a sibling of the media_streams
+            # package and a top-level import would make this module's import
+            # order depend on it.
+            try:
+                from app.filler_phrases import note_filler_played
+
+                note_filler_played(_session, is_write=False)
+            except Exception:  # pragma: no cover - never break the clip on this
+                logger.warning("[ms_filler] could not register in filler cooldown")
             logger.info(
                 "[ms_filler] clip firing (delay=%dms, variant %d/%d)",
                 delay_ms, _idx + 1, len(self._pool),
