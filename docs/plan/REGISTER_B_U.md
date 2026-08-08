@@ -165,6 +165,68 @@ half, plus the four unchanged-clinic hashes).
 
 ---
 
+## `B-58` · **A completed cancellation was narrated as a failure** — **FIXED 2026-08-08**
+
+> ✅ **Fixed on `latency-eval`.** Regression:
+> `tests/regression/test_b58_duplicate_write_after_success.py`.
+
+**P1. Found on a live call, `CA0f9a12`, 8 Aug.** Billy's appointment was
+cancelled successfully. He said "thank you bye". On that farewell turn the model
+fired `cancel_appointment` once more, the gate refused it, and Susie began:
+
+> "I'm sorry — there was a problem completing that cancellation. Could you give
+> us a call back on oh seven eight seven oh, on…"
+
+**He heard none of it, and that was luck, not a safety net.** Twilio's `stop`
+event landed 150 ms after ElevenLabs returned the first chunk and the second was
+cancelled mid-synthesis — he had already hung up. A caller who waited two
+seconds, or said "sorry, what?", is told a completed cancellation failed and
+rings the clinic.
+
+**Cause 1 — the guard asserted a fact it never checked.** `_WRITE_NO_CLAIM_RULE`
+described the state of the world: the cancel rule ended *"Their original
+appointment still stands."* All `_note_write_result` knows is that **this
+attempt** was refused; it knows nothing about the calendar. All three rules now
+constrain Susie's *speech* instead ("This cancellation attempt did not go
+through… do not tell the caller anything about the state of their appointments
+that you have not been told"). This is the general half: it holds in cases the
+latch below does not cover, and it cannot weaken a genuine refusal because it
+only ever narrows what may be asserted.
+
+**Cause 2 — only booking had a call-scoped success latch.** `book_appointment`
+set `booking_write_confirmed`; cancel and reschedule set nothing, so a duplicate
+write on the farewell turn was indistinguishable from a first one that failed —
+it armed Gate 5f and drew the no-claim rule. All three families now latch in
+`WRITE_SUCCEEDED_KEY` (call-scoped, the opposite lifetime to the turn-scoped
+`WRITE_REFUSED_KEY`), and a refusal in a latched family arms nothing and is
+handed `_WRITE_ALREADY_DONE_RULE` — "already completed… does not undo it… if
+they are saying goodbye, simply say goodbye."
+
+The latch is keyed **per family, not per appointment id**: the cancel executor's
+success payload is `{"success", "cancelled", "was_at"}` with no id
+(`receptionist_tools.py` `_exec_cancel_appointment`), so an id-keyed latch needs
+the executor changed too. The cost is confined to the refusal path — a second,
+genuine cancellation still runs and still succeeds — and is pinned by
+`test_a_second_genuine_write_still_succeeds`.
+
+**Deliberately NOT done — dropping the tool from the schema.** The obvious third
+layer is to remove `cancel_appointment` from `_build_claude_tools` once a cancel
+has succeeded, so the model structurally cannot re-fire it. Rejected: a caller
+with two appointments cancelling both in one call would find the second request
+impossible, and would get *silence* rather than a controlled outcome — trading a
+narration bug for a dropped request, against §6.3. Causes 1 and 2 already
+convert the observed call into a goodbye.
+
+**Still open — cause 3, the root.** `_append_history` stores text pairs only, so
+no `tool_result` survives a turn. The model reached the farewell turn with no
+structured evidence the cancel had run at all, which is both why it re-fired and
+why it invented `patient_name: "Awlstuh"` from the only capitalised token in
+sight. Appending a compact fact per successful write would fix both. That
+touches every turn's context on every call and wants its own change and its own
+suite — tracked as `B-59`, not bundled here.
+
+---
+
 ## `B-57` · **Theorem cannot cancel — its mandated CTA does not satisfy the cancel gate** — **FIXED 2026-08-05**
 
 > ✅ **Both halves fixed.** `latency-eval` `7090e4c`; `theorem-onboarding` `d2a3338`

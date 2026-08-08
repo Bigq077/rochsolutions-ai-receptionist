@@ -223,5 +223,10 @@ def test_the_block_arms_the_false_confirmation_guard():
     out = ls._note_write_result(
         s, "cancel_appointment", {"status": "identity_confirmation_required"}
     )
-    assert "was not cancelled" in (out.get("caller_message_rule") or "").lower()
+    # B-58 reworded this rule to constrain speech rather than assert calendar
+    # state; what this test guards is that a rule is attached at all, and that
+    # it is the no-claim one rather than B-58's duplicate-write rule.
+    assert out.get("caller_message_rule") == ls._WRITE_NO_CLAIM_RULE[
+        th.WRITE_FAMILY_CANCEL
+    ]
     assert th._armed_write_families(s) == [th.WRITE_FAMILY_CANCEL]

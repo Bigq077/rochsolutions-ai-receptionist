@@ -664,23 +664,90 @@ _WRITE_TOOL_FAMILIES = {
 # cancellation the model had an instruction to ask a question and no rule at all
 # against announcing success. On CA23199d089 it announced success: the caller was
 # told their appointment had moved and it had not.
+#
+# Each rule constrains what Susie may SAY. It must not describe the state of the
+# world, because the only thing this code knows is that *this attempt* was
+# refused — not what the calendar holds. The cancel rule used to end "Their
+# original appointment still stands", and on CA0f9a12 that sentence was read out
+# of a refused duplicate cancel *after a real one had already succeeded*: the
+# caller had cancelled, said "thank you bye", the model fired cancel_appointment
+# one more time on the farewell turn, and the guard handed it a false statement
+# to narrate. He hung up 150 ms into the apology and heard nothing — timing, not
+# a safety net. A rule that only ever narrows what may be asserted cannot do
+# that, and cannot suppress a genuine refusal either.
 _WRITE_NO_CLAIM_RULE = {
     WRITE_FAMILY_BOOKING: (
-        "The booking was NOT made. Do not tell the caller they are booked, "
-        "confirmed, or all set. Ask the outstanding question, and only state a "
-        "booking once book_appointment returns success."
+        "This booking attempt did not go through. Do not claim this attempt "
+        "succeeded — do not tell the caller they are booked, confirmed, or all "
+        "set. Do not tell the caller anything about the state of their "
+        "appointments that you have not been told. Ask the outstanding "
+        "question, and only state a booking once book_appointment returns "
+        "success."
     ),
     WRITE_FAMILY_RESCHEDULE: (
-        "The appointment was NOT moved. Do not tell the caller it has been "
-        "rescheduled, moved, changed or sorted, and do not state the new day or "
-        "time as if it were settled. Ask the outstanding question, and only "
-        "state a move once reschedule_appointment returns success."
+        "This reschedule attempt did not go through. Do not claim this attempt "
+        "succeeded — do not tell the caller it has been rescheduled, moved, "
+        "changed or sorted, and do not state the new day or time as if it were "
+        "settled. Do not tell the caller anything about the state of their "
+        "appointments that you have not been told, in particular do not say "
+        "their original appointment still stands. Ask the outstanding "
+        "question, and only state a move once reschedule_appointment returns "
+        "success."
     ),
     WRITE_FAMILY_CANCEL: (
-        "The appointment was NOT cancelled. Do not tell the caller it has been "
-        "cancelled and do not imply the slot has been given up. Their original "
-        "appointment still stands. Ask the outstanding question, and only state "
-        "a cancellation once cancel_appointment returns success."
+        "This cancellation attempt did not go through. Do not claim this "
+        "attempt succeeded — do not tell the caller it has been cancelled and "
+        "do not imply the slot has been given up. Do not tell the caller "
+        "anything about the state of their appointments that you have not been "
+        "told, in particular do not say their original appointment still "
+        "stands. Ask the outstanding question, and only state a cancellation "
+        "once cancel_appointment returns success."
+    ),
+}
+
+# Layer 2 — what the model is told instead when the refused write belongs to a
+# family that ALREADY succeeded on this call. Arming the no-claim rule there is
+# wrong twice over: the attempt is a duplicate of work that is done, and the
+# caller is usually mid-farewell. Nothing here asserts calendar state either —
+# a caller with two appointments may legitimately be part-way through the
+# second — it says only what this code actually knows, and tells the model that
+# a goodbye deserves a goodbye.
+#
+# CALL-scoped, deliberately — the opposite lifetime to WRITE_REFUSED_KEY, which
+# is turn-scoped and cleared at the top of every turn. A completed write is a
+# fact about the call; only `book_appointment` had such a latch
+# (`booking_write_confirmed`, which Gate 5f reads) and cancel and reschedule had
+# none, which is why a duplicate cancel on the farewell turn looked identical to
+# a first one that failed. Per family rather than per appointment id: the cancel
+# executor's success payload is {"success", "cancelled", "was_at"} with no id
+# (receptionist_tools.py `_exec_cancel_appointment`), so an id-keyed latch would
+# need the executor changed too. The cost of the coarser key is confined to the
+# refusal path — a second, genuine cancellation still runs and still succeeds;
+# only a second *refused* one is described as a duplicate rather than a failure,
+# and _WRITE_ALREADY_DONE_RULE is worded so that is still true.
+WRITE_SUCCEEDED_KEY = "_write_families_succeeded"
+
+_WRITE_ALREADY_DONE_RULE = {
+    WRITE_FAMILY_BOOKING: (
+        "A booking already completed successfully earlier on this call. This "
+        "further attempt did not go through and does not undo it. Do not "
+        "apologise, do not tell the caller anything failed, and do not tell "
+        "them anything about the state of their appointments that you have not "
+        "been told. If they are saying goodbye, simply say goodbye."
+    ),
+    WRITE_FAMILY_RESCHEDULE: (
+        "A reschedule already completed successfully earlier on this call. "
+        "This further attempt did not go through and does not undo it. Do not "
+        "apologise, do not tell the caller anything failed, and do not tell "
+        "them anything about the state of their appointments that you have not "
+        "been told. If they are saying goodbye, simply say goodbye."
+    ),
+    WRITE_FAMILY_CANCEL: (
+        "A cancellation already completed successfully earlier on this call. "
+        "This further attempt did not go through and does not undo it. Do not "
+        "apologise, do not tell the caller anything failed, and do not tell "
+        "them anything about the state of their appointments that you have not "
+        "been told. If they are saying goodbye, simply say goodbye."
     ),
 }
 
@@ -692,7 +759,8 @@ def _note_write_result(session: dict, tool_name: str, result):
     `_run_tools` — which sees BOTH the gate-branch refusals constructed above it
     (`*_required`, no `success` key at all) and the executor's own results.
 
-    Layer 1: when the write actually SUCCEEDS, record it. For booking that is
+    Layer 1: when the write actually SUCCEEDS, record it — per family in
+    `WRITE_SUCCEEDED_KEY`, and for booking additionally as
     `booking_write_confirmed`, the call-scoped "a real booking exists" signal
     Gate 5f reads.
 
@@ -700,6 +768,12 @@ def _note_write_result(session: dict, tool_name: str, result):
     tool_result the model reads, forbidding a success claim for THAT family.
     Steering only — it fires on the already-failed path, so it can never suppress
     a real write.
+
+    Layer 2b (CA0f9a12): if the refused family already succeeded earlier in the
+    call, the refusal is a duplicate, not a failure. The gate is not armed and
+    the model is given `_WRITE_ALREADY_DONE_RULE` instead of a no-claim rule, so
+    a farewell turn that re-fires the write ends in a goodbye rather than an
+    apology for something that did not fail.
 
     Polarity is deliberate: the refusal branch is `not (success is True)`, not
     `success is False`. Every gate refusal in `_run_tools` returns
@@ -719,6 +793,9 @@ def _note_write_result(session: dict, tool_name: str, result):
     refused = session.get(WRITE_REFUSED_KEY)
     if not isinstance(refused, dict):
         refused = {}
+    succeeded = session.get(WRITE_SUCCEEDED_KEY)
+    if not isinstance(succeeded, dict):
+        succeeded = {}
     if result.get("success") is True:
         # A retry SUCCEEDED later in the same turn. The tool loop can run a
         # write up to MAX_TOOL_ITERATIONS times (CA7e389a47 did three), and the
@@ -733,8 +810,27 @@ def _note_write_result(session: dict, tool_name: str, result):
                 tool_name, family,
             )
         session[WRITE_REFUSED_KEY] = refused
+        succeeded[family] = True
+        session[WRITE_SUCCEEDED_KEY] = succeeded
         if family == WRITE_FAMILY_BOOKING:
             session["booking_write_confirmed"] = True
+        return result
+    if succeeded.get(family):
+        # CA0f9a12 — a duplicate write in a family that already completed this
+        # call. Arming here is wrong: Gate 5f would strip the turn's speech on
+        # the strength of an attempt that changed nothing, and the no-claim rule
+        # would hand the model a sentence about the caller's calendar that this
+        # code has no basis for. Note what is NOT done here — the marker is not
+        # set, so a refusal that follows a success cannot re-arm the gate for
+        # the rest of the turn.
+        logger.info(
+            "[ms_llm] %s did not succeed (status=%r) but the %s family already "
+            "completed this call — guard NOT armed, duplicate-write rule "
+            "attached instead",
+            tool_name, result.get("status") or result.get("error"), family,
+        )
+        result = dict(result)
+        result.setdefault("caller_message_rule", _WRITE_ALREADY_DONE_RULE[family])
         return result
     # Layer 3's arming signal (B-36 cause 2a): Gate 5f is scoped to the write
     # that was actually refused, not to a conversation flow flag that a
