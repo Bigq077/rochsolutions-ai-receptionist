@@ -97,7 +97,17 @@ CASES = [
         "What's the appointment for, Tom?",
         ["slot_iso", "book_appointment", "msk_initial_assessment", "call state",
          "conversation fragment"],
-        "What's the appointment for, Tom?",
+        # Was "What's the appointment for, Tom?" until 2026-08-08. That sentence
+        # is the REASON QUESTION, and the owner's rule is that Susie never asks
+        # it in any phrasing (O-5; Gate 5b-r in turn_handler). So it is no longer
+        # substantive content to be protected — it is the thing being removed.
+        #
+        # This file's principle is unchanged and still enforced: the caller must
+        # not be left with silence. Gate 5b-r substitutes the outstanding booking
+        # step when the strip empties the turn, which is exactly what this case
+        # now exercises — the whole raw reply was reasoning plus one banned
+        # question, and the caller still hears a real question.
+        "could I take your first name and surname",
     ),
     (
         "CAfe6a4162",

@@ -24,6 +24,46 @@ logger = logging.getLogger(__name__)
 # is preserved.  Applied AFTER the chunk-drop check (Gate 5a).
 # ---------------------------------------------------------------------------
 
+# ── The reason question — never asked, in any phrasing ──────────────────────
+# Owner decision, 2026-08-07, restated 2026-08-08: Susie must NEVER ask what
+# brings the caller in. The reason is recorded only when the caller volunteers
+# it, unprompted, in their own words — `first_turn_extractor._extract_reason`
+# does that deterministically. An empty reason is a correct outcome, not a gap.
+#
+# The prompt has said so since susie_system_prompt.py:901 ("REASON IS OPTIONAL —
+# do NOT ask the caller what their injury or condition is"). The model asks
+# anyway, and asks it at the worst possible point: between the slot and the
+# phone step. On CA041352eb (2026-08-08 00:01:04) the whole turn was
+#
+#     "Before I go ahead and check that day, could I ask what brings you in?"
+#     "what's the appointment for?"
+#
+# Two earlier fixes were drafted and withdrawn because they RE-ORDERED the
+# question instead of removing it. Suppression is the fix. See O-5.
+#
+# Deliberately NOT in the flat list below: stripping this can empty the turn,
+# and an empty turn falls through to the deferred Gate-5 fallback, which speaks
+# "Sorry, I didn't quite catch that — could you say that again?" — handing the
+# caller a non-sequitur for a question they never should have been asked. The
+# dead-end substitution at the call site is what makes the strip safe.
+#
+# Each alternative is a WHOLE sentence match ([^.!?]* both sides) so a reason
+# question folded into a longer reply takes only its own sentence with it.
+_REASON_QUESTION_RE = re.compile(
+    r"[^.!?]*\b(?:"
+    r"what(?:'s|\s+is)?\s+(?:brings|bringing)\s+you\s+in"          # what brings you in
+    r"|what\s+brings\s+you\s+(?:to|in\s+to)\s+us"
+    r"|what(?:'s|\s+is)\s+the\s+appointment\s+for"                 # what's the appointment for
+    r"|what(?:'s|\s+is)\s+going\s+on\s+with\s+(?:it|that)"         # what's going on with it
+    r"|what(?:'s|\s+is)\s+(?:been\s+)?troubling\s+you"
+    r"|what(?:'s|\s+is)\s+the\s+(?:issue|problem|trouble)"
+    r"|which\s+(?:area|body\s+part)\s+(?:is\s+)?(?:it|bothering)"
+    r"|what\s+(?:are\s+you|do\s+you\s+want\s+to)\s+(?:coming\s+in|be\s+seen)\s+for"
+    r")\b[^.!?]*[.!?]?",
+    re.IGNORECASE,
+)
+
+
 _BANNED_SENTENCE_RE = [
     # ── Markdown artefacts (A1, 2026-07-29) ─────────────────────────────────
     # CAbad8422e read a booking readback aloud as markdown: "**Patient name:**
@@ -1222,6 +1262,32 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
         if cleaned != result:
             logger.info("[ms_gate5] removed banned phrase (%s)", desc)
             result = cleaned
+
+    # ── Gate 5b-r: the reason question is never asked ────────────────────────
+    # See _REASON_QUESTION_RE. Separate from the flat loop above because the
+    # strip can empty the turn, and an empty turn is NOT a safe outcome here:
+    # it falls through to the deferred Gate-5 fallback, which speaks "Sorry, I
+    # didn't quite catch that — could you say that again?". The caller then gets
+    # a non-sequitur in place of a question that should never have existed.
+    #
+    # On CA041352eb the entire turn was the reason question, twice over, so this
+    # is the common case rather than the corner.
+    _reason_cleaned = _REASON_QUESTION_RE.sub("", result)
+    if _reason_cleaned != result:
+        _reason_cleaned = re.sub(r"\s{2,}", " ", _reason_cleaned).strip()
+        if not _reason_cleaned:
+            # Nothing survived — the turn WAS the reason question. Ask the step
+            # that is genuinely outstanding instead, in the prompt's own order,
+            # rather than handing back silence or a re-ask.
+            _reason_cleaned = _next_booking_question_for(session)
+            logger.info(
+                "[ms_gate5] reason question removed — turn was nothing else; "
+                "asked the outstanding step instead: %r",
+                _reason_cleaned[:60],
+            )
+        else:
+            logger.info("[ms_gate5] removed banned phrase (reason_question)")
+        result = _reason_cleaned
 
     # ── Gate 5g: self-narration strip ────────────────────────────────────────
     # Runs here, adjacent to 5b, because it is the same kind of operation —
