@@ -18,11 +18,74 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 from typing import Any, Callable, Coroutine, List, Optional
 
 logger = logging.getLogger(__name__)
 
 _MAX_FILLER_CHARS = 400
+
+
+# ── Filler cooldown (CA8cf0aaea, 2026-08-05) ─────────────────────────────────
+# Three independent producers queue hold phrases and none of them knew about
+# the others, so on a reschedule the caller heard, in 3.4 seconds:
+#
+#   15:13:33.278  "Let me just check that…"        connection.py, phone confirm
+#   15:13:35.094  "One moment…"                    llm_stream.py, background ack
+#   15:13:36.727  "Let me bring that up for you…"  filler_phrases.py, tool call
+#
+# and at the write, 1.1 s apart, two phrases saying the same thing:
+#
+#   15:14:42.691  "Just moving that for you now…"
+#   15:14:43.810  "No problem at all — I'm moving that for you now…"
+#
+# A cancellation path already exists (`_ack_filler_cancelled`) but it only
+# helps when the ack filler has not yet reached ElevenLabs. By the time a tool
+# call is detected it usually has, so the cancel is a no-op and both play.
+#
+# This is the shared clock those producers were missing. Deliberately a
+# COOLDOWN and not a per-turn budget: silence is the worse failure, and a turn
+# that genuinely stalls must still be able to speak again.
+FILLER_COOLDOWN_S = 3.0
+
+
+def should_play_filler(session: dict, *, is_write: bool = False) -> bool:
+    """False when another filler played too recently to add a second one.
+
+    A write filler is exempt from the FIRST suppression — the calendar
+    round-trip after a caller says "yes, go ahead" is the most anxious silence
+    in the call and must always be covered (B-40, an 11.1 s measured stall).
+    It is not exempt from a second write filler, which is the duplicate pair
+    above.
+    """
+    last_ts = session.get("_last_filler_ts")
+    if last_ts is None:
+        return True
+    if (time.monotonic() - last_ts) >= FILLER_COOLDOWN_S:
+        return True
+    if is_write and not session.get("_last_filler_was_write"):
+        return True
+    return False
+
+
+def note_filler_played(session: dict, *, is_write: bool = False) -> None:
+    """Record that a filler reached the TTS queue. Call at EVERY producer."""
+    session["_last_filler_ts"] = time.monotonic()
+    session["_last_filler_was_write"] = bool(is_write)
+
+
+_WRITE_FILLER_MARKERS = (
+    "locking that in",
+    "moving that for you",
+    "booked in for you",
+    "popping that in the diary",
+)
+
+
+def is_write_filler(text: str) -> bool:
+    """Matches the same phrases connection.py arms its barge-in guard on."""
+    low = (text or "").lower()
+    return any(m in low for m in _WRITE_FILLER_MARKERS)
 
 THINKING_FILLERS_PRIMARY: List[str] = [
     "Let me have a look at what we've got…",
@@ -194,7 +257,14 @@ async def with_filler(
         Whatever api_coro returns.
     """
     used = session.setdefault("used_fillers", [])
-
+    # ── Reconcile, 2026-08-08 (Theorem -> Vital Edge port) ──────────────────
+    # Two independent fixes for the same defect meet here: this branch
+    # (Theorem 8ce4b74, the recorded clip already spoke) and the cooldown
+    # clock below (latency-eval 265d95e, another producer spoke recently).
+    # Both are kept. This one runs FIRST because FillerGuard does not call
+    # note_filler_played -- so if the cooldown ran first and the clip were
+    # ever wired into the clock, this branch's 4-second secondary would be
+    # skipped entirely and the dead air O-4 closed would reopen.
     # FillerGuard has already spoken this turn. Its clip and this list say the
     # same thing in different words — "Let me have a look at what we've got…"
     # was verbatim THINKING_FILLERS_PRIMARY[0] — and because pick_filler()
@@ -213,8 +283,20 @@ async def with_filler(
         if not done:
             secondary = pick_filler(THINKING_FILLERS_SECONDARY, used)
             logger.info("[filler] API slow (>4s) — secondary filler: %r", secondary)
+            note_filler_played(session, is_write=is_write_filler(secondary))
             await tts_fn(secondary)
         return await api_task
+
+    # Peek before picking: pick_filler mutates `used` in place, so choosing a
+    # phrase we are about to suppress would burn it out of the rotation and
+    # push the pool towards an early reset for nothing.
+    _peek = pick_filler(filler_list, list(used))
+    if not should_play_filler(session, is_write=is_write_filler(_peek)):
+        logger.info(
+            "[filler] suppressed by cooldown (%.1fs) — another filler is still "
+            "in the caller's ear: %r", FILLER_COOLDOWN_S, _peek[:60],
+        )
+        return await api_coro
 
     filler_text = pick_filler(filler_list, used)
 
@@ -230,6 +312,7 @@ async def with_filler(
             filler_text[:60],
         )
 
+    note_filler_played(session, is_write=is_write_filler(filler_text))
     # Queue primary filler immediately (non-blocking — returns once enqueued)
     filler_task = asyncio.create_task(tts_fn(filler_text))
 
@@ -238,16 +321,23 @@ async def with_filler(
     done, pending = await asyncio.wait([api_task], timeout=4.0)
 
     if not done:
-        # API still running after 4s — play a secondary filler
+        # API still running after 4s — play a secondary filler. Not gated on
+        # the cooldown: four seconds of nothing is the failure this exists to
+        # prevent, and 4s > FILLER_COOLDOWN_S anyway. It still records itself,
+        # so whatever speaks next sees it.
         secondary = pick_filler(THINKING_FILLERS_SECONDARY, used)
         logger.info("[filler] API slow (>4s) — secondary filler: %r", secondary)
+        note_filler_played(session, is_write=is_write_filler(secondary))
         await tts_fn(secondary)
 
-    # Ensure primary filler task is done before we return
-    try:
-        await asyncio.wait_for(asyncio.shield(filler_task), timeout=2.0)
-    except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
+    # Ensure primary filler task is done before we return.
+    # filler_task is None when the cooldown suppressed it — there is nothing to
+    # wait for, and shield(None) would raise.
+    if filler_task is not None:
+        try:
+            await asyncio.wait_for(asyncio.shield(filler_task), timeout=2.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
 
     # Collect API result — re-raise any exception
     if done:

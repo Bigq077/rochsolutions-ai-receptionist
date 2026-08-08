@@ -18,19 +18,37 @@ Lifecycle per turn
 
 has_played and the internal task are reset at the top of every arm() call so
 a fresh turn always starts clean.
+
+Each clip is a POOL, not a file
+───────────────────────────────
+`clip_path` names the first member of a numbered set — `filler_checking.ulaw`,
+`filler_checking_2.ulaw`, … — and one member is drawn per turn. A single file
+meant every hold moment in every call was the same waveform: not merely the same
+words but the same breath, the same stress, the same length, to the byte. Words
+can repeat in a real conversation and pass unnoticed; an identical recording
+cannot, and the second playing is what tells the caller they are talking to a
+machine. Varying the wording alone would not fix it — two utterances of one
+sentence by one person are never acoustically equal, so the rotation has to be
+over recordings.
+
+A pool of one is the old behaviour exactly, which is what a deploy that has not
+yet regenerated its clips gets.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, List, Optional
 
 logger = logging.getLogger(__name__)
 
 
 def expect_slot_presentation(
     *,
+    timing_preference_known: bool,
+    slots_already_presented: bool,
     slot_map_active: bool,
     name_collection_pending: bool,
     phone_collection_active: bool,
@@ -47,20 +65,109 @@ def expect_slot_presentation(
     noticed. Every argument is a plain bool so the caller owns reading the state
     and this owns the rule.
 
-    Each exclusion marks a stage where the moment has passed or not yet come:
+    ── Why this is now an ALLOW-list (CAd34a122247, 2026-08-08) ──────────────
+    It used to be four exclusions and nothing else, which reads as "the moment
+    is anything that is not one of these four stages". On a single-site clinic
+    the location question auto-confirms at second one, so for most of a call
+    NONE of the four were active and every turn qualified. The caller heard a
+    hold phrase nine times in 123 seconds — on a 1.27s acknowledgement, on a
+    price FAQ, on a phone confirmation, on "yeah 9 in the morning works".
 
-      slot_map_active            options are already on the table; a re-lookup
-                                 here ends in a readback, not a presentation
+    Timing every LLM round trip in that call shows why no exclusion list could
+    have worked. Turn duration is bimodal with nothing in between: six turns
+    took ONE model iteration (1.3-3.1s) and two took THREE (7.05s, 8.68s). One
+    iteration costs ~2.3s all in. What separates the modes is whether a TOOL
+    runs — a tool is two iterations minimum, so ~4.6s before the provider even
+    answers. Stage is a proxy for that; a bare deny-list is a bad one.
+
+    So the moment has to be asserted, not merely not-denied:
+
+      timing_preference_known    a lookup needs something to look up. Before the
+                                 caller has expressed any day/time there is
+                                 nothing to fetch, so a hold phrase is covering
+                                 a turn that was only ever going to be one
+                                 model call.
+      slots_already_presented    options are on the table; what follows is a
+                                 readback, not a presentation. Distinct from
+                                 slot_map_active, which is only True for the
+                                 DTMF grid — on the call above slots were
+                                 offered conversationally and the grid was never
+                                 armed, so this was the state that mattered and
+                                 nothing was reading it.
+
+    Each exclusion still marks a stage where the moment has passed or not come:
+
+      slot_map_active            the DTMF grid is up
       name_collection_pending    collecting the name (no tool at all)
       phone_collection_active    collecting the number (no tool at all)
       location_question_active   still choosing a clinic
+
+    NOT a rule here, deliberately: "a tool will run". It cannot be known at
+    350ms, and firing later does not help — tool detection lands 2.1-2.5s into
+    the turn, by which point the caller has already had the silence the clip
+    exists to prevent. Early on few turns beats late on many.
     """
+    if not timing_preference_known:
+        return False
+    if slots_already_presented:
+        return False
     return not (
         slot_map_active
         or name_collection_pending
         or phone_collection_active
         or location_question_active
     )
+
+
+def discover_clip_pool(first: Path) -> List[Path]:
+    """
+    Every variant of `first` that exists on disk, in order.
+
+    `audio_clips/filler_checking.ulaw` yields that file plus
+    `filler_checking_2.ulaw`, `_3`, … stopping at the first gap. Ascending and
+    contiguous rather than a glob: a glob would silently absorb any stray
+    `filler_checking_old.ulaw` someone leaves in the directory and play it to a
+    patient, and would order the pool by whatever the filesystem returns.
+    Stopping at the first gap also means a half-finished regeneration — the
+    script died after variant 3 of 5 — yields a working pool of 3 rather than a
+    pool with a hole in it.
+
+    Returns [] if `first` itself is missing; the guard reads that as "no clip"
+    and disables itself, which is the pre-existing behaviour.
+    """
+    if not first.exists():
+        return []
+    pool = [first]
+    n = 2
+    while True:
+        nxt = first.with_name(f"{first.stem}_{n}{first.suffix}")
+        if not nxt.exists():
+            return pool
+        pool.append(nxt)
+        n += 1
+
+
+def next_clip_index(pool_size: int, last_index: Optional[int]) -> int:
+    """
+    Index of the clip to play, given what played last time on this call.
+
+    Random, minus the one just heard. Plain `random.choice` over the whole pool
+    would let a five-clip pool say the same sentence on two consecutive lookups
+    roughly one turn in five — and back-to-back is the only repeat a caller
+    actually registers as a repeat, which makes it the one case worth spending
+    a rule on.
+
+    Pure so the rotation can be proven without synthesising audio or placing a
+    call. `pool_size <= 1` returns 0: a single-clip pool must keep working, or
+    a deploy that has not regenerated its clips loses its filler entirely and
+    the dead air O-4 closed comes back.
+    """
+    if pool_size <= 1:
+        return 0
+    if last_index is None:
+        return random.randrange(pool_size)
+    choices = [i for i in range(pool_size) if i != last_index]
+    return random.choice(choices)
 
 
 class FillerGuard:
@@ -84,29 +191,35 @@ class FillerGuard:
         clip_path_2: "Path | None" = None,
         second_delay_ms: int = 2500,
     ) -> None:
-        if clip_path.exists():
-            self._clip: bytes = clip_path.read_bytes()
+        # Each path names the FIRST member of a numbered pool — see
+        # discover_clip_pool. A pool of one behaves exactly as the single clip
+        # did before, so nothing here depends on the variants having been
+        # generated yet.
+        self._pool: List[bytes] = [p.read_bytes() for p in discover_clip_pool(clip_path)]
+        if self._pool:
             logger.info(
-                "[filler_guard] loaded %d bytes from %s",
-                len(self._clip), clip_path,
+                "[filler_guard] loaded %d clip(s) from %s (%d bytes total)",
+                len(self._pool), clip_path.parent, sum(len(c) for c in self._pool),
             )
+            if len(self._pool) == 1:
+                logger.info(
+                    "[filler_guard] only one primary clip — every hold moment in "
+                    "every call will be the identical recording. Run "
+                    "scripts/synthesise_filler.py to cut the variants."
+                )
         else:
-            self._clip = b""
             logger.warning(
                 "[filler_guard] clip not found: %s — filler disabled until clip is generated",
                 clip_path,
             )
 
-        # Second clip — falls back to primary if not provided or missing
-        if clip_path_2 and clip_path_2.exists():
-            self._clip_2: bytes = clip_path_2.read_bytes()
-            logger.info(
-                "[filler_guard] second clip loaded %d bytes from %s",
-                len(self._clip_2), clip_path_2,
-            )
-        else:
-            # Reuse primary clip; a repeated "one moment" beats silence
-            self._clip_2 = self._clip
+        # Second pool — falls back to the primary pool if not provided or missing
+        self._pool_2: List[bytes] = (
+            [p.read_bytes() for p in discover_clip_pool(clip_path_2)] if clip_path_2 else []
+        )
+        if not self._pool_2:
+            # Reuse the primary pool; a repeated hold phrase beats silence
+            self._pool_2 = self._pool
             if clip_path_2:
                 logger.info(
                     "[filler_guard] second clip not found (%s) — will reuse primary",
@@ -117,6 +230,11 @@ class FillerGuard:
         self._send_audio = send_audio
         self._task: "asyncio.Task | None" = None
         self._played: bool = False
+        # Which variant spoke last, per pool, for THIS call — the guard is
+        # constructed per WebSocketCallHandler, so the no-repeat rule is scoped
+        # to one caller's ear and does not need resetting between calls.
+        self._last_idx: Optional[int] = None
+        self._last_idx_2: Optional[int] = None
 
     async def arm(
         self,
@@ -186,33 +304,91 @@ class FillerGuard:
             )
             return
 
-        # Gate 3: clip must be present.
-        if not self._clip:
+        # Gate 3: at most once per call. Owner rule — the recorded filler
+        # belongs to the one moment before options are read out, and a normal
+        # booking has one such moment.
+        #
+        # This is the gate that does not depend on getting the state read right.
+        # On CAd34a122247 every check_availability was BLOCKED and retried, so
+        # it returned no slots, so `slots_already_presented` never became True
+        # and the stage exclusions had nothing to bite on — Susie read the
+        # options out of her own text instead of a slot buffer. A predicate
+        # built only from booking state inherits every bug in that state. A
+        # latch does not: whatever else is wrong, the caller hears the clip
+        # once.
+        if session.get("_filler_clip_spoke_this_call"):
+            logger.info(
+                "[ms_filler] not armed — clip already spoke once this call"
+            )
             return
+
+        # Gate 4: clip must be present.
+        if not self._pool:
+            return
+
+        # Draw this turn's variants at arm() time, not inside _fire(): a turn
+        # whose LLM answers inside the delay is cancelled before it speaks, and
+        # advancing the rotation for a clip nobody heard would let the next turn
+        # play the one the caller last actually heard.
+        _idx = next_clip_index(len(self._pool), self._last_idx)
+        if self._pool_2 is self._pool:
+            # No dedicated second pool, so both clips come out of one list. Avoid
+            # the index just chosen rather than the one played on a previous
+            # turn: these two play 2.5s apart in the SAME turn, and the identical
+            # recording twice inside three seconds is the worst version of the
+            # sameness this pool exists to break up.
+            _idx_2 = next_clip_index(len(self._pool_2), _idx)
+        else:
+            _idx_2 = next_clip_index(len(self._pool_2), self._last_idx_2)
 
         _delay_s        = delay_ms / 1000.0
         _second_delay_s = self._second_delay_s
-        _clip           = self._clip
-        _clip_2         = self._clip_2
+        _clip           = self._pool[_idx]
+        _clip_2         = self._pool_2[_idx_2]
         _send           = self._send_audio
         _session        = session
 
         async def _fire() -> None:
             await asyncio.sleep(_delay_s)
             self._played = True
+            self._last_idx = _idx
             # Set at the moment audio actually goes out, not at arm() time: a
             # turn whose LLM answers inside 350ms cancels this task before the
             # sleep returns, and nothing was spoken, so with_filler must still
-            # be allowed its own phrase.
+            # be allowed its own phrase. The once-per-call latch is set here for
+            # the same reason — a turn that never spoke must not spend the call's
+            # one clip.
             _session["_filler_clip_spoke_this_turn"] = True
-            logger.info("[ms_filler] clip firing (delay=%dms)", delay_ms)
+            _session["_filler_clip_spoke_this_call"] = True
+
+            # Register in the SHARED cooldown clock. Without this the clip is
+            # invisible to every other filler producer: on CAd34a122247 at
+            # 08:37:06.969 the clip said "Let me just check that for you…" and
+            # 1.46s later llm_stream's ack filler said "Right with you…" on top
+            # of it. `should_play_filler` existed precisely to stop that and had
+            # never been told the clip speaks. Imported here rather than at
+            # module scope — app.filler_phrases is a sibling of the media_streams
+            # package and a top-level import would make this module's import
+            # order depend on it.
+            try:
+                from app.filler_phrases import note_filler_played
+
+                note_filler_played(_session, is_write=False)
+            except Exception:  # pragma: no cover - never break the clip on this
+                logger.warning("[ms_filler] could not register in filler cooldown")
+            logger.info(
+                "[ms_filler] clip firing (delay=%dms, variant %d/%d)",
+                delay_ms, _idx + 1, len(self._pool),
+            )
             await _send(_clip)
             # Wait to see if the LLM responds; if not, play second clip.
             # cancel() will interrupt this sleep when the first TTS chunk arrives.
             await asyncio.sleep(_second_delay_s)
+            self._last_idx_2 = _idx_2
             logger.info(
-                "[ms_filler] second clip firing (still no LLM response after %.1fs)",
-                _second_delay_s,
+                "[ms_filler] second clip firing (variant %d/%d, still no LLM "
+                "response after %.1fs)",
+                _idx_2 + 1, len(self._pool_2), _second_delay_s,
             )
             await _send(_clip_2)
 

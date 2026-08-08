@@ -8897,8 +8897,17 @@ class WebSocketCallHandler:
                             if _phone_confirm_is_yes(utterance):
                                 # Caller confirmed → use calling number
                                 self.session["lookup_phone"] = _calling_number
+                                # Producer A of three. This one fires the
+                                # instant the number is confirmed; the LLM
+                                # turn's own ack filler follows ~1.8s later and
+                                # the tool filler ~1.6s after that. Record it so
+                                # those two can see it (CA8cf0aaea).
+                                from app.filler_phrases import (
+                                    note_filler_played as _note_filler,
+                                )
                                 _filler = _random.choice(FILLER_PHRASES)
                                 await self.tts_text_queue.put(_filler)
+                                _note_filler(self.session)
                                 self.session["last_bot_prompt"] = _filler
                                 await save_session(
                                     self.call_sid, self.session
@@ -9286,8 +9295,17 @@ class WebSocketCallHandler:
                                         )
                                 # Change B: arm filler before LLM call.
                                 # No-op here (non-v3 path, booking_flow_active absent).
+                                #
+                                # expect_lookup=False explicitly. This site took
+                                # the True default until 2026-08-08: four of the
+                                # five arm() sites bypassed the gate entirely,
+                                # so gating the main path only ever closed one
+                                # door of five. Nothing on this path presents
+                                # slots.
                                 self._filler_breath_injected = False
-                                await self._filler.arm(self.session)
+                                await self._filler.arm(
+                                    self.session, expect_lookup=False
+                                )
                                 self._current_llm_task = asyncio.create_task(
                                     llm.run_turn(
                                         user_text=utterance,
@@ -9508,8 +9526,11 @@ class WebSocketCallHandler:
                                         " response: %r",
                                         utterance[:60],
                                     )
+                                    # Clinic disambiguation, not a lookup.
                                     self._filler_breath_injected = False
-                                    await self._filler.arm(self.session)
+                                    await self._filler.arm(
+                                        self.session, expect_lookup=False
+                                    )
                                     self._current_llm_task = (
                                         asyncio.create_task(
                                             llm.run_turn(
@@ -9624,8 +9645,11 @@ class WebSocketCallHandler:
                                         " passing to LLM (flag cleared): %r",
                                         utterance[:60],
                                     )
+                                    # Clinic disambiguation, not a lookup.
                                     self._filler_breath_injected = False
-                                    await self._filler.arm(self.session)
+                                    await self._filler.arm(
+                                        self.session, expect_lookup=False
+                                    )
                                     self._current_llm_task = (
                                         asyncio.create_task(
                                             llm.run_turn(
@@ -10597,11 +10621,13 @@ class WebSocketCallHandler:
                                                 " routing to LLM: %r",
                                                 utterance[:60],
                                             )
+                                            # Answering an FAQ, not a lookup.
                                             self._filler_breath_injected = (
                                                 False
                                             )
                                             await self._filler.arm(
-                                                self.session
+                                                self.session,
+                                                expect_lookup=False,
                                             )
                                             self._current_llm_task = (
                                                 asyncio.create_task(
@@ -11152,6 +11178,25 @@ class WebSocketCallHandler:
                             # is never assigned anywhere in the repo, so the
                             # session read at ~10181 is always None.
                             _filler_expect_lookup = expect_slot_presentation(
+                                # A lookup needs something to look up. Captured
+                                # earlier in THIS turn (see the time-of-day
+                                # capture above), so a caller who states a
+                                # preference and triggers the fetch in one
+                                # utterance still qualifies.
+                                timing_preference_known=bool(
+                                    self.session.get("time_of_day_preference")
+                                    or self.session.get(
+                                        "v3_last_presented_date_hint"
+                                    )
+                                ),
+                                # Options already read out — what follows is a
+                                # readback. `slots_presented` is set by
+                                # llm_stream the moment check_availability
+                                # returns slots.
+                                slots_already_presented=bool(
+                                    self.session.get("slots_presented")
+                                    or self.session.get("last_offered_slots")
+                                ),
                                 slot_map_active=(
                                     self.slot_map_stage != SlotMapStage.NONE
                                 ),
