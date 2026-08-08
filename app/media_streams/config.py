@@ -273,6 +273,25 @@ CLAUDE_TEMPERATURE = 0.4
 # Maximum tool-calling iterations per LLM turn (prevents infinite loops)
 MAX_TOOL_ITERATIONS = 6
 
+# Session key: the previous iteration blocked a tool call and told the model IN
+# THE TOOL RESULT to speak instead. Set at the block, read once at the top of
+# the next iteration, which sends tool_choice={"type": "none"} so the model
+# structurally cannot call a tool again.
+#
+# CAd34a122247 (Vital Edge, 2026-08-08) is why this is a request parameter and
+# not stronger wording. check_availability was blocked with a message that opens
+# "Do NOT call check_availability. Produce the booking summary now" — and the
+# model called it again anyway, on two separate turns. That is not the model
+# ignoring an instruction: a tool result carrying `"error"` reads as a FAILED
+# call, and retrying a failed call is the correct default behaviour. The
+# instruction and the frame it arrives in say opposite things, and the frame
+# wins. Each ignored retry costs one full model round trip — ~2.3s measured —
+# so the two turns took 7.05s and 8.68s against ~2.3s for every single-iteration
+# turn in the same call.
+#
+# tool_choice removes the choice instead of arguing with it.
+FORCE_TEXT_NEXT_ITERATION = "_force_text_next_iteration"
+
 # Maximum conversation history turns kept in session (each turn = 2 entries)
 MAX_HISTORY_TURNS = 10
 

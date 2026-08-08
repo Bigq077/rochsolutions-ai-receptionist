@@ -51,6 +51,7 @@ from .config import (
     GPT_MODEL,
     CLAUDE_MAX_TOKENS,
     CLAUDE_TEMPERATURE,
+    FORCE_TEXT_NEXT_ITERATION,
     MAX_TOOL_ITERATIONS,
     MAX_HISTORY_TURNS,
     LLM_FIRST_CHUNK_TIMEOUT_MS,
@@ -2305,6 +2306,21 @@ class LLMStream:
         for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
             logger.info("[ms_llm] iteration=%d model=%s", iteration, model)
 
+            # Popped, not read: the suppression lasts exactly one iteration.
+            # Left set it would disarm tools for the rest of the turn, and a
+            # later iteration that legitimately needs book_appointment — the
+            # caller says "yes, go ahead" — would be unable to call it and the
+            # booking would silently never happen. That is the worst failure
+            # this system has, so the flag is consumed at the first read.
+            _force_text = bool(session.pop(FORCE_TEXT_NEXT_ITERATION, False))
+            _tool_choice = {"type": "none"} if _force_text else None
+            if _force_text:
+                logger.info(
+                    "[ms_llm] tools suppressed for iter=%d — the previous "
+                    "iteration blocked a tool call and asked for speech",
+                    iteration,
+                )
+
             # ── Slot complete-response buffer ─────────────────────────────
             # When the previous iteration executed check_availability, route
             # this iteration's output through a temporary buffer instead of
@@ -2410,6 +2426,7 @@ class LLMStream:
                     # (after tool calls) generate genuinely new text.
                     interim_played=(interim_played and iteration == 1),
                     dynamic_prompt=_call_dynamic,
+                    tool_choice=_tool_choice,
                 )
                 filler_sent = True  # suppress filler on subsequent iterations
 
@@ -2460,6 +2477,12 @@ class LLMStream:
                                 filler_sent=True,
                                 interim_played=True,
                                 dynamic_prompt=dynamic_prompt,
+                                # Same iteration, retried after a 529 — it must
+                                # carry the same suppression. The flag was
+                                # already popped above, so reading the session
+                                # again here would find nothing and the retry
+                                # would silently regain tools.
+                                tool_choice=_tool_choice,
                             )
                             filler_sent = True
                             _retry_ok = True
@@ -2705,6 +2728,7 @@ class LLMStream:
         filler_sent: bool,
         interim_played: bool = False,
         dynamic_prompt: str = "",
+        tool_choice: Optional[dict] = None,
     ) -> tuple:
         """
         Open one Claude streaming session, feed tokens through the chunker,
@@ -2712,6 +2736,12 @@ class LLMStream:
 
         Returns (full_text, tool_uses, transfer_initiated).
         tool_uses is non-empty if stop_reason == "tool_use".
+
+        `tool_choice` is passed straight through to the Messages API when set.
+        `{"type": "none"}` makes a tool call structurally impossible for that
+        iteration — see the FORCE_TEXT_NEXT_ITERATION note in run_turn(). It is
+        omitted entirely when None rather than sent as null, so the request
+        shape is unchanged on every normal iteration.
         """
         chunker    = ResponseChunker(
             min_words_first=WS_A_MIN_WORDS_FIRST,
@@ -2849,6 +2879,14 @@ class LLMStream:
                 "text": dynamic_prompt,
             })
 
+        # tool_choice is omitted unless set. It is safe to vary per iteration:
+        # changing tool_choice does NOT invalidate the tools or system prefix in
+        # the prompt cache (only tool DEFINITION and model changes do), and the
+        # static system block here is ~19K tokens.
+        _tc_kwargs = {"tool_choice": tool_choice} if tool_choice else {}
+        if tool_choice:
+            logger.info("[ms_llm] tool_choice=%r for this iteration", tool_choice)
+
         async with client.messages.stream(
             model=model,
             system=_system_blocks,
@@ -2856,6 +2894,7 @@ class LLMStream:
             tools=tools,
             max_tokens=CLAUDE_MAX_TOKENS,
             temperature=CLAUDE_TEMPERATURE,
+            **_tc_kwargs,
         ) as stream:
 
             async for event in stream:
@@ -3325,6 +3364,15 @@ class LLMStream:
                         "error": "booking_details_already_complete",
                         "message": _rb_msg,
                     }
+                    # Every branch above ends with "Say EXACTLY this, then stop"
+                    # or "Produce the booking summary now" — the required next
+                    # action is SPEECH, and there is no tool that could serve it.
+                    # Take the choice away rather than repeating the instruction:
+                    # on CAd34a122247 the model re-called check_availability
+                    # after reading this exact message, on two separate turns,
+                    # burning a ~2.3s round trip each time. See
+                    # FORCE_TEXT_NEXT_ITERATION in config.py.
+                    session[FORCE_TEXT_NEXT_ITERATION] = True
                 elif (
                     tool_name == "check_availability"
                     and session.get("v3_confirmed_slot_phrase")
