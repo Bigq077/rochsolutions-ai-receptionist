@@ -4472,9 +4472,50 @@ async def _check_availability_published(
     the dedicated availability calendar is a bookable slot, EXCEPT ones already
     flipped to PENDING/BOOKED. We never generate slots from working_hours, so
     Susie can only ever offer times the practitioner has actually published.
+
+    ⚠️ That contract holds ONLY while the calendar contains published
+    availability. Vital Edge's calendar turned out to contain the opposite —
+    Jonathan's BOOKED work ("Massage with Roger", "Padel with Jose") — so every
+    event this function offered was a time he was already busy. Call
+    CAdafca484696fce9a538695f2a95ee04e (8 Aug 2026) was offered "four in the
+    morning, three in the afternoon, eleven in the evening"; had it completed,
+    the booking would have been written on top of an existing client.
+
+    `availability_mode: "handoff"` is the holding switch for exactly that
+    situation: stop offering times entirely and let the practitioner propose,
+    rather than serve confidently wrong slots. It is a stop-gap — the fix is to
+    compute availability by subtracting the diary from a working envelope
+    (generate_candidate_slots → freebusy → filter_free_slots), which is what the
+    non-provisional Google path already does.
     """
     from app.tools.calendar_google import list_upcoming_events
     from app.tools.slots import format_slot
+
+    if (clinic.get("availability_mode") or "").strip().lower() == "handoff":
+        logger.info(
+            "_check_availability_published: availability_mode=handoff for clinic=%r"
+            " — offering no times, handing off to the practitioner",
+            clinic.get("clinic_id"),
+        )
+        # Named from clinic.json — the practitioner's name must never be a
+        # literal in engine code (CLAUDE.md §5), and this message is spoken.
+        _who = str(clinic.get("practitioner") or "").strip() or "the practitioner"
+        return {
+            "error": "availability_handoff",
+            "message": (
+                "You cannot see live availability for this practitioner, so you "
+                "must NOT offer, guess or invent any specific dates or times, and "
+                "must not say you are checking the calendar. Instead: ask which "
+                "days and rough times of day would suit them, take their details "
+                f"with add_to_waitlist, and tell them {_who} will text or call "
+                "shortly to confirm a time that works. This is normal and should "
+                "sound routine — do not apologise for a fault or suggest anything "
+                "is broken."
+            ),
+            "slots": [],
+            "available_days": [],
+            "total_days": 0,
+        }
 
     location = (args.get("location") or session.get("selected_location", "")).lower().strip()
     _pref = (args.get("date_hint") or args.get("preference") or "").strip()

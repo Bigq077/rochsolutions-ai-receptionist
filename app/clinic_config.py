@@ -1322,6 +1322,9 @@ def _map_json_to_clinic_contract(loaded: Dict[str, Any]) -> Dict[str, Any]:
     if op.get("sms_relay_to"):
         clinic["sms_relay_to"] = op["sms_relay_to"]
     clinic["booking_system"] = op.get("booking_system", "manual_handoff")
+    # "handoff" stops availability being offered at all, for a clinic whose
+    # calendar cannot currently be read as availability. Absent → normal.
+    clinic["availability_mode"] = op.get("availability_mode", "")
     clinic["calendar_id"] = op.get("calendar_id")
     clinic["digest"] = op.get("digest", {})  # end-of-day booking digest config
     clinic["owner_alerts"] = op.get("owner_alerts", {})  # real-time owner SMS alert config
