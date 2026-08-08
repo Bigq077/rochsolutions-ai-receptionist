@@ -165,6 +165,151 @@ half, plus the four unchanged-clinic hashes).
 
 ---
 
+## `B-58` · **A completed cancellation was narrated as a failure** — **FIXED 2026-08-08**
+
+> ✅ **Fixed on `latency-eval`.** Regression:
+> `tests/regression/test_b58_duplicate_write_after_success.py`.
+
+**P1. Found on a live call, `CA0f9a12`, 8 Aug.** Billy's appointment was
+cancelled successfully. He said "thank you bye". On that farewell turn the model
+fired `cancel_appointment` once more, the gate refused it, and Susie began:
+
+> "I'm sorry — there was a problem completing that cancellation. Could you give
+> us a call back on oh seven eight seven oh, on…"
+
+**He heard none of it, and that was luck, not a safety net.** Twilio's `stop`
+event landed 150 ms after ElevenLabs returned the first chunk and the second was
+cancelled mid-synthesis — he had already hung up. A caller who waited two
+seconds, or said "sorry, what?", is told a completed cancellation failed and
+rings the clinic.
+
+**Cause 1 — the guard asserted a fact it never checked.** `_WRITE_NO_CLAIM_RULE`
+described the state of the world: the cancel rule ended *"Their original
+appointment still stands."* All `_note_write_result` knows is that **this
+attempt** was refused; it knows nothing about the calendar. All three rules now
+constrain Susie's *speech* instead ("This cancellation attempt did not go
+through… do not tell the caller anything about the state of their appointments
+that you have not been told"). This is the general half: it holds in cases the
+latch below does not cover, and it cannot weaken a genuine refusal because it
+only ever narrows what may be asserted.
+
+**Cause 2 — only booking had a call-scoped success latch.** `book_appointment`
+set `booking_write_confirmed`; cancel and reschedule set nothing, so a duplicate
+write on the farewell turn was indistinguishable from a first one that failed —
+it armed Gate 5f and drew the no-claim rule. All three families now latch in
+`WRITE_SUCCEEDED_KEY` (call-scoped, the opposite lifetime to the turn-scoped
+`WRITE_REFUSED_KEY`), and a refusal in a latched family arms nothing and is
+handed `_WRITE_ALREADY_DONE_RULE` — "already completed… does not undo it… if
+they are saying goodbye, simply say goodbye."
+
+The latch is keyed **per family, not per appointment id**: the cancel executor's
+success payload is `{"success", "cancelled", "was_at"}` with no id
+(`receptionist_tools.py` `_exec_cancel_appointment`), so an id-keyed latch needs
+the executor changed too. The cost is confined to the refusal path — a second,
+genuine cancellation still runs and still succeeds — and is pinned by
+`test_a_second_genuine_write_still_succeeds`.
+
+**Deliberately NOT done — dropping the tool from the schema.** The obvious third
+layer is to remove `cancel_appointment` from `_build_claude_tools` once a cancel
+has succeeded, so the model structurally cannot re-fire it. Rejected: a caller
+with two appointments cancelling both in one call would find the second request
+impossible, and would get *silence* rather than a controlled outcome — trading a
+narration bug for a dropped request, against §6.3. Causes 1 and 2 already
+convert the observed call into a goodbye.
+
+**Still open — cause 3, the root.** `_append_history` stores text pairs only, so
+no `tool_result` survives a turn. The model reached the farewell turn with no
+structured evidence the cancel had run at all, which is both why it re-fired and
+why it invented `patient_name: "Awlstuh"` from the only capitalised token in
+sight. Appending a compact fact per successful write would fix both. That
+touches every turn's context on every call and wants its own change and its own
+suite — tracked as `B-59`, not bundled here.
+
+---
+
+## `B-57` · **Theorem cannot cancel — its mandated CTA does not satisfy the cancel gate** — **FIXED 2026-08-05**
+
+> ✅ **Both halves fixed.** `latency-eval` `7090e4c`; `theorem-onboarding` `d2a3338`
+> (applied by symbol, not cherry-picked — the two branches have diverged too far
+> in these files for a clean pick).
+>
+> **Arming half:** `_cancel_retention_asked` now returns True for *either*
+> sanctioned wording — the retention question's `"altogether"` as before, or a
+> direct cancel CTA via the new `_direct_cancel_cta`. The CTA arm requires BOTH
+> an ask shape (`"shall i go ahead"`, `"would you like me to cancel"`, …) **and**
+> a cancel verb, so a statement cannot arm the gate, and the booking and
+> reschedule re-steers — which carry an ask shape but no cancel verb — still
+> cannot. That leak is asserted shut in the tests.
+>
+> **Consent half — the B-44 loop below.** `_cancel_reply_consents` now takes the
+> session and, *only* when the CTA named a single action, accepts a clear
+> affirmative through `_book_verdict_deterministic` (which settles negation and
+> correction before the yes, and returns `'unsure'` — which blocks — rather than
+> guessing). Against the retention question an explicit `"cancel"` token is still
+> required, because a bare "yes" answers an OR and identifies nothing. Every
+> negation, reschedule word and "keep/leave it" still blocks first, ahead of all
+> of this. **No classifier decides a deletion.**
+>
+> Read through `_cta_asked` rather than `last_bot_prompt` directly, so the
+> uncapped `last_question` is consulted too: a cancel read-back naming service,
+> practitioner and site runs past the 200-char cap (`B-38`), and the truncated
+> form would have silently fallen back to demanding the token.
+>
+> Regression: `tests/regression/test_b57_theorem_cancel_gate.py`, per arm and per
+> prompt — including the negation and re-steer cases, which are the ones that
+> must never regress.
+
+**P2. Found by sweep, 2026-08-04, not by a call.** The `B-36 R6` fix (`015eeb0`)
+was a single-literal write gate meeting a prompt that mandates different wording.
+That is a SHAPE, so all three write arms were swept against all three prompts.
+**Six of seven pass. One does not.**
+
+| arm | prompt | gate opens? |
+|---|---|---|
+| booking | theorem / template / template-provisional | ✅ ✅ ✅ (R6) |
+| reschedule | theorem / template | ✅ ✅ (widened `CA23199d08`) |
+| **cancel** | **theorem** | 🔴 **NO** |
+| cancel | template | ✅ |
+
+`_cancel_retention_asked` ([llm_stream.py](../../app/media_streams/llm_stream.py))
+requires `"altogether"`. `clinic_template_prompt.py:2353` teaches *"…or cancel it
+altogether?"* — passes. **Theorem mandates the other wording** at
+[susie_system_prompt.py:2188](../../app/prompts/susie_system_prompt.py): *"The
+CTA is always 'shall I go ahead and cancel that?'"* — no `"altogether"`, so
+`cancel_appointment` is refused. The template even calls that phrasing
+"redundant" at `:2387`, which is why only Theorem is exposed.
+
+### Why this is P2 and not P1 — the outcome differs from R6
+
+**Theorem's cancel closing IS visible to Gate 5f** (*"That's all done — your
+appointment has been cancelled"* → `_false_write_claim` = True), so the phantom
+is **stripped, not spoken**. No silent false confirmation. The re-steer then
+contains `"altogether"` and re-opens the gate, so it self-heals in one turn.
+
+### But it can loop, and that is B-44 recurring
+
+Recovery needs an explicit cancel token — `_cancel_reply_consents` measured:
+
+    "cancel it" / "yes cancel it"  -> True
+    "yes" / "yes please" / "go ahead" -> False
+
+The re-steer asks *"would you like to keep this appointment, or cancel it
+altogether?"* — to which **"yes" is the natural answer**, and it blocks again.
+`B-44` recorded exactly this: a caller stating an intention to cancel **four
+times across 89 s**.
+
+**Reaches Theorem only.** Not screening-scoped. `theorem-onboarding` is about to
+take Mark's live traffic, so it lands with a cancel path a caller may not be able
+to complete.
+
+**Fix:** widen `_cancel_retention_asked` to accept `"cancel that"` — the same
+repair as R6 and as `_move_confirmation_asked`. `_cancel_reply_consents` remains
+the second arm, so the destructive write still needs explicit consent. Ships with
+the R6 test file's structure: controls per arm, and end-to-end through
+`sanitise_response` rather than the predicate alone.
+
+---
+
 ## `B-54` · **a real calendar event was cancelled that the caller did not mean** — steering **FIXED `c273475`**, gate **FIXED `9c6fd53`**
 
 **P1. Found live, 2026-08-03 22:46, `CA156fa25206ffa7b15cb3474b617c8672`, build
