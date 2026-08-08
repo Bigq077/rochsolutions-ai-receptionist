@@ -2,15 +2,23 @@
 """
 Pre-synthesis script — generates filler audio clips in Susie's voice.
 
-Output:
-  audio_clips/filler_checking.ulaw  — "Let me have a look at what we've got…"
-  audio_clips/filler_moment.ulaw    — "Just one moment…"
+Output — two pools, one clip drawn from each per turn:
+  audio_clips/filler_checking.ulaw, _2, _3, …   the hold phrase
+  audio_clips/filler_moment.ulaw,   _2, _3, …   the "still going" phrase
 
 Format: µ-law 8kHz (ulaw_8000) — Twilio-ready, no ffmpeg required.
 
 Usage:
-    python scripts/synthesise_filler.py            # skip if files already exist
-    python scripts/synthesise_filler.py --force    # regenerate unconditionally
+    ELEVENLABS_VOICE_ID=<live value> python scripts/synthesise_filler.py
+
+The no-flag run skips clips that already exist, so adding a variant to a pool
+below costs one API call for the new file and leaves the ones callers already
+hear untouched — which is what you want, because regenerating is the only way
+the live voice can silently change. Use --force only when you mean to recut
+everything (a voice change, a model change).
+
+Commit the output: Render deploys from git, so an untracked clip is a clip the
+live service does not have.
 
 Requirements:
     ELEVENLABS_API_KEY environment variable must be set.
@@ -70,10 +78,60 @@ _AUDIO_CLIPS_DIR = Path(__file__).resolve().parents[1] / "audio_clips"
 # "bear with me", "just a moment", "one moment please" — or a deterministic clip
 # becomes the one path by which the caller hears a phrase the engine forbids
 # everywhere else. That has already happened twice, in two filler lists.
-CLIPS = [
-    ("Let me just check that for you…", _AUDIO_CLIPS_DIR / "filler_checking.ulaw"),
-    ("Just one moment…",                _AUDIO_CLIPS_DIR / "filler_moment.ulaw"),
+# ── Why these are POOLS and not two sentences ────────────────────────────────
+# Owner report, 2026-08-08: latency is good but the hold phrase "sounds quite
+# robotic". It is not the wording. Until this change each pool was one file, so
+# every hold moment in every call on every clinic played a byte-identical
+# recording — the same breath, the same stress, the same length. A person
+# saying one sentence twice is never acoustically equal; a file is, and the
+# second playing is what reads as a machine.
+#
+# So the variation has to be over RECORDINGS, not just words: five different
+# sentences cut once each would still be five fixed waveforms, but the caller
+# meets a different one each time and the metronome is gone. They are also
+# varied in LENGTH and opening rhythm on purpose — a pool of five same-shaped
+# sentences ("Let me X for you…" five times) still ticks.
+#
+# `FillerGuard.discover_clip_pool` reads these off disk by name: the first
+# member keeps the historical filename and the rest are `_2`, `_3`, … Anything
+# not yet generated is simply not in the pool, so a branch that has not run this
+# script keeps working with the single clip it already has.
+_PRIMARY_POOL = [
+    # Variant 1 is the phrase already live on both clinics — kept first, and
+    # kept at its original filename, so regenerating does not silently change
+    # what a caller hears most often.
+    "Let me just check that for you…",
+    "Okay, let me pull the diary up…",
+    "Right, let me see what we've got…",
+    "I'll have a quick look for you now…",
+    "Let me find out what's free…",
 ]
+
+# Plays 2.5s after the primary when the LLM still has not answered. Shorter and
+# lower-key than the primary pool by design: this is a second reassurance, not a
+# second announcement, and re-announcing the lookup makes the wait feel longer.
+_SECONDARY_POOL = [
+    "Just one moment…",
+    "Won't be a second…",
+    "Just bringing that up now…",
+    "Nearly with you…",
+]
+
+
+def _pool_paths(stem: str, count: int) -> list[Path]:
+    """filler_checking.ulaw, filler_checking_2.ulaw, … — must match
+    `app.media_streams.filler_guard.discover_clip_pool`, which stops at the
+    first gap in the sequence."""
+    return [
+        _AUDIO_CLIPS_DIR / (f"{stem}.ulaw" if i == 0 else f"{stem}_{i + 1}.ulaw")
+        for i in range(count)
+    ]
+
+
+# Flat (text, path) list — the shape the regression tests read.
+CLIPS = list(zip(_PRIMARY_POOL, _pool_paths("filler_checking", len(_PRIMARY_POOL)))) + list(
+    zip(_SECONDARY_POOL, _pool_paths("filler_moment", len(_SECONDARY_POOL)))
+)
 
 
 def generate(text: str, output_path: Path, api_key: str) -> None:
