@@ -105,8 +105,20 @@ def test_switch_is_off_by_default(mode, monkeypatch):
     assert reached["yes"], f"guard fired for availability_mode={mode!r}"
 
 
-def test_ve_clinic_json_has_the_switch_on():
-    """The holding switch is only useful if it is actually set for VE."""
+def test_ve_is_never_on_the_published_reader():
+    """VE ran on `published` until 8 Aug 2026, and it offered callers the times
+    Jonathan was already working — his flight to Ibiza among them. Any mode but
+    that one is a judgement call; `published` is simply wrong for this clinic.
+
+    Deliberately NOT pinned to a single value: `handoff` and `diary` are both
+    legitimate live states and switching between them is the designed retreat.
+    Pinning the exact mode would turn that retreat into a failing test.
+    """
     from app.clinic_config import get_clinic
 
-    assert (get_clinic("vital_edge") or {}).get("availability_mode") == "handoff"
+    mode = (get_clinic("vital_edge") or {}).get("availability_mode")
+    assert mode in ("diary", "handoff"), f"unexpected availability_mode {mode!r}"
+    assert mode != "published", (
+        "VE is back on the published reader — it treats Jonathan's booked work "
+        "as available and will offer callers times he is already working"
+    )

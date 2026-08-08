@@ -60,7 +60,7 @@
     "transfer_phone": "+447545862307",
     "booking_system": "google_calendar_provisional",
     "_availability_mode_note": "8 Aug 2026. The calendar holds Jonathan's BOOKED work, not published availability, so the 'published' reader offered callers the times he already had clients (it offered his flight to Ibiza as a massage slot). 'diary' subtracts the calendar from working_hours below and is the intended mode; 'handoff' offers no times at all and is the safe fallback — switching back is editing this one value, not a revert. 'published' is wrong for this clinic and must not be restored.",
-    "availability_mode": "handoff",
+    "availability_mode": "diary",
     "_calendar_id_note": "Dedicated 'Vital Edge — Available' Google calendar where Jonathan publishes open slots. Susie's google_tokens MUST be OAuthed as Vital Edge's own Google account. GOOGLE_CALENDAR_ID env on the Render service overrides this if set. TBC: confirm the exact calendar address/ID.",
     "calendar_id": "vitaledgetherapy@gmail.com",
     "_owner_notification_note": "CONFIRMED 2026-07-10: +447545862307 is Jonathan's actual mobile, so the provisional-booking ping reaches him. Susie texts it the moment she takes a provisional booking (name/phone/time/duration/notes). SMS now; WhatsApp is a fast-follow. NOTE this is deliberately the same as transfer_phone and the caller-facing primary_phone — the AI itself answers on a separate Twilio line (see clinic_config.py NUMBER->clinic map).",

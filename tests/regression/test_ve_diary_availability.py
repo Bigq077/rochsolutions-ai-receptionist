@@ -217,8 +217,17 @@ def test_session_available_days_is_populated(monkeypatch):
     assert session.get("last_offered_slots")
 
 
-def test_handoff_mode_still_wins_over_diary(monkeypatch):
-    """The fallback must be reachable by config alone."""
+def test_ve_is_wired_to_the_diary_reader():
+    """LIVE since 8 Aug 2026. If this ever fails, check it was a deliberate
+    retreat to `handoff` (offer nothing) and not a slip back to `published`,
+    which offers Jonathan's booked work as availability."""
     from app.clinic_config import get_clinic
 
-    assert (get_clinic("vital_edge") or {}).get("availability_mode") == "handoff"
+    c = get_clinic("vital_edge") or {}
+    assert c.get("availability_mode") == "diary"
+    # The envelope the diary is subtracted from — a silent reset to all-closed
+    # would produce "nothing available" on every call.
+    assert c.get("working_hours", {}).get("sat") == (9.0, 19.0)
+    assert c.get("slot_break_minutes") == 5
+    assert c.get("days_ahead") == 17
+    assert c.get("allow_same_day") is False
