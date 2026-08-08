@@ -1210,6 +1210,36 @@ def _confirmed_slot_is_stale(conf_slot: str, session: Dict[str, Any]) -> bool:
     return seen_any
 
 
+def _clinic_asks_its_own_reason_question(session: Dict[str, Any]) -> bool:
+    """True when THIS clinic deliberately asks the caller why they are coming in.
+
+    The owner decision behind Gate 5b-r — Susie never asks what brings the
+    caller in — is Theorem's and jv_v1's. Vital Edge is the exception: it asks
+    the question on purpose, in its own wording, exactly once, and the whole
+    mechanism is already gated on the same key (`902411a`, `bec1b5e`).
+
+    Ungated, Gate 5b-r is a booking-failure landmine for Vital Edge and the
+    suite cannot see it. VE's MANDATED wording ("Is there a particular area or
+    reason for the massage…") does not match _REASON_QUESTION_RE, so every test
+    stays green — but the model improvises, and on CA86c320ef it improvised
+    "What's the appointment for?", which the regex DOES strip. The reason is
+    then never asked, so `note_reason_question_asked` never latches, so no
+    reason is collected, and `book_appointment` refuses for want of one.
+
+    Read through `get_clinic` rather than the session so it follows the same
+    source of truth as the prompt renderer, and fail CLOSED — any error means
+    the clinic did not opt in, so the suppression still runs. That is the safe
+    direction: a clinic that never asked for the reason question keeps the
+    protection it has today.
+    """
+    try:
+        from app.clinic_config import get_clinic
+        _pf = (get_clinic(session.get("clinic_id")) or {}).get("prompt_facts") or {}
+        return bool(_pf.get("reason_question"))
+    except Exception:
+        return False
+
+
 def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     """
     Clean LLM output before it reaches tts_text_queue.
@@ -1272,7 +1302,10 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     #
     # On CA041352eb the entire turn was the reason question, twice over, so this
     # is the common case rather than the corner.
-    _reason_cleaned = _REASON_QUESTION_RE.sub("", result)
+    if _clinic_asks_its_own_reason_question(session):
+        _reason_cleaned = result          # this clinic asks it on purpose
+    else:
+        _reason_cleaned = _REASON_QUESTION_RE.sub("", result)
     if _reason_cleaned != result:
         _reason_cleaned = re.sub(r"\s{2,}", " ", _reason_cleaned).strip()
         if not _reason_cleaned:
