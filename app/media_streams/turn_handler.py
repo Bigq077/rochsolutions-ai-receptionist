@@ -1349,6 +1349,32 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
             "name" if not _name_known(session) else "phone",
             _next_ask[:60],
         )
+        # ── O-18: this substitution can deadlock the name step ───────────────
+        # When the name is what is missing, the sentence being deleted is very
+        # often the model's ACKNOWLEDGEMENT of the name the caller just gave
+        # ("Thanks Quentin — shall I go ahead and book that in?"). That
+        # acknowledgement is the ONLY thing _v3_try_persist_name can read a
+        # first name out of: it scans the assistant reply, and the caller's own
+        # utterance is used solely to recover a surname.
+        #
+        # conversation_history stores the SPOKEN text (llm_stream._append_history,
+        # deliberate since 2026-08-02), so by the time the persist runs the
+        # acknowledgement is gone, nothing is stored, _name_known stays False,
+        # and the next turn lands here again. On CA041352eb (2026-08-08) the
+        # caller gave his name three times, was asked a fourth, and hung up:
+        #
+        #   00:01:27  "um yeah that would be quentin rook"
+        #   00:01:28  "Before I do that — could I take your first name…?"
+        #   00:01:36  "yeah that'll be quentin rook"          → same sentence
+        #   00:01:45  "yeah i said that would be quentin rook" → same sentence
+        #
+        # The flag tells the persist call site that THIS turn's reply was
+        # rewritten here, so it may fall back to the raw generation. Narrow on
+        # purpose: the raw is consulted only in the situation this gate created,
+        # so it does not generally reopen "the model believes things it never
+        # said" — the failure _append_history was changed to prevent (CA7d46c2bc).
+        if not _name_known(session):
+            session["_gate5g_dropped_name_ack"] = True
         result = _replaced
 
     # ── Booking-readback DATE enforcement ────────────────────────────────────
