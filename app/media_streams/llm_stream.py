@@ -2784,6 +2784,12 @@ class LLMStream:
         # the marked ack-filler chunk before it reaches ElevenLabs.
         session["_ack_filler_active"]    = False
         session["_ack_filler_cancelled"] = False
+        # O-18: set by Gate 5g when it deletes a booking CTA because the NAME is
+        # missing — which also deletes the model's acknowledgement of the name
+        # the caller just gave. Reset per turn, or a stale True would let a later
+        # turn read a name out of an unrelated raw reply. See turn_handler and
+        # connection._v3_try_persist_name's call site.
+        session["_gate5g_dropped_name_ack"] = False
         # Pre-slot cancellation: all text chunks in this turn are prefixed with
         # PRE_SLOT_MARKER.  When check_availability tool_use is detected via
         # content_block_start, _pre_slot_cancelled is set True so the tts_loop
