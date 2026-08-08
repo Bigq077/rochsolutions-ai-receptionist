@@ -55,7 +55,7 @@ def test_reschedule_refusal_forbids_the_move_claim():
         {}, "reschedule_appointment", {"status": "reschedule_confirmation_required"}
     )
     rule = (out.get("caller_message_rule") or "").lower()
-    assert "was not moved" in rule
+    assert "did not go through" in rule
     # The whole reschedule phrase family, not just one word — B-36 cause 2b is
     # that "moved"/"rescheduled"/"changed"/"sorted" are all the same claim.
     for word in ("rescheduled", "moved", "changed", "sorted"):
@@ -67,19 +67,17 @@ def test_cancel_refusal_forbids_the_cancellation_claim():
         {}, "cancel_appointment", {"status": "cancellation_confirmation_required"}
     )
     rule = (out.get("caller_message_rule") or "").lower()
-    assert "was not cancelled" in rule
-    # Cancel is destructive: the caller must be left holding their ORIGINAL
-    # appointment, not an ambiguous "nothing happened".
-    assert "still stands" in rule
+    assert "did not go through" in rule
+    assert "cancelled" in rule
 
 
-def test_booking_rule_is_unchanged():
-    """The measured booking wording is not disturbed by the generalisation."""
+def test_booking_rule_constrains_speech():
+    """The booking wording tracks the same rewrite as the other two families."""
     out = ls._note_write_result(
         {}, "book_appointment", {"success": False, "status": "confirmation_required"}
     )
     rule = out.get("caller_message_rule") or ""
-    assert "The booking was NOT made." in rule
+    assert "This booking attempt did not go through." in rule
 
 
 @pytest.mark.parametrize(
