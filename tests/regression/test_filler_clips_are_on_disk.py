@@ -27,8 +27,21 @@ import audioop
 import pytest
 
 from app.media_streams.connection import _AUDIO_CLIPS_DIR
+from app.media_streams.filler_guard import discover_clip_pool
 
+# The first member of each pool. These two must always exist — without them the
+# guard has nothing to play at all. The numbered variants are checked separately
+# below: they are what stops the clip sounding like a recording, but a branch
+# that has not regenerated yet is degraded, not broken.
 CLIPS = ["filler_checking.ulaw", "filler_moment.ulaw"]
+
+# Everything actually on disk, variants included, so a malformed variant is
+# caught by the format checks the same way the first member is.
+POOLED = [
+    p.name
+    for stem in ("filler_checking", "filler_moment")
+    for p in discover_clip_pool(_AUDIO_CLIPS_DIR / f"{stem}.ulaw")
+]
 
 
 def test_the_clips_directory_exists():
@@ -45,7 +58,26 @@ def test_each_clip_is_present_and_non_empty(clip):
     assert path.stat().st_size > 0, f"{path} is empty"
 
 
-@pytest.mark.parametrize("clip", CLIPS)
+@pytest.mark.parametrize("stem", ["filler_checking", "filler_moment"])
+def test_each_pool_has_more_than_one_variant(stem):
+    """
+    A pool of one is a single recording replayed for the life of the service —
+    same breath, same stress, to the byte. Owner report 2026-08-08: "latency is
+    great but it sounds quite robotic". The rotation code is in place; this is
+    red until the audio exists, and it can only be cut with the paid key and the
+    LIVE voice id, neither of which belongs in this repo.
+    """
+    pool = discover_clip_pool(_AUDIO_CLIPS_DIR / f"{stem}.ulaw")
+    assert len(pool) > 1, (
+        f"{stem} is a pool of {len(pool)} — every call plays the identical "
+        f"recording. Read ELEVENLABS_VOICE_ID off the Render service, then:\n"
+        f"    ELEVENLABS_VOICE_ID=<live value> python scripts/synthesise_filler.py\n"
+        f"(no --force: it generates only the missing variants and leaves the "
+        f"clips callers already hear alone). Then commit audio_clips/."
+    )
+
+
+@pytest.mark.parametrize("clip", POOLED or CLIPS)
 def test_each_clip_is_plausible_8k_mulaw(clip):
     """
     Twilio needs raw µ-law 8 kHz with no container. An MP3 or a WAV written to a
