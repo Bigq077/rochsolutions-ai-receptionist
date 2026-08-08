@@ -490,3 +490,101 @@ def backfill_surname(
             ):
                 return titlecase_surname(cand)
     return ""
+
+
+# ---------------------------------------------------------------------------
+# First-turn self-introduction
+# ---------------------------------------------------------------------------
+# A caller who opens with "hi, it's Quentin" should not be asked their name
+# again. Detecting that is easy; detecting it WITHOUT inventing a name out of
+# ordinary speech is the whole problem, and it has now failed three times:
+#
+#   2026-08-04  "a shockwave on its own"          -> name "Own"    (T-7)
+#   2026-08-04  "is it worth its cost"            -> name "Cost"   (T-7)
+#   2026-08-08  "...to be fair i'm free all week" -> name "Free"   (CA 22:13)
+#
+# The first two were answered with a denylist and then a question gate. The
+# question gate is correct and still applies at the call site, but it cannot
+# help here: "i'm free all week" is a STATEMENT, so it passes the gate, and the
+# denylist was the only thing left. Replaying the shipped patterns over ordinary
+# booking speech produced a false name in 15 of 16 utterances -- "i'm calling
+# about my knee" -> "Calling", "i'm not sure" -> "Not", "it's for my back" ->
+# "For". This was not an edge case; it was the normal case.
+#
+# ── The rule that actually generalises ────────────────────────────────────
+# An introduction ENDS ITS CLAUSE. "I'm Quentin." "It's Quentin, calling about
+# my knee." A predicate does not: "I'm free ALL WEEK", "I'm calling ABOUT my
+# knee", "I'm not SURE". So the captured token is accepted only when what
+# follows it is a clause boundary -- end of utterance, punctuation, or one of a
+# few words that genuinely do follow a name in an introduction.
+#
+# That kills the open-ended class. What it cannot decide is the single-word
+# predicate that also ends a clause ("i'm flexible", "it's urgent"), because
+# those are grammatically identical to "i'm Quentin". That residue IS bounded,
+# unlike the class above, so a denylist is the right shape for it -- and it is
+# the only part of this function a future false positive should be added to.
+_INTRO_CONTINUATIONS = frozenset({
+    # Words that can legitimately follow a first name in an introduction.
+    "here", "speaking", "calling", "and", "again",
+})
+
+# Single-word predicates that end a clause, so the boundary rule above cannot
+# separate them from a real name. Bounded class; extend HERE, not elsewhere.
+_NOT_A_FIRST_NAME = frozenset({
+    "free", "flexible", "urgent", "fine", "good", "easy", "ready", "happy",
+    "afraid", "sorry", "new", "not", "sure", "okay", "ok", "well", "better",
+    "worse", "busy", "available", "keen", "interested", "desperate", "fed",
+    "back", "there", "here", "in", "out", "off", "done", "stuck",
+})
+
+_SELF_INTRO_PATTERNS = (
+    # "it's Quentin" / "this is Quentin" / "i'm Quentin" / "hello it's Quentin"
+    # The apostrophe on it[’]s is REQUIRED — an optional one let the possessive
+    # "its" match the contraction, which is how "on its own" became "Own".
+    # "i'm" keeps an optional apostrophe: bare "im" is a safe lead-in.
+    r"\b(?:it[‘’']s|this is|i[‘’']?m|hello[,\s]+(?:it[‘’']s)?)\s+"
+    r"([A-Za-z][a-z]{1,20})\b(?P<tail>.*)$",
+    r"\bmy name is ([A-Za-z][a-z]{1,20})\b(?P<tail>.*)$",
+    r"^([A-Za-z][a-z]{1,20}) here\b(?P<tail>.*)$",
+)
+
+
+def first_name_from_self_introduction(utterance: str) -> str:
+    """Return a first name ONLY when the caller actually introduced themselves.
+
+    Returns "" for anything else, including every phrasing that looks like an
+    introduction to a regex but is ordinary speech to a human. Deliberately
+    biased towards returning nothing: a missed introduction costs one extra
+    "and your name?", while a false one is spoken back to the caller and can
+    reach the booking.
+
+    See the module note above for the three live incidents and the reasoning.
+    """
+    text = (utterance or "").strip()
+    if not text:
+        return ""
+
+    for _pat in _SELF_INTRO_PATTERNS:
+        m = re.search(_pat, text, re.I)
+        if not m:
+            continue
+        cand = m.group(1)
+        low = cand.lower()
+
+        if low in _NOT_A_FIRST_NAME or low in NAME_FALSE_POSITIVES:
+            continue
+
+        # The clause-boundary test. Everything after the candidate must be
+        # nothing, punctuation, or an allowed continuation word.
+        tail = (m.group("tail") or "").strip()
+        if tail:
+            if tail[0] in ".,!?;:—-":
+                pass                                  # "i'm Quentin, calling…"
+            else:
+                nxt = re.split(r"[^a-z']+", tail.lower(), maxsplit=1)[0]
+                if nxt not in _INTRO_CONTINUATIONS:
+                    continue                          # "i'm free ALL week"
+
+        return cand.capitalize()
+
+    return ""

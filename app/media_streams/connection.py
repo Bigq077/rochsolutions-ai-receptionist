@@ -2238,6 +2238,7 @@ from app.name_capture import (  # noqa: E402
     NAME_FALSE_POSITIVES as _V3_NAME_FALSE_POSITIVES,
     extract_surname as _v3_extract_surname,
     backfill_surname as _v3_backfill_surname,
+    first_name_from_self_introduction,
 )
 
 # Time-lead words that must never be mistaken for a caller's name — guards the
@@ -12010,39 +12011,29 @@ class WebSocketCallHandler:
                             # ones start being caught. "i'm" keeps its optional
                             # apostrophe — bare "im" is a safe lead-in, bare
                             # "its" is not.
-                            _name_patterns = [
-                                r"\b(?:it[‘’']s|this is|i[‘’']?m|"
-                                r"hello[,\s]+(?:it[‘’']s)?)\s+"
-                                r"([A-Za-z][a-z]{1,20})\b",
-                                r"\bmy name is ([A-Za-z][a-z]{1,20})\b",
-                                r"^([A-Za-z][a-z]{1,20}) here\b",
-                            ]
-                            _NOT_NAMES = {
-                                "Like", "To", "An", "The", "A",
-                                "And", "Book", "Please", "Just",
-                                "Really", "Very", "Some", "My",
-                                "Your", "Our", "Hi", "Hello",
-                                "Yeah", "Yes", "No", "Ok", "Okay",
-                                # common false-positive words
-                                "Me", "It", "He", "She", "We",
-                                "Be", "Do", "Go", "At", "In",
-                                "On", "Up", "If", "As", "Is",
-                            }
-                            # The denylist above is the wrong shape for this
-                            # job and cannot be made right: it can only ever
-                            # hold junk somebody already thought of, and "own"
-                            # is a word ordinary English produces constantly
-                            # ("on its own", "my own", "own it"). The question
-                            # gate is the real guard; _NOT_NAMES stays as a
-                            # second line for statement turns.
-                            _name_found = None
-                            for _pat in _name_patterns:
-                                _nm = re.search(_pat, utterance, re.I)
-                                if _nm:
-                                    _candidate = _nm.group(1).capitalize()
-                                    if _candidate not in _NOT_NAMES:
-                                        _name_found = _candidate
-                                        break
+                            # The patterns and the denylist that used to live
+                            # inline here now live in app/name_capture.py, the
+                            # module that already owns name parsing and its
+                            # false-positive vocabularies. The denylist was the
+                            # wrong shape for the job and its own comment said
+                            # so: it can only ever hold junk somebody already
+                            # thought of. It held "Own" and "Cost" from T-7 and
+                            # still admitted "Free" from "i'm free all week"
+                            # (2026-08-08, 22:13). Replaying the shipped
+                            # patterns over ordinary booking speech produced a
+                            # false name in 15 of 16 utterances.
+                            #
+                            # first_name_from_self_introduction adds the test
+                            # that generalises: an introduction ENDS ITS CLAUSE,
+                            # a predicate continues into one. See its module
+                            # note for the three incidents and the reasoning.
+                            #
+                            # _extractable_turn is unchanged and still applies —
+                            # it is a different guard for a different failure
+                            # (the caller asking a question), and it is correct.
+                            _name_found = first_name_from_self_introduction(
+                                utterance
+                            )
 
                             if _name_found and _extractable_turn:
                                 _sc = (
