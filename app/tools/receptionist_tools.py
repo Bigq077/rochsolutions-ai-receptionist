@@ -1511,6 +1511,25 @@ TOOL_SCHEMAS = [
 ]
 
 
+# theorem_v3's replacement for TOOL_BOOK_APPOINTMENT's `reason` description.
+#
+# The stock description reads "REQUIRED IN PRACTICE ... this tool REFUSES the
+# booking when no reason is on record. Ask for it before checking availability."
+# That is a standing instruction to ask, it ships with every request, and it is
+# not subject to the system prompt at all — which is why suppressing the
+# question at the output could never hold. It is correct for JV and Vital Edge
+# and wrong for Theorem, so it is rewritten here rather than changed at source.
+_THEOREM_REASON_DESC = (
+    "OPTIONAL on this clinic, and an empty reason is a correct outcome — the "
+    "booking is never refused for the want of one. NEVER ask the caller what "
+    "the appointment is for, what brings them in, or any variation: that "
+    "question does not exist on this clinic. Pass this field ONLY when the "
+    "caller volunteered their condition unprompted, in their own words (e.g. "
+    "'right shoulder pain since a fall'). Otherwise omit it entirely. Never a "
+    "guess, and never a placeholder."
+)
+
+
 def build_tool_schemas(clinic_id: Optional[str]) -> list:
     """
     Return the tool schemas for a clinic.
@@ -1519,14 +1538,25 @@ def build_tool_schemas(clinic_id: Optional[str]) -> list:
     alcester/redditch, service 'physiotherapy assessment', 50-min default). For a
     single-site template clinic (e.g. jv_v1) that forces the LLM to pass the
     wrong location/service. Here we deep-copy and rewrite location/service/
-    duration from the clinic's own config. Theorem / legacy / multi-site clinics
-    get the static list unchanged (single_location_template returns None).
+    duration from the clinic's own config. Legacy / multi-site clinics get the
+    static list unchanged (single_location_template returns None); Theorem gets
+    it with one field rewritten — see _THEOREM_REASON_DESC.
     """
     import copy
     from app.clinic_config import get_clinic, single_location_template
 
     solo = single_location_template(clinic_id)
     if not solo:
+        if clinic_id == "theorem_v3":
+            # Deep-copied, never mutated in place: TOOL_SCHEMAS is a module-level
+            # constant shared by every clinic in the process, and rewriting it
+            # would silently give JV and Vital Edge the never-ask instruction too.
+            out = copy.deepcopy(list(TOOL_SCHEMAS))
+            for t in out:
+                _r = ((t.get("input_schema") or {}).get("properties") or {}).get("reason")
+                if isinstance(_r, dict) and "REQUIRED IN PRACTICE" in (_r.get("description") or ""):
+                    _r["description"] = _THEOREM_REASON_DESC
+            return out
         return list(TOOL_SCHEMAS)
 
     clinic = get_clinic(clinic_id)
@@ -5022,7 +5052,24 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         or _gate_text(session.get("reason"))
         or _gate_text(_cg_collected.get("reason"))
     )
-    if not _cg_reason:
+    # THEOREM ONLY — the reason is never asked here (owner decision 2026-08-07,
+    # scope reconfirmed 2026-08-09), so it can only ever arrive volunteered, and
+    # `_extract_reason` cannot supply it either: that runs from flow.py, and the
+    # FlowEngine is bypassed on every live clinic.
+    #
+    # Which makes this gate a deadlock on theorem_v3, not a safety net. On a
+    # caller who never mentions their injury ("um yeah i'd like to book an
+    # appointment", CAb1592daa) the reason is unreachable, so the booking is
+    # refused — and the refusal message below tells the model to ask "What's the
+    # appointment for?", which Gate 5b-r then deletes on its way to TTS. The
+    # model asks, gets deleted, asks again. That loop IS the reported pestering,
+    # and underneath it no such caller could be booked at all.
+    #
+    # So on Theorem an empty reason is a correct outcome and must not block. The
+    # gate stands unchanged everywhere else — asking is right on JV and Vital
+    # Edge, and only Theorem carries the never-ask rule.
+    _reason_required = session.get("clinic_id") != "theorem_v3"
+    if _reason_required and not _cg_reason:
         logger.warning(
             "[book] BLOCKED — no reason on record (A2) clinic=%s",
             session.get("clinic_id"),
@@ -5039,6 +5086,14 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
                 "book_appointment again passing their own words as `reason`."
             ),
         }
+    if not _cg_reason:
+        # Only reachable on Theorem. Logged because "the booking has no reason"
+        # must stay legible in the call record — it is now an expected outcome,
+        # not a silent one.
+        logger.info(
+            "[book] no reason on record — not required on clinic=%s, proceeding",
+            session.get("clinic_id"),
+        )
     # Commit the reason both ways, so a booking that passes this gate always
     # carries the reason it was made for into the call record and the SMS.
     if not _gate_text(session.get("reason")):

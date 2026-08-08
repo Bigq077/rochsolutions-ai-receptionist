@@ -277,7 +277,18 @@ UNMOVED_PROMPTS = {
     # byte-identical to d1639f0's render before this pin was updated — the
     # change is an addition for one case, not an edit to the existing one.
     # Cancel wording untouched; the assertions above are what prove that.
-    "theorem_v3": "e67a8d1316b97189",
+    # Moved 2026-08-09, deliberately: e67a8d1316b97189 -> 81a5bc13fdf6598c.
+    # theorem_v3 gained the HARD RULE banning the reason question, and lost the
+    # worked example that demonstrated it ("Susie: 'No problem at all — what
+    # brings you in today?'"). The prompt had never carried the rule at all —
+    # the version cited by 9ca1ce2 sits in the fast_booking branch, which this
+    # clinic does not render — so the model was being told to ask by its own
+    # prompt while Gate 5b-r deleted the sentence on the way out.
+    #
+    # The other four pins are unchanged, and that is the assertion that matters
+    # here: asking the reason is CORRECT on jv_v1 and vital_edge, and neither
+    # moved. Cancel wording untouched; the assertions above are what prove that.
+    "theorem_v3": "81a5bc13fdf6598c",
     "vital_edge": "706299246fa856dc",
 }
 

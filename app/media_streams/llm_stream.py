@@ -2482,6 +2482,12 @@ class LLMStream:
         # post-Gate-5 chunk is released. Cleared here so a turn can never inherit
         # the previous turn's speech.
         session.pop("_spoken_this_turn", None)
+        # Gate 5b-r substitutes the outstanding booking step when stripping the
+        # reason question leaves the turn with nothing to ask. TURN-scoped, and
+        # it must be: sanitise_response runs once per streamed chunk, so without
+        # the reset a later turn would inherit the latch and go back to shipping
+        # the silence this exists to prevent.
+        session.pop("_gate5br_substituted", None)
         # L1/L2: the affirmation verdict is memoised per turn. The tool loop can
         # retry book_appointment up to MAX_TOOL_ITERATIONS times (CA7e389a47 did
         # three in one turn), and without this each retry would re-run the

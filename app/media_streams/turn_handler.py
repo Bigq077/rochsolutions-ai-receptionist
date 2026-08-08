@@ -100,6 +100,41 @@ _REASON_PREAMBLE_RE = re.compile(
 )
 
 
+# The same defect one layer out, and the reason BOTH patterns exist.
+#
+# _REASON_PREAMBLE_RE above is deliberately narrow — it recognises the admin
+# framing ("a reason on the booking", "for our records") and nothing else. That
+# is the right shape for what it catches, and it does not catch this:
+#
+#     CAb1592daa, 2026-08-08 23:16:42
+#     "<reason question> Just so Mark has a heads up."
+#
+# No admin noun, so the preamble pattern misses it, the residue survived, the
+# dead-end substitution below never fired, and the caller heard a dangling "Just
+# so Mark has a heads up." followed by nine seconds of nothing before saying
+# "hello" into the silence. Same defect as CA32440a92, different words — which
+# is the fourth time a matcher keyed to the shape of model speech has been
+# beaten by the model saying it another way.
+#
+# So this one is not a third list of phrasings. The call site asks the general
+# question instead — does the turn still ASK anything? — and this pattern only
+# decides whether the leftover is worth keeping. Anything it does not match
+# keeps its text and merely gains a question, which is the safe direction.
+#
+# Matching on the opening connector ALONE is not safe: every slot readback in
+# this system opens "So that's Wednesday the 19th of August at ten...", and a
+# connector-only rule deleted it. The second half is what makes this a purpose
+# clause rather than a sentence that merely starts like one — it has to be
+# ABOUT someone being told or made ready.
+_REASON_RESIDUE_FRAGMENT_RE = re.compile(
+    r"^(?:just\s+so|so\s+that|so|that\s+way|and\s+that\s+way"
+    r"|in\s+order\s+(?:to|that)|and|because|then)\b"
+    r"[^.!?]*\b(?:know|knows|prepare|prepares|prepared|ready|heads\s+up"
+    r"|help|helps|expect|expects|aware|idea)\b",
+    re.IGNORECASE,
+)
+
+
 _BANNED_SENTENCE_RE = [
     # ── Markdown artefacts (A1, 2026-07-29) ─────────────────────────────────
     # CAbad8422e read a booking readback aloud as markdown: "**Patient name:**
@@ -1338,16 +1373,43 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
             logger.info("[ms_gate5] removed orphaned reason preamble")
             _reason_cleaned = _orphan
         _reason_cleaned = re.sub(r"\s{2,}", " ", _reason_cleaned).strip()
-        if not _reason_cleaned:
-            # Nothing survived — the turn WAS the reason question. Ask the step
-            # that is genuinely outstanding instead, in the prompt's own order,
-            # rather than handing back silence or a re-ask.
-            _reason_cleaned = _next_booking_question_for(session)
-            logger.info(
-                "[ms_gate5] reason question removed — turn was nothing else; "
-                "asked the outstanding step instead: %r",
-                _reason_cleaned[:60],
-            )
+        # The strip removed the only thing this turn asked. Whatever is left,
+        # the caller now has nothing to answer — so the test is not "is the
+        # residue empty?" but "does the residue still ASK something?". A turn
+        # that asks nothing is dead air, and dead air on a live call reads as a
+        # broken system (see _REASON_RESIDUE_FRAGMENT_RE).
+        #
+        # Substitute at most once per turn: sanitise_response runs per streamed
+        # chunk, and without the latch a two-chunk turn could tack the
+        # outstanding question on twice.
+        _asks_something = "?" in _reason_cleaned
+        _already = bool(session.get("_gate5br_substituted"))
+        if not _asks_something and not _already:
+            _outstanding = _next_booking_question_for(session)
+            session["_gate5br_substituted"] = True
+            if not _reason_cleaned or _REASON_RESIDUE_FRAGMENT_RE.match(_reason_cleaned):
+                # Either the turn WAS the reason question, or all that survived
+                # is a clause that only made sense hanging off it ("Just so Mark
+                # has a heads up."). Speaking that alone is worse than not
+                # speaking it — it answers a question the caller never heard.
+                # Replace the whole thing with the step genuinely outstanding,
+                # in the prompt's own order.
+                logger.info(
+                    "[ms_gate5] reason question removed — nothing askable left "
+                    "(residue=%r); asked the outstanding step instead: %r",
+                    _reason_cleaned[:40], _outstanding[:60],
+                )
+                _reason_cleaned = _outstanding
+            else:
+                # Substantive content survived (a slot readback, an empathy
+                # line). Keep it — it is the caller's, not the model's
+                # scaffolding — and give them something to answer.
+                logger.info(
+                    "[ms_gate5] removed banned phrase (reason_question); residue "
+                    "asked nothing, appended the outstanding step: %r",
+                    _outstanding[:60],
+                )
+                _reason_cleaned = f"{_reason_cleaned} {_outstanding}".strip()
         else:
             logger.info("[ms_gate5] removed banned phrase (reason_question)")
         result = _reason_cleaned

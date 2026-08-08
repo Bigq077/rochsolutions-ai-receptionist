@@ -156,3 +156,44 @@ async def test_proceeds_when_reason_and_phone_are_both_on_record():
             {"patient_name": "Quentin Roche", "phone": "+447502211207"},
             _ok_session(),
         )
+
+
+# ── A2 · Theorem is exempt (2026-08-09) ───────────────────────────────────
+# The reason is never asked on theorem_v3 (owner decision 2026-08-07), and no
+# path can supply it unprompted either: _extract_reason runs from flow.py, and
+# the FlowEngine is bypassed on every live clinic. So on Theorem this gate was
+# not a safety net but a deadlock — it refused the booking, its error text told
+# the model to ask "What's the appointment for?", and Gate 5b-r deleted that
+# sentence before it reached TTS. The model asked again. That loop is the
+# pestering reported on CAb1592daa; underneath it, a caller who never mentioned
+# an injury could not be booked at all.
+async def test_theorem_books_without_a_reason():
+    session = {"clinic_id": "theorem_v3", "phone_confirmed": True}
+    with pytest.raises(_ProceededPastGate):
+        await rt._exec_book_appointment({}, session)
+
+
+async def test_theorem_still_records_a_volunteered_reason():
+    """Exempt from the BLOCK, not from the capture — Mark still gets the words
+    the caller offered."""
+    session = {"clinic_id": "theorem_v3", "phone_confirmed": True}
+    with pytest.raises(_ProceededPastGate):
+        await rt._exec_book_appointment({"reason": "knee gave way on the stairs"}, session)
+    assert session["reason"] == "knee gave way on the stairs"
+    assert session["collected"]["reason"] == "knee gave way on the stairs"
+
+
+async def test_theorem_is_exempt_from_the_reason_gate_only():
+    """The phone gate is untouched — an unconfirmed number still refuses."""
+    session = {"clinic_id": "theorem_v3"}
+    result = await rt._exec_book_appointment({}, session)
+    assert result.get("success") is False
+    assert "number" in (result.get("error") or "").lower()
+
+
+async def test_the_exemption_does_not_reach_the_other_clinics():
+    """Asking is CORRECT on JV and Vital Edge (scope corrected 2026-08-08)."""
+    for cid in ("jv_v1", "vital_edge"):
+        session = {"clinic_id": cid, "phone_confirmed": True}
+        result = await rt._exec_book_appointment({}, session)
+        assert result.get("success") is False, f"{cid} lost the reason gate"
