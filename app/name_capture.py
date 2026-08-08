@@ -53,6 +53,33 @@ NAME_FALSE_POSITIVES = frozenset({
 NAME_LEAD_FILLERS = frozenset({
     "is", "it", "yeah", "yes", "um", "uh", "erm", "so", "well",
     "my", "hi", "hello", "and", "ok", "okay",
+    # ── The copula lead-in class (CAb297555c, 8 Aug 2026) ───────────────────
+    # "yeah that'll be quentin rook" stored 'Quentin'. The surname was in the
+    # transcript, cleanly transcribed, and dropped — because "that'll" and "be"
+    # were not fillers, so the all-leading-tokens test below rejected the whole
+    # utterance.
+    #
+    # This is the THIRD patch to the same gap and the second phrasing of the
+    # same sentence. `extract_surname` pattern 2 already carries a comment
+    # recording the last one: "would be" / "that's" / "that is" were added on
+    # 2026-07-11 for "that would be Quentin Rock". The caller then said
+    # "that'll be" and it broke again. Enumerating the next literal would buy
+    # one more phrasing and fail on "it'll be".
+    #
+    # So this adds the CLASS: demonstrative + copula, in every contraction
+    # English offers. A caller stating their name says some subset of
+    # {that, this, it} + {is, 's, 'll, will, would} + be. All of it is
+    # semantically empty before the name, which is exactly what a lead filler
+    # is.
+    #
+    # The documented safety property is unchanged and load-bearing: EVERY token
+    # before the first name must be in this set, so "no that's not quentin rook"
+    # still rejects — "no" and "not" are absent, deliberately, and must stay
+    # absent. Do not add a negation or a correction word here.
+    "that", "thats", "that's", "that'll", "thatll",
+    "this", "this's", "this'll",
+    "it's", "its", "it'll", "itll",
+    "will", "would", "be",
 })
 
 SURNAME_STOPWORDS = frozenset({
