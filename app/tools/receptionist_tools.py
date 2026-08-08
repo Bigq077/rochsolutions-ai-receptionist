@@ -4542,6 +4542,53 @@ def _all_day_busy_blocks(events, w_start, w_end) -> list:
     return blocks
 
 
+def _log_busy_blocks(busy_blocks, events, break_min: int) -> None:
+    """Name every interval that was subtracted from the working envelope.
+
+    The counts line says "9 busy block(s)" and nothing else, so when a caller is
+    offered 10:00 on a morning the practitioner believes is empty there is no way
+    to tell an over-block from an entry he has forgotten or cannot see. (Google
+    draws a multi-day TIMED event — a holiday, a flight home — as a banner across
+    the top of day view, not in the hour grid, so the grid looks free while
+    freebusy correctly reports it busy. That is exactly the shape of Vital Edge's
+    Ibiza trip, and exactly the question asked of Friday 14 Aug 2026.)
+
+    freebusy returns bare intervals with no titles, so each one is matched back
+    to the timed event it came from. Diagnostic only — nothing here changes what
+    is offered. Every failure is swallowed: a logging helper must never be able
+    to take down an availability read.
+    """
+    try:
+        timed = []
+        for ev in events or []:
+            s_raw = ((ev.get("start") or {}).get("dateTime"))
+            e_raw = ((ev.get("end") or {}).get("dateTime"))
+            if not s_raw or not e_raw:
+                continue
+            try:
+                timed.append((
+                    datetime.fromisoformat(s_raw.replace("Z", "+00:00")).astimezone(LONDON_TZ),
+                    datetime.fromisoformat(e_raw.replace("Z", "+00:00")).astimezone(LONDON_TZ),
+                    (ev.get("summary") or "(no title)")[:60],
+                ))
+            except ValueError:
+                continue
+        pad = timedelta(minutes=int(break_min or 0))
+        for bs, be in sorted(busy_blocks or [], key=lambda b: b[0]):
+            # freebusy merges overlapping events, so a block can cover several —
+            # name every timed event it contains rather than guessing at one.
+            names = [t[2] for t in timed if max(t[0], bs) < min(t[1], be)]
+            logger.info(
+                "[availability] busy %s → %s (blocks %s → %s with the %dm gap) — %s",
+                bs.strftime("%a %d %b %H:%M"), be.strftime("%a %d %b %H:%M"),
+                (bs - pad).strftime("%H:%M"), (be + pad).strftime("%H:%M"),
+                int(break_min or 0),
+                " + ".join(names) if names else "no timed event matched (all-day or external)",
+            )
+    except Exception as e:  # diagnostics must never break a call
+        logger.warning("[availability] busy-block logging failed (non-fatal): %r", e)
+
+
 # list_upcoming_events takes no page token, so this cap is the whole window. At
 # Vital Edge's density (~8 entries/day) a 17-day window is ~140; 250 leaves room.
 # A truncated read is dangerous in a way an empty one is not — the missing tail
@@ -4702,6 +4749,7 @@ async def _check_availability_diary(
         len(candidates), len(busy_blocks), len(free_slots),
         w_start.date(), w_end.date(), duration_min, _break_min,
     )
+    _log_busy_blocks(busy_blocks, events, _break_min)
 
     if not free_slots:
         return {
