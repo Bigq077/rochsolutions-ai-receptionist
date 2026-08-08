@@ -37,11 +37,22 @@ def _first(patient_name: Optional[str]) -> str:
     pass the full name looked up from the calendar, so normalise here at the
     rendering boundary. Empty / "none" / "unknown" → "there" (preserves the
     prior fallback behaviour).
+
+    Booking-state words are rejected for the same reason: the calendar title of
+    a provisional booking starts "PENDING CONFIRMATION — …", and a cancellation
+    SMS greeted a live caller "Hi PENDING". The parser that produced that is
+    fixed at source (_gcal_event_patient_name); this is the last line of defence
+    at the rendering boundary, where a status word is never a person.
     """
     name = (patient_name or "").strip()
     if not name or name.lower() in {"none", "unknown"}:
         return "there"
-    return name.split()[0]
+    first = name.split()[0]
+    if first.lower().strip(":,") in {
+        "pending", "booked", "confirmed", "provisional", "cancelled", "canceled",
+    }:
+        return "there"
+    return first
 
 
 # ============================================================================
