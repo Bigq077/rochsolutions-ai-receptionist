@@ -6982,6 +6982,33 @@ def _gcal_event_location(ev: Dict[str, Any]) -> str:
     return ""
 
 
+# Leading segments of a calendar title that describe the BOOKING'S STATE, not a
+# person: the provisional writer titles events
+# "PENDING CONFIRMATION [— HOME VISIT] — <name> — <service>". Treating the first
+# segment as the name therefore returned "PENDING CONFIRMATION", and the SMS
+# greeting (first token only) reached a real caller as "Hi PENDING" after a
+# cancellation on Vital Edge, 2026-08-08. Matched on the first word so
+# "PENDING", "PENDING CONFIRMATION" and "BOOKED — …" all strip.
+_SUMMARY_STATUS_WORDS = frozenset({
+    "pending", "booked", "confirmed", "provisional", "cancelled", "canceled",
+    "available", "home",   # "HOME VISIT"
+})
+
+
+def _gcal_summary_segments(ev: Dict[str, Any]) -> List[str]:
+    """Em-dash segments of an event title with any leading status markers
+    dropped, so segment 0 is the patient and segment 1 the service under both
+    the provisional ("PENDING CONFIRMATION — Name — Service") and the legacy
+    ("Name — Service") titles."""
+    parts = [p.strip() for p in (ev.get("summary") or "").split("—")]
+    while parts and (
+        not parts[0]
+        or parts[0].split()[0].strip(":,").lower() in _SUMMARY_STATUS_WORDS
+    ):
+        parts.pop(0)
+    return parts
+
+
 def _gcal_event_patient_name(ev: Dict[str, Any]) -> str:
     # Read the patient name from the structured `description` ("Patient: …"),
     # which book_appointment always writes. Splitting the summary is unreliable
@@ -6992,11 +7019,11 @@ def _gcal_event_patient_name(ev: Dict[str, Any]) -> str:
         if line.strip().lower().startswith("patient:"):
             return line.split(":", 1)[1].strip()
     # Fallback for legacy/externally-created events with no structured
-    # description: assume the historical "Patient — Service" ordering.
-    summary = ev.get("summary") or ""
-    if "—" in summary:
-        return summary.split("—")[0].strip()
-    return summary.strip()
+    # description: assume the historical "Patient — Service" ordering, after
+    # dropping any status marker. Returns "" rather than a marker word, so the
+    # callers fall through to _lookup_patient_name / the "there" greeting.
+    segments = _gcal_summary_segments(ev)
+    return segments[0] if segments else ""
 
 
 def _gcal_event_service(ev: Dict[str, Any]) -> str:
@@ -7005,10 +7032,8 @@ def _gcal_event_service(ev: Dict[str, Any]) -> str:
     for line in (ev.get("description") or "").splitlines():
         if line.strip().lower().startswith("service:"):
             return line.split(":", 1)[1].strip()
-    summary = ev.get("summary") or ""
-    if "—" in summary:
-        return summary.split("—", 1)[1].strip()
-    return ""
+    segments = _gcal_summary_segments(ev)
+    return segments[1] if len(segments) > 1 else ""
 
 
 # Placeholder values the model emits into patient_name when it has not carried
