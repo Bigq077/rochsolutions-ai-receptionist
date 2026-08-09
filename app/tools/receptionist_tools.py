@@ -658,6 +658,17 @@ def _find_service_def(clinic: Dict[str, Any], service: str) -> Optional[Dict[str
     if not svc:
         return None
     for s in (clinic.get("services") or []):
+        # `services` is a list of DICTS for the template clinics and a list of
+        # plain STRINGS for theorem and demo. The isinstance guard is
+        # load-bearing rather than defensive tidiness — the same hazard
+        # _options_services documents. Until 2026-08-09 every caller of this
+        # function happened to run only on template clinics, so the
+        # AttributeError was unreachable; duration_choice_gate made the
+        # theorem path reachable and it raised on the first availability
+        # lookup. A string service has no definition to find, so skipping is
+        # the correct answer, not merely the safe one.
+        if not isinstance(s, dict):
+            continue
         if (s.get("service_id") or "").lower() == svc or (s.get("name") or "").lower() == svc:
             return s
     return None
@@ -973,6 +984,121 @@ def _resolve_duration_minutes(
         return int(_arg)
 
     return _service_duration_minutes(clinic, service, fallback, preferred=_captured)
+
+
+def duration_choice_gate(
+    clinic: Dict[str, Any], service: str, session: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """The tool-result that blocks check_availability until the caller has
+    chosen a session length, or None to let the lookup through.
+
+    `CAa1e98c447774ec15340a6b84cc89cff0` (9 Aug 2026, Vital Edge, live). The
+    caller wanted a deep tissue massage. check_availability ran before anyone
+    had asked how long:
+
+        16:08:38  'deep_tissue_massage' offers [60, 90] and NO choice was
+                  captured — defaulting to 60
+        16:08:38  check_availability … duration=60m
+        16:08:40  "Number 1, Friday 14th August … Number 2, Saturday 15th"
+        16:08:46  caller picks Friday 10am
+        16:08:51  "would you like a 60-minute session … or a 90-minute…?"
+        16:09:01  session length captured: 90 minutes
+        16:09:06  check_availability … duration=90m   (the whole lookup again)
+
+    So the caller chose a slot off a grid built at a length nobody had agreed,
+    was then asked the qualifying question, and had it recomputed underneath
+    them. The call ran 3m02s and booked nothing.
+
+    The instruction was not missing. Vital Edge's clinic.json says "ask which
+    length they'd like … BEFORE offering any appointment times". The model
+    walked past it, and nothing stopped it: `_resolve_duration_minutes` above
+    deliberately does not block ("re-asking from inside a resolver is not this
+    function's job — but make it loud"). It was loud. Loud is not a gate.
+
+    This is that gate, and it is the ORDERING half only. The resolver still
+    owns which length gets written; this owns whether the lookup may run yet.
+
+    **Fires once per call, never twice.** `_duration_gate_fired` is the whole
+    safety argument. If the caller answers in words the capturer cannot read
+    ("the longer one", "whatever you'd recommend"), a gate that blocked every
+    time would re-ask forever and the booking would never happen — which is
+    the worst failure this system has, and strictly worse than the wrong-grid
+    defect being fixed. So the second call through is allowed and logged at
+    WARNING with the shortest-option default, exactly as before this existed.
+
+    Narrow by construction. Returns None unless ALL of:
+      - the service resolves in this clinic's catalogue, AND
+      - it declares two or more `typical_duration_minutes_options`, AND
+      - no valid choice is captured yet, AND
+      - the gate has not already fired on this call.
+
+    A single-length service, an unknown service name, and every clinic with no
+    options-service at all (theorem, demo) are untouched on every path.
+    """
+    svc = _find_service_def(clinic, service) or {}
+    opts = [int(o) for o in (svc.get("typical_duration_minutes_options") or [])]
+    if len(opts) < 2:
+        return None
+
+    _captured = session.get("_service_duration_choice")
+    if _captured and int(_captured) in opts:
+        return None
+
+    if session.get("_duration_gate_fired"):
+        logger.warning(
+            "[ms_tools] duration gate already fired this call and %r still has "
+            "no captured choice — letting the lookup through at %s minutes "
+            "rather than asking a third time. The caller's answer did not "
+            "parse; see duration_choice_from_utterance.",
+            service, opts[0],
+        )
+        return None
+
+    session["_duration_gate_fired"] = True
+
+    # The required next action is SPEECH — there is no tool that asks a
+    # caller a question. Take the choice away rather than repeating the
+    # instruction, for the reason recorded on FORCE_TEXT_NEXT_ITERATION: a
+    # tool result carrying "error" reads as a FAILED call, and retrying a
+    # failed call is correct default behaviour, so wording alone loses.
+    try:
+        from app.media_streams.config import FORCE_TEXT_NEXT_ITERATION
+        session[FORCE_TEXT_NEXT_ITERATION] = True
+    except Exception:  # pragma: no cover - import-shape safety only
+        logger.warning(
+            "[ms_tools] could not arm the force-text flag for the duration "
+            "gate — the model may retry the blocked call", exc_info=True,
+        )
+
+    # Prices come from the service's own pricing block, the same source and
+    # the same `<n>min_in_clinic_gbp` key the prompt renders from, so the
+    # question here cannot quote a figure Susie would not.
+    _pricing = svc.get("pricing", {}) or {}
+    _parts = []
+    for _m in opts:
+        _p = _pricing.get(f"{_m}min_in_clinic_gbp")
+        _parts.append(f"{_m}-minute at £{_p}" if _p is not None else f"{_m}-minute")
+    _phrase = " or ".join(_parts)
+    _name = svc.get("name") or service
+
+    logger.info(
+        "[ms_tools] check_availability blocked — %r offers %s minutes and the "
+        "caller has not chosen. Asking first (fires once per call).",
+        service, opts,
+    )
+    return {
+        "error": "duration_choice_required",
+        "message": (
+            f"Do NOT call check_availability yet, and do not call any other "
+            f"tool. The caller has not said how long they want, and {_name} "
+            f"comes in more than one length — offering times now builds the "
+            f"slot grid at a length nobody agreed. "
+            f"Ask them now, in one short question, naming both lengths and "
+            f"both prices: would they like the {_phrase}? "
+            f"Say that and stop. Once they answer, call check_availability "
+            f"again. Do NOT mention this to the caller as a correction."
+        ),
+    }
 
 
 def _service_supports_location(svc_def: Dict[str, Any], location: str) -> bool:
@@ -4230,6 +4356,23 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
                     "check_availability with their confirmed location."
                 ),
             }
+
+    # ── Session-length gate ────────────────────────────────────────────────
+    # Deliberately AFTER the location gate: both block on a question the
+    # caller has to answer, and the flow asks which clinic before how long.
+    # Ordered the other way, a caller who had confirmed neither would be asked
+    # the length first and the clinic second, which is not how the prompt
+    # teaches the booking sequence.
+    #
+    # See duration_choice_gate — it fires at most once per call, so a caller
+    # whose answer the capturer cannot parse gets the old default rather than
+    # an unbookable loop.
+    from app.clinic_config import get_clinic as _gc_dur
+    _dur_block = duration_choice_gate(
+        _gc_dur(session.get("clinic_id")) or {}, _raw_service, session,
+    )
+    if _dur_block:
+        return _dur_block
 
     # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
     if _gate_cid in ("theorem", "theorem_v2", "theorem_v3"):
