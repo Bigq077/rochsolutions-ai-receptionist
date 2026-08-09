@@ -257,10 +257,16 @@ UNMOVED_PROMPTS = {
     # and EXACTLY the two template_v1 clinics moved while all three clinics
     # that render elsewhere are byte-identical. See
     # tests/regression/test_faq_answer_length_template.py.
-    "jv_v1": "0bbf232b457512b7",
+    #
+    # Re-pinned 2026-08-09 again: the AI DISCLOSURE rule Theorem got on
+    # 2026-08-04 (8d3a22f), re-authored into _render_identity, plus the
+    # manner-vs-claim clause in VOICE RULES. Same containment as the FAQ
+    # change above and verified the same way — exactly the two template_v1
+    # clinics moved. See tests/regression/test_ai_disclosure_template.py.
+    "jv_v1": "9135bfc0c66beb48",
     "theorem": "8565be9a48a7a9aa",
     "theorem_v3": "d5d26ee076213608",
-    "vital_edge": "7dcc6a18a580c705",
+    "vital_edge": "625afec0bd9fc446",
 }
 
 

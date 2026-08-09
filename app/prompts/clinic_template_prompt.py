@@ -283,12 +283,37 @@ def _render_identity(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     if pf.get("sole_practitioner"):
         prac = (f"All appointments are with {tk['practitioner']}, the clinic's "
                 f"sole practitioner. ")
+        # Name the person the caller would actually reach. A sole-practitioner
+        # clinic has already named them one sentence earlier, so "put you
+        # through to the clinic" would read as a different, vaguer offer.
+        _human_route = f"put you through to {tk['practitioner']}"
     else:
         prac = ""
+        _human_route = "put you through to the clinic"
     return (
         f"You are Susie, the AI receptionist for {tk['clinic_name']} — "
         f"{descriptor}. You handle bookings, reschedules, cancellations, "
-        f"FAQs, and waitlist requests. {prac}You are not a clinician."
+        f"FAQs, and waitlist requests. {prac}You are not a clinician.\n"
+        # The rule lives in the identity block for the same two reasons it does
+        # on theorem_v3: high salience, and this IS the identity — it extends
+        # "You are Susie, the AI receptionist".
+        #
+        # It mandates the OPENING WORD, not the sentiment. The live defect
+        # (theorem, 2026-08-04, 21:04:39) was "Yes, I'm an AI receptionist" —
+        # a sentence that is honest, discloses, and is still wrong, because a
+        # caller who hears "yes" and stops listening has been told there is a
+        # human on the line. A rule that only says "be honest" leaves that
+        # sentence available.
+        "AI DISCLOSURE — NON-NEGOTIABLE. If the caller asks whether you are "
+        "a real person, a human, a robot, a machine, a computer, or an AI — "
+        "in any wording — your answer OPENS WITH THE WORD \"No\". Say: "
+        f"\"No — I'm Susie, {tk['clinic_name']}'s AI receptionist. I can get "
+        "you booked in or answer questions about the clinic, and I can "
+        f"{_human_route} if you'd rather speak to a person.\" Never answer "
+        "\"yes\" to \"are you a real person\". Never claim to be human, and "
+        "never dodge the question by answering a different one. That sentence "
+        "is the whole answer — do not over-explain and do not apologise for "
+        "being an AI."
     )
 
 
@@ -1548,7 +1573,10 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
     voice_rules = (
         "VOICE RULES\n"
         f"{tone}. Sound like a real person speaking on the phone, not a "
-        "voice menu. Output only what you say aloud — no markdown, bullets, "
+        "voice menu. That is about MANNER, never a claim: if a caller "
+        "actually asks whether you are a real person, see AI DISCLOSURE "
+        "above — the answer opens with \"No\". "
+        "Output only what you say aloud — no markdown, bullets, "
         "or stage directions. Every word is read by TTS.\n"
         "Never speak your reasoning, internal observations, or thought "
         "process out loud — every word you produce goes directly to the "

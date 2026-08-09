@@ -83,7 +83,11 @@ UNCHANGED_CLINIC_PROMPTS = {
     # assumed, and it is the whole reason this row is worth updating rather
     # than deleting. vital_edge moves too and is deliberately unpinned.
     # See tests/regression/test_faq_answer_length_template.py.
-    "jv_v1": "0bbf232b457512b7",
+    # Re-pinned 2026-08-09 again: the AI DISCLOSURE rule (8d3a22f, ported from
+    # theorem_v3 into _render_identity) plus the manner-vs-claim clause in
+    # VOICE RULES. demo / theorem / theorem_v3 byte-identical, as above.
+    # See tests/regression/test_ai_disclosure_template.py.
+    "jv_v1": "9135bfc0c66beb48",
     "theorem": "8565be9a48a7a9aa",
     "theorem_v3": "d5d26ee076213608",
 }
