@@ -135,6 +135,9 @@ def _handler(session):
     h.call_sid = "CA_test"
     h.tts_text_queue = asyncio.Queue()
     h.audio_out_queue = asyncio.Queue()
+    # Real queue, not the __getattr__ None: on reschedule/cancel the keypad
+    # choice is handed to the model through here rather than spoken (T-19).
+    h.transcript_queue = asyncio.Queue()
     # The watchdog is incidental here: _handle_dtmf cancels its timers, stamps
     # arrival time and re-arms questions on it.
     h._silence_handler = MagicMock()
@@ -209,8 +212,16 @@ async def test_cancel_and_reschedule_do_not_inject_a_phone_question():
     time, and arming the confirm flag would make the deterministic 'use this
     number' intercept swallow the caller's plain 'yes' to that read-back.
 
-    Still asserted: the keypad choice is heard and acknowledged, so the caller
-    is not left in silence and the flow keeps its clinic.
+    Still asserted, and this is the point of the test: the caller is not left
+    in silence. What changed on 2026-08-09 is WHO breaks it.
+
+    This used to assert the code spoke "Alcester." itself. That ack was the
+    whole of the turn — nothing here calls run_turn — so on the voice sites
+    with the same shape the caller heard one word and then nothing, and
+    CAba035928b6fe0d135ff95ce920bf9073 abandoned at 26 s. The keypad now hands
+    the choice to the model as a synthetic transcript and the model acks it
+    inside the turn where it also reads the number back. Speaking here as well
+    would ack twice.
     """
     for intent in ("cancel", "reschedule"):
         session = {"v3_awaiting_location_dtmf": True, "v3_caller_intent": intent}
@@ -222,12 +233,22 @@ async def test_cancel_and_reschedule_do_not_inject_a_phone_question():
             "question the model no longer asks"
         )
         spoken = _spoken(h).lower()
-        assert "use this number" not in spoken, (
-            f"{intent} is injecting the banned set-phrase question again"
+        assert spoken == "", (
+            f"{intent} spoke {spoken!r} from the keypad handler. Nothing here "
+            "runs a model turn, so whatever is said is the entire turn — a "
+            "bare clinic ack and then silence. The model owns this turn."
         )
-        assert "alcester" in spoken, (
-            f"{intent} did not acknowledge the keypad choice — the caller "
-            "pressed 1 and heard nothing back"
+        assert session["selected_location"] == "alcester", (
+            f"{intent} did not keep the clinic the caller pressed for"
+        )
+        assert not h.transcript_queue.empty(), (
+            f"{intent} consumed the keypress and handed nothing on — the "
+            "caller pressed 1 and the call goes silent"
+        )
+        _queued = h.transcript_queue.get_nowait()
+        assert "alcester" in str(_queued[1]).lower(), (
+            f"{intent} re-queued {_queued[1]!r}, which does not tell the model "
+            "which clinic the caller chose"
         )
 
 

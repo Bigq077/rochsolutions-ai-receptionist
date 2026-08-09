@@ -23,6 +23,7 @@ properties that has to keep, all of which are cheap to break by editing one
 string in either file.
 """
 
+import ast
 import inspect
 import re
 
@@ -64,6 +65,103 @@ def _handler_code() -> str:
         line for line in source.split("\n")
         if not line.lstrip().startswith("#")
     )
+
+
+_HANDOFF_HELPER = "_v3_hand_location_answer_to_model"
+
+
+def _connection_tree():
+    """connection.py as an AST, with parent links.
+
+    The T-19 assertions below are about control flow — what runs before what,
+    and whether a branch can fall through to speech. Regex cannot see that;
+    the previous version of this file tried and passed straight through the
+    defect. Parsed once per call: these are cheap next to the prompt build.
+    """
+    tree = ast.parse(inspect.getsource(conn))
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            child._parent = parent
+    return tree
+
+
+def _is_reschedule_guard(node) -> bool:
+    """`if <anything> in ("reschedule", "cancel"):` — any variable name.
+
+    Matched structurally rather than by name: the four sites read the intent
+    into four differently-named locals, and a fifth would be missed by a
+    name-based match.
+    """
+    if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
+        return False
+    if len(node.test.ops) != 1 or not isinstance(node.test.ops[0], ast.In):
+        return False
+    right = node.test.comparators[0]
+    if not isinstance(right, ast.Tuple):
+        return False
+    values = [
+        e.value for e in right.elts
+        if isinstance(e, ast.Constant) and isinstance(e.value, str)
+    ]
+    return values == ["reschedule", "cancel"]
+
+
+def _reschedule_guards(tree) -> list:
+    return [n for n in ast.walk(tree) if _is_reschedule_guard(n)]
+
+
+def _calls_to(node, dotted: str) -> list:
+    """Every Call in this subtree whose func renders as `dotted`."""
+    found = []
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Call):
+            try:
+                rendered = ast.unparse(sub.func)
+            except Exception:                       # pragma: no cover
+                continue
+            if rendered.endswith(dotted):
+                found.append(sub)
+    return found
+
+
+def _body_of(guard) -> ast.Module:
+    """The guard's own branch (not its else) as a walkable node."""
+    return ast.Module(body=guard.body, type_ignores=[])
+
+
+def _hands_over(guard) -> bool:
+    """Does this branch give the turn to the model rather than end it?
+
+    Two shapes, because the two callers live in different places: inside the
+    LLM loop it awaits run_turn via the helper; the DTMF handler is not in the
+    loop and cannot, so it re-queues a synthetic transcript instead.
+    """
+    body = _body_of(guard)
+    return bool(
+        _calls_to(body, _HANDOFF_HELPER)
+        or _calls_to(body, "transcript_queue.put")
+    )
+
+
+def _handoff_guards(tree) -> list:
+    """The location-answer guards: hand over, then end the turn."""
+    return [
+        g for g in _reschedule_guards(tree)
+        if _hands_over(g)
+        and g.body
+        and isinstance(g.body[-1], (ast.Continue, ast.Return))
+    ]
+
+
+def _enclosing_block(node):
+    """The statement whose body list holds `node` directly."""
+    parent = getattr(node, "_parent", None)
+    while parent is not None:
+        for field in ("body", "orelse", "finalbody"):
+            if node in getattr(parent, field, []):
+                return parent
+        node, parent = parent, getattr(parent, "_parent", None)
+    return None
 
 
 def _theorem_prompt(**overrides) -> str:
@@ -192,31 +290,143 @@ def test_call_state_does_not_forbid_reading_the_number_back():
 # ── 3. Code must not inject into this flow ──────────────────────────────────
 
 def test_use_this_number_is_not_injected_on_reschedule_or_cancel():
-    """The banned set-phrase question is gone from the booking-ack handler.
+    """The banned set-phrase question is gone from EVERY reschedule branch.
 
     'If so, just say "use this number"' asks the caller to reason about a
     number they cannot hear — banned by the owner on the other branches on
     3 Aug. The booking flow's own keypad prompts keep their copies of the
-    phrase, so this asserts on the reschedule branch only.
-    """
-    branch = re.search(
-        r'if _intent in \("reschedule", "cancel"\):(.*?)\n\s*else:',
-        _handler_code(),
-        re.DOTALL,
-    )
-    assert branch, "reschedule/cancel branch of the booking-ack handler not found"
-    body = branch.group(1)
+    phrase, so this asserts on the reschedule branches only.
 
-    assert "use this number" not in body, (
-        "the reschedule ack is injecting the banned set-phrase question again"
+    Every one of them, now. This used to regex out the FIRST
+    `if _intent in ("reschedule", "cancel")` in the file and assert on that
+    alone — which, despite the docstring naming the booking-ack handler, was
+    the DTMF location handler. Six other branches went unchecked.
+    """
+    guards = _reschedule_guards(_connection_tree())
+    assert len(guards) >= 4, (
+        f"only {len(guards)} reschedule/cancel branches found — the intent "
+        "gates have been renamed or removed"
     )
-    assert "v3_awaiting_phone_confirm" not in body, (
-        "arming the deterministic phone-confirm intercept assumes a question "
-        "this flow no longer asks — it would swallow the caller's plain 'yes' "
-        "to the readback"
+    for guard in guards:
+        body = ast.unparse(_body_of(guard))
+        where = f"line {guard.lineno}"
+        assert "use this number" not in body, (
+            f"the reschedule branch at {where} is injecting the banned "
+            "set-phrase question again"
+        )
+        assert "v3_awaiting_phone_confirm" not in body, (
+            f"the reschedule branch at {where} arms the deterministic "
+            "phone-confirm intercept, which assumes a question this flow no "
+            "longer asks — it would swallow the caller's plain 'yes' to the "
+            "readback"
+        )
+
+
+# ── 3a. T-19: the code must not SPEAK into this flow either ─────────────────
+#
+# Suppressing the injected question was only half of it. Three intercepts and
+# the DTMF handler still spoke a bare clinic ack — "Awlstuh." — and then ended
+# the turn without calling run_turn. The model never got the turn in which the
+# prompt tells it to ack, read the number back, and look the patient up.
+#
+#   CAba035928b6fe0d135ff95ce920bf9073, 2026-08-08, 26 s, outcome='abandoned'
+#   21:38:22  "Was your original appointment at our Awlstuh or Redditch cli…"
+#   21:38:29  FINAL 'uh ooster'
+#   21:38:30  "Awlstuh."        ← the last thing the caller ever heard
+#   21:38:31  WATCHDOG_START wait=10.0s
+#   21:38:37  stop event — hung up 3.1 s before the backstop would have fired
+#
+# Silence and not-asking-a-question are different properties. The gap between
+# them is this bug, and the T-18 test above only ever pinned the second.
+
+
+def test_the_reschedule_location_branches_speak_nothing():
+    """Nothing may reach TTS from these branches. The model owns the turn."""
+    guards = _handoff_guards(_connection_tree())
+    assert len(guards) == 4, (
+        f"expected 4 location-answer handoffs (DTMF, use-this-clinic, alias, "
+        f"Haiku), found {len(guards)} at "
+        f"{[g.lineno for g in guards]} — a site has been added or has stopped "
+        "handing the turn to the model"
     )
-    assert "_next_q = None" in body, (
-        "the reschedule ack must inject nothing — the model asks in its own turn"
+    for guard in guards:
+        spoken = _calls_to(_body_of(guard), "tts_text_queue.put")
+        assert not spoken, (
+            f"the reschedule branch at line {guard.lineno} queues speech "
+            f"(line {spoken[0].lineno}). A bare ack with no turn behind it is "
+            "what left CAba0359 in dead air — store the location and hand the "
+            "utterance to the model, which acks it in its own turn."
+        )
+
+
+def test_no_reschedule_branch_can_fall_through_to_the_bare_ack():
+    """The guard must sit ABOVE the ack, not merely suppress the question.
+
+    The alias site is why this is asserted on position rather than presence:
+    its intent gate was nested three levels below `await
+    tts_text_queue.put(_ack)`, so it could suppress the follow-up question and
+    still speak. Every bare-ack site must be unreachable on this intent.
+    """
+    tree = _connection_tree()
+    guards = _handoff_guards(tree)
+    acks = [
+        call for call in _calls_to(tree, "tts_text_queue.put")
+        if call.args
+        and isinstance(call.args[0], ast.Name)
+        and call.args[0].id == "_ack"
+    ]
+    assert len(acks) == 4, (
+        f"expected 4 bare clinic-ack sites, found {len(acks)} at "
+        f"{[a.lineno for a in acks]} — a new one needs a handoff guard above it"
+    )
+    for ack in acks:
+        earlier = [g for g in guards if g.lineno < ack.lineno]
+        assert earlier, (
+            f"the bare clinic ack at line {ack.lineno} has no reschedule "
+            "handoff above it — on this intent it speaks one word and the "
+            "turn ends"
+        )
+        guard = max(earlier, key=lambda g: g.lineno)
+        block = _enclosing_block(guard)
+        assert block is not None and ack in ast.walk(block), (
+            f"the bare clinic ack at line {ack.lineno} is not inside the "
+            f"block guarded at line {guard.lineno} — the nearest handoff "
+            "belongs to a different site, so this ack is ungated"
+        )
+
+
+def test_the_handoff_gives_the_model_a_real_turn():
+    """Storing the answer silently is not enough — someone has to speak.
+
+    The helper has to (1) run the model turn, (2) drain gate 5's deferred
+    fallback, because its callers `continue` past the post-turn block that
+    normally emits it, and (3) re-arm the watchdog on the question the MODEL
+    just asked. Without (3) the backstop stays pointed at the clinic question
+    the caller has already answered, and re-asks "Awlstuh or Redditch?" over
+    the phone readback.
+    """
+    tree = _connection_tree()
+    helper = next(
+        (
+            n for n in ast.walk(tree)
+            if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))
+            and n.name == _HANDOFF_HELPER
+        ),
+        None,
+    )
+    assert helper is not None, f"{_HANDOFF_HELPER} is gone"
+    body = ast.unparse(helper)
+    assert _calls_to(helper, "llm.run_turn"), (
+        "the handoff no longer runs a model turn — the caller hears nothing"
+    )
+    assert "_gate5_fallback_pending" in body, (
+        "the handoff `continue`s past the post-turn block that emits gate 5's "
+        "deferred fallback, so it must drain it here — otherwise a turn that "
+        "produces no speech is the same dead air again"
+    )
+    assert _calls_to(helper, "on_question_asked"), (
+        "the watchdog is left armed on the clinic question the caller just "
+        "answered"
     )
 
 

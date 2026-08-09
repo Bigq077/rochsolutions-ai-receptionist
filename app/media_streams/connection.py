@@ -5996,7 +5996,30 @@ class WebSocketCallHandler:
                     # it arms the deterministic "use this number" intercept,
                     # which would swallow the caller's plain "yes" to the
                     # model's readback.
-                    _next_q = None
+                    #
+                    # T-19 — injecting nothing was only half of it. `_ack` was
+                    # queued unconditionally below and this handler then
+                    # returned, so on this intent the caller heard "Awlstuh."
+                    # and the call went silent — the same shape that abandoned
+                    # CAba035928b6fe0d135ff95ce920bf9073 on the voice path.
+                    # There is no run_turn to call from here (this is the DTMF
+                    # handler, not the LLM loop), so hand the answer over the
+                    # way every other out-of-loop path does: re-queue it as a
+                    # synthetic transcript and let the model open its own turn
+                    # — ack plus phone readback, as the flow specifies.
+                    # v3_location_confirmed is already True above, so the
+                    # re-queue lands on the normal run_turn path rather than
+                    # back in the location intercept.
+                    await self.transcript_queue.put(
+                        (time.monotonic(), _disp, True)
+                    )
+                    await save_session(self.call_sid, self.session)
+                    logger.info(
+                        "[ms_conn v3] DTMF location resolved: %s (digit=%s),"
+                        " intent=%s — unspoken, re-queued %r for the model",
+                        _loc_dtmf, digit, _intent, _disp,
+                    )
+                    return
                 else:
                     # FAQ-before-clinic: if the caller asked a clinic-specific
                     # FAQ (parking/hours/etc.) and we only asked the clinic in
@@ -7387,6 +7410,98 @@ class WebSocketCallHandler:
             from .llm_stream import LLMStream
 
             llm = LLMStream()
+
+            # ── T-19: hand a clinic answer to the model, unspoken ────────────
+            # On reschedule/cancel the MODEL owns the whole turn (78fae2d):
+            # turn 2 is collect_and_store(field="location") plus the clinic ack
+            # plus the phone readback, delivered together, and turn 1 already
+            # told it "NEVER end turn 2 on the clinic acknowledgement alone".
+            #
+            # The three location intercepts below each suppress their INJECTED
+            # follow-up question on that intent (`_next_q = None`) but still
+            # spoke a bare "Awlstuh." — and none of them calls run_turn. So the
+            # code said one word and the turn ended: the model never got turn 2,
+            # and the rule it would have obeyed never reached it.
+            #
+            #   CAba035928b6fe0d135ff95ce920bf9073, 2026-08-08, 26 s, abandoned
+            #   21:38:22  "Was your original appointment at our Awlstuh or …"
+            #   21:38:29  FINAL 'uh ooster'
+            #   21:38:30  "Awlstuh."          ← the whole rest of the call
+            #   21:38:31  WATCHDOG_START wait=10.0s
+            #   21:38:37  caller hung up, 3.1 s before the backstop would fire
+            #
+            # Suppressing the question was right; suppressing the ack too, and
+            # handing the utterance to the model, is what makes it a turn.
+            #
+            # Not silent about the clinic: the model's own turn 2 opens on
+            # "Right, Awlstuh." so a mishear is still correctable in one word,
+            # and on this flow lookup_patient overwrites selected_location from
+            # the appointment anyway (b4174bf) — the booking, not the caller's
+            # memory, decides the site.
+            async def _v3_hand_location_answer_to_model(
+                _utterance: str,
+                _site: str,
+            ) -> None:
+                self._filler_breath_injected = False
+                await self._filler.arm(self.session, expect_lookup=False)
+                self._current_llm_task = asyncio.create_task(
+                    llm.run_turn(
+                        user_text=_utterance,
+                        session=self.session,
+                        call_sid=self.call_sid,
+                        stream_sid=self.stream_sid,
+                        tts_text_queue=self.tts_text_queue,
+                        audio_out_queue=self.audio_out_queue,
+                        websocket=self.websocket,
+                        on_transfer=self._on_transfer_request,
+                    ),
+                    name="ms_llm_turn",
+                )
+                _handoff_cancelled = False
+                try:
+                    await self._current_llm_task
+                except asyncio.CancelledError:
+                    logger.info(
+                        "[ms_conn v3] location→model run_turn cancelled"
+                        " (%s) — newer transcript wins",
+                        _site,
+                    )
+                    _handoff_cancelled = True
+                finally:
+                    self._current_llm_task = None
+                # B2: callers of this helper `continue`, so the post-turn block
+                # that normally drains gate 5's deferred fallback never runs.
+                # Drain it here — a turn that produced no audible speech is
+                # exactly the dead air this whole path exists to stop.
+                _g5_deferred = self.session.pop(
+                    "_gate5_fallback_pending", None
+                )
+                if (
+                    _g5_deferred
+                    and not _handoff_cancelled
+                    and self.pending_transcript is None
+                ):
+                    await self.tts_text_queue.put(_g5_deferred)
+                    logger.info(
+                        "[ms_conn v3] deferred gate5 fallback emitted"
+                        " (location→model, %s) — turn produced no speech",
+                        _site,
+                    )
+                # Re-arm the watchdog on the question the MODEL just asked.
+                # Without this it stays armed on the clinic question the caller
+                # has already answered, and a 10 s no-input would re-ask
+                # "Awlstuh or Redditch?" at the phone readback.
+                _handoff_q = self.session.get("last_question", "")
+                if (
+                    _handoff_q
+                    and self._silence_handler is not None
+                    and self.session.get("call_outcome") is None
+                ):
+                    self._silence_handler.set_state(
+                        self.session.get("state", "default")
+                    )
+                    self._silence_handler.on_question_asked(_handoff_q)
+                await save_session(self.call_sid, self.session)
 
             # ── Single-site auto-confirm (one-time, at call start) ───────────
             # Single-site template clinics (e.g. jv_v1 → Bolton) have no clinic-
@@ -9731,7 +9846,48 @@ class WebSocketCallHandler:
                                         # T-18 — the model asks for the number
                                         # itself now; see the long note at the
                                         # DTMF location site.
-                                        _next_q = None
+                                        # T-19 — and it must be given the turn
+                                        # in which to ask. Store the answer,
+                                        # say nothing, hand over. Speaking
+                                        # `_ack` here and stopping is the dead
+                                        # air; see the helper's note.
+                                        self.session[
+                                            "selected_location"
+                                        ] = _confirmed
+                                        self.session[
+                                            "v3_location_confirmed"
+                                        ] = True
+                                        self.session[
+                                            "v3_location_q_active"
+                                        ] = False
+                                        self.session[
+                                            "v3_location_asked"
+                                        ] = False
+                                        self.session[
+                                            "v3_booking_intent"
+                                        ] = False
+                                        # Same rule as the booking paths: a
+                                        # deferred FAQ is superseded once the
+                                        # caller states an intent.
+                                        self.session.pop(
+                                            "v3_faq_pending_utterance", None
+                                        )
+                                        await save_session(
+                                            self.call_sid, self.session
+                                        )
+                                        logger.info(
+                                            "[ms_conn v3] use-this-clinic"
+                                            " confirmed: %s, intent=%s —"
+                                            " unspoken, handing turn to the"
+                                            " model",
+                                            _confirmed, _intent,
+                                        )
+                                        await (
+                                            _v3_hand_location_answer_to_model(
+                                                utterance, "use-this-clinic",
+                                            )
+                                        )
+                                        continue
                                     else:
                                         # FAQ-before-clinic: re-queue a pending
                                         # clinic-specific FAQ now the clinic is
@@ -9999,6 +10155,53 @@ class WebSocketCallHandler:
                                     continue
 
                                 if _confirmed_loc:
+                                    # T-19 — reschedule/cancel: the model owns
+                                    # the whole turn. Store the answer, say
+                                    # nothing, hand over. This has to sit ABOVE
+                                    # the ack: the intent gate further down
+                                    # only ever suppressed the follow-up
+                                    # question, and the bare ack it left behind
+                                    # is the dead air. See the helper's note.
+                                    _alias_intent = self.session.get(
+                                        "v3_caller_intent", "booking"
+                                    )
+                                    if _alias_intent in (
+                                        "reschedule", "cancel"
+                                    ):
+                                        self.session["selected_location"] = (
+                                            _confirmed_loc
+                                        )
+                                        self.session[
+                                            "v3_location_confirmed"
+                                        ] = True
+                                        self.session[
+                                            "v3_location_q_active"
+                                        ] = False
+                                        self.session[
+                                            "v3_location_asked"
+                                        ] = False
+                                        self.session[
+                                            "v3_booking_intent"
+                                        ] = False
+                                        self.session.pop(
+                                            "v3_faq_pending_utterance", None
+                                        )
+                                        await save_session(
+                                            self.call_sid, self.session
+                                        )
+                                        logger.info(
+                                            "[ms_conn v3] location answer"
+                                            " intercepted (alias): %s,"
+                                            " intent=%s — unspoken, handing"
+                                            " turn to the model",
+                                            _confirmed_loc, _alias_intent,
+                                        )
+                                        await (
+                                            _v3_hand_location_answer_to_model(
+                                                utterance, "alias",
+                                            )
+                                        )
+                                        continue
                                     _loc_label = _confirmed_loc.capitalize()
                                     _ack = f"{_loc_label}."
                                     await self.tts_text_queue.put(_ack)
@@ -10491,6 +10694,62 @@ class WebSocketCallHandler:
                                         continue
 
                                     if _resolved != "unknown":
+                                        # T-19 — reschedule/cancel: the model
+                                        # owns the whole turn. Store, say
+                                        # nothing, hand over. Above the ack for
+                                        # the same reason as the alias site.
+                                        #
+                                        # A defaulted resolution is handed over
+                                        # the same way. The "defaults out loud"
+                                        # safety below is not lost: the model's
+                                        # turn 2 opens on "Right, Awlstuh." so
+                                        # the caller still hears the site and
+                                        # can correct it, and on this flow
+                                        # lookup_patient overwrites it from the
+                                        # appointment regardless (b4174bf).
+                                        _hk_intent = self.session.get(
+                                            "v3_caller_intent", "booking"
+                                        )
+                                        if _hk_intent in (
+                                            "reschedule", "cancel"
+                                        ):
+                                            self.session[
+                                                "selected_location"
+                                            ] = _resolved
+                                            self.session[
+                                                "v3_location_confirmed"
+                                            ] = True
+                                            self.session[
+                                                "v3_location_q_active"
+                                            ] = False
+                                            self.session[
+                                                "v3_location_asked"
+                                            ] = False
+                                            self.session[
+                                                "v3_booking_intent"
+                                            ] = False
+                                            self.session.pop(
+                                                "v3_faq_pending_utterance",
+                                                None,
+                                            )
+                                            await save_session(
+                                                self.call_sid, self.session
+                                            )
+                                            logger.info(
+                                                "[ms_conn v3] Haiku resolved"
+                                                " location: %s (defaulted=%s),"
+                                                " intent=%s, from %r —"
+                                                " unspoken, handing turn to"
+                                                " the model",
+                                                _resolved, _loc_defaulted,
+                                                _hk_intent, utterance[:60],
+                                            )
+                                            await (
+                                                _v3_hand_location_answer_to_model(
+                                                    utterance, "haiku",
+                                                )
+                                            )
+                                            continue
                                         _disp = _resolved.capitalize()
                                         _ack = f"{_disp}."
                                         if _loc_defaulted:
