@@ -74,7 +74,16 @@ UNCHANGED_CLINIC_PROMPTS = {
     # clinic without one (vital_edge, demo, theorem, theorem_v3) is
     # byte-identical, which is the containment claim this table exists for.
     # See tests/regression/test_condition_led_opening.py.
-    "jv_v1": "b393a5c7c1c6c8e7",
+    # Re-pinned 2026-08-09: the FAQ block gained the answer-length rules Theorem
+    # got on 2026-08-04 (e2a44f3) — ANSWER ONLY WHAT WAS ASKED with its two
+    # live examples, a sentence-LENGTH cap independent of count, ONE OFFER
+    # NEVER TWO, and the slot-list exemption. The edit is confined to
+    # clinic_template_prompt.py, so jv_v1 moves and demo / theorem /
+    # theorem_v3 are byte-identical — that containment was verified, not
+    # assumed, and it is the whole reason this row is worth updating rather
+    # than deleting. vital_edge moves too and is deliberately unpinned.
+    # See tests/regression/test_faq_answer_length_template.py.
+    "jv_v1": "0bbf232b457512b7",
     "theorem": "8565be9a48a7a9aa",
     "theorem_v3": "d5d26ee076213608",
 }
