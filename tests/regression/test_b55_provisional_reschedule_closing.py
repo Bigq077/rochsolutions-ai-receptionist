@@ -47,6 +47,33 @@ from app.media_streams.turn_handler import (
 # and bounded to one ask). jv_v1 and theorem_v3 move deliberately; demo and
 # theorem are verified unchanged.
 UNCHANGED_CLINIC_PROMPTS = {
+# Re-pinned 2026-08-09. ALL FOUR values were stale, and the table had been
+# failing rather than guarding — so before touching it every move was
+# attributed to a commit, by replaying app/prompts, app/clinic_config.py and
+# app/clinics at each of the 34 prompt-touching commits back to 914cda3 and
+# re-rendering. What that showed:
+#
+#   demo     moved exactly ONCE, at 76cef3d, and has been byte-stable at
+#   theorem  ed86dbfbb561af80 / f5473a9d4e073c27 for the 20 commits since.
+#            76cef3d is the caller-ID read-back fix — which is precisely what
+#            the block below already says moved them. The comment was written
+#            and the values were not updated with it.
+#
+#   jv_v1    moved twice: 5bc4b3b (Jonathan's service list) and d2a3338 (B-39,
+#            retention scoped to the cancel path). Both are documented below
+#            and both are clinic_template_prompt changes that SHOULD move it.
+#
+#   theorem_v3 moved at nearly every commit on this branch, as expected — it is
+#            the clinic this branch exists to serve, and each change carries its
+#            own regression test.
+#
+# The useful half of the table therefore still holds, and holds strongly: the
+# two shared-renderer canaries have not drifted in 20 commits. Nothing here was
+# re-pinned to make a failure go away.
+#
+# A caution for whoever re-pins next: a stale pin and a real regression look
+# identical from the test output. Attribute the move to a commit before you
+# update a value — if you cannot name the commit, do not re-pin.
 # Re-pinned 2026-08-04 (T-4, commit 76cef3d). demo, theorem and theorem_v3 all
 # moved together because the caller-ID read-back fix edits all three renderers:
 # build_system_prompt, get_system_prompt's known-context block, and the
@@ -54,7 +81,7 @@ UNCHANGED_CLINIC_PROMPTS = {
 # number" without ever speaking the digits, so callers confirmed a number they
 # had never heard. Intended drift, not B-55 leaking into confirmed-booking
 # clinics — the property this table exists to prove still holds.
-    "demo": "a26c6a5ec53d4a88",
+    "demo": "ed86dbfbb561af80",
     # Re-pinned 2026-08-04. jv_v1 is the only other clinic with a
     # duration-choice service, so it is the only one the DURATIONS-ARE-FIXED
     # rewrite could move — demo, theorem and theorem_v3 are byte-identical
@@ -66,8 +93,8 @@ UNCHANGED_CLINIC_PROMPTS = {
     # a sentence denying a session the clinic sells, in the same breath as the
     # line offering it. The claim is now scoped per service and derived from
     # clinic.json instead of asserted in engine code.
-    "jv_v1": "7d90d044ca7534b2",
-    "theorem": "edb23ef9e7aea7ed",
+    "jv_v1": "0c7e427a8308ca93",
+    "theorem": "f5473a9d4e073c27",
     # Re-pinned 2026-08-04 on theorem-onboarding ONLY — this value deliberately
     # diverges from latency-eval's e6202afb47d91820, and a cherry-pick conflict
     # here is expected rather than a mistake.
@@ -127,7 +154,10 @@ UNCHANGED_CLINIC_PROMPTS = {
     # the wrong version — Thu/Fri — so Susie was offering Fridays for a physio
     # who does not work them. Also adds the reschedule rule after CAe0f8d2d6
     # moved a Leanne Thursday onto a Mark Wednesday in silence.
-    "theorem_v3": "da07d0352e792ffa",
+    # Re-pinned 2026-08-09: 62d6bbb (the reason gate — the tool schema and a
+    # tool error string were still telling her to ask), plus every theorem_v3
+    # move listed above that was never carried into this value.
+    "theorem_v3": "97427e2be0cf2936",
 }
 
 OLD_CONFIRMED_WORDING = ("that's you rescheduled", "you're now in for")
