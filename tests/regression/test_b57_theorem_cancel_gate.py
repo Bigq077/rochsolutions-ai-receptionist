@@ -263,10 +263,20 @@ UNMOVED_PROMPTS = {
     # manner-vs-claim clause in VOICE RULES. Same containment as the FAQ
     # change above and verified the same way — exactly the two template_v1
     # clinics moved. See tests/regression/test_ai_disclosure_template.py.
-    "jv_v1": "9135bfc0c66beb48",
+    #
+    # Re-pinned 2026-08-10: CALL STATE now states a withheld caller ID in words
+    # instead of omitting the line, ported from theorem_v3 (4cf79d9). The edit
+    # is confined to clinic_template_prompt.py and the fixture session carries
+    # no caller ID, so it renders the new branch. Same containment as the two
+    # 08-09 changes and verified the same way — EXACTLY the two template_v1
+    # clinics moved, and the three that render elsewhere (demo, theorem,
+    # theorem_v3) are byte-identical. theorem_v3 already carried this branch,
+    # which is why it does not move.
+    # See tests/regression/test_no_caller_id_asks_for_the_keypad.py.
+    "jv_v1": "b60be0364138866c",
     "theorem": "8565be9a48a7a9aa",
     "theorem_v3": "d5d26ee076213608",
-    "vital_edge": "625afec0bd9fc446",
+    "vital_edge": "5e82ee27d3febeae",
 }
 
 
