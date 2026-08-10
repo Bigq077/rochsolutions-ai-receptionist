@@ -510,16 +510,16 @@ def _spoken_day_phrase(iso_date: str) -> str:
     return f"{d.strftime('%A')} the {_ordinal(d.day)} of {d.strftime('%B')}"
 
 
-def _offered_day_vocabulary(session: Optional[Dict[str, Any]]) -> frozenset:
-    """The day-words that name a day ALREADY on the table — weekday and month
-    names for every date the caller has been offered or has agreed to.
+def _offered_day_dates(session: Optional[Dict[str, Any]]) -> tuple:
+    """Every offered/agreed day as a real `date`, from the four keys that can
+    carry one. Unparseable entries are dropped.
 
-    Empty when nothing has been offered yet, or when session is None. An empty
-    result means the caller cannot be accepting anything, so every caller in
-    this module treats it as "cannot rule out a change request".
+    Extracted so the name vocabulary below and the same-weekday proximity test
+    read the SAME four keys. They disagreed once already: adding a source to one
+    and not the other is how a guard silently stops covering a path.
     """
     if not session:
-        return frozenset()
+        return ()
 
     _isos: set = set()
     for _d in (session.get("available_days") or []):
@@ -535,17 +535,80 @@ def _offered_day_vocabulary(session: Optional[Dict[str, Any]]) -> frozenset:
 
     from datetime import date as _date
 
-    _vocab: set = set()
+    _dates: list = []
     for _iso in _isos:
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", _iso):
             continue
         try:
-            _dt = _date(int(_iso[:4]), int(_iso[5:7]), int(_iso[8:10]))
+            _dates.append(_date(int(_iso[:4]), int(_iso[5:7]), int(_iso[8:10])))
         except ValueError:
             continue
+    return tuple(sorted(_dates))
+
+
+def _offered_day_vocabulary(session: Optional[Dict[str, Any]]) -> frozenset:
+    """The day-words that name a day ALREADY on the table — weekday and month
+    names for every date the caller has been offered or has agreed to.
+
+    Empty when nothing has been offered yet, or when session is None. An empty
+    result means the caller cannot be accepting anything, so every caller in
+    this module treats it as "cannot rule out a change request".
+
+    NAMES ONLY, and that is the trap — see `_offered_weekday_is_within_reach`.
+    """
+    _vocab: set = set()
+    for _dt in _offered_day_dates(session):
         _vocab.add(_dt.strftime("%A").lower())
         _vocab.add(_dt.strftime("%B").lower())
     return frozenset(_vocab)
+
+
+_WEEKDAY_WORDS: frozenset = frozenset({
+    "monday", "tuesday", "wednesday", "thursday",
+    "friday", "saturday", "sunday",
+})
+
+
+def _offered_weekday_is_within_reach(
+    session: Optional[Dict[str, Any]], word: str, today
+) -> bool:
+    """True when saying `word` can only mean the day already offered.
+
+    CA166de2a9 (Theorem, 2026-08-10): Susie offered **Wednesday 19 August** —
+    the 12th had no afternoon left, so the tool skipped it. The caller asked
+    "are you free earlier… on a wednesday". "wednesday" was in the offered
+    vocabulary, so `_caller_requests_different_day` read it as him ACCEPTING the
+    day on the table, the steer stayed silent, and the model never called the
+    tool. It answered from the 19th's slots still in its message history and
+    spoke them as "Wednesday the 12th — two, three and four in the afternoon".
+    Those three times existed on no calendar. Four bookings 400'd out of Acuity,
+    four manual-followup alerts went to the owner, and the caller only got
+    booked because he suggested Thursday himself — a different weekday WORD,
+    which is the only reason the steer finally fired.
+
+    Weekday names repeat every 7 days. A name identifies a day only while no
+    OTHER date of that weekday sits between today and the one offered, so that
+    is exactly the test: the offered date must be within a week.
+
+        offered 19 Aug (Wed), today 10 Aug   → 9 days → Wed 12th is unoffered
+                                               and nearer: AMBIGUOUS, fire.
+        offered 15 Aug (Sat), today 8 Aug    → 7 days → no Saturday in between:
+                                               he is accepting (CAb297555c).
+
+    Seven is the boundary and must stay inclusive: it is CAb297555c exactly, the
+    call this suppression was built for.
+
+    Past dates do not count. A day that has been and gone cannot be the one the
+    caller is accepting, and treating it as reachable would suppress the steer
+    on the stalest state in the session.
+    """
+    for _dt in _offered_day_dates(session):
+        if _dt.strftime("%A").lower() != word:
+            continue
+        _delta = (_dt - today).days
+        if 0 <= _delta <= 7:
+            return True
+    return False
 
 
 # Words that mark a SHIFT away from the day under discussion even when the
@@ -558,8 +621,15 @@ _DAY_SHIFT_WORDS: frozenset = frozenset({
 })
 
 
-def _caller_requests_different_day(messages, session: Optional[Dict[str, Any]] = None) -> bool:
+def _caller_requests_different_day(
+    messages, session: Optional[Dict[str, Any]] = None, today=None
+) -> bool:
     """True if the caller's latest utterance names a DIFFERENT calendar day.
+
+    `today` is the clinic's date, defaulted from the one shared zoned clock and
+    injectable so the suppression can be tested without the calendar deciding
+    the result. Never `date.today()` — that is server-local, and B-09 is what
+    that costs between 23:00 and midnight under BST.
 
     CAc6b971ad (30 Jul 2026): the caller asked for Wednesday seven times after
     giving name and phone. Each time the post-collect guard blocked
@@ -612,9 +682,27 @@ def _caller_requests_different_day(messages, session: Optional[Dict[str, Any]] =
         return True
     if set(re.findall(r"[a-z']+", txt)) & _DAY_SHIFT_WORDS:
         return True
-    # Every day-word the caller used names a day already on the table, with
-    # nothing signalling a move away from it — they are accepting, not asking.
-    return not _named.issubset(_offered)
+    if not _named.issubset(_offered):
+        return True
+
+    # Every day-word names something on the table BY NAME. For a weekday that is
+    # not enough — the name repeats weekly, so it only pins the offered day when
+    # no nearer date of that weekday exists. CA166de2a9 is what the name-only
+    # test let through; see _offered_weekday_is_within_reach.
+    #
+    # Month words keep the name test: "august" cannot be the wrong August the
+    # way "wednesday" can be the wrong Wednesday, and the relative tokens
+    # ("tomorrow", "weekend") never enter the vocabulary at all, so both reach
+    # here already decided.
+    if today is None:
+        from app.date_context import clinic_today as _clinic_today
+        today = _clinic_today()
+    for _w in (_named & _WEEKDAY_WORDS):
+        if not _offered_weekday_is_within_reach(session, _w, today):
+            return True
+
+    # Accepting, not asking.
+    return False
 
 
 def _caller_requests_new_day_or_time(messages, session: Optional[Dict[str, Any]] = None) -> bool:
