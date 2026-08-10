@@ -152,13 +152,24 @@ class SMSService:
         # owner alerts, booking SMS — funnels through this method, so this one
         # gate covers them all.
         #
-        # ⚑ latency-eval branch: default is OFF (opposite of live branches, where
-        # it defaults to "true"). This branch is an isolated timing-eval service
-        # that must NEVER text a real caller; defaulting off guarantees silence
-        # even if the Render env var is forgotten. To deliberately send SMS from
-        # an eval run, set SMS_ENABLED=true. DO NOT port this default flip to
-        # main/theorem/jv live branches.
-        if os.getenv("SMS_ENABLED", "false").strip().lower() not in ("true", "1", "yes", "on"):
+        # ⚑ LIVE branch (jv_v2): default is ON. Deliberately the opposite of
+        # latency-eval, which this branch was cut from and which defaults OFF
+        # because it is an isolated timing-eval service that must never text a
+        # real caller.
+        #
+        # The flip back is not optional and it is not cosmetic. theorem-onboarding
+        # was cut from latency-eval the same way and inherited the OFF default
+        # straight past the comment telling it not to (3b2f195). Mark's line then
+        # sent nothing — no booking confirmation, no staff transfer notice, no
+        # reminder — and it read as healthy, because "[sms] SMS_ENABLED is off"
+        # is exactly what a correct eval branch prints. The prompt closes on
+        # "Confirmation text on its way" unconditionally, so every caller was
+        # promised a text that was never coming.
+        #
+        # Defaulting ON means a forgotten Render env var fails in the safe
+        # direction for a LIVE clinic, which is sending. Set SMS_ENABLED=false to
+        # deliberately silence this service.
+        if os.getenv("SMS_ENABLED", "true").strip().lower() not in ("true", "1", "yes", "on"):
             logger.info("[sms] SMS_ENABLED is off — outbound SMS suppressed (not sent)")
             return None
 

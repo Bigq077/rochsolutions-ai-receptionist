@@ -44,8 +44,20 @@ except ImportError:
 # KILL SWITCH — AUTOMATIC APPOINTMENT REMINDERS
 # ============================================================================
 
-# The automatic 24-hour and 2-hour reminder SMS are OFF on this branch by owner
-# decision, 2026-08-07. Both halves of the pipeline are gated, so it does not
+# ⚑ LIVE branch (jv_v2): reminders default ON, deliberately the opposite of
+# latency-eval, which this branch was cut from.
+#
+# The switch was added to latency-eval on 2026-08-07 by owner decision, so an
+# isolated timing-eval service could not text real patients. The two LIVE
+# clinics — theorem-onboarding and vitaledge-onboarding — carry no switch at all
+# and send reminders unconditionally, on purpose (owner-confirmed 2026-08-10).
+# JV is a live clinic, so it matches them: the switch is kept, because a named
+# switch is better than none, but it defaults ON so a forgotten Render env var
+# fails in the same direction the other two live clinics already run in.
+#
+# Set APPOINTMENT_REMINDERS_ENABLED=false to deliberately silence reminders here.
+#
+# Both halves of the pipeline are gated, so it does not
 # matter which side of the switch a booking lands on:
 #
 #   schedule_appointment_reminders()  queues nothing new
@@ -64,8 +76,8 @@ except ImportError:
 # rather than the process — same convention as SMS_ENABLED in sms.py.
 
 def _appointment_reminders_enabled() -> bool:
-    """True only when APPOINTMENT_REMINDERS_ENABLED is explicitly switched on."""
-    return os.getenv("APPOINTMENT_REMINDERS_ENABLED", "false").strip().lower() in (
+    """True unless APPOINTMENT_REMINDERS_ENABLED is explicitly switched off."""
+    return os.getenv("APPOINTMENT_REMINDERS_ENABLED", "true").strip().lower() in (
         "true", "1", "yes", "on",
     )
 
@@ -114,7 +126,7 @@ async def schedule_appointment_reminders(
     Returns:
         True if scheduled successfully, False if Redis unavailable
     """
-    # Kill switch — off by default on this branch. The booking itself is
+    # Kill switch — ON by default on this live branch. The booking itself is
     # already written by the time we get here; declining to queue reminders
     # must never look like a booking failure, so this returns the same False
     # the Redis-unavailable path returns and every caller already tolerates.

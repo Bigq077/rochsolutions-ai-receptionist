@@ -64,8 +64,8 @@
     "owner_notification_sms": "+447586605462",
     "_owner_notify_note": "Marcus's mobile — receives an SMS ping when an insurance booking is made so he can follow up to collect pre-auth/cover details.",
     "booking_system": "google_calendar",
-    "_calendar_id_note": "latency-eval / DEMO ONLY: repointed to Quentin's 'Susie Demo' Google calendar so demo calls on this branch book into Quentin's calendar, not JV's. google_tokens on the demo service are OAuthed as quentinroch10@gmail.com (owner of this calendar). LIVE JV (on main) still uses jointventurephysiotherapy@gmail.com — DO NOT merge this branch to main. Original: jointventurephysiotherapy@gmail.com.",
-    "calendar_id": "63bc844e0df1b6ef56b5d450a3a338d11d5286d186020d5b6ea43379ab550e57@group.calendar.google.com",
+    "_calendar_id_note": "JV GO-LIVE calendar, set 2026-08-10 on branch jv_v2 (cut from latency-eval). This replaces the demo repoint that latency-eval carries: that branch points at Quentin's 'Susie Demo' calendar (63bc844e...) so eval calls never book into JV's diary, and its google_tokens are OAuthed as quentinroch10@gmail.com. THAT IS THE TRAP HERE — a calendar_id change alone is not enough. The Google account authorised for clinic_id=jv_v1 must be able to SEE this calendar, or every availability read returns nothing and every booking fails. Either re-authorise as the calendar's owner via /auth/google/start?clinic_id=jv_v1, or share this calendar with the authorised account. Verify with /auth/google/status?clinic_id=jv_v1 before the first live call.",
+    "calendar_id": "0ee3a961836fedb8c1b5da206ce73fa74acc8ad6305e14334e4ce2b09921c051@group.calendar.google.com",
     "_digest_note": "End-of-day email of the day's calendar bookings so the agency enters them into Carepatron. Set email_to (or env DIGEST_EMAIL_TO) before go-live; sends once daily at hour:minute London. Requires SMTP_* env + google_tokens connected.",
     "digest": {
       "enabled": true,

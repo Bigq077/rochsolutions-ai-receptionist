@@ -1,10 +1,19 @@
 # tests/regression/test_appointment_reminders_kill_switch.py
 """
-The automatic 24hr/2hr appointment reminder SMS are switched OFF.
+The automatic 24hr/2hr appointment reminder SMS are switched ON — this is a
+LIVE clinic branch.
 
-Owner decision, 2026-08-07: patients should get the booking confirmation text
-and nothing else. The reminders are gated behind APPOINTMENT_REMINDERS_ENABLED,
-which defaults OFF on this branch.
+APPOINTMENT_REMINDERS_ENABLED still exists and still gates both halves, but on
+jv_v2 it defaults ON, which is the opposite of latency-eval (this branch's
+parent) and matches the two other live clinics, theorem-onboarding and
+vitaledge-onboarding, which carry no switch at all and send unconditionally by
+owner decision (confirmed 2026-08-10).
+
+The switch was introduced on latency-eval on 2026-08-07 so an isolated
+timing-eval service could not text real patients. Keeping the switch but
+inverting its default gives a live clinic a named off-ramp without inheriting
+eval silence — the failure that cost theorem-onboarding days of unsent
+confirmations (3b2f195).
 
 WHY BOTH HALVES ARE GATED
 
@@ -80,12 +89,13 @@ def _future_appointment():
 # 1 + 2 — the scheduler half
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("env", [None, "false", "0", "no", "off", ""])
+# `None` (unset) is deliberately NOT in this list on jv_v2. On latency-eval an
+# unset variable means OFF; on a live clinic branch it means ON, and that
+# inversion is the whole point of the branch. Unset is covered by
+# test_default_is_on_with_no_environment_at_all below.
+@pytest.mark.parametrize("env", ["false", "0", "no", "off", ""])
 async def test_no_reminder_is_queued_when_the_switch_is_off(monkeypatch, fake_redis, env):
-    if env is None:
-        monkeypatch.delenv("APPOINTMENT_REMINDERS_ENABLED", raising=False)
-    else:
-        monkeypatch.setenv("APPOINTMENT_REMINDERS_ENABLED", env)
+    monkeypatch.setenv("APPOINTMENT_REMINDERS_ENABLED", env)
 
     result = await scheduler.schedule_appointment_reminders(
         patient_phone="+447700900123",
@@ -101,11 +111,18 @@ async def test_no_reminder_is_queued_when_the_switch_is_off(monkeypatch, fake_re
     assert fake_redis.setex_calls == [], "a reminder payload was written with the switch off"
 
 
-async def test_default_is_off_with_no_environment_at_all(monkeypatch):
-    """The default lives in code, not in Render's env panel. A branch that
-    deploys with no APPOINTMENT_REMINDERS_ENABLED set must still be silent."""
+async def test_default_is_on_with_no_environment_at_all(monkeypatch):
+    """The default lives in code, not in Render's env panel — and on a LIVE
+    clinic branch it must default ON.
+
+    This is the assertion that was inverted when jv_v2 was cut from
+    latency-eval, and it is the one that matters. theorem-onboarding was cut the
+    same way and silently inherited latency-eval's OFF default for SMS, so
+    Mark's line sent nothing for days (3b2f195). A forgotten Render variable
+    must fail towards sending here, matching the two live clinics that carry no
+    switch at all."""
     monkeypatch.delenv("APPOINTMENT_REMINDERS_ENABLED", raising=False)
-    assert scheduler._appointment_reminders_enabled() is False
+    assert scheduler._appointment_reminders_enabled() is True
 
 
 # ---------------------------------------------------------------------------
@@ -116,8 +133,10 @@ async def test_queued_reminders_are_never_sent_while_the_switch_is_off(
     monkeypatch, fake_redis
 ):
     """Reminders queued before the switch was thrown must not fire. The worker
-    must not even read the pending set."""
-    monkeypatch.delenv("APPOINTMENT_REMINDERS_ENABLED", raising=False)
+    must not even read the pending set.
+
+    Set explicitly rather than unset: on this branch unset means ON."""
+    monkeypatch.setenv("APPOINTMENT_REMINDERS_ENABLED", "false")
 
     sent = await scheduler.process_due_reminders()
 
