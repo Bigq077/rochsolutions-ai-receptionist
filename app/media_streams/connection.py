@@ -2203,16 +2203,25 @@ _V3_NAME_CONFIRM_PATTERNS = (
 # exactly how "my surname would be X" was fixed on theorem and left broken on
 # JV + Vital Edge for weeks.
 #
-# Verify the invariant — all three hashes must match:
+# Verify the invariant — these hashes must match:
 #   git rev-parse origin/main:app/name_capture.py
 #   git rev-parse jv-v1-onboarding:app/name_capture.py
 #   git rev-parse vitaledge-onboarding:app/name_capture.py
+#
+# ...and as of 2026-08-10 they DO NOT, so read the paragraph above as the goal
+# rather than the state.  Measured: main + jv-v1-onboarding on 3096d9ab,
+# vitaledge-onboarding + theorem-onboarding + latency-eval on 85dac79f.  The
+# surname-correction fix of this date adds a third state on theorem; it is
+# additive (SURNAME_MARKERS / has_surname_marker, no behaviour change to any
+# existing caller) so porting it is a straight file copy on any branch that has
+# not diverged further.
 #
 # Session coupling and the phase gate stay here, in _v3_try_persist_name below.
 from app.name_capture import (  # noqa: E402
     NAME_FALSE_POSITIVES as _V3_NAME_FALSE_POSITIVES,
     extract_surname as _v3_extract_surname,
     backfill_surname as _v3_backfill_surname,
+    has_surname_marker as _has_surname_marker,
     first_name_from_self_introduction,
 )
 
@@ -2274,8 +2283,26 @@ def _v3_try_persist_name(
         or ""
     ).strip()
     if _existing:
-        if " " in _existing:
-            return False  # a surname is already present — nothing to add
+        # A surname is already present — but "present" is not "right".  STT heard
+        # "jack told me to call" and stored 'Jack Told'; the caller corrected it
+        # in the clearest words available — "my surname is Jack Thompson,
+        # t-h-o-m-p-s-o-n" — and this early return dropped it (CA166de2a9,
+        # 10 Aug).  The model used the right name for two turns from its own
+        # context, then the forced readback re-injected the stored one and it
+        # reverted.  Acuity has 'Jack Told'; so does his confirmation SMS.
+        #
+        # So a correction may overwrite, under a cue strictly stronger than the
+        # one that fills an EMPTY surname.  Filling an empty surname risks a
+        # missing word; overwriting risks destroying a correct one, and the
+        # spelled-run branch alone is not safe enough to carry that — digits are
+        # stripped before the run is read, so a postcode said aloud ("B97 5AB")
+        # spells a surname out of its letters.  Require the caller to have SAID
+        # "surname"/"last name".  backfill_surname still decides what the surname
+        # IS, so "my surname, t-h-o-m-p-s-o-n" (marker, no extractable token)
+        # still resolves through the spelling branch.
+        _correcting = " " in _existing
+        if _correcting and not _has_surname_marker(caller_utterance):
+            return False
         # Bound the back-fill by booking-not-yet-completed rather than the
         # phone-confirm step.  phone_confirmed is too early: the caller can
         # confirm the phone ("use this number") BEFORE the surname is spoken,
@@ -2315,22 +2342,37 @@ def _v3_try_persist_name(
             session.get("v3_awaiting_slot_selection")
             or session.get("v3_dtmf_slot_map")
         )
-        _awaiting = (not _slot_pending) and (
+        # Never on the correction path: the bare-straggler branch accepts ANY
+        # single word, which is the one thing that must not be able to unseat a
+        # surname the caller already gave.
+        _awaiting = (not _correcting) and (not _slot_pending) and (
             bool(session.get("v3_awaiting_surname")) or any(
                 k in (last_bot or "").lower()
                 for k in ("surname", "last name", "family name", "full name")
             )
         )
         _sur = _v3_backfill_surname(caller_utterance, _first, awaiting_surname=_awaiting)
-        if _sur and _sur.lower() != _first.lower():
+        _old_sur = _existing.split(None, 1)[1].strip() if _correcting else ""
+        if _sur and _sur.lower() != _first.lower() and _sur.lower() != _old_sur.lower():
             full = f"{_first} {_sur}"
-            session.setdefault("collected", {})["name"] = full
+            _col = session.setdefault("collected", {})
+            _col["name"] = full
+            # full_name OUTRANKS name at the forced readback (llm_stream.py) and
+            # at the booking summary, so leaving a stale one behind would let the
+            # wrong surname win anyway.  Only refreshed where it already exists —
+            # creating the key would change which branch those readers take.
+            if _col.get("full_name"):
+                _col["full_name"] = full
+            if session.get("full_name"):
+                session["full_name"] = full
             session["patient_name"] = full
             session["surname_captured"] = True
             session["v3_awaiting_surname"] = False
             logger.info(
-                "[ms_conn v3] surname back-filled onto stored first name: %r",
+                "[ms_conn v3] surname %s: %r%s",
+                "CORRECTED" if _correcting else "back-filled onto stored first name",
                 full,
+                f" (was {_existing!r})" if _correcting else "",
             )
             return True
         return False

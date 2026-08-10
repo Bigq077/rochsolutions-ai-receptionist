@@ -413,6 +413,18 @@ def extract_surname(caller_utterance: str, first_name: str) -> str:
     return ""
 
 
+# Words that mark the following token as a SURNAME rather than anything else the
+# caller might be saying.  Shared, because the correction path in connection.py
+# has to gate on exactly the same cue branch 1 below fires on — two copies of
+# this list drifting apart is a correction that silently stops landing.
+SURNAME_MARKERS = ("surname", "last name", "family name", "second name")
+
+
+def has_surname_marker(caller_utterance: str) -> bool:
+    """True when the caller explicitly labelled a word as their surname."""
+    return any(mk in (caller_utterance or "").lower() for mk in SURNAME_MARKERS)
+
+
 def backfill_surname(
     caller_utterance: str,
     first_name: str,
@@ -437,7 +449,7 @@ def backfill_surname(
     low = caller_utterance.lower()
 
     # 1) Explicit marker → reuse the conservative extractor.
-    if any(mk in low for mk in ("surname", "last name", "family name", "second name")):
+    if any(mk in low for mk in SURNAME_MARKERS):
         _s = extract_surname(caller_utterance, first_name)
         if _s:
             return _s
