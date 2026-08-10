@@ -29,6 +29,68 @@ class GoogleCalendarAuthError(RuntimeError):
     pass
 
 
+# ── Per-clinic OAuth token storage ──────────────────────────────────────────
+#
+# Google tokens used to live under ONE Redis key, "google_tokens", for the whole
+# process. One Redis therefore meant one Google account. That was survivable
+# only because each clinic runs its own Render service; the moment two clinics
+# share a Redis, whichever authorised last owns the key and the other clinic
+# writes its bookings into the WRONG practice's calendar. Two of the three
+# clinics book into Google Calendar, so this was one shared Redis away from a
+# live data-integrity incident — and notifications/scheduler.py already refers
+# to "another tenant sharing this Redis", so the sharing is not hypothetical.
+#
+# Keys are now namespaced per clinic. The migration is deliberately READ-ONLY
+# and never adopts: resolve_tokens_key() returns the namespaced key only when it
+# already exists, and otherwise falls back to the legacy global key. So:
+#
+#   * a clinic that has not re-authorised keeps working exactly as it does today
+#     (reads AND writes the legacy key) — no forced re-auth, and no half-migrated
+#     state where a refresh lands in one key while reads come from another;
+#   * the moment a clinic authorises via /auth/google/start?clinic_id=<id> the
+#     namespaced key exists and is used from then on, permanently;
+#   * nothing is ever silently COPIED into a clinic-specific key. Adoption would
+#     be actively harmful on a shared Redis — it would bake one practice's
+#     tokens into another practice's key, which is the very failure being fixed,
+#     only now invisible.
+#
+# Cut over one clinic at a time, confirming each with
+# /auth/google/status?clinic_id=<id> before moving to the next.
+
+GOOGLE_TOKENS_LEGACY_KEY = "google_tokens"
+
+
+def tokens_key(clinic_id: Optional[str]) -> str:
+    """The namespaced Redis key for a clinic's Google OAuth tokens."""
+    cid = (clinic_id or "").strip().lower()
+    if not cid:
+        return GOOGLE_TOKENS_LEGACY_KEY
+    return f"{GOOGLE_TOKENS_LEGACY_KEY}:{cid}"
+
+
+async def resolve_tokens_key(clinic_id: Optional[str]) -> str:
+    """
+    The key actually IN USE for this clinic: the namespaced one if it exists,
+    otherwise the legacy global key.
+
+    Reads and writes must both go through this, so a token refresh can never
+    land in a different key from the one being read.
+    """
+    from app.storage.redis_store import redis_get_json
+
+    key = tokens_key(clinic_id)
+    if key == GOOGLE_TOKENS_LEGACY_KEY:
+        return key
+    try:
+        if await redis_get_json(key):
+            return key
+    except Exception:
+        # Redis unavailable — fall back to legacy rather than returning a key
+        # that reads empty and would look like "not connected".
+        pass
+    return GOOGLE_TOKENS_LEGACY_KEY
+
+
 def _require_env(name: str) -> str:
     v = os.getenv(name)
     if not v:

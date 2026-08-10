@@ -26,8 +26,11 @@ logger = logging.getLogger(__name__)
 
 LONDON_TZ = pytz.timezone("Europe/London")
 
-# Google tokens are stored globally in Redis under this key (same as legacy)
-_TOKENS_KEY = "google_tokens"
+# Google tokens are keyed PER CLINIC — see calendar_google.tokens_key /
+# resolve_tokens_key. There is deliberately no module-level key constant here
+# any more: a bare "google_tokens" read is the bug (one Redis = one Google
+# account = bookings written into another practice's calendar), and leaving the
+# constant lying around is an invitation to reintroduce it.
 
 # ---------------------------------------------------------------------------
 # Acuity appointment type IDs
@@ -644,16 +647,27 @@ def _extract_week_range(
     return None
 
 
-async def _get_tokens() -> Optional[Dict[str, Any]]:
-    """Fetch Google Calendar OAuth tokens from Redis."""
+async def _get_tokens(clinic_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Fetch this clinic's Google Calendar OAuth tokens from Redis.
+
+    clinic_id is required in practice — pass _resolve_clinic_id(session). It
+    defaults to None only so that a caller which genuinely has no session
+    degrades to the legacy shared key rather than raising. See the note on
+    key namespacing in app/tools/calendar_google.py.
+    """
     from app.storage.redis_store import redis_get_json
+    from app.tools.calendar_google import resolve_tokens_key
     try:
-        return await redis_get_json(_TOKENS_KEY)
+        key = await resolve_tokens_key(clinic_id)
+        return await redis_get_json(key)
     except Exception:
         return None
 
 
-async def _save_gcal_tokens(tokens: Dict[str, Any]) -> None:
+async def _save_gcal_tokens(
+    tokens: Dict[str, Any], clinic_id: Optional[str] = None
+) -> None:
     """
     Persist refreshed GCal tokens back to Redis.
     _refresh_if_needed() updates the token dict in-place but never writes to
@@ -661,10 +675,16 @@ async def _save_gcal_tokens(tokens: Dict[str, Any]) -> None:
     access token and expiry are saved so the next request skips a needless
     refresh round-trip.  Failures are non-fatal — worst case is an extra
     refresh on the next call.
+
+    Writes to the key resolve_tokens_key() reports as IN USE, which is the same
+    key _get_tokens read from. Writing to the namespaced key while reads still
+    come from the legacy one would strand every refresh.
     """
     from app.storage.redis_store import redis_set_json
+    from app.tools.calendar_google import resolve_tokens_key
     try:
-        await redis_set_json(_TOKENS_KEY, tokens, ttl_seconds=60 * 60 * 24 * 365)
+        key = await resolve_tokens_key(clinic_id)
+        await redis_set_json(key, tokens, ttl_seconds=60 * 60 * 24 * 365)
     except Exception as e:
         logger.warning("_save_gcal_tokens: failed to persist updated tokens: %r", e)
 
@@ -4731,7 +4751,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         break_min=_break_min,
     )
 
-    tokens = await _get_tokens()
+    tokens = await _get_tokens(_resolve_clinic_id(session))
     if not tokens:
         if not candidates:
             return {"error": "No slots found in the next 7 days.", "slots": []}
@@ -4760,7 +4780,9 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
             asyncio.to_thread(freebusy, tokens, w_start, w_end, calendar_id),
             _all_day_blocks_for_window(tokens, calendar_id, w_start, w_end),
         )
-        await _save_gcal_tokens(tokens)   # persist any token refresh that happened inside freebusy
+        # persist any token refresh that happened inside freebusy, under THIS
+        # clinic's namespaced key — not the process-global one
+        await _save_gcal_tokens(tokens, _resolve_clinic_id(session))
         # freebusy reports Busy/Free honestly for TIMED events; all-day entries
         # default to Free in Google, so they are added here or a blocked-out
         # week is offered as available.
@@ -4833,7 +4855,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
                         tokens, calendar_id, w_start, _wide_end
                     ),
                 )
-                await _save_gcal_tokens(tokens)
+                await _save_gcal_tokens(tokens, _resolve_clinic_id(session))
                 free_slots = filter_free_slots(
                     _wide_candidates,
                     parse_busy(_wide_busy or []) + _wide_all_day,
@@ -5090,7 +5112,7 @@ async def _check_availability_diary(
     if w_end > horizon:
         w_end = horizon
 
-    tokens = await _get_tokens()
+    tokens = await _get_tokens(_resolve_clinic_id(session))
     if not tokens:
         logger.error(
             "_check_availability_diary: no Google tokens — cannot read the diary,"
@@ -5111,7 +5133,7 @@ async def _check_availability_diary(
         events = await asyncio.to_thread(
             list_upcoming_events, tokens, days_ahead, _MAX_DIARY_EVENTS, calendar_id
         )
-        await _save_gcal_tokens(tokens)
+        await _save_gcal_tokens(tokens, _resolve_clinic_id(session))
     except Exception as e:
         logger.error(
             "_check_availability_diary: diary read failed (%r) — handing off. NOT"
@@ -5243,7 +5265,7 @@ async def _check_availability_published(
     if w_end > horizon:
         w_end = horizon
 
-    tokens = await _get_tokens()
+    tokens = await _get_tokens(_resolve_clinic_id(session))
     if not tokens:
         return {"error": "Calendar not connected — unable to read availability.", "slots": []}
 
@@ -5251,7 +5273,7 @@ async def _check_availability_published(
         events = await asyncio.to_thread(
             list_upcoming_events, tokens, days_ahead, 75, calendar_id
         )
-        await _save_gcal_tokens(tokens)
+        await _save_gcal_tokens(tokens, _resolve_clinic_id(session))
     except Exception as e:
         logger.error("_check_availability_published: list events error: %r", e)
         return {"error": "Couldn't read availability just now — please try again.", "slots": []}
@@ -5446,7 +5468,7 @@ async def _book_appointment_provisional(
         + ["Confirm directly with the client (WhatsApp/phone)."]
     )
 
-    tokens = await _get_tokens()
+    tokens = await _get_tokens(_resolve_clinic_id(session))
     event_id = None
     calendar_written = False
     if tokens:
@@ -5481,7 +5503,7 @@ async def _book_appointment_provisional(
                     create_event, tokens, start_dt, end_dt, summary, description, calendar_id, "default"
                 )
                 event_id = (ev or {}).get("id", "")
-            await _save_gcal_tokens(tokens)
+            await _save_gcal_tokens(tokens, _resolve_clinic_id(session))
             calendar_written = True
         except Exception as e:
             logger.error("provisional booking calendar write failed: %r", e)
@@ -5819,7 +5841,7 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
     from app.tools.calendar_google import create_event
     from app.notifications.booking_sms import send_booking_confirmation
 
-    tokens = await _get_tokens()
+    tokens = await _get_tokens(_resolve_clinic_id(session))
     location = (args.get("location") or "").lower().strip()
     # BUG-5: carry the confirmed modality into the booking. The model sometimes
     # reverts to the in-clinic default (a physical site) at book time even after
@@ -6091,7 +6113,7 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         event = await asyncio.to_thread(
             create_event, tokens, start_dt, end_dt, summary, description, calendar_id, "public"
         )
-        await _save_gcal_tokens(tokens)   # persist any token refresh that happened inside create_event
+        await _save_gcal_tokens(tokens, _resolve_clinic_id(session))   # persist any token refresh that happened inside create_event
         event_id = event.get("id", "")
     except Exception as e:
         logger.error("book_appointment create_event error: %r", e)
@@ -6322,7 +6344,7 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
     from app.tools.calendar_google import list_upcoming_events, delete_event
     from app.clinic_config import get_clinic
 
-    tokens = await _get_tokens()
+    tokens = await _get_tokens(_resolve_clinic_id(session))
     if not tokens:
         return {"success": False, "error": "Calendar not connected."}
 
@@ -6470,7 +6492,7 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
     from app.tools.calendar_google import list_upcoming_events, patch_event_time
     from app.clinic_config import get_clinic
 
-    tokens = await _get_tokens()
+    tokens = await _get_tokens(_resolve_clinic_id(session))
     if not tokens:
         return {"success": False, "error": "Calendar not connected."}
 
@@ -6577,7 +6599,7 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
                 await asyncio.to_thread(patch_event_time, tokens, event_id, new_start, new_end, calendar_id)
                 await asyncio.to_thread(_upd, tokens, event_id, _new_summary, _new_desc, calendar_id)
                 _new_event_id = event_id
-            await _save_gcal_tokens(tokens)
+            await _save_gcal_tokens(tokens, _resolve_clinic_id(session))
             session["calendar_event_id"] = _new_event_id
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -7678,14 +7700,14 @@ async def _lookup_patient_gcal(args: Dict[str, Any], session: Dict[str, Any]) ->
     if not name and not phone:
         return {"found": False, "message": "Provide name or phone to look up an appointment"}
 
-    tokens = await _get_tokens()
+    tokens = await _get_tokens(_resolve_clinic_id(session))
     if not tokens:
         return {"found": False, "message": "Calendar not connected"}
     clinic = get_clinic(session.get("clinic_id"))
     calendar_id = _resolve_calendar_id(clinic, (args.get("location") or ""))
     try:
         events = await asyncio.to_thread(list_upcoming_events, tokens, 60, 50, calendar_id)
-        await _save_gcal_tokens(tokens)
+        await _save_gcal_tokens(tokens, _resolve_clinic_id(session))
     except Exception as exc:
         logger.warning("_lookup_patient_gcal: list_upcoming_events failed: %r", exc)
         return {"found": False, "message": "Could not retrieve appointments"}

@@ -96,7 +96,9 @@ def test_switch_is_off_by_default(mode, monkeypatch):
     """
     reached = {"yes": False}
 
-    async def _tokens():
+    # _get_tokens takes the clinic_id now — Google tokens are keyed per
+    # clinic, so a zero-arg stub no longer matches the call site.
+    async def _tokens(*a, **k):
         reached["yes"] = True
         return None  # no tokens → early, harmless return
 

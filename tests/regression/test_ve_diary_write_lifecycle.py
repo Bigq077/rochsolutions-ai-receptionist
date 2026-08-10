@@ -47,7 +47,9 @@ class Calls(dict):
 def cal(monkeypatch):
     calls = Calls(created=[], updated=[], deleted=[], patched=[])
 
-    async def _tok():
+    # _get_tokens takes the clinic_id now — Google tokens are keyed per
+    # clinic, so a zero-arg stub no longer matches the call site.
+    async def _tok(*a, **k):
         return {"access_token": "x"}
 
     async def _save(*a, **k):

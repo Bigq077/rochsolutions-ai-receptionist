@@ -56,7 +56,9 @@ def _timed(day, start_h, end_h, summary="Massage with Roger"):
 
 def _install(monkeypatch, busy_events=(), all_day=(), fail=False, tokens=True, n_events=None):
     """Wire a fake calendar. busy_events → freebusy; all_day → the events list."""
-    async def _tok():
+    # _get_tokens takes the clinic_id now — Google tokens are keyed per
+    # clinic, so a zero-arg stub no longer matches the call site.
+    async def _tok(*a, **k):
         return {"access_token": "x"} if tokens else None
 
     def _freebusy(*a, **k):
