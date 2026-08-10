@@ -573,6 +573,38 @@ def _extract_week_range(
         )
         return _md_range
 
+    # ── Pattern 3.9: month-first date "August 19th", "Aug 19 2026" ───────────
+    # Must run BEFORE Pattern 4.  Pattern 4 is day-first only: on "august 19th"
+    # its `re.search` starts at the digits, so the month word to their LEFT is
+    # never seen.  It then fell through to the nearest-future-19th branch and
+    # returned a date in whatever month came next — "september 19th" resolved to
+    # 19 AUGUST, "december 1st" to 1 SEPTEMBER.  The month was not merely
+    # unparsed, it was silently replaced (2026-08-10).
+    _mf_m = re.search(
+        r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+        r"jul(?:y)?|aug(?:ust)?|sep(?:t)?(?:ember)?|oct(?:ober)?|"
+        r"nov(?:ember)?|dec(?:ember)?)\s+(?:the\s+)?(\d{1,2})(?!\d)"
+        r"(?:st|nd|rd|th)?(?:[,\s]+(\d{4}))?",
+        hint,
+    )
+    # (?!\d) stops the day group eating the head of a bare year: without it
+    # "21st May 2026" matched "may 20" and resolved to 20 May 2027.
+    if _mf_m:
+        _mf_month = _MONTH_MAP.get(_mf_m.group(1), 0)
+        _mf_day   = int(_mf_m.group(2))
+        _mf_yr_s  = _mf_m.group(3) or ""
+        if _mf_month:
+            _mf_year = int(_mf_yr_s) if _mf_yr_s else today.year
+            try:
+                _mf_target = _date_type(_mf_year, _mf_month, _mf_day)
+                # A bare month+day already past this year means next year —
+                # same roll-forward Pattern 4 applies to the day-first form.
+                if _mf_target < today and not _mf_yr_s:
+                    _mf_target = _date_type(_mf_year + 1, _mf_month, _mf_day)
+            except ValueError:
+                return None
+            return _mf_target, _mf_target  # single-day range
+
     # ── Pattern 4: specific date (optional day-of-week prefix) ───────────────
     # e.g. "Thursday 21st May mornings", "21st May 2026", "the 14th"
     _sd_m = re.search(
@@ -599,8 +631,15 @@ def _extract_week_range(
         # Guard against time strings (e.g. "9am", "10:30") by requiring an
         # explicit ordinal suffix (st/nd/rd/th); a bare digit with no suffix
         # is too ambiguous to treat as a calendar date.
+        #
+        # `word` is whatever followed the ordinal, and it is only meaningful
+        # when it IS a month.  Requiring `not word` meant any trailing word at
+        # all killed the fallback: "the 19th at 3 pm" captured word="at" and
+        # returned None, so a hint carrying both a date and a time parsed as
+        # no date.  The ordinal suffix is what makes this a calendar date; a
+        # non-month word after it says nothing either way (2026-08-10).
         _has_ordinal = bool(re.search(r"\d(?:st|nd|rd|th)", _sd_m.group(0), re.IGNORECASE))
-        if 1 <= day_n <= 31 and not word and _has_ordinal:
+        if 1 <= day_n <= 31 and not month_n and _has_ordinal:
             target = _nearest_future_day_of_month(day_n)
             if target:
                 return target, target
@@ -2664,10 +2703,27 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                 re.search(r"\b(?:today|tomorrow)\b", _hint_lower)
             ) or bool(
                 re.search(
-                    r"\b\d{1,2}(?:st|nd|rd|th)?\s+(?:jan(?:uary)?|feb(?:ruary)?|"
+                    r"\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan(?:uary)?|"
+                    r"feb(?:ruary)?|"
                     r"mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|"
                     r"sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
                     r"\b",
+                    _hint_lower,
+                )
+            ) or bool(
+                # MONTH-FIRST ordinal date ("August 19th at 3 pm").  The
+                # day-first row above does not match it, so the caller's named
+                # date was bypassed: the tool swept the full 30 days, the
+                # spoken list was capped to the soonest 3 (11th/12th/13th), and
+                # the 19th was simply absent from the payload.  The model read
+                # that absence as clinic state and said "Wednesday the 19th of
+                # August is fully booked, I'm afraid".  It was not — the same
+                # log shows 6 raw slots that day (2026-08-10).
+                re.search(
+                    r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|"
+                    r"may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t)?(?:ember)?|"
+                    r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+                    r"\s+(?:the\s+)?\d{1,2}(?:st|nd|rd|th)?\b",
                     _hint_lower,
                 )
             ) or bool(
