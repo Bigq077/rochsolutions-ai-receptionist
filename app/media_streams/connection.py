@@ -10093,6 +10093,26 @@ class WebSocketCallHandler:
                                                 " check_availability",
                                                 _utc_tp,
                                             )
+                                            # The branch above records its
+                                            # question; this one asked nothing,
+                                            # so without this the exchange is
+                                            # invisible to the model and it
+                                            # re-asks which clinic. CAc8f74ddf
+                                            # — see the Haiku site for the full
+                                            # account. Both roles, to keep the
+                                            # history alternating.
+                                            self.session.setdefault(
+                                                "conversation_history", []
+                                            ).extend([
+                                                {
+                                                    "role": "user",
+                                                    "content": utterance,
+                                                },
+                                                {
+                                                    "role": "assistant",
+                                                    "content": _ack,
+                                                },
+                                            ])
                                     await save_session(
                                         self.call_sid, self.session
                                     )
@@ -10332,6 +10352,25 @@ class WebSocketCallHandler:
                                                     " re-queued pref",
                                                         _existing_tp,
                                                     )
+                                                # Timing Q skipped means nothing
+                                                # was asked, so nothing would
+                                                # otherwise reach the model and
+                                                # the clinic question reads as
+                                                # unanswered. CAc8f74ddf — see
+                                                # the Haiku site. Both roles,
+                                                # to keep history alternating.
+                                                self.session.setdefault(
+                                                    "conversation_history", []
+                                                ).extend([
+                                                    {
+                                                        "role": "user",
+                                                        "content": utterance,
+                                                    },
+                                                    {
+                                                        "role": "assistant",
+                                                        "content": _ack,
+                                                    },
+                                                ])
                                                 _new_ret_q = None
                                             else:
                                                 _new_ret_q = (
@@ -10866,6 +10905,9 @@ class WebSocketCallHandler:
                                         # no longer armed here; see the note at
                                         # the alias-match site above.
                                         await self.tts_text_queue.put(_ack)
+                                        # Everything spoken on this turn, in
+                                        # order, for the history append below.
+                                        _spoken = [_ack]
                                         if _h_tp:
                                             # Time preference known — re-queue
                                             # so LLM fires check_availability.
@@ -10890,16 +10932,60 @@ class WebSocketCallHandler:
                                             self.session[
                                                 "last_question"
                                             ] = _h_next_q
-                                            self.session.setdefault(
-                                                "conversation_history", []
-                                            ).append({
-                                                "role": "assistant",
-                                                "content": _h_next_q,
-                                            })
+                                            _spoken.append(_h_next_q)
                                             self._silence_handler\
                                                 .on_question_asked(
                                                     _h_next_q
                                                 )
+                                        # ── Record BOTH sides of the exchange
+                                        # this intercept just swallowed ───────
+                                        # CAc8f74ddf (Theorem, 10 Aug): Susie
+                                        # asked which clinic FOUR times. The
+                                        # caller answered every time — and the
+                                        # resolver got it RIGHT on the first
+                                        # one, defaulting a mangled "uh you're
+                                        # always the clinic" to alcester and
+                                        # saying "Awlstuh." He hung up on turn
+                                        # 12 with no booking, having said "i
+                                        # said the osteo clinic".
+                                        #
+                                        # Nothing reached the model. The ack
+                                        # went to the TTS queue only, and the
+                                        # caller's answer was consumed here and
+                                        # replaced by the re-queued time
+                                        # preference. So the model's view was
+                                        # its own unanswered "Which clinic were
+                                        # you thinking of?" followed by a user
+                                        # turn saying "afternoons" — and it
+                                        # asked again. Every time.
+                                        #
+                                        # This bites precisely when the caller
+                                        # names a time in their opening
+                                        # sentence, which this one did ("do you
+                                        # have anything on a wednesday
+                                        # afternoon"): that sets _h_tp, and the
+                                        # _h_tp branch is the one that recorded
+                                        # nothing. The _h_next_q branch at
+                                        # least logged its question — which is
+                                        # why the loop looked intermittent.
+                                        #
+                                        # Both roles, in one place, because
+                                        # appending only the assistant side
+                                        # would leave two assistant turns
+                                        # adjacent in a history that is sent to
+                                        # the API very nearly verbatim.
+                                        self.session.setdefault(
+                                            "conversation_history", []
+                                        ).extend([
+                                            {
+                                                "role": "user",
+                                                "content": utterance,
+                                            },
+                                            {
+                                                "role": "assistant",
+                                                "content": " ".join(_spoken),
+                                            },
+                                        ])
                                         await save_session(
                                             self.call_sid, self.session
                                         )
