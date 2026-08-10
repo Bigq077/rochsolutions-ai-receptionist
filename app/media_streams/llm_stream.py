@@ -836,6 +836,15 @@ def _post_collect_readback_due(tool_name: str, session, messages) -> bool:
     """
     if tool_name != "check_availability":
         return False
+    # CA166de2a9 (2026-08-10): "the caller's details are settled and nobody is
+    # trying to change the slot" stops being true the moment the provider
+    # rejects the slot. This guard fired seven times after the first Acuity 400,
+    # each time telling the model not to ask about the day or time again — so
+    # the one action that could recover the call was the one it forbade. Four
+    # minutes, four failed writes, four owner alerts, and the caller had to
+    # suggest a different day himself.
+    if session.get(BOOKING_WRITE_FAILED_KEY):
+        return False
     if not session.get("phone_confirmed"):
         return False
     _col = session.get("collected") or {}
@@ -937,6 +946,15 @@ _WRITE_NO_CLAIM_RULE = {
 # and _WRITE_ALREADY_DONE_RULE is worded so that is still true.
 WRITE_SUCCEEDED_KEY = "_write_families_succeeded"
 
+# Call-scoped: book_appointment reached the provider and came back failed.
+#
+# Deliberately NOT WRITE_REFUSED_KEY, which is turn-scoped and covers all three
+# families and both refusal kinds. This one answers a narrower question that two
+# guards need — "is the slot on record still worth defending?" — and the answer
+# has to outlive the turn, because on CA166de2a9 the block that would not stand
+# down fired across seven separate turns after the first failure.
+BOOKING_WRITE_FAILED_KEY = "_booking_write_failed"
+
 _WRITE_ALREADY_DONE_RULE = {
     WRITE_FAMILY_BOOKING: (
         "A booking already completed successfully earlier on this call. This "
@@ -1024,6 +1042,11 @@ def _note_write_result(session: dict, tool_name: str, result):
         session[WRITE_SUCCEEDED_KEY] = succeeded
         if family == WRITE_FAMILY_BOOKING:
             session["booking_write_confirmed"] = True
+            # A real booking now exists, so the availability blocks are correct
+            # again — the caller is not choosing a time any more. Cleared rather
+            # than left latched so a farewell turn cannot spend a round trip
+            # re-reading the diary.
+            session.pop(BOOKING_WRITE_FAILED_KEY, None)
         return result
     if succeeded.get(family):
         # CA0f9a12 — a duplicate write in a family that already completed this
@@ -1047,6 +1070,24 @@ def _note_write_result(session: dict, tool_name: str, result):
     # reschedule never sets.
     refused[family] = True
     session[WRITE_REFUSED_KEY] = refused
+    # CA166de2a9 — call-scoped, and armed ONLY by an executor failure.
+    #
+    # The availability blocks below exist to stop a spurious re-search while the
+    # name and number are being collected. Once book_appointment has come back
+    # from the provider having failed, that premise is gone: the slot on record
+    # is one the calendar has just rejected, and re-reading it back is the one
+    # thing that cannot help. On that call the post-collect block fired seven
+    # times AFTER the first 400, each time instructing the model not to ask about
+    # the day or time again. It looped for four minutes and the caller had to
+    # propose a different day himself.
+    #
+    # `success is False` and not the branch condition: this branch also runs for
+    # the gate refusals, which carry `{"status": "..._required"}` and no success
+    # key at all. Those mean the write was never attempted because details are
+    # still missing — precisely when the block is doing its job — so they must
+    # not release it. Only a real attempt that reached the provider and failed.
+    if family == WRITE_FAMILY_BOOKING and result.get("success") is False:
+        session[BOOKING_WRITE_FAILED_KEY] = True
     logger.warning(
         "[ms_llm] %s did not succeed (status=%r) — false-confirmation guard "
         "ARMED for the %s family this turn",
@@ -3689,6 +3730,14 @@ class LLMStream:
                     and session.get("v3_confirmed_slot_phrase")
                     and not session.get("last_offered_slots")
                     and not _caller_wants_new_slot(messages or [])
+                    # Releasing the post-collect guard above and not this one
+                    # would have changed nothing on CA166de2a9: every blocked
+                    # turn also satisfied this condition — a confirmed phrase, an
+                    # empty cache, and "yes please" as the utterance, which
+                    # carries no digit and no new-slot word. The next `elif`
+                    # would simply have taken over the blocking. Both stand down
+                    # on a failed write, or neither does.
+                    and not session.get(BOOKING_WRITE_FAILED_KEY)
                 ):
                     # Slot-locked guard: the caller has already agreed a specific
                     # slot (v3_confirmed_slot_phrase set by the connection layer)
