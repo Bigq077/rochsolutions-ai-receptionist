@@ -6069,8 +6069,12 @@ class WebSocketCallHandler:
                             " day/time Q (no strand)"
                         )
                     else:
+                        # synthetic=True: bypass STT-phantom guards — this
+                        # re-injection races the ack turn's completion and
+                        # would else be dropped as a same-breath straggler,
+                        # leaving the call in dead air until the watchdog.
                         await self.transcript_queue.put(
-                            (time.monotonic(), _dtmf_tp)
+                            (time.monotonic(), _dtmf_tp, True)
                         )
                         logger.info(
                             "[ms_conn v3] DTMF: time preference known"
@@ -7769,8 +7773,14 @@ class WebSocketCallHandler:
                                     "lookup_patient",
                                     utterance[:40],
                                 )
+                                # synthetic=True: bypass STT-phantom guards —
+                                # the "yes" turn ends here (`continue`), so
+                                # these digits ARE the rest of the turn.  As a
+                                # 2-tuple they raced the read-back turn's
+                                # completion and could be dropped as a
+                                # same-breath straggler, stranding the lookup.
                                 await self.transcript_queue.put(
-                                    (time.monotonic(), _rb_phone)
+                                    (time.monotonic(), _rb_phone, True)
                                 )
                                 continue
                             # No stashed number is not recoverable by guessing.
@@ -10012,9 +10022,26 @@ class WebSocketCallHandler:
                                                 # this is a new patient turn
                                                 # (location confirmation), not
                                                 # a double-dispatch.
+                                                #
+                                                # synthetic=True: bypass STT-
+                                                # phantom guards — the ack turn
+                                                # is ack-only (no run_turn), so
+                                                # this re-injection IS the rest
+                                                # of the turn.  Enqueued
+                                                # microseconds before the ack
+                                                # completes, it was otherwise
+                                                # eaten as a same-breath
+                                                # straggler and the call
+                                                # dead-aired until the watchdog
+                                                # (10s).  Same reasoning as the
+                                                # FAQ branch below.
                                                 await (
                                                     self.transcript_queue
-                                                    .put((time.monotonic(), _existing_tp))
+                                                    .put((
+                                                        time.monotonic(),
+                                                        _existing_tp,
+                                                        True,
+                                                    ))
                                                 )
                                                 logger.info(
                                                     "[ms_conn v3] time_pref"
