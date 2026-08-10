@@ -34,6 +34,8 @@ what stop it becoming the worse bug.
 """
 from __future__ import annotations
 
+from datetime import date as _date
+
 import pytest
 
 from app.media_streams.llm_stream import (
@@ -41,6 +43,19 @@ from app.media_streams.llm_stream import (
     _different_day_steer,
     _offered_day_vocabulary,
 )
+
+
+# The call ran on Saturday 8 August 2026. Every assertion below is about a
+# session holding 15 August, and since CA166de2a9 the suppression asks how far
+# away that is — so the clock is pinned to the real call date rather than left
+# to whenever the suite happens to run. Without this the file passes today and
+# starts failing on 16 August for no reason anyone would connect to this change.
+CALL_DAY = _date(2026, 8, 8)
+
+
+@pytest.fixture(autouse=True)
+def _pin_clinic_today(monkeypatch):
+    monkeypatch.setattr("app.date_context.clinic_today", lambda *a, **k: CALL_DAY)
 
 
 # Session as it stood at 09:10:41 — Saturday 15 August 2026 on the table.
