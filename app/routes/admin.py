@@ -248,12 +248,24 @@ async def diagnostics():
 
 
 @router.get("/clear_google_tokens")
-async def clear_google_tokens(key: str):
+async def clear_google_tokens(key: str, clinic_id: str = ""):
+    """
+    Delete the Google tokens for ONE clinic.
+
+    Without clinic_id this targets the legacy shared key, which disconnects
+    every clinic that has not yet been cut over to its own namespaced key —
+    that used to be the only behaviour, and it is why this now takes a
+    clinic_id. Pass one unless you genuinely mean "disconnect everything not
+    yet migrated". See app/tools/calendar_google.py for the key scheme.
+    """
     if not ADMIN_KEY or key != ADMIN_KEY:
         return {"ok": False, "error": "unauthorized"}
 
-    await redis_delete_key("google_tokens")
-    return {"ok": True}
+    from app.tools.calendar_google import resolve_tokens_key
+
+    target = await resolve_tokens_key(clinic_id)
+    await redis_delete_key(target)
+    return {"ok": True, "deleted_key": target, "clinic_id": clinic_id or None}
 
 
 @router.get("/test-acuity")
