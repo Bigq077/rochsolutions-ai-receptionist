@@ -117,8 +117,34 @@ async def notify_owner(
         message = _build_message(
             event, patient_name, when_label, service, location, is_new_patient, note
         )
+
+        # ── One alert per distinct piece of news, per call ───────────────────
+        # CA166de2a9 (10 Aug): book_appointment was retried against a slot the
+        # calendar had already rejected, and Mark got FOUR identical
+        # "Booking needs manual entry: Jack" texts in two minutes — for a caller
+        # who ended the call successfully booked. An alert he has to work out
+        # the meaning of is worse than no alert; four of them train him to
+        # ignore the channel, and the channel is the escalation path.
+        #
+        # The message is the signature, not the event, because the message is
+        # exactly what Mark reads. Two alerts that say different things are two
+        # pieces of news and both go — a booking moved to another slot has a
+        # different when_label. Two that read identically cannot be.
+        #
+        # Stored as a list, not a set: session is serialised by save_session.
+        _seen = session.setdefault("owner_alerts_sent", [])
+        if message in _seen:
+            logger.info(
+                "owner_alert [%s] suppressed — identical text already sent this "
+                "call (clinic=%r)", event, session.get("clinic_id"),
+            )
+            return False
+
         sid = await send_sms(to=owner_phone, message=message)
         if sid:
+            # Recorded only on a confirmed send, so a Twilio failure is retried
+            # rather than silently swallowed by its own suppression.
+            _seen.append(message)
             logger.info(
                 "owner_alert sent [%s] → ***%s (clinic=%r)",
                 event, owner_phone[-4:], session.get("clinic_id"),
