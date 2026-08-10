@@ -2881,7 +2881,40 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         # only the spoken presentation is trimmed.  The ≤2-times-per-day cap is
         # enforced by the slot formatter (SLOT_FORMATTER_SYSTEM_PROMPT, multi_day).
         _present_days = days_data[:3] if _presentation_mode == "multi_day" else days_data
-        _result = {"available_days": _present_days, "total_days": len(_present_days), "presentation_mode": _presentation_mode}
+
+        # ── Say what was NOT looked at ───────────────────────────────────────
+        # 2026-08-10: "Wednesday the 19th of August is fully booked, I'm afraid"
+        # — it was not; it had 6 free slots. The hint bypassed the week filter,
+        # the sweep returned the soonest days, the spoken list was capped to 3,
+        # and the 19th was simply absent. The model read that absence as clinic
+        # state, which is the one thing a gap in a payload can never mean.
+        #
+        # `total_days` cannot carry this: _cap_presented_slots and
+        # _filter_same_day_slots both (re)define it as the number of days in
+        # THIS payload, and they run after us. So the honest counts go in
+        # fields nothing downstream rewrites.
+        #
+        # search_narrowed_to is the discriminator. When it is a date, the tool
+        # looked at that day and an empty/short answer is real clinic state.
+        # When it is null the tool did NOT look at any particular day, so no
+        # statement about a specific day is supportable from this result.
+        _days_found = len(days_data)
+        _narrowed = None
+        if _week_range is not None:
+            _narrowed = (
+                _week_range[0].isoformat()
+                if _week_range[0] == _week_range[1]
+                else f"{_week_range[0].isoformat()}..{_week_range[1].isoformat()}"
+            )
+        _result = {
+            "available_days":       _present_days,
+            "total_days":           len(_present_days),
+            "presentation_mode":    _presentation_mode,
+            "days_found_in_window": _days_found,
+            "days_not_shown":       max(0, _days_found - len(_present_days)),
+            "window_examined_days": used_window,
+            "search_narrowed_to":   _narrowed,
+        }
         if _presentation_mode == "single_day" and days_data:
             # Cap a single day's SPOKEN times to the soonest 3 so a busy day
             # (e.g. "the 29th" with 10 slots) isn't a wall of times.  When more

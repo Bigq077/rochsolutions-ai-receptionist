@@ -275,7 +275,21 @@ UNMOVED_PROMPTS = {
     # See tests/regression/test_no_caller_id_asks_for_the_keypad.py.
     "jv_v1": "b60be0364138866c",
     "theorem": "8565be9a48a7a9aa",
-    "theorem_v3": "d5d26ee076213608",
+    # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
+    # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
+    # A DAY FULL UNLESS THE TOOL LOOKED AT THAT DAY" rule in the
+    # check_availability TOOLS block, naming the three payload fields the
+    # Acuity executor now emits (search_narrowed_to, days_not_shown,
+    # days_found_in_window). Susie had told a Theorem caller "Wednesday the
+    # 19th of August is fully booked, I'm afraid" about a day with six free
+    # slots that the tool had never searched.
+    #
+    # The hash differs from theorem-onboarding's (9f22c6b5168512a9) because the
+    # prompts either side of the addition differ between the branches; the
+    # ADDITION is identical. It is confined to the TOOLS block, nowhere near
+    # the cancel wording, and the other three pins here are unchanged — which
+    # is the containment assertion that matters.
+    "theorem_v3": "31dcedf2fd28f98e",
     "vital_edge": "5e82ee27d3febeae",
 }
 
