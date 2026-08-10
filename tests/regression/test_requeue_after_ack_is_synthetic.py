@@ -119,6 +119,15 @@ _REINJECTIONS = {
 # is completing underneath them, so the phantom guards are correct to apply.
 _NOT_REINJECTIONS = {"complete", "_label", "_queued_utt", None}
 
+# Sites that exist only on branches carrying the feature that introduced them.
+# `_disp` is T-19's DTMF location re-queue and lives with the two-clinic
+# location ladder, so it is absent wherever that ladder is — a single-location
+# clinic has no clinic question to answer by keypad.
+#
+# Absent is tolerated; PRESENT-and-2-tuple is not. Keeping the row here rather
+# than deleting it means the day a branch grows the site, it is already covered.
+_BRANCH_CONDITIONAL = {"_disp"}
+
 
 @pytest.mark.parametrize(
     "name,what",
@@ -127,6 +136,8 @@ _NOT_REINJECTIONS = {"complete", "_label", "_queued_utt", None}
 )
 def test_every_reinjection_carries_the_synthetic_flag(name, what):
     sites = [(ln, arity) for ln, arity, nm in _queue_puts() if nm == name]
+    if not sites and name in _BRANCH_CONDITIONAL:
+        pytest.skip(f"{name} ({what}) is not on this branch")
     assert sites, (
         f"no transcript_queue.put of {name!r} found ({what}) — the site moved "
         f"or was renamed; re-point this test rather than deleting the row"

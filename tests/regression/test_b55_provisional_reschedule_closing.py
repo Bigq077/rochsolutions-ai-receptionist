@@ -97,7 +97,16 @@ UNCHANGED_CLINIC_PROMPTS = {
     # tests/regression/test_no_caller_id_asks_for_the_keypad.py.
     "jv_v1": "b60be0364138866c",
     "theorem": "8565be9a48a7a9aa",
-    "theorem_v3": "d5d26ee076213608",
+    # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
+    # Ported from theorem-onboarding 4896fe2 — theorem_v3 gained the "NEVER
+    # CALL A DAY FULL UNLESS THE TOOL LOOKED AT THAT DAY" rule in its TOOLS
+    # block. This table is read by three tests (here, test_reason_question_once
+    # and test_under_age_booking_gate), each of which uses it to assert its OWN
+    # feature did not leak into theorem_v3. All three claims still hold: what
+    # moved the prompt is a fourth, deliberate change, not B-55, not the reason
+    # question and not the age gate. jv_v1 and vital_edge are unchanged, which
+    # is what proves it.
+    "theorem_v3": "31dcedf2fd28f98e",
 }
 
 OLD_CONFIRMED_WORDING = ("that's you rescheduled", "you're now in for")
