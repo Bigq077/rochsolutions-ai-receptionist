@@ -36,11 +36,35 @@ import pytest
 from app.notifications.owner_alert import notify_owner
 
 
-THEOREM = {"clinic_id": "theorem_v3"}
+# The clinic is SYNTHETIC and get_clinic is patched to return it.
+#
+# The first version of this file used the real "theorem_v3" config. That passed
+# here and failed all six ways the moment the fix was cherry-picked to
+# latency-eval, jv_v2 or vitaledge — the `owner_alerts` block exists ONLY on
+# theorem-onboarding, so `owner_alerts_enabled` returned False, notify_owner
+# no-opped, and every assertion below read as a broken port when nothing was
+# broken at all.
+#
+# What is under test is the suppression, which is clinic-independent. Binding it
+# to a branch's config makes the test measure the config instead.
+_CLINIC = {
+    "owner_alerts": {
+        "enabled": True,
+        "phone": "+447000000000",
+        "events": ["manual_followup", "booking"],
+    }
+}
+
+
+@pytest.fixture(autouse=True)
+def _clinic(monkeypatch):
+    monkeypatch.setattr(
+        "app.notifications.owner_alert.get_clinic", lambda _cid: _CLINIC
+    )
 
 
 def _session(**extra) -> dict:
-    s = dict(THEOREM)
+    s = {"clinic_id": "any_clinic"}
     s.update(extra)
     return s
 
@@ -158,10 +182,17 @@ def test_the_record_is_json_serialisable():
 
 # ── 5. Unrelated behaviour, pinned ──────────────────────────────────────────
 
-async def test_a_clinic_without_the_block_is_still_a_no_op(block_outbound_sms):
-    """The module's self-gating contract — unaffected by the suppression."""
+async def test_a_clinic_without_the_block_is_still_a_no_op(
+    monkeypatch, block_outbound_sms
+):
+    """
+    The module's self-gating contract — unaffected by the suppression. Not a
+    hypothetical: `vital_edge` carries no owner_alerts block on ANY branch, so
+    this is its live behaviour and a failed booking there reaches no one.
+    """
+    monkeypatch.setattr("app.notifications.owner_alert.get_clinic", lambda _cid: {})
     sent = await notify_owner(
-        {"clinic_id": "vital_edge"}, event="manual_followup", patient_name="Jack"
+        {"clinic_id": "no_alerts"}, event="manual_followup", patient_name="Jack"
     )
     assert sent is False
     assert len(block_outbound_sms) == 0
