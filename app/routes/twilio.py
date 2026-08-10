@@ -1645,6 +1645,136 @@ async def _handle_general_inbound_sms(
         logger.warning("[SMS_INBOUND] patient ack failed (non-fatal): %r", _ae)
 
 
+# ── Call-mode toggle over SMS ───────────────────────────────────────────────
+# A clinic texts OFF to their own Susie number and calls ring their phone first
+# until midnight; ON puts Susie back in front. See app/clinic_call_mode.py.
+
+# Exact match on the whole body, case-insensitive. Substring matching is banned:
+# "can you turn it off for tomorrow" from the practitioner must reach the clinic
+# as an ordinary text, not silently reroute their phone.
+#
+# STOP is deliberately absent. _SMS_OPT_OUT above is the carrier-level opt-out
+# set that Twilio itself intercepts — reusing one of those words would be both
+# broken and a compliance problem.
+_CALL_MODE_COMMANDS = {
+    "off": "human_first",
+    "susie off": "human_first",
+    "front desk": "human_first",
+    "on": "ai_first",
+    "susie on": "ai_first",
+    "status": "status",
+    "susie status": "status",
+}
+
+
+def _parse_call_mode_command(body: str) -> "str | None":
+    """Return "human_first" / "ai_first" / "status", or None.
+
+    `Optional` is not imported in this module; the annotation is a string under
+    `from __future__ import annotations`, but naming an undefined symbol would
+    still break anything that resolves hints at runtime.
+    """
+    return _CALL_MODE_COMMANDS.get(" ".join((body or "").split()).lower())
+
+
+def _call_mode_authorised_numbers(clinic: dict) -> set:
+    """The numbers allowed to toggle this clinic's call routing.
+
+    NOTE the `operational` fallback: get_clinic() flattens some keys to the top
+    level but NOT owner_notification_sms, which reads back as None. Written as
+    the build plan specified — top level only — that candidate would silently
+    never match, and a clinic whose owner number differs from transfer_phone
+    would find the toggle simply did not work for them.
+    """
+    op = clinic.get("operational") or {}
+    candidates = (
+        (clinic.get("call_overflow") or {}).get("dial_phone"),
+        clinic.get("transfer_phone"),
+        op.get("transfer_phone"),
+        clinic.get("owner_notification_sms"),
+        op.get("owner_notification_sms"),
+    )
+    from app.flows.triage_legacy import normalize_phone
+    out = set()
+    for c in candidates:
+        c = (c or "").strip()
+        if not c:
+            continue  # empty must never match an empty sender
+        out.add((normalize_phone(c) or c).replace(" ", ""))
+    return out
+
+
+def _sender_is_authorised(sender: str, clinic: dict) -> bool:
+    from app.flows.triage_legacy import normalize_phone
+    s = (normalize_phone(sender) or (sender or "")).strip().replace(" ", "")
+    return bool(s) and s in _call_mode_authorised_numbers(clinic)
+
+
+async def _handle_call_mode_command(
+    *, cmd: str, sender: str, clinic: dict, clinic_id: str, to_number: str,
+) -> PlainTextResponse:
+    """Apply a call-mode command and confirm it. Always returns 200.
+
+    The confirmation states the resulting CONDITION rather than acknowledging
+    the command, so the clinic never has to remember which way the switch
+    points.
+    """
+    from app.clinic_call_mode import (
+        set_mode, clear_mode, current_mode, MODE_HUMAN_FIRST,
+    )
+    from app.notifications.sms import send_sms
+
+    _FAIL = ("Sorry — I couldn't change that just now. Calls are still being "
+             "answered as normal. Please try again shortly.")
+
+    if cmd == "status":
+        state = await current_mode(clinic_id, clinic)
+        reply = ("Front desk mode, until midnight tonight."
+                 if state["mode"] == MODE_HUMAN_FIRST
+                 else "I'm answering all calls.")
+        await _send_call_mode_reply(send_sms, sender, to_number, reply)
+        return PlainTextResponse("ok")
+
+    prior = await current_mode(clinic_id, clinic)
+    payload = await set_mode(clinic_id, cmd, sender)
+    if payload is None:
+        # Redis unavailable — the override was NOT stored. Say so; never claim
+        # a routing change that did not happen.
+        await _send_call_mode_reply(send_sms, sender, to_number, _FAIL)
+        return PlainTextResponse("ok")
+
+    reply = (
+        "Front desk mode on — calls will ring your phone first, and I'll pick "
+        "up anything you miss. Back to normal at midnight, or text ON."
+        if cmd == MODE_HUMAN_FIRST
+        else "Back on — I'm answering all calls now."
+    )
+    sid = await _send_call_mode_reply(send_sms, sender, to_number, reply)
+    if not sid:
+        # A toggle that silently succeeds is worse than no toggle: the clinic
+        # does not know whether their phone is about to ring. Revert.
+        logger.error(
+            "[call_mode] confirmation SMS returned no SID — reverting %s to %r",
+            clinic_id, prior.get("mode"),
+        )
+        if prior.get("source") == "override":
+            await set_mode(clinic_id, prior["mode"], sender)
+        else:
+            await clear_mode(clinic_id)
+    return PlainTextResponse("ok")
+
+
+async def _send_call_mode_reply(send_sms, sender: str, to_number: str, text: str):
+    """Reply to the SENDER, not a configured clinic number — a locum toggling
+    from their own phone must still get the confirmation. Returns the Twilio
+    SID, or None if nothing was sent."""
+    try:
+        return await send_sms(to=sender, message=text, from_number=to_number)
+    except Exception as exc:
+        logger.error("[call_mode] confirmation SMS failed: %r", exc)
+        return None
+
+
 @router.post("/sms/inbound")
 async def sms_inbound(request: Request) -> PlainTextResponse:
     """
@@ -1680,7 +1810,35 @@ async def sms_inbound(request: Request) -> PlainTextResponse:
 
     # Resolve which clinic this number belongs to (jv/theorem/…) so forwarding
     # and branding are clinic-aware.
-    _clinic = get_clinic(clinic_id_from_twilio_to(form.get("To") or "")) or {}
+    _to_number = form.get("To") or ""
+    _clinic_id = clinic_id_from_twilio_to(_to_number)
+    _clinic = get_clinic(_clinic_id) or {}
+
+    # ── Call-mode toggle ────────────────────────────────────────────────────
+    # Placement is load-bearing in both directions:
+    #   AFTER the idempotency lock above — a Twilio webhook retry must not
+    #   double-send the confirmation or double-flip the routing;
+    #   BEFORE the oversight relay and the pending-name branch below — a
+    #   command is an instruction to us, not a patient text, and must never be
+    #   forwarded to the practitioner as one.
+    #
+    # The authorisation check runs BEFORE dispatch, not after, so an
+    # unauthorised sender's "ON" falls straight through to the existing patient
+    # path unchanged. A patient who happens to text "on" sees no difference.
+    #
+    # A command from an authorised sender wins over a pending name confirmation.
+    # Rare, and the right way round: the practitioner is asking for their phone
+    # to ring, which is more urgent than a name capture that can be chased again.
+    _cmd = _parse_call_mode_command(body)
+    if _cmd and _sender_is_authorised(sender, _clinic):
+        logger.info(
+            "[call_mode] command %r from authorised sender ***%s for clinic %r",
+            _cmd, (sender or "")[-4:], _clinic_id,
+        )
+        return await _handle_call_mode_command(
+            cmd=_cmd, sender=sender, clinic=_clinic,
+            clinic_id=_clinic_id, to_number=_to_number,
+        )
 
     try:
         from app.flows.triage_legacy import normalize_phone
