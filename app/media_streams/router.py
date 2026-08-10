@@ -262,16 +262,25 @@ async def ms_incoming(request: Request) -> Response:
         # phone FIRST and only hand the call to Susie if they don't press 1 to
         # take it. Gated per-clinic via clinic.json — every other clinic keeps
         # answering with Susie immediately (no behaviour change).
+        # The clinic.json value is now only the DEFAULT: a clinic can text OFF
+        # to their Susie number to ring their own phone first until midnight
+        # (app/clinic_call_mode.py). resolve_overflow never raises and falls
+        # back to this same config value, so a Redis fault degrades to today's
+        # behaviour rather than to a failed webhook.
+        _human_first, _mode_reason = False, "config"
         try:
             from app.clinic_config import clinic_id_from_twilio_to, get_clinic
-            _clinic   = get_clinic(clinic_id_from_twilio_to(to_number)) or {}
+            from app.clinic_call_mode import resolve_overflow
+            _cid      = clinic_id_from_twilio_to(to_number)
+            _clinic   = get_clinic(_cid) or {}
             _overflow = _clinic.get("call_overflow") or {}
+            _human_first, _mode_reason = await resolve_overflow(_cid, _clinic)
         except Exception as _cx:
             logger.warning("[ms_router] overflow config lookup failed: %r", _cx)
             _clinic, _overflow = {}, {}
 
         _dial_phone = (_overflow.get("dial_phone") or "").strip()
-        if _overflow.get("enabled") and _dial_phone:
+        if _human_first and _dial_phone:
             _timeout   = int(_overflow.get("ring_timeout", 20) or 20)
             # callerId must be a number we own — use the dialled clinic number
             # so the practitioner sees it's a work call.
@@ -279,8 +288,9 @@ async def ms_incoming(request: Request) -> Response:
             _screen    = _abs_ms_url(request, f"/ms/screen?parent={call_sid}")
             _action    = _abs_ms_url(request, "/ms/after-dial")
             logger.info(
-                "[ms_router] overflow ON — ringing %s first (timeout=%ss) call_sid=%s",
-                _dial_phone, _timeout, call_sid,
+                "[ms_router] overflow ON (%s) — ringing %s first (timeout=%ss) "
+                "call_sid=%s",
+                _mode_reason, _dial_phone, _timeout, call_sid,
             )
             dial_twiml = (
                 '<?xml version="1.0" encoding="UTF-8"?>'
