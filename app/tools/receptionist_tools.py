@@ -1166,7 +1166,11 @@ def _resolve_slot_iso(slot_iso: str, session: dict) -> "datetime":
     # below forces it back to the offered list so the wrong slot can never be booked.
     s = str(slot_iso or "").strip()
     offered_check = session.get("last_offered_slots") or []
-    if s and offered_check:
+    # available_days is checked at 1b below, so it must also be able to OPEN this
+    # block: the two are cleared independently, and gating on last_offered_slots
+    # alone sent a slot that available_days could have verified down the
+    # fail-closed path added for CA166de2a9 — a real slot refused.
+    if s and (offered_check or session.get("available_days")):
         try:
             dt_candidate = _to_london(datetime.fromisoformat(s))
             # Accept only if it matches an offered slot (within 60 s tolerance)
@@ -1195,8 +1199,35 @@ def _resolve_slot_iso(slot_iso: str, session: dict) -> "datetime":
             logger.warning("_resolve_slot_iso: ISO %r not in offered slots %s — falling back to index/label matching", s, [o['start'] for o in offered_check])
         except (ValueError, TypeError):
             pass
-    elif s and not offered_check:
-        # No offered slots in session (e.g. direct calendar booking) — accept as-is
+    elif s and session.get("_slots_offered_this_call"):
+        # CA166de2a9 (Theorem, 10 Aug): the branch below used to accept the ISO
+        # unchecked whenever the session held no offered slots — and the slot
+        # cache is cleared at the top of every turn, so "no offered slots" is the
+        # NORMAL state a turn or two after a lookup, not the rare one.
+        #
+        # That is precisely the state a fabricated slot arrives in. The model had
+        # invented "Wednesday the 12th at four" from a list belonging to the 19th;
+        # by the time it called book_appointment the cache was empty, this branch
+        # waved the ISO straight through, and Acuity returned 400 four times.
+        # turn_handler's booking-readback gate cites this function as the reason a
+        # hallucinated slot "is rejected and forced back to a real offered slot" —
+        # it was not, because the check needs a list it no longer had.
+        #
+        # So: once a real availability result has been seen in this call, an ISO
+        # that matches nothing currently on record is not resolvable. Fall through
+        # to the index/label paths and, failing those, raise — book_appointment
+        # turns that into {"success": False}, which arms the do-not-claim-success
+        # guard. A refused booking the model can recover from beats a confident
+        # one the calendar rejects.
+        logger.warning(
+            "_resolve_slot_iso: ISO %r cannot be verified — slots were offered "
+            "earlier in this call but none are on record now (cache cleared). "
+            "NOT accepting it unchecked.", s,
+        )
+    elif s:
+        # No availability lookup has ever run in this call (e.g. a direct calendar
+        # booking). There is nothing to verify against and never was, so the ISO
+        # is all we have — unchanged behaviour.
         try:
             dt = datetime.fromisoformat(s)
             return _to_london(dt)
