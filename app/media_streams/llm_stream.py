@@ -808,6 +808,28 @@ def _second_filler_text(
     return random.choice(pool)
 
 
+# ── A refusal is not a reading of the diary ─────────────────────────────────
+# The guards below refuse check_availability without consulting Acuity at all.
+# The model receives that refusal in the same slot a real availability result
+# would occupy, and on CA166de2a9 it narrated the refusal as clinic state:
+#
+#   15:02:15  "it looks like Wednesday afternoon has filled up"
+#   15:02:33  "that slot doesn't seem to be available any more"
+#
+# Neither was true, and neither came from Mark's calendar — both were the model
+# explaining a block to the caller. This is B-58's rule: a guard must never let
+# the model state world state it was not told. The clause is appended to the
+# refusals that carry NO diary data. `already_retrieved` deliberately does not
+# get it — that one returns available_days, so a claim about availability made
+# from it is grounded.
+_NOT_AVAILABILITY_NEWS = (
+    " This is an internal instruction, NOT a reading of the diary: nothing has "
+    "been checked. Do NOT tell the caller that a day, time or slot is full, "
+    "taken, gone, unavailable or no longer free — you have not been told that "
+    "and it may be untrue."
+)
+
+
 def _post_collect_readback_due(tool_name: str, session, messages) -> bool:
     """True when check_availability must be blocked in favour of the booking
     read-back: the caller's details are settled and nobody is trying to change
@@ -3714,7 +3736,7 @@ class LLMStream:
                         )
                     result = {
                         "error": "booking_details_already_complete",
-                        "message": _rb_msg,
+                        "message": _rb_msg + _NOT_AVAILABILITY_NEWS,
                     }
                     # Every branch above ends with "Say EXACTLY this, then stop"
                     # or "Produce the booking summary now" — the required next
@@ -3764,6 +3786,7 @@ class LLMStream:
                             + "\"). Do NOT call check_availability. Continue "
                             "collecting the caller's first name, surname and phone "
                             "number, then read back the booking summary."
+                            + _NOT_AVAILABILITY_NEWS
                         ),
                     }
                 elif (
