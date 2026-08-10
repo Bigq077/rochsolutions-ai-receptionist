@@ -563,6 +563,37 @@ def _offered_day_vocabulary(session: Optional[Dict[str, Any]]) -> frozenset:
     return frozenset(_vocab)
 
 
+def _note_availability_seen(session: Dict[str, Any], result: Any) -> bool:
+    """Record that a check_availability result carried real slots. Returns that
+    same fact, which the caller keeps as the per-turn `_check_av_had_slots`.
+
+    `_slots_offered_this_call` is call-scoped and never cleared — unlike the
+    per-turn flags beside it, and unlike `last_offered_slots`, which is wiped at
+    the top of every turn. `_resolve_slot_iso` needs to tell two states apart
+    that look identical once that cache is gone (CA166de2a9):
+
+        this call has read the diary, so an ISO matching nothing is a fabrication
+        no lookup ever ran, so the ISO is all there is and always was
+
+    Only a result carrying `available_days` arms it. Seven checks in that call
+    were BLOCKED and came back as the booking-details-already-complete error; a
+    guard's refusal is not a reading of the diary, and treating it as one would
+    make a clinic that never got a real lookup start refusing direct bookings.
+
+    (Spelling that error's key out verbatim here would break
+    test_blocked_tool_forces_text, which scans this file for the FIRST occurrence
+    of the literal and checks the force-text flag sits beside it.)
+
+    Extracted rather than left inline for the reason `_post_collect_readback_due`
+    was: a guard only reachable through a 15k-line method is a guard whose tests
+    pass when it is deleted.
+    """
+    _had = bool(isinstance(result, dict) and result.get("available_days"))
+    if _had:
+        session["_slots_offered_this_call"] = True
+    return _had
+
+
 _WEEKDAY_WORDS: frozenset = frozenset({
     "monday", "tuesday", "wednesday", "thursday",
     "friday", "saturday", "sunday",
@@ -4224,8 +4255,8 @@ class LLMStream:
             # zero-slot result armed the focused Haiku prompt, which has no
             # handling for an empty result and emitted silence (C8-5).
             if tool_name == "check_availability":
-                session["_check_av_had_slots"] = bool(
-                    isinstance(result, dict) and result.get("available_days")
+                session["_check_av_had_slots"] = _note_availability_seen(
+                    session, result
                 )
                 # Mark that a check ran this turn so the loop-level C8-5 silence
                 # guarantee can choose the no-availability fallback over the
