@@ -2809,6 +2809,37 @@ def _b7_call_state(session: Dict[str, Any], clinic: Dict[str, Any], tk: Dict[str
             "have this. At Step 8 read it back and ask a yes/no; never ask the "
             "caller to supply a number you are holding"
         )
+    elif not (session.get("collected") or {}).get("phone"):
+        # NO caller ID — withheld number, or a carrier that sent a word instead
+        # of one ("anonymous"), which connection.py blanks at call start.
+        #
+        # Say so explicitly. Omitting the line is not an instruction: on
+        # CA4ab554ce (2026-08-06, Theorem) the line was correctly absent and the
+        # model ran its scripted phone step anyway — "is the number you're
+        # calling from the best one for the booking? If so, just say use this
+        # number" — offering a number that does not exist. The caller said "use
+        # this number" and the call reached the booking readback holding no
+        # phone number at all.
+        #
+        # Ported from _build_theorem_v3 (4cf79d9) on 2026-08-10: the template
+        # clinics render Step 8 from this builder and carried the same hole.
+        #
+        # The instruction deliberately points at the keypad line this prompt
+        # ALREADY mandates, rather than Theorem's wording. Two competing keypad
+        # scripts in one prompt is how the model ends up improvising a third,
+        # and that line is the one that arms keypad capture.
+        state.append(
+            "NO caller ID on this call — the caller's number is withheld or "
+            "unavailable, and you do NOT have a number for them. Every "
+            "read-it-back instruction elsewhere in this prompt assumes a "
+            "pre-loaded number and does NOT apply on this call. Never offer "
+            "to use \"the number you're calling from\", never say \"just say "
+            "use this number\", and never ask whether the calling number is "
+            "the best one: there is nothing to offer and the caller cannot "
+            "answer it. Go STRAIGHT to the keypad line instead — say EXACTLY: "
+            "'No problem — go ahead and type the number on your keypad. You "
+            "can press the star key to reset at any time.'"
+        )
     if (session.get("acuity_booking_id")
             or session.get("booking_id")
             or session.get("calendar_status") in ("created", "provisional")):

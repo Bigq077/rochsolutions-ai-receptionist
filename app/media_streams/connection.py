@@ -7817,6 +7817,75 @@ class WebSocketCallHandler:
                                 _bk_caller_num, utterance[:60],
                             )
                             # Fall through to run_turn — phone now in CALL STATE.
+                        elif _bk_phone_step:
+                            # YES to the phone question, but there is no number
+                            # to say yes to — the caller withheld their caller
+                            # ID, so twilio_from was blanked at call start and
+                            # _confirm_caller_number() is empty.
+                            #
+                            # The branch above already refuses to store nothing.
+                            # What it does not do is TELL anyone: the turn fell
+                            # through to run_turn, the model carried on to the
+                            # booking readback, and phone_confirmed stayed unset
+                            # while the caller believed the number was handled.
+                            #
+                            # CA4ab554ce, 2026-08-06, on Theorem:
+                            #   22:30:51  "…is the number you're calling from
+                            #             the best one? If so, just say use
+                            #             this number."   ← no number exists
+                            #   22:31:01  caller: "um use this number"
+                            #   22:31:03  straight to readback, then "shall I go
+                            #             ahead and book that in?"  phone=no
+                            #
+                            # Ported here 2026-08-10 from 4cf79d9. Nothing about
+                            # it was Theorem-specific: this intercept, the
+                            # backstop below and the template clinics' scripted
+                            # phone step are all shared, so Vital Edge and JV
+                            # carried the identical hole.
+                            #
+                            # Neither backstop catches it. book_appointment
+                            # blocks only when phone_confirmed is unset AND the
+                            # phone question was never asked — she had asked it.
+                            # The unsettled ladder below fires on a verdict of
+                            # "unsure", and "use this number" verdicts as yes.
+                            #
+                            # Take the turn and ask for the keypad. Wording
+                            # carries "type the number" so the phone step still
+                            # registers as asked downstream.
+                            _no_cli_ask = (
+                                "I haven't got a number showing for this call — "
+                                "could you type the number you'd like us to use "
+                                "on your keypad?"
+                            )
+                            logger.warning(
+                                "[ms_conn v3] caller confirmed the calling "
+                                "number but NO caller ID is held — asking for "
+                                "keypad entry instead of proceeding: %r",
+                                utterance[:60],
+                            )
+                            self.session["v3_phone_dtmf_active"] = True
+                            self.session["phone_awaiting_dtmf"] = True
+                            self.session["phone_dtmf_buffer"] = ""
+                            self.session["last_bot_prompt"] = _no_cli_ask
+                            self.session["last_question"] = _no_cli_ask
+                            self.session.setdefault(
+                                "conversation_history", []
+                            ).append({
+                                "role": "assistant",
+                                "content": _no_cli_ask,
+                            })
+                            await save_session(self.call_sid, self.session)
+                            await self.tts_text_queue.put(_no_cli_ask)
+                            if self._silence_handler is not None:
+                                self._silence_handler.on_question_asked(
+                                    _no_cli_ask
+                                )
+                            # No on_llm_finished() mirror here, unlike the slot
+                            # intercepts further down: on_llm_started() does not
+                            # fire until well after this branch, so
+                            # llm_in_flight / _llm_busy are still False and there
+                            # is nothing to unwind.
+                            continue
                     # Bound the verbal phone confirm (CAcb4a11b90, 2 Aug 2026).
                     #
                     # The block above handles a recognised YES. A recognised NO
@@ -11767,15 +11836,36 @@ class WebSocketCallHandler:
                                         " extracted: %s", _name_found,
                                     )
 
+                            # These are matched against _last_bot, which since
+                            # 2 Aug is the POST-Gate-5 text (see _record_turn in
+                            # llm_stream: "conversation_history stores what the
+                            # caller HEARD"). Gate 5's banned_opener rule strips
+                            # a leading "Of course, " / "Of course — ", so any
+                            # entry here that begins with one can never match.
+                            #
+                            # Five of the eight entries began with one, and were
+                            # therefore dead. That is not cosmetic: this tuple
+                            # sets booking_flow_active, and the template prompt
+                            # mandates "Of course, let's get that moved" at the
+                            # reschedule ack (clinic_template_prompt.py:2484).
+                            # Gate 5 reduced that to "let's get that moved",
+                            # which matched nothing — so on Vital Edge and JV a
+                            # reschedule ack went undetected. Same defect as
+                            # T-18 on Theorem, via the same door; fixed there
+                            # 26 Apr, ported here 2026-08-10.
+                            #
+                            # Entries are therefore anchored on the part of the
+                            # phrase Gate 5 leaves alone. Do not add a phrase
+                            # that starts with a banned opener — check
+                            # turn_handler._GATE5_PATTERNS["banned_opener"]
+                            # before editing this tuple.
                             _V3_ACK_PHRASES = (
-                                "right —",                                       # current scripted phrase (short ack)
-                                "of course —",                                  # legacy (keep during transition)
-                                "of course — let me get that sorted for you",  # legacy long form
-                                "of course — i'd be happy to sort that",        # legacy fallback
-                                "of course, let's get that moved",
-                                "of course — let's get that sorted",
-                                "no problem at all",
-                                "let me get that sorted",
+                                "right —",                       # current scripted phrase (short ack)
+                                "let's get that moved",          # reschedule ack, de-prefixed
+                                "let's get that sorted",         # de-prefixed
+                                "no problem at all",             # cancel ack
+                                "let me get that sorted",        # legacy long form, de-prefixed
+                                "i'd be happy to sort that",     # legacy fallback, de-prefixed
                             )
                             # Spec P: once booking flow is active, suppress all
                             # further ack detection so mid-flow "Of course —"

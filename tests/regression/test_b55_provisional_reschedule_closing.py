@@ -87,7 +87,15 @@ UNCHANGED_CLINIC_PROMPTS = {
     # theorem_v3 into _render_identity) plus the manner-vs-claim clause in
     # VOICE RULES. demo / theorem / theorem_v3 byte-identical, as above.
     # See tests/regression/test_ai_disclosure_template.py.
-    "jv_v1": "9135bfc0c66beb48",
+    # Re-pinned 2026-08-10: CALL STATE now states a withheld caller ID in words
+    # rather than omitting the line, ported from theorem_v3 (4cf79d9) — the
+    # template clinics carried the same hole for four days after Theorem was
+    # fixed. Confined to clinic_template_prompt.py, so jv_v1 moves and demo /
+    # theorem / theorem_v3 are byte-identical; theorem_v3 does not move because
+    # it already had the branch. vital_edge moves too and stays unpinned here.
+    # Verified, not assumed. See
+    # tests/regression/test_no_caller_id_asks_for_the_keypad.py.
+    "jv_v1": "b60be0364138866c",
     "theorem": "8565be9a48a7a9aa",
     "theorem_v3": "d5d26ee076213608",
 }
