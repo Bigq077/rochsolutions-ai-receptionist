@@ -288,7 +288,21 @@ UNMOVED_PROMPTS = {
     # The other four pins are unchanged, and that is the assertion that matters
     # here: asking the reason is CORRECT on jv_v1 and vital_edge, and neither
     # moved. Cancel wording untouched; the assertions above are what prove that.
-    "theorem_v3": "81a5bc13fdf6598c",
+    # Moved 2026-08-10, deliberately: 81a5bc13fdf6598c -> 9f22c6b5168512a9.
+    # theorem_v3 gained the "NEVER CALL A DAY FULL UNLESS THE TOOL LOOKED AT
+    # THAT DAY" rule in the check_availability TOOLS block, naming the three
+    # new payload fields (search_narrowed_to, days_not_shown,
+    # days_found_in_window). Susie had told a caller "Wednesday the 19th of
+    # August is fully booked, I'm afraid" about a day with six free slots that
+    # the tool had never searched — the day was merely absent from a truncated
+    # sweep. The prompt carried no rule about this at all, and the Acuity path
+    # this clinic runs emitted no signal to hang one on.
+    #
+    # It is an addition to the TOOLS block, which is nowhere near the cancel
+    # wording; the assertions above are what prove that, and they pass. The
+    # other four pins are unchanged — the tool fields are emitted by the Acuity
+    # executor, which only Theorem uses.
+    "theorem_v3": "9f22c6b5168512a9",
     "vital_edge": "706299246fa856dc",
 }
 
