@@ -54,7 +54,11 @@ def block_day(monkeypatch):
                 "end": (start + timedelta(days=1)).isoformat(),
             }]
         monkeypatch.setattr(calendar_google, "freebusy", fake_freebusy)
-        monkeypatch.setattr(rt, "_get_tokens", lambda: _async({"access_token": "t"}))
+        # _get_tokens takes the clinic_id now — Google tokens are keyed per
+        # clinic, so a zero-arg stub no longer matches the call site.
+        monkeypatch.setattr(
+            rt, "_get_tokens", lambda *a, **k: _async({"access_token": "t"})
+        )
         monkeypatch.setattr(rt, "_save_gcal_tokens", lambda *a, **k: _async(None))
         monkeypatch.setattr(rt, "_resolve_calendar_id", lambda *a, **k: "cal@example.com")
     return _apply
