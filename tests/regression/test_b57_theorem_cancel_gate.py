@@ -273,7 +273,19 @@ UNMOVED_PROMPTS = {
     # theorem_v3) are byte-identical. theorem_v3 already carried this branch,
     # which is why it does not move.
     # See tests/regression/test_no_caller_id_asks_for_the_keypad.py.
-    "jv_v1": "b60be0364138866c",
+    # Re-pinned 2026-08-11: b60be0364138866c -> fda61dff2429f6a2, in step with
+    # the sibling table in test_b55_provisional_reschedule_closing.py — these
+    # two move together by design. NOT an engine change: jv_v1 gained
+    # prompt_facts.reason_question in clinic.json (owner decision, same day —
+    # Joint Venture DOES ask what the appointment is for; the never-ask rule is
+    # Theorem's alone), so rule 1b renders the clinic's wording plus the
+    # once-only tightening that opting in carries.
+    #
+    # Containment unchanged and verified: demo / theorem / theorem_v3 are
+    # byte-identical, so the reason-question mechanism is still per-clinic and
+    # has not leaked into shared text.
+    # See tests/regression/test_reason_gate_is_clinic_scoped.py.
+    "jv_v1": "fda61dff2429f6a2",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL

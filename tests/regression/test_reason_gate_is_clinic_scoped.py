@@ -4,11 +4,25 @@ asks it on purpose.
 
 Two owner decisions are both live and they point opposite ways:
 
-  2026-08-07/08 (Theorem, jv_v1)  Susie NEVER asks what brings the caller in.
+  2026-08-07/08 (Theorem)         Susie NEVER asks what brings the caller in.
                                   Enforced by Gate 5b-r in sanitise_response.
   2026-08-04    (Vital Edge)      Susie DOES ask, in the clinic's own wording,
                                   exactly once — 902411a / bec1b5e, gated on
                                   prompt_facts.reason_question.
+  2026-08-11    (jv_v1)           Susie DOES ask. jv_v1 was originally listed
+                                  under the Theorem decision; the owner scoped
+                                  that decision to Theorem only, and jv_v1 now
+                                  opts in the same way Vital Edge does.
+
+jv_v1 is the case this gate was designed for: it opted in with a clinic.json key
+and NO engine edit, which is what test_the_gate_reads_config_not_a_hardcoded_
+clinic_name exists to keep possible.
+
+The cost of the wrong default is not theoretical — jv_v1 ran it. With the key
+absent the model asked, the gate deleted the sentence, the caller heard the
+substituted name question instead, no reason was ever collected, and every
+book_appointment call died on the A2 gate in receptionist_tools.py. That is the
+same chain spelled out below, reached from the other side.
 
 Gate 5b-r arrived from theorem-onboarding with no clinic gate. Landing it on the
 canonical branch ungated is a booking-failure landmine for Vital Edge, and — the
@@ -56,19 +70,20 @@ def test_the_improvised_phrasing_is_what_the_regex_targets():
     )
 
 
-def test_vital_edge_keeps_its_reason_question():
-    session = {"clinic_id": "vital_edge"}
+@pytest.mark.parametrize("clinic_id", ["vital_edge", "jv_v1"])
+def test_a_clinic_that_opted_in_keeps_its_reason_question(clinic_id):
+    session = {"clinic_id": clinic_id}
     assert _clinic_asks_its_own_reason_question(session) is True
 
     out = sanitise_response(IMPROVISED, session)
     assert "appointment for" in out, (
-        "Gate 5b-r stripped Vital Edge's reason question. The question is never "
-        "spoken, so the once-only latch never fires, so no reason is collected, "
-        "so book_appointment refuses — a silent booking failure"
+        f"Gate 5b-r stripped {clinic_id}'s reason question. The question is "
+        "never spoken, so the once-only latch never fires, so no reason is "
+        "collected, so book_appointment refuses — a silent booking failure"
     )
 
 
-@pytest.mark.parametrize("clinic_id", ["theorem", "theorem_v3", "jv_v1"])
+@pytest.mark.parametrize("clinic_id", ["theorem", "theorem_v3"])
 def test_every_other_clinic_still_has_the_question_suppressed(clinic_id):
     session = {"clinic_id": clinic_id}
     assert _clinic_asks_its_own_reason_question(session) is False

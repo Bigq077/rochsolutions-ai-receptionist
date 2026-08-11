@@ -95,7 +95,18 @@ UNCHANGED_CLINIC_PROMPTS = {
     # it already had the branch. vital_edge moves too and stays unpinned here.
     # Verified, not assumed. See
     # tests/regression/test_no_caller_id_asks_for_the_keypad.py.
-    "jv_v1": "b60be0364138866c",
+    # Re-pinned 2026-08-11: b60be0364138866c -> fda61dff2429f6a2. NOT an engine
+    # change — jv_v1 gained prompt_facts.reason_question in clinic.json, so rule
+    # 1b now renders the clinic's own wording plus the once-only tightening that
+    # opting in carries. Owner decision, same day: Joint Venture DOES ask what
+    # the appointment is for; the never-ask decision is Theorem's alone.
+    #
+    # This row moving is the OPT-IN working as designed, and the containment
+    # claim is unchanged: demo / theorem / theorem_v3 are byte-identical, which
+    # is what proves the reason-question mechanism is still gated per clinic and
+    # has not leaked into shared text. Verified, not assumed.
+    # See tests/regression/test_reason_gate_is_clinic_scoped.py.
+    "jv_v1": "fda61dff2429f6a2",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2 — theorem_v3 gained the "NEVER
