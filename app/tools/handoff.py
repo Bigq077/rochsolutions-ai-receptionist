@@ -44,7 +44,16 @@ def _get_service():
     global _cached_service
 
     if not SHEETS_ENABLED:
-        print("Sheets disabled (SHEETS_ENABLED not true) — no write performed")
+        # WARNING, not print: this is the most common reason a clinic silently
+        # writes no call records at all, and a bare print carries no level and
+        # no logger name, so it does not show up when an operator greps the
+        # Render log for warnings. Every live branch inherits the default
+        # below, so this fires on a real clinic far more often than on eval.
+        logger.warning(
+            "Sheets append will be SKIPPED — SHEETS_ENABLED is not 'true' "
+            "(env value %r). No call record is being written for this call.",
+            os.getenv("SHEETS_ENABLED", ""),
+        )
         return None
 
     raw = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
@@ -85,8 +94,8 @@ def _append_values(values: List[List[Any]], tab_name: str) -> bool:
     if not service:
         logger.warning(
             "Sheets append SKIPPED (no client) tab=%r rows=%d — see the "
-            "'Sheets not configured' / 'invalid JSON' / 'Failed to build' "
-            "warning above for the reason",
+            "'SHEETS_ENABLED is not' / 'Sheets not configured' / 'invalid JSON' "
+            "/ 'Failed to build' warning above for the reason",
             tab_name, len(values),
         )
         return False
