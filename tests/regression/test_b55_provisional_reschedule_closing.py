@@ -106,7 +106,16 @@ UNCHANGED_CLINIC_PROMPTS = {
     # is what proves the reason-question mechanism is still gated per clinic and
     # has not leaked into shared text. Verified, not assumed.
     # See tests/regression/test_reason_gate_is_clinic_scoped.py.
-    "jv_v1": "fda61dff2429f6a2",
+    # Re-pinned 2026-08-11 (2nd time today): fda61dff2429f6a2 -> 2c377ec8e1d6b181.
+    # The RESCHEDULE / CANCEL flow stopped assuming a caller ID exists — turn 2
+    # now branches (a)/(b) on what CALL STATE actually holds, and two sentences
+    # that asked about "the number you're calling on" were made true for a
+    # number that was TYPED. Confined to clinic_template_prompt.py, so EXACTLY
+    # the two template_v1 clinics move (jv_v1 here, vital_edge deliberately
+    # unpinned in this table) and demo / theorem / theorem_v3 are
+    # byte-identical. Verified, not assumed.
+    # See tests/regression/test_reschedule_phone_without_caller_id_template.py.
+    "jv_v1": "2c377ec8e1d6b181",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2 — theorem_v3 gained the "NEVER
