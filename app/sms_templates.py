@@ -214,10 +214,29 @@ def build_sms(session: dict) -> str:
         from app.clinic_config import get_clinic
         _clinic = get_clinic(session.get("clinic_id"))
         fees_note = _clinic.get("sms_fees_note") or ""
+        # Identity is NOT a template-engine concern. Gated on template_v1, a
+        # clinic running any other prompt builder fell through to the env
+        # defaults and sent "Your appointment at the clinic is confirmed… call
+        # us on ." — while its own config held the real name and number the
+        # whole time. A patient was told to ring a number that was not there.
+        # A clinic that knows its own name and number should use them whichever
+        # builder it runs; the env vars stay as the last fallback for a
+        # deployment with no clinic config at all. What stays gated below is
+        # `_is_template_clinic`, which drives the spelling-confirm note — a
+        # genuinely template-only behaviour.
+        clinic_name  = (
+            _clinic.get("sms_name") or _clinic.get("clinic_name") or clinic_name
+        )
+        # `sms_phone` wins where a clinic sets one: the number a patient should
+        # ring off the back of a text is the line the text came FROM, so that
+        # "call us" and "reply to this message" reach the same place. Falls back
+        # to `phone` for clinics that don't distinguish the two.
+        clinic_phone = (
+            _clinic.get("sms_phone") or _clinic.get("phone") or clinic_phone
+        )
+
         if _clinic.get("prompt_engine") == "template_v1":
             _is_template_clinic = True
-            clinic_name  = _clinic.get("sms_name") or _clinic.get("clinic_name") or clinic_name
-            clinic_phone = _clinic.get("phone") or clinic_phone
             _locs  = _clinic.get("locations") or []
             _match = next(
                 (l for l in _locs if str(l.get("location_id", "")).lower() == _loc),
