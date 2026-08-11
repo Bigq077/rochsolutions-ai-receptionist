@@ -15535,7 +15535,15 @@ class WebSocketCallHandler:
                         _summ["_raw_session"] = _snap
                         _row = await _bar(_summ)
                         _ffa(_row)
-                        logger.info("[ms_conn] call-summary row queued to Sheets")
+                        # "handed to", not "written": _ffa is fire-and-forget, so
+                        # this line fires even when there is no Sheets client at
+                        # all. It used to read "queued to Sheets", which looked
+                        # like proof the row landed and hid a fleet-wide silent
+                        # failure. The append logs its own success or SKIP.
+                        logger.info(
+                            "[ms_conn] call-summary row handed to the Sheets "
+                            "appender (see its own log line for the outcome)"
+                        )
                     except Exception as _e:
                         logger.warning("[ms_conn] sheets call-log failed (non-fatal): %r", _e)
 
