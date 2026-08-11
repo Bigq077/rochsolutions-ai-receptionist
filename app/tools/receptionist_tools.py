@@ -746,6 +746,30 @@ _DURATION_WORDS = {
 }
 # "the 30th" is a DATE, not a thirty-minute session.
 _ORDINAL_NUM_RE = re.compile(r"\b\d+(?:st|nd|rd|th)\b")
+# Clock times, removed before any session-length scan for the same reason
+# ordinals are: a caller saying WHEN is not saying HOW LONG.
+#
+# On CAce1457d1 (jv_v1, 2026-08-11) the caller said "the 24th of August at
+# around 5 30 to 9 pm" and the engine captured a 30-MINUTE SESSION from the "30"
+# in half past five. The ordinal strip already handled "the 30th of August"; the
+# clock case was the same bug through a different door.
+#
+# It is worth stating what that costs, because nothing surfaces it: the captured
+# length drives the slot GRID and the booked event, and the capture deliberately
+# never overwrites — so one misread minute-hand sets the wrong appointment length
+# for the rest of the call. jv_v1 sells a 30-minute Sports Massage, so "Monday at
+# 4 30" was enough to book a 40-minute assessment as 30 and leave the
+# practitioner ten minutes short, with the caller told nothing.
+#
+# The hour alternation is bounded (0-23) and the minute half must be 00-59, so
+# a genuine "30 minutes" or "90" can never match — those are single tokens with
+# no separator. Note the input has already had punctuation flattened to spaces
+# by the caller, so "5:30" and "5.30" both arrive here as "5 30".
+_CLOCK_TIME_RE = re.compile(
+    r"\b(?:[01]?\d|2[0-3])\s*[: ]\s*[0-5]\d\b"   # 5 30 | 5:30 | 17 30
+    r"|\b\d{1,2}\s*(?:am|pm)\b"                   # 9 pm | 5pm
+    r"|\b\d{1,2}\s*o\s*clock\b"                   # 4 o clock
+)
 # pricing keys look like "60min_in_clinic_gbp" / "90min_in_clinic_gbp"
 _PRICE_KEY_RE = re.compile(r"^(\d+)\s*min", re.IGNORECASE)
 
@@ -806,6 +830,9 @@ def duration_choice_from_utterance(
     low = " " + re.sub(r"[^a-z0-9£ ]+", " ", (utterance or "").lower()).strip() + " "
     # Strip ordinals so "the 30th of August" cannot read as a 30-minute session.
     low = _ORDINAL_NUM_RE.sub(" ", low)
+    # …and clock times, so "at 4 30" cannot either. Same class, different door —
+    # see _CLOCK_TIME_RE. Ordinals first: "the 24th at 5 30" needs both gone.
+    low = _CLOCK_TIME_RE.sub(" ", low)
 
     found: set = set()
     for svc in svcs:
