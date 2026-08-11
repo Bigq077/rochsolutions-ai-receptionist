@@ -95,7 +95,23 @@ UNCHANGED_CLINIC_PROMPTS = {
     # it already had the branch. vital_edge moves too and stays unpinned here.
     # Verified, not assumed. See
     # tests/regression/test_no_caller_id_asks_for_the_keypad.py.
-    "jv_v1": "b60be0364138866c",
+    # Re-pinned 2026-08-11: b60be0364138866c -> d8dd5e12fe85af4e. The RESCHEDULE /
+    # CANCEL flow stopped assuming a caller ID exists — turn 2 now branches
+    # (a)/(b) on what CALL STATE actually holds, and two sentences that asked
+    # about "the number you're calling on" were made true for a number that was
+    # TYPED.
+    #
+    # NOTE for anyone comparing branches: this hash is NOT the value the same
+    # row carries on jv_v2 / latency-eval. Those branches also gave jv_v1
+    # prompt_facts.reason_question on the same day, which moves its prompt
+    # again; this branch did not, so jv_v1 here moved for ONE reason, not two.
+    # Recompute per branch — never copy a pin across.
+    #
+    # Confined to clinic_template_prompt.py, so EXACTLY the two template_v1
+    # clinics move (jv_v1 here, vital_edge deliberately unpinned in this table)
+    # and demo / theorem / theorem_v3 are byte-identical. Verified, not assumed.
+    # See tests/regression/test_reschedule_phone_without_caller_id_template.py.
+    "jv_v1": "d8dd5e12fe85af4e",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2 — theorem_v3 gained the "NEVER

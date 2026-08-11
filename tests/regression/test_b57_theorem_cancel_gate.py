@@ -273,7 +273,16 @@ UNMOVED_PROMPTS = {
     # theorem_v3) are byte-identical. theorem_v3 already carried this branch,
     # which is why it does not move.
     # See tests/regression/test_no_caller_id_asks_for_the_keypad.py.
-    "jv_v1": "b60be0364138866c",
+    # Re-pinned 2026-08-11: b60be0364138866c -> d8dd5e12fe85af4e, in step with the
+    # sibling table in test_b55_provisional_reschedule_closing.py — these two
+    # move together by design. The RESCHEDULE / CANCEL flow no longer assumes a
+    # caller ID exists.
+    #
+    # This hash differs from the same row on jv_v2 / latency-eval: those
+    # branches also opted jv_v1 into prompt_facts.reason_question, which this
+    # branch did not. Recompute per branch; never copy a pin across.
+    # See tests/regression/test_reschedule_phone_without_caller_id_template.py.
+    "jv_v1": "d8dd5e12fe85af4e",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -290,7 +299,14 @@ UNMOVED_PROMPTS = {
     # the cancel wording, and the other three pins here are unchanged — which
     # is the containment assertion that matters.
     "theorem_v3": "31dcedf2fd28f98e",
-    "vital_edge": "5e82ee27d3febeae",
+    # Re-pinned 2026-08-11: 5e82ee27d3febeae -> 366fd05251985af7, alongside
+    # jv_v1 above. The RESCHEDULE / CANCEL flow no longer assumes a caller ID
+    # exists. Both template_v1 clinics render that block, so both move — that
+    # they move TOGETHER is the containment claim, and demo / theorem /
+    # theorem_v3 staying byte-identical is what proves it stayed in the
+    # template builder.
+    # See tests/regression/test_reschedule_phone_without_caller_id_template.py.
+    "vital_edge": "366fd05251985af7",
 }
 
 
