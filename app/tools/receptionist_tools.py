@@ -3175,7 +3175,7 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
                     has_insurance=bool(insurer),
                     insurer=insurer or None,
                     clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
-                    clinic_phone=clinic.get("phone"),
+                    clinic_phone=clinic.get("sms_phone") or clinic.get("phone"),
                     session=session,
                 )
             except Exception as e:
@@ -3194,7 +3194,7 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
                 has_insurance=bool(insurer),
                 insurer=insurer or None,
                 clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
-                clinic_phone=clinic.get("phone"),
+                clinic_phone=clinic.get("sms_phone") or clinic.get("phone"),
             )
         except Exception as e:
             logger.warning("_book_appointment_acuity reminder scheduling failed (non-fatal): %r", e)
@@ -6030,7 +6030,7 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
                 has_insurance=bool(insurer),
                 insurer=insurer or None,
                 clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
-                clinic_phone=clinic.get("phone"),
+                clinic_phone=clinic.get("sms_phone") or clinic.get("phone"),
                 session=session,
             )
             session["confirmation_sms_sent"] = True
@@ -6192,7 +6192,7 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
             has_insurance=bool(insurer),
             insurer=insurer or None,
             clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
-            clinic_phone=clinic.get("phone"),
+            clinic_phone=clinic.get("sms_phone") or clinic.get("phone"),
             session=session,
         )
         # Tell the smart SMS router at call end that a confirmation was already sent
@@ -6213,7 +6213,7 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
             has_insurance=bool(insurer),
             insurer=insurer or None,
             clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
-            clinic_phone=clinic.get("phone"),
+            clinic_phone=clinic.get("sms_phone") or clinic.get("phone"),
             from_number=twilio_number_for_clinic(
                 clinic.get("clinic_id") or session.get("clinic_id") or ""
             ),
@@ -6393,8 +6393,10 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
             and (clinic.get("availability_mode") or "").strip().lower() == "published"
         )
         if _restores_to_available:
-            # Falls back to a delete if the restore write fails, so the pending
-            # booking is at least cleared either way.
+            # Give the freed slot back to availability instead of deleting it, so
+            # the time the practitioner published becomes bookable again. Falls
+            # back to a delete if the restore write fails, so the pending booking
+            # is at least cleared either way.
             from app.tools.calendar_google import update_event as _upd
             _avail = clinic.get("provisional_available_label") or "Available"
             try:
@@ -6429,7 +6431,7 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
                 patient_name=_appt_name,
                 appointment_time=appt_time,
                 clinic_name=_c_sms.get("sms_name") or _c_sms.get("display_name"),
-                clinic_phone=_c_sms.get("phone"),
+                clinic_phone=_c_sms.get("sms_phone") or _c_sms.get("phone"),
             )
     except Exception as e:
         logger.warning("cancel_appointment SMS failed (non-fatal): %r", e)
@@ -6657,7 +6659,7 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
                     new_time=new_start,
                     location=_sms_location,
                     clinic_name=_c_sms.get("sms_name") or _c_sms.get("display_name"),
-                    clinic_phone=_c_sms.get("phone"),
+                    clinic_phone=_c_sms.get("sms_phone") or _c_sms.get("phone"),
                 )
     except Exception as e:
         logger.warning("reschedule_appointment SMS failed (non-fatal): %r", e)
