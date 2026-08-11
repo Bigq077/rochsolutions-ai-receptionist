@@ -717,6 +717,17 @@ def _find_service_def(clinic: Dict[str, Any], service: str) -> Optional[Dict[str
     if not svc:
         return None
     for s in (clinic.get("services") or []):
+        # `services` is a list of DICTS for the template clinics and a list of
+        # plain STRINGS for theorem and demo. The isinstance guard is
+        # load-bearing rather than defensive tidiness — the same hazard
+        # _options_services documents. Until 2026-08-09 every caller of this
+        # function happened to run only on template clinics, so the
+        # AttributeError was unreachable; duration_choice_gate made the
+        # theorem path reachable and it raised on the first availability
+        # lookup. A string service has no definition to find, so skipping is
+        # the correct answer, not merely the safe one.
+        if not isinstance(s, dict):
+            continue
         if (s.get("service_id") or "").lower() == svc or (s.get("name") or "").lower() == svc:
             return s
     return None
@@ -1601,15 +1612,43 @@ TOOL_SCHEMAS = [
 ]
 
 
-# theorem_v3's replacement for TOOL_BOOK_APPOINTMENT's `reason` description.
-#
-# The stock description reads "REQUIRED IN PRACTICE ... this tool REFUSES the
-# booking when no reason is on record. Ask for it before checking availability."
-# That is a standing instruction to ask, it ships with every request, and it is
-# not subject to the system prompt at all — which is why suppressing the
-# question at the output could never hold. It is correct for JV and Vital Edge
-# and wrong for Theorem, so it is rewritten here rather than changed at source.
-_THEOREM_REASON_DESC = (
+def _clinic_asks_the_reason(clinic_id: Optional[str]) -> bool:
+    """True when THIS clinic deliberately asks the caller why they are coming in.
+
+    The same config key, read the same way, as
+    `turn_handler._clinic_asks_its_own_reason_question` — deliberately, so the
+    output gate and the booking gate can never disagree about a clinic. Keying
+    off `prompt_facts.reason_question` rather than a clinic id is what lets a
+    clinic change its mind with a config edit and no engine change.
+
+    FAILS OPEN, and that is the opposite of its sibling in turn_handler — same
+    predicate, different consequence. There, "unknown" must suppress the
+    question, because asking a question the owner banned is the harm. Here,
+    "unknown" must NOT require a reason, because requiring one from a clinic
+    that never asks is a DEADLOCK: the model is told not to ask, no reason is
+    ever collected, and every booking is refused. That is not hypothetical —
+    it is what made Theorem's bookings impossible.
+
+    A booking that completes carrying no reason is recoverable; a caller who
+    cannot book at all is not. In practice the branch is close to unreachable:
+    if `get_clinic` is failing, the calendar id and service list are gone too
+    and the booking fails for better reasons.
+    """
+    try:
+        from app.clinic_config import get_clinic
+        _pf = (get_clinic(clinic_id) or {}).get("prompt_facts") or {}
+        return bool(_pf.get("reason_question"))
+    except Exception:
+        return False
+
+
+# Handed to the model for a clinic that never asks the reason. The stock
+# description is a standing instruction to ASK: it says the tool refuses without
+# a reason and to "ask for it before checking availability". That text ships
+# with every request and is not subject to the system prompt at all — which is
+# why suppressing the question at the output could never hold on its own. It is
+# correct for a clinic that asks, and wrong for one that does not.
+_REASON_OPTIONAL_DESC = (
     "OPTIONAL on this clinic, and an empty reason is a correct outcome — the "
     "booking is never refused for the want of one. NEVER ask the caller what "
     "the appointment is for, what brings them in, or any variation: that "
@@ -1620,6 +1659,30 @@ _THEOREM_REASON_DESC = (
 )
 
 
+def _apply_reason_policy(schemas: list, clinic_id: Optional[str]) -> list:
+    """Rewrite the `reason` field description for a clinic that never asks.
+
+    Applied to BOTH schema paths, not just the non-template one. Theorem's
+    version keyed on `clinic_id == "theorem_v3"` inside the `not solo` branch,
+    so a single-site TEMPLATE clinic that stopped asking would have kept the
+    "REQUIRED IN PRACTICE — ask for it" text and walked straight back into the
+    deadlock. Keying off config and applying it at both returns removes that.
+
+    Never mutates in place: TOOL_SCHEMAS is a module-level constant shared by
+    every clinic in the process, so rewriting it would hand the never-ask text
+    to the clinics that DO ask.
+    """
+    if _clinic_asks_the_reason(clinic_id):
+        return schemas
+    import copy
+    out = copy.deepcopy(list(schemas))
+    for t in out:
+        _r = ((t.get("input_schema") or {}).get("properties") or {}).get("reason")
+        if isinstance(_r, dict) and "REQUIRED IN PRACTICE" in (_r.get("description") or ""):
+            _r["description"] = _REASON_OPTIONAL_DESC
+    return out
+
+
 def build_tool_schemas(clinic_id: Optional[str]) -> list:
     """
     Return the tool schemas for a clinic.
@@ -1628,26 +1691,18 @@ def build_tool_schemas(clinic_id: Optional[str]) -> list:
     alcester/redditch, service 'physiotherapy assessment', 50-min default). For a
     single-site template clinic (e.g. jv_v1) that forces the LLM to pass the
     wrong location/service. Here we deep-copy and rewrite location/service/
-    duration from the clinic's own config. Legacy / multi-site clinics get the
-    static list unchanged (single_location_template returns None); Theorem gets
-    it with one field rewritten — see _THEOREM_REASON_DESC.
+    duration from the clinic's own config. Theorem / legacy / multi-site clinics
+    get the static list unchanged (single_location_template returns None).
+
+    Both paths then go through `_apply_reason_policy`, which rewrites the
+    `reason` field for a clinic that never asks for one.
     """
     import copy
     from app.clinic_config import get_clinic, single_location_template
 
     solo = single_location_template(clinic_id)
     if not solo:
-        if clinic_id == "theorem_v3":
-            # Deep-copied, never mutated in place: TOOL_SCHEMAS is a module-level
-            # constant shared by every clinic in the process, and rewriting it
-            # would silently give JV and Vital Edge the never-ask instruction too.
-            out = copy.deepcopy(list(TOOL_SCHEMAS))
-            for t in out:
-                _r = ((t.get("input_schema") or {}).get("properties") or {}).get("reason")
-                if isinstance(_r, dict) and "REQUIRED IN PRACTICE" in (_r.get("description") or ""):
-                    _r["description"] = _THEOREM_REASON_DESC
-            return out
-        return list(TOOL_SCHEMAS)
+        return _apply_reason_policy(list(TOOL_SCHEMAS), clinic_id)
 
     clinic = get_clinic(clinic_id)
     mods = clinic.get("modalities") or []
@@ -1723,7 +1778,7 @@ def build_tool_schemas(clinic_id: Optional[str]) -> list:
                 ),
             }
         out.append(t2)
-    return out
+    return _apply_reason_policy(out, clinic_id)
 
 
 # ===========================================================================
@@ -5192,23 +5247,15 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         or _gate_text(session.get("reason"))
         or _gate_text(_cg_collected.get("reason"))
     )
-    # THEOREM ONLY — the reason is never asked here (owner decision 2026-08-07,
-    # scope reconfirmed 2026-08-09), so it can only ever arrive volunteered, and
-    # `_extract_reason` cannot supply it either: that runs from flow.py, and the
-    # FlowEngine is bypassed on every live clinic.
+    # The A2 gate belongs ONLY to a clinic that asks for a reason. On one that
+    # never asks, requiring one is a closed loop: the prompt forbids the
+    # question, Gate 5b-r strips it if the model improvises it anyway, so no
+    # reason is ever collected — and then this refuses every booking. That is
+    # what made Theorem's bookings impossible.
     #
-    # Which makes this gate a deadlock on theorem_v3, not a safety net. On a
-    # caller who never mentions their injury ("um yeah i'd like to book an
-    # appointment", CAb1592daa) the reason is unreachable, so the booking is
-    # refused — and the refusal message below tells the model to ask "What's the
-    # appointment for?", which Gate 5b-r then deletes on its way to TTS. The
-    # model asks, gets deleted, asks again. That loop IS the reported pestering,
-    # and underneath it no such caller could be booked at all.
-    #
-    # So on Theorem an empty reason is a correct outcome and must not block. The
-    # gate stands unchanged everywhere else — asking is right on JV and Vital
-    # Edge, and only Theorem carries the never-ask rule.
-    _reason_required = session.get("clinic_id") != "theorem_v3"
+    # Keyed on config, not a clinic id, and on the SAME key the output gate
+    # reads, so the two can never disagree about a clinic.
+    _reason_required = _clinic_asks_the_reason(session.get("clinic_id"))
     if _reason_required and not _cg_reason:
         logger.warning(
             "[book] BLOCKED — no reason on record (A2) clinic=%s",
@@ -5236,10 +5283,17 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         )
     # Commit the reason both ways, so a booking that passes this gate always
     # carries the reason it was made for into the call record and the SMS.
-    if not _gate_text(session.get("reason")):
-        session["reason"] = _cg_reason
-    if not _gate_text(_cg_collected.get("reason")):
-        _cg_collected["reason"] = _cg_reason
+    #
+    # Guarded on _cg_reason being non-empty since the gate above became
+    # conditional: on a clinic that never asks, an empty reason reaches here as
+    # a CORRECT outcome, and writing "" into the slots would overwrite nothing
+    # with nothing while making an absent reason look like a collected one to
+    # the call record and the SMS router.
+    if _cg_reason:
+        if not _gate_text(session.get("reason")):
+            session["reason"] = _cg_reason
+        if not _gate_text(_cg_collected.get("reason")):
+            _cg_collected["reason"] = _cg_reason
 
     if session.get("phone_confirmed") is not True:
         logger.warning(
