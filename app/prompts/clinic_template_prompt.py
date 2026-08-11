@@ -2492,7 +2492,28 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         # same field is the shape that produced B-20; it is also just worse for
         # the caller, who is asked to reason about a number they cannot hear.
         # The lookup number now gets read back exactly like the booking number.
-        "Then READ THE BOOKING NUMBER BACK. You ALREADY HAVE it — it is in "
+        # 11 Aug 2026. This step used to open "Then READ THE BOOKING NUMBER
+        # BACK. You ALREADY HAVE it — it is in CALL STATE, pre-loaded from
+        # caller ID", unconditionally. For a caller who withholds their number
+        # that is false, and it contradicted the CALL STATE block, which since
+        # 4cf79d9 correctly says "you do NOT have a number for them".
+        #
+        # That CALL STATE line does neutralise this one — it disclaims "every
+        # read-it-back instruction elsewhere in this prompt" and mandates the
+        # same keypad wording used below, which was verified against
+        # _is_keypad_arming_line — so this was never the dead end 2652ca2 fixed
+        # on Theorem, where no recovery path existed at all. It is still a
+        # falsehood the model has to override rather than one it never reads.
+        # Stating the true thing in both cases is strictly cheaper.
+        #
+        # Branch (a) is the previous text verbatim, so the caller-ID case — the
+        # overwhelmingly common one — is unchanged in wording; only the routing
+        # sentence in front of it is new.
+        "Then get the number the booking is under. CALL STATE tells you which "
+        "case you are in and it is AUTHORITATIVE — never assume a number "
+        "exists because this flow mentions one.\n"
+        "(a) CALL STATE GIVES YOU A CALLER PHONE → READ THE BOOKING NUMBER "
+        "BACK. You ALREADY HAVE it — it is in "
         "CALL STATE, pre-loaded from caller ID — so do NOT ask them for it and "
         "do NOT ask them to say a set phrase. Say the digits in three groups so "
         "they can actually check them, then ask a plain yes/no, as ONE short "
@@ -2504,7 +2525,16 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "Only if the caller DECLINES that number (says it was a different one) "
         "do you ask them to type it — say EXACTLY: 'No problem "
         "— go ahead and type the number on your keypad. You can press the star "
-        "key to reset at any time.' Never invite them to say the number aloud, "
+        "key to reset at any time.'\n"
+        "(b) CALL STATE SAYS THERE IS NO CALLER ID → there is NOTHING to read "
+        "back and nothing to confirm. Do NOT say any digits, do NOT offer 'the "
+        "number you're calling from', and do NOT ask whether the calling "
+        "number is the right one — the caller cannot answer any of that. Ask "
+        "for the keypad in that SAME turn, straight after the ack phrase — say "
+        "EXACTLY: 'No problem — go ahead and type the number on your keypad. "
+        "You can press the star key to reset at any time.' STOP there on that "
+        "turn.\n"
+        "In BOTH cases: never invite them to say the number aloud, "
         "and never ask 'what number was it booked under' as an open question — "
         "the keypad line is what captures the digits.\n"
         "Once the phone is provided, call lookup_patient(purpose='reschedule', "
@@ -2526,9 +2556,14 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "result is found=false/exhausted.\n"
         "If exhausted (no more appointments under that number) → do NOT "
         "transfer yet. The booking may simply be under a DIFFERENT number. Say "
+        # "the number you're calling ON" assumed the number came from caller
+        # ID. When it was typed on the keypad — which is the ONLY way a
+        # withheld caller reaches this point — the caller is not calling on it
+        # at all, and the question is about a fact they were never given. The
+        # neutral wording is true in both cases and reads the same to a caller
+        # whose number did come from caller ID.
         "exactly: 'I couldn't find another appointment under this number. Are "
-        "you sure the number you're calling on is the one your booking is "
-        "under?'\n"
+        "you sure that's the number the booking is under?'\n"
         "  - If the caller says it was a DIFFERENT number → say EXACTLY: 'No "
         "problem — go ahead and type the number on your keypad. You can press "
         "the star key to reset at any time.' Do NOT invite them to say the "
@@ -2539,7 +2574,11 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "lookup_patient call.\n"
         "  - If the caller confirms it IS the number their booking is under, OR "
         "asks you to check/look again, OR simply insists → re-run "
-        "lookup_patient(purpose='reschedule', phone=<the calling number>) ONE "
+        # Was "<the calling number>", the same caller-ID assumption as the
+        # question above it: for a withheld caller the number to re-run is the
+        # one they TYPED, and there is no calling number to reach for.
+        "lookup_patient(purpose='reschedule', phone=<the same number you just "
+        "checked>) ONE "
         "more time. This is the ONE allowed extra lookup on the confirm path.\n"
         "      · If it now finds the appointment → read it back as above and "
         "continue.\n"
