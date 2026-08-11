@@ -4394,6 +4394,107 @@ _NARROW_WINDOW_MAX_DAYS = 3
 # How far ahead to look once a narrow search misses.
 _WIDEN_WINDOW_DAYS = 14
 
+# Cap on the event list fetched purely to find all-day entries. Generous enough
+# that a normal window is never truncated; bounded so a runaway calendar cannot
+# stall an availability read mid-call.
+_MAX_AVAILABILITY_EVENTS = 250
+
+
+def _all_day_busy_blocks(events, w_start, w_end) -> list:
+    """Whole-day busy blocks for every date-only event in the window.
+
+    `freebusy` honours each event's Busy/Free setting, and **Google creates
+    all-day events as FREE by default** — so a week blocked out as an all-day
+    "holiday" reports as available and gets offered to a caller. A day-long
+    entry is never a time to put a patient, so block it here regardless of
+    transparency and regardless of title.
+
+    Written for the Vital Edge diary reader (`ddd5318`) and originally wired
+    only into `_check_availability_diary`. The hazard was never VE-specific:
+    every clinic on the ordinary Google Calendar path had the same hole, and the
+    practitioner cannot see it — the calendar shows the week as blocked while
+    Susie offers it. This is now the SINGLE definition on this branch, shared by
+    the diary reader and the ordinary path; the near-duplicate that sat further
+    down the file was removed when the ordinary path was wired up, so the two
+    readers cannot drift apart.
+
+    Timed events are skipped: `freebusy` already reports those correctly,
+    including multi-day ones, which Google draws as a banner above the hour grid
+    rather than in it.
+    """
+    blocks: list = []
+    for ev in events or []:
+        start = (ev.get("start") or {})
+        end = (ev.get("end") or {})
+        if start.get("dateTime"):
+            continue  # timed — freebusy already owns it
+        s_raw, e_raw = start.get("date"), end.get("date")
+        if not s_raw:
+            continue
+        try:
+            s_d = _date_type.fromisoformat(str(s_raw)[:10])
+            # Google's all-day `end.date` is EXCLUSIVE; absent → single day.
+            e_d = (
+                _date_type.fromisoformat(str(e_raw)[:10]) if e_raw
+                else (s_d + timedelta(days=1))
+            )
+        except ValueError:
+            continue
+        s_dt = LONDON_TZ.localize(datetime.combine(s_d, datetime.min.time()))
+        e_dt = LONDON_TZ.localize(datetime.combine(e_d, datetime.min.time()))
+        if e_dt <= w_start or s_dt >= w_end:
+            continue
+        blocks.append((s_dt, e_dt))
+        logger.info(
+            "[availability] all-day block %s → %s (%r) — treated as unavailable",
+            s_d, e_d, (ev.get("summary") or "")[:40],
+        )
+    return blocks
+
+
+async def _all_day_blocks_for_window(tokens, calendar_id, w_start, w_end) -> list:
+    """Fetch the events list for a window and return its all-day busy blocks.
+
+    Runs as a SEPARATE Google call because `freebusy` returns bare intervals
+    with no event bodies, so there is nothing in its response to inspect for
+    date-only entries. Callers must run this CONCURRENTLY with the freebusy
+    call — this is a live-call path and a serial second round trip would show up
+    as dead air before the slots are read out.
+
+    Every failure is swallowed and returns no blocks. This is a refinement of
+    the busy set, not the source of it: if the events call fails, the caller
+    still has freebusy's answer, and losing an all-day block is far better than
+    losing the whole availability read. That matches the surrounding posture,
+    where even a total freebusy failure falls back to unfiltered candidates
+    rather than killing the conversation.
+    """
+    try:
+        from app.tools.calendar_google import list_upcoming_events
+
+        # list_upcoming_events measures days_ahead from NOW, but the window can
+        # start later than now (after_date shifts w_start forward), so ask for
+        # enough days to reach w_end and let _all_day_busy_blocks do the real
+        # window filtering. +2 covers the partial first day and any DST seam.
+        _span_days = (w_end - datetime.now(LONDON_TZ)).total_seconds() / 86400.0
+        _days_ahead = max(1, int(_span_days) + 2)
+        events = await asyncio.to_thread(
+            list_upcoming_events, tokens, _days_ahead,
+            _MAX_AVAILABILITY_EVENTS, calendar_id,
+        )
+        if len(events or []) >= _MAX_AVAILABILITY_EVENTS:
+            logger.warning(
+                "[availability] all-day scan hit the %d-event cap — an all-day "
+                "block beyond it would be missed",
+                _MAX_AVAILABILITY_EVENTS,
+            )
+        return _all_day_busy_blocks(events, w_start, w_end)
+    except Exception as _ade:
+        logger.warning(
+            "[availability] all-day scan failed (%r) — continuing with freebusy "
+            "only; an all-day holiday in this window may be offered", _ade,
+        )
+        return []
+
 
 def _spoken_day_label(date_iso: str) -> str:
     """"2026-08-04" → "Tuesday 4th August". Matches _build_days_data's day_label
@@ -4653,9 +4754,17 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     calendar_id = _resolve_calendar_id(clinic, location)
 
     try:
-        busy_raw = await asyncio.to_thread(freebusy, tokens, w_start, w_end, calendar_id)
+        # Concurrent, not serial: the all-day scan is a second Google round trip
+        # and this runs while the caller is waiting to hear times.
+        busy_raw, _all_day = await asyncio.gather(
+            asyncio.to_thread(freebusy, tokens, w_start, w_end, calendar_id),
+            _all_day_blocks_for_window(tokens, calendar_id, w_start, w_end),
+        )
         await _save_gcal_tokens(tokens)   # persist any token refresh that happened inside freebusy
-        busy_blocks = parse_busy(busy_raw or [])
+        # freebusy reports Busy/Free honestly for TIMED events; all-day entries
+        # default to Free in Google, so they are added here or a blocked-out
+        # week is offered as available.
+        busy_blocks = parse_busy(busy_raw or []) + _all_day
         free_slots = filter_free_slots(candidates, busy_blocks, break_min=_break_min)
     except Exception as e:
         # Calendar API failed — fall back to unfiltered candidate slots (same
@@ -4713,12 +4822,22 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
                 break_min=_break_min,
             )
             try:
-                _wide_busy = await asyncio.to_thread(
-                    freebusy, tokens, w_start, _wide_end, calendar_id
+                # Same two-call shape as the primary path. The widen window is
+                # LONGER, so it is more likely to contain a holiday, not less —
+                # this site needs the all-day scan at least as much.
+                _wide_busy, _wide_all_day = await asyncio.gather(
+                    asyncio.to_thread(
+                        freebusy, tokens, w_start, _wide_end, calendar_id
+                    ),
+                    _all_day_blocks_for_window(
+                        tokens, calendar_id, w_start, _wide_end
+                    ),
                 )
                 await _save_gcal_tokens(tokens)
                 free_slots = filter_free_slots(
-                    _wide_candidates, parse_busy(_wide_busy or []), break_min=_break_min
+                    _wide_candidates,
+                    parse_busy(_wide_busy or []) + _wide_all_day,
+                    break_min=_break_min,
                 )
             except Exception as _we:
                 # Same posture as the primary freebusy failure above: unfiltered
@@ -4818,46 +4937,6 @@ def _availability_handoff_payload(clinic: Dict[str, Any]) -> Dict[str, Any]:
         "total_days": 0,
     }
 
-
-def _all_day_busy_blocks(events, w_start, w_end) -> list:
-    """Whole-day busy blocks for every date-only event in the window.
-
-    freebusy honours each event's Busy/Free setting, and Google creates all-day
-    events as FREE by default — so a week blocked out as an all-day "holiday"
-    can report as available and be offered to a caller. A day-long entry is
-    never a time to put a client, so block it here regardless of transparency
-    and regardless of title.
-
-    (Vital Edge's Ibiza trip is a TIMED multi-day event, which freebusy does see.
-    This exists for the next holiday, which may not be entered the same way.)
-    """
-    from datetime import date as _date
-
-    blocks: list = []
-    for ev in events or []:
-        start = (ev.get("start") or {})
-        end = (ev.get("end") or {})
-        if start.get("dateTime"):
-            continue  # timed — freebusy already owns it
-        s_raw, e_raw = start.get("date"), end.get("date")
-        if not s_raw:
-            continue
-        try:
-            s_d = _date.fromisoformat(str(s_raw)[:10])
-            # Google's all-day `end.date` is EXCLUSIVE; absent → single day.
-            e_d = _date.fromisoformat(str(e_raw)[:10]) if e_raw else (s_d + timedelta(days=1))
-        except ValueError:
-            continue
-        s_dt = LONDON_TZ.localize(datetime.combine(s_d, datetime.min.time()))
-        e_dt = LONDON_TZ.localize(datetime.combine(e_d, datetime.min.time()))
-        if e_dt <= w_start or s_dt >= w_end:
-            continue
-        blocks.append((s_dt, e_dt))
-        logger.info(
-            "[availability] all-day block %s → %s (%r) — treated as unavailable",
-            s_d, e_d, (ev.get("summary") or "")[:40],
-        )
-    return blocks
 
 
 def _log_busy_blocks(busy_blocks, events, break_min: int) -> None:
