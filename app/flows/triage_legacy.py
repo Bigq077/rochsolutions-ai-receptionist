@@ -3661,7 +3661,7 @@ async def triage_turn(
                             has_insurance=bool(collected.get("insurer")),
                             insurer=collected.get("insurer"),
                             clinic_name=_sms_clinic.get("sms_name") or _sms_clinic.get("display_name"),
-                            clinic_phone=_sms_clinic.get("phone"),
+                            clinic_phone=_sms_clinic.get("sms_phone") or _sms_clinic.get("phone"),
                             session=session,
                         )
                         logger.info("✅ Booking confirmation SMS sent to ***%s", collected.get('phone', '')[-4:])
