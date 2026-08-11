@@ -1002,6 +1002,47 @@ _WRITE_ALREADY_DONE_RULE = {
 }
 
 
+def _booking_outcome_line(result: dict) -> str:
+    """A caller-ready sentence describing a booking that HAS just been written.
+
+    Built from the tool result and nothing else. That is the whole point: when
+    the turn that should announce the booking produces no speech, the outcome is
+    still known deterministically, and saying the true thing beats saying the
+    deaf thing.
+
+    On CAd8868396 (Vital Edge, 2026-08-11) `book_appointment` returned
+    `{"success": true, "provisional": true, "booked_slot": "Tuesday 18 August at
+    12:00", "note": "…Tell the caller it is NOT confirmed…"}`. The very next
+    iteration stalled 21s on the provider, retried, and emitted nothing — so the
+    caller heard "Sorry, I didn't quite catch that — could you say that again?",
+    said goodbye, and hung up. The request was in Jonathan's diary and they were
+    never told. The call was then recorded as `abandoned`, because nothing had
+    been spoken for the summariser to see.
+
+    PROVISIONAL IS NOT CONFIRMED, and the distinction is the reason this returns
+    two different sentences rather than one. Telling a Vital Edge caller they
+    are "booked in" when the practitioner has not accepted yet is a false
+    confirmation — the exact failure the whole write-guard family exists to
+    prevent. Neither sentence promises a text: SMS is env-gated per service and
+    a promise made here cannot check it.
+
+    Returns "" when the result carries no slot to speak, so the caller gets the
+    ordinary fallback rather than a sentence with a hole in it.
+    """
+    if not isinstance(result, dict) or result.get("success") is not True:
+        return ""
+    slot = str(result.get("booked_slot") or "").strip()
+    if not slot:
+        return ""
+    if result.get("provisional") is True:
+        return (
+            f"Right — I've put that request through for {slot}. "
+            "It's not confirmed just yet; the practitioner will confirm it "
+            "with you shortly."
+        )
+    return f"That's booked in — you're down for {slot}."
+
+
 def _note_write_result(session: dict, tool_name: str, result):
     """P1 #5 / F-023 / B-36 — Layers 1 & 2 of the false-confirmation guard.
 
@@ -1069,6 +1110,13 @@ def _note_write_result(session: dict, tool_name: str, result):
             # than left latched so a farewell turn cannot spend a round trip
             # re-reading the diary.
             session.pop(BOOKING_WRITE_FAILED_KEY, None)
+            # Keep a caller-ready sentence describing what just happened, built
+            # from the TOOL RESULT rather than from anything the model says.
+            # See _booking_outcome_line: this is what the deferred Gate-5
+            # fallback speaks when the confirmation turn produces nothing.
+            _line = _booking_outcome_line(result)
+            if _line:
+                session["_booking_outcome_unspoken"] = _line
         return result
     if succeeded.get(family):
         # CA0f9a12 — a duplicate write in a family that already completed this
@@ -2670,6 +2718,12 @@ class LLMStream:
         # the reset a later turn would inherit the latch and go back to shipping
         # the silence this exists to prevent.
         session.pop("_gate5br_substituted", None)
+        # The booking-outcome fallback is TURN-scoped. It is set when a booking
+        # write succeeds and consumed by the deferred Gate-5 fallback in the
+        # same turn. Clearing it here means a later empty turn — a farewell the
+        # model fumbles, say — can never re-announce a booking the caller was
+        # told about minutes ago.
+        session.pop("_booking_outcome_unspoken", None)
         # L1/L2: the affirmation verdict is memoised per turn. The tool loop can
         # retry book_appointment up to MAX_TOOL_ITERATIONS times (CA7e389a47 did
         # three in one turn), and without this each retry would re-run the
@@ -3425,6 +3479,23 @@ class LLMStream:
                     "Sorry, I didn't quite catch that"
                     " — could you say that again?"
                 )
+                # A booking was WRITTEN this turn and the turn that should have
+                # announced it produced nothing. Asking the caller to repeat
+                # themselves is the worst available answer: the booking exists,
+                # the caller does not know, and on CAd8868396 they said goodbye
+                # and hung up believing nothing had happened.
+                #
+                # Consumed with pop(), so it can be spoken at most once, and
+                # cleared at the start of every turn (see the per-turn reset) so
+                # a later empty turn can never re-announce a stale booking.
+                _outcome = session.pop("_booking_outcome_unspoken", "")
+                if _outcome:
+                    _gate5_fallback = _outcome
+                    logger.info(
+                        "[ms_gate5] empty turn after a SUCCESSFUL booking — "
+                        "speaking the outcome from the tool result instead of "
+                        "the re-ask: %r", _outcome[:80],
+                    )
                 # theorem_v3 (Bug B2): defer the fallback to connection.py's
                 # post-turn path instead of emitting it inline.  The v3 loop
                 # runs recovery logic AFTER run_turn returns — the booking-ack
