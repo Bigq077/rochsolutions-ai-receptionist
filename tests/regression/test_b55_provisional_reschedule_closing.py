@@ -111,7 +111,15 @@ UNCHANGED_CLINIC_PROMPTS = {
     # clinics move (jv_v1 here, vital_edge deliberately unpinned in this table)
     # and demo / theorem / theorem_v3 are byte-identical. Verified, not assumed.
     # See tests/regression/test_reschedule_phone_without_caller_id_template.py.
-    "jv_v1": "d8dd5e12fe85af4e",
+    # Re-pinned 2026-08-11 (P6 config normalisation): d8dd5e12fe85af4e ->
+    # 2c377ec8e1d6b181. NOT an engine change — jv_v1's clinic.json on this
+    # branch was stale and gained prompt_facts.reason_question, which the
+    # other branches already had. The new value is IDENTICAL to canonical's,
+    # which is the point: this row previously carried a third distinct hash
+    # purely because this branch's copy of another clinic's config had
+    # drifted. Verified with each file's OWN _sha helper — the two tables
+    # use separate functions and must not be checked with one another's.
+    "jv_v1": "2c377ec8e1d6b181",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2 — theorem_v3 gained the "NEVER
