@@ -172,20 +172,38 @@ def test_every_other_clinic_renders_byte_identical():
 
 def test_the_gate_is_the_clinic_opting_in():
     """A clinic with no custom wording gets neither the new question nor the
-    once-only instruction — one switch, not two that can drift apart."""
+    once-only instruction — one switch, not two that can drift apart.
+
+    The not-opted-in side is SYNTHETIC on purpose. It used to be jv_v1, but on
+    2026-08-11 jv_v1 opted in (owner decision: Joint Venture does ask), and both
+    template_v1 clinics now supply their own wording — so there is no real
+    clinic left to carry the negative case. Deriving it by deleting the one key
+    from a real config is also the stronger claim: it pins that the KEY is the
+    switch, which is what lets a clinic opt in or out with no engine edit.
+    """
+    import copy
+
     from app.prompts.clinic_template_prompt import build_clinic_prompt as _b
-    jv = _b({}, get_clinic(JV))[0]
-    assert "do not ask a second, differently-worded" not in jv
+
+    opted_out = copy.deepcopy(get_clinic(JV))
+    opted_out["prompt_facts"].pop("reason_question", None)
+    assert "do not ask a second, differently-worded" not in _b({}, opted_out)[0]
+
     ve = _static(VE)
     assert "do not ask a second, differently-worded" in ve
+    # and the same config, with the key restored, does get it
+    assert "do not ask a second, differently-worded" in _b({}, get_clinic(JV))[0]
 
 
-@pytest.mark.parametrize("clinic_id", [JV, "theorem_v3", "demo", None])
+@pytest.mark.parametrize("clinic_id", ["theorem_v3", "demo", None])
 def test_the_latch_does_not_even_run_for_a_clinic_that_did_not_opt_in(clinic_id):
     """The absolute form of containment: not "no visible effect" but "no
-    execution". jv_v1 and theorem are live lines that did not ask for this, and
-    their rendered prompt is already byte-identical static and dynamic; this
-    pins that no session key is written for them either."""
+    execution". These are lines that did not ask for this, and their rendered
+    prompt is already byte-identical static and dynamic; this pins that no
+    session key is written for them either.
+
+    jv_v1 left this list on 2026-08-11 when it opted in — it belongs with
+    vital_edge now, and the latch running for it is the point, not a leak."""
     session = {"clinic_id": clinic_id}
     assert note_reason_question_asked(
         session, "Right — What's the appointment for?"

@@ -106,6 +106,8 @@
   "prompt_facts": {
     "identity_descriptor": "a private physiotherapy clinic based in Bolton",
     "discipline": "physiotherapy",
+    "_reason_question_note": "Owner decision 2026-08-11: Joint Venture DOES ask what the appointment is for. Setting this key is the whole fix — it turns OFF Gate 5b-r for this clinic (turn_handler._clinic_asks_its_own_reason_question) and turns ON the once-only tightening. Without it the model asked, the gate deleted the sentence, no reason was ever collected, and book_appointment refused every booking on the A2 gate. Do NOT remove without reading that gate.",
+    "reason_question": "What's the appointment for?",
     "first_appt_noun": "assessment",
     "home_visit_area": "Bolton and Greater Manchester",
     "sole_practitioner": true,
