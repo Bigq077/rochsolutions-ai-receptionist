@@ -64,28 +64,13 @@ _REASON_QUESTION_RE = re.compile(
 )
 
 
-# ── The run-up to the reason question ───────────────────────────────────────
-# _REASON_QUESTION_RE takes a whole sentence, which is right, but the model can
-# put the justification in one sentence and the question in the next. Stripping
-# only the question leaves the caller with "Just so we've got a reason on the
-# booking." and no question at all — see the call site for CA32440a92.
-#
-# Deliberately NARROW:
-#
-#  * it requires the admin framing ("a reason ON THE BOOKING", "for our
-#    records"), never the bare word "reason", so ordinary speech is untouched;
-#  * it must end in "." or "!" — never "?" — so a sentence that IS a question
-#    about the reason can never be taken by this pattern. That matters because
-#    Gate 5b-r is unconditional on this branch: there is no per-clinic opt-out
-#    here, so the pattern itself has to be the guard.
-# Two shapes, because the justification does not always name the reason:
-#
-#   A  "Just so we've got a reason on the booking."   reason + admin noun
-#   B  "Just for our records."                        admin framing alone
-#
-# B is here because A alone would have passed a test written from A's own
-# comment — the comment cited "for our records" as admin framing and the
-# pattern required the literal word "reason". Both end in [.!], never [?].
+# The admin framing a reason question hangs off. When the question itself is
+# stripped, a preamble like "I'll note the reason on the booking." is left
+# introducing something that no longer exists. Deliberately narrow — it
+# recognises the admin framing and nothing else. Ends in [.!], never [?], so it
+# can never eat a question. Only ever applied INSIDE the branch where a reason
+# question was actually removed: a standalone "I've noted the reason on the
+# booking" is a statement of fact and must survive.
 _REASON_PREAMBLE_RE = re.compile(
     r"[^.!?]*(?:"
     r"\breason\b[^.!?]{0,40}?\b(?:on|for|to)\s+"
@@ -102,27 +87,19 @@ _REASON_PREAMBLE_RE = re.compile(
 
 # The same defect one layer out, and the reason BOTH patterns exist.
 #
-# _REASON_PREAMBLE_RE above is deliberately narrow — it recognises the admin
-# framing ("a reason on the booking", "for our records") and nothing else. That
-# is the right shape for what it catches, and it does not catch this:
+# _REASON_PREAMBLE_RE above catches admin framing and nothing else, which is
+# the right shape for what it catches — and it does not catch a purpose clause
+# with no admin noun in it ("Just so Mark has a heads up."). Left behind, the
+# caller hears a dangling fragment and then silence, because the turn no longer
+# asks anything.
 #
-#     CAb1592daa, 2026-08-08 23:16:42
-#     "<reason question> Just so Mark has a heads up."
-#
-# No admin noun, so the preamble pattern misses it, the residue survived, the
-# dead-end substitution below never fired, and the caller heard a dangling "Just
-# so Mark has a heads up." followed by nine seconds of nothing before saying
-# "hello" into the silence. Same defect as CA32440a92, different words — which
-# is the fourth time a matcher keyed to the shape of model speech has been
-# beaten by the model saying it another way.
-#
-# So this one is not a third list of phrasings. The call site asks the general
+# So this is not a third list of phrasings. The call site asks the general
 # question instead — does the turn still ASK anything? — and this pattern only
 # decides whether the leftover is worth keeping. Anything it does not match
 # keeps its text and merely gains a question, which is the safe direction.
 #
-# Matching on the opening connector ALONE is not safe: every slot readback in
-# this system opens "So that's Wednesday the 19th of August at ten...", and a
+# Matching the opening connector ALONE is not safe: every slot readback in this
+# system opens "So that's Wednesday the 19th of August at ten...", and a
 # connector-only rule deleted it. The second half is what makes this a purpose
 # clause rather than a sentence that merely starts like one — it has to be
 # ABOUT someone being told or made ready.
@@ -1281,6 +1258,36 @@ def _confirmed_slot_is_stale(conf_slot: str, session: Dict[str, Any]) -> bool:
     return seen_any
 
 
+def _clinic_asks_its_own_reason_question(session: Dict[str, Any]) -> bool:
+    """True when THIS clinic deliberately asks the caller why they are coming in.
+
+    The owner decision behind Gate 5b-r — Susie never asks what brings the
+    caller in — is Theorem's and jv_v1's. Vital Edge is the exception: it asks
+    the question on purpose, in its own wording, exactly once, and the whole
+    mechanism is already gated on the same key (`902411a`, `bec1b5e`).
+
+    Ungated, Gate 5b-r is a booking-failure landmine for Vital Edge and the
+    suite cannot see it. VE's MANDATED wording ("Is there a particular area or
+    reason for the massage…") does not match _REASON_QUESTION_RE, so every test
+    stays green — but the model improvises, and on CA86c320ef it improvised
+    "What's the appointment for?", which the regex DOES strip. The reason is
+    then never asked, so `note_reason_question_asked` never latches, so no
+    reason is collected, and `book_appointment` refuses for want of one.
+
+    Read through `get_clinic` rather than the session so it follows the same
+    source of truth as the prompt renderer, and fail CLOSED — any error means
+    the clinic did not opt in, so the suppression still runs. That is the safe
+    direction: a clinic that never asked for the reason question keeps the
+    protection it has today.
+    """
+    try:
+        from app.clinic_config import get_clinic
+        _pf = (get_clinic(session.get("clinic_id")) or {}).get("prompt_facts") or {}
+        return bool(_pf.get("reason_question"))
+    except Exception:
+        return False
+
+
 def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     """
     Clean LLM output before it reaches tts_text_queue.
@@ -1345,25 +1352,6 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     # is the common case rather than the corner.
     _reason_cleaned = _REASON_QUESTION_RE.sub("", result)
     if _reason_cleaned != result:
-        # The question is gone; its RUN-UP is not. _REASON_QUESTION_RE matches a
-        # whole sentence, which is correct — but the model does not always put
-        # the whole intent in one sentence. On CA32440a92 (2026-08-08 22:14) it
-        # split it, twice in the same call:
-        #
-        #     "Just so we've got a reason on the booking. What brings you in?"
-        #     "I need a reason on the booking. What's the appointment for?"
-        #
-        # Only the second sentence matched, so the caller heard the preamble
-        # alone — a justification for a question that no longer existed — then
-        # nothing. The T-3 nudge fired both times ("turn answered but asked
-        # nothing and none was outstanding"), and the caller came back with
-        # "hello you got cut off".
-        #
-        # Sentence boundaries are what decide whether this reproduces. The
-        # single-sentence form ("could I ask what brings you in?") empties the
-        # turn and the fallback below asks the outstanding step correctly —
-        # that is the same call, working, four minutes earlier.
-        #
         # Runs ONLY inside this branch, i.e. only when a reason question was
         # actually removed. A standalone "I've noted the reason on the booking"
         # is a statement of fact and must survive; it is an orphan only when the

@@ -5847,11 +5847,26 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
     _appt_name = _gcal_event_patient_name(found) or session.get("_lookup_patient_name") or ""
 
     try:
-        if clinic.get("booking_system") == "google_calendar_provisional":
+        # Restoring a cancelled booking to "Available" is only meaningful when
+        # events ARE the offer (availability_mode "published"): the slot the
+        # practitioner published becomes bookable again.
+        #
+        # Under "diary" the same write is actively harmful. There, every event
+        # on the calendar BLOCKS — so leaving a renamed event behind would make
+        # that time permanently unbookable, and cancelling would remove
+        # availability instead of returning it. Exactly backwards. Anything that
+        # is not "published" therefore deletes, which is also the right posture
+        # for "handoff": a leftover marker must not become a phantom block if
+        # the clinic is later switched to diary.
+        _restores_to_available = (
+            clinic.get("booking_system") == "google_calendar_provisional"
+            and (clinic.get("availability_mode") or "").strip().lower() == "published"
+        )
+        if _restores_to_available:
             # Give the freed slot back to availability instead of deleting it, so
-            # the time Jonathan published becomes bookable again. Falls back to a
-            # delete if the restore write fails, so the pending booking is at least
-            # cleared either way.
+            # the time the practitioner published becomes bookable again. Falls
+            # back to a delete if the restore write fails, so the pending booking
+            # is at least cleared either way.
             from app.tools.calendar_google import update_event as _upd
             _avail = clinic.get("provisional_available_label") or "Available"
             try:
