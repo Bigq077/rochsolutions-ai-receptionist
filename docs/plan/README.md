@@ -34,8 +34,9 @@ Phase 0 templates (fill / keep current): `TEST_BASELINE.md`,
 
 | Document | What it is |
 |---|---|
+| [`HANDOVER_JULES_5DAY_2026-08-11.md`](HANDOVER_JULES_5DAY_2026-08-11.md) | **Quentin away — Jules owns the week.** Standing rules, Jobs 1–3, adversarial scripts A1–A10 |
 | [`DEMO_SWEEP_2026-08-05.md`](DEMO_SWEEP_2026-08-05.md) | Demo call script — Sweep A (JV) + Sweep B (Theorem) |
-| [`SESSION_2026-08-05.md`](SESSION_2026-08-05.md) | Today's synthesis — fixes + **Sweep A 6/6 PASS** |
+| [`SESSION_2026-08-05.md`](SESSION_2026-08-05.md) | 5 Aug synthesis — fixes + **Sweep A 6/6 PASS** |
 
 ---
 

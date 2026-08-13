@@ -4,7 +4,7 @@
 CAc36368cbeb, 2026-08-13 — Susie promised a callback and never notified anyone.
 Run this on a host that has Twilio creds + SMS_ENABLED (Render shell is fine):
 
-    SMS_ENABLED=true python scripts/remediate_dylan_wilson_callback.py
+    SMS_ENABLED=true PYTHONPATH=. python scripts/remediate_dylan_wilson_callback.py
 
 Idempotent enough to re-run; Jonathan may get a duplicate if he already got one
 by hand — check with him first if unsure.
@@ -16,9 +16,13 @@ import os
 import sys
 from pathlib import Path
 
+_REPO = Path(__file__).resolve().parent.parent
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+
 
 def _load_dotenv() -> None:
-    env = Path(__file__).resolve().parent.parent / ".env"
+    env = _REPO / ".env"
     if not env.exists():
         return
     for line in env.read_text(encoding="utf-8", errors="ignore").splitlines():
