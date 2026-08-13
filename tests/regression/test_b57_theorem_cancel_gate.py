@@ -278,19 +278,14 @@ UNMOVED_PROMPTS = {
     # move together by design. The RESCHEDULE / CANCEL flow no longer assumes a
     # caller ID exists.
     #
-    # This hash differs from the same row on jv_v2 / latency-eval: those
-    # branches also opted jv_v1 into prompt_facts.reason_question, which this
-    # branch did not. Recompute per branch; never copy a pin across.
-    # See tests/regression/test_reschedule_phone_without_caller_id_template.py.
-    # Re-pinned 2026-08-11 (P6 config normalisation): d8dd5e12fe85af4e ->
-    # 2c377ec8e1d6b181. NOT an engine change — jv_v1's clinic.json on this
-    # branch was stale and gained prompt_facts.reason_question, which the
-    # other branches already had. The new value is IDENTICAL to canonical's,
-    # which is the point: this row previously carried a third distinct hash
-    # purely because this branch's copy of another clinic's config had
-    # drifted. Verified with each file's OWN _sha helper — the two tables
-    # use separate functions and must not be checked with one another's.
-    "jv_v1": "2c377ec8e1d6b181",
+    # Containment unchanged and verified: demo / theorem / theorem_v3 are
+    # byte-identical, so the reason-question mechanism is still per-clinic and
+    # has not leaked into shared text.
+    # See tests/regression/test_reason_gate_is_clinic_scoped.py.
+    # Re-pinned 2026-08-13: request_callback tool + CALLBACK CONTRACT — the
+    # Dylan Wilson miss (CAc36368cbeb). jv_v1 / theorem_v3 / vital_edge move
+    # together; demo and theorem stay byte-identical.
+    "jv_v1": "9f6979d0c76e53b3",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -306,15 +301,8 @@ UNMOVED_PROMPTS = {
     # ADDITION is identical. It is confined to the TOOLS block, nowhere near
     # the cancel wording, and the other three pins here are unchanged — which
     # is the containment assertion that matters.
-    "theorem_v3": "31dcedf2fd28f98e",
-    # Re-pinned 2026-08-11: 5e82ee27d3febeae -> 366fd05251985af7, alongside
-    # jv_v1 above. The RESCHEDULE / CANCEL flow no longer assumes a caller ID
-    # exists. Both template_v1 clinics render that block, so both move — that
-    # they move TOGETHER is the containment claim, and demo / theorem /
-    # theorem_v3 staying byte-identical is what proves it stayed in the
-    # template builder.
-    # See tests/regression/test_reschedule_phone_without_caller_id_template.py.
-    "vital_edge": "366fd05251985af7",
+    "theorem_v3": "761036c8d0da91ed",
+    "vital_edge": "91800b39f28cf047",
 }
 
 
