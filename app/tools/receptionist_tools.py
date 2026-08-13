@@ -1835,7 +1835,9 @@ TOOL_ADD_TO_WAITLIST = {
     "description": (
         "Add a caller to the clinic waitlist when no appointment slots are available. "
         "Stores their name, phone, preferred location, and any notes about preferred "
-        "days/times. The clinic team will contact them when a slot opens up."
+        "days/times. Texts the clinic owner so a human follows up. "
+        "For a deliberate callback / 'quick chat with the practitioner' request "
+        "(not a full waitlist), prefer request_callback instead."
     ),
     "input_schema": {
         "type": "object",
@@ -1862,6 +1864,41 @@ TOOL_ADD_TO_WAITLIST = {
             },
         },
         "required": ["patient_name", "phone"],
+    },
+}
+
+TOOL_REQUEST_CALLBACK = {
+    "name": "request_callback",
+    "description": (
+        "Notify the clinic owner that a caller wants a CALLBACK — a quick chat "
+        "with the practitioner, a pre-booking chat, or any 'please get them to "
+        "ring me' request. Texts the owner immediately with the caller's name, "
+        "number, and why. "
+        "MUST be called AFTER you have the caller's name and phone, and BEFORE "
+        "you tell them someone will call them back / you'll pass it on. "
+        "Never promise a callback until this returns success."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "patient_name": {
+                "type": "string",
+                "description": "Caller's full name.",
+            },
+            "phone": {
+                "type": "string",
+                "description": "Best number for the clinic to reach them on.",
+            },
+            "notes": {
+                "type": "string",
+                "description": (
+                    "Why they want the callback — e.g. 'wants a quick chat "
+                    "with Jonathan before booking', 'asked about ANF', "
+                    "'question you couldn't answer'."
+                ),
+            },
+        },
+        "required": ["patient_name", "phone", "notes"],
     },
 }
 
@@ -1904,6 +1941,7 @@ TOOL_SCHEMAS = [
     TOOL_LOOKUP_PATIENT,
     TOOL_TRANSFER_TO_HUMAN,
     TOOL_ADD_TO_WAITLIST,
+    TOOL_REQUEST_CALLBACK,
 ]
 
 
@@ -7141,6 +7179,78 @@ async def _exec_lookup_recent_appointment(
     }
 
 
+def _owner_callback_number(clinic: dict) -> str:
+    """Where owner/callback SMS should go for this clinic.
+
+    Prefer owner_notification_sms (the dedicated owner ping), then transfer_phone.
+    Both are usually the practitioner's mobile on small clinics; reading them in
+    this order means a clinic that splits 'transfer' from 'notify' still gets
+    the callback on the notify line.
+    """
+    return (
+        (clinic.get("owner_notification_sms") or "").strip()
+        or (clinic.get("transfer_phone") or "").strip()
+        or ((clinic.get("operational") or {}).get("owner_notification_sms") or "").strip()
+        or ((clinic.get("operational") or {}).get("transfer_phone") or "").strip()
+    )
+
+
+def _queue_owner_callback_sms(
+    session: dict,
+    *,
+    patient_name: str,
+    phone: str,
+    notes: str,
+    kind: str = "callback",
+) -> bool:
+    """Queue one owner SMS about a callback/waitlist lead. Deduped per call.
+
+    Returns True when a send was queued (or already queued earlier this call).
+    Sets `_waitlist_pinged` so teardown staff-notify / drop-off ping do not
+    double-text the same number about the same caller.
+    """
+    if session.get("_waitlist_pinged"):
+        return True
+    try:
+        from app.clinic_config import get_clinic
+        from app.notifications.sms import send_sms
+        clinic = get_clinic(session.get("clinic_id")) or {}
+        to = _owner_callback_number(clinic)
+        if not to:
+            logger.warning(
+                "owner callback SMS skipped — no owner_notification_sms/"
+                "transfer_phone for clinic %r",
+                session.get("clinic_id"),
+            )
+            return False
+        what = (notes or "wants a callback").strip()
+        if kind == "waitlist":
+            message = (
+                f"📞 CALLBACK NEEDED — please call {patient_name} back on "
+                f"{phone}. They asked about: {what}."
+            )
+        else:
+            # Deliberate callback / quick-chat shape — the Dylan Wilson miss
+            # (CAc36368cbeb, 2026-08-13): Susie promised Jonathan would call
+            # back and never notified anyone.
+            message = (
+                f"📞 CALLBACK — {patient_name}. Number: {phone}. {what}."
+            )
+        asyncio.create_task(send_sms(to=to, message=message))
+        session["_waitlist_pinged"] = True
+        session["human_requested"] = True
+        session["callback_write_confirmed"] = True
+        logger.info(
+            "owner callback SMS queued (%s) to ***%s",
+            kind,
+            to[-4:] if to else "????",
+        )
+        return True
+    except Exception as e:
+        logger.warning("owner callback SMS failed (non-fatal): %r", e)
+        return False
+
+
 async def _exec_add_to_waitlist(args: dict, session: dict) -> dict:
     """Add a caller to the clinic waitlist in Redis."""
     patient_name = (args.get("patient_name") or "").strip()
@@ -7159,35 +7269,13 @@ async def _exec_add_to_waitlist(args: dict, session: dict) -> dict:
     # transfer_to_human sets, because it is the same promise.
     session["human_requested"] = True
 
-    # Heads-up SMS to the clinic (transfer_phone, e.g. Marcus) so a waitlist /
-    # coming-soon enquiry actually reaches a human — without this the entry just
-    # sits in Redis and nobody follows up, so "the team will be in touch" is an
-    # empty promise. Fire-and-forget, non-fatal, deduped to one per call.
-    # `_waitlist_pinged` also stands the cleanup staff-notify down: it targets
-    # the same transfer_phone, so without the dedupe the flag set above would
-    # earn the practitioner two texts about one caller.
-    if not session.get("_waitlist_pinged"):
-        try:
-            from app.clinic_config import get_clinic
-            from app.notifications.sms import send_sms
-            _clinic = get_clinic(session.get("clinic_id"))
-            _tp = _clinic.get("transfer_phone", "")
-            if _tp:
-                _what = (notes or service or "an enquiry").strip()
-                asyncio.create_task(send_sms(
-                    to=_tp,
-                    message=(
-                        f"📞 CALLBACK NEEDED — please call {patient_name} back on "
-                        f"{phone}. They asked about: {_what}."
-                    ),
-                ))
-                session["_waitlist_pinged"] = True
-                logger.info(
-                    "waitlist practitioner ping queued to ***%s",
-                    _tp[-4:] if _tp else "????",
-                )
-        except Exception as e:
-            logger.warning("waitlist practitioner ping failed (non-fatal): %r", e)
+    _queue_owner_callback_sms(
+        session,
+        patient_name=patient_name,
+        phone=phone,
+        notes=notes or service or "waitlist / enquiry",
+        kind="waitlist",
+    )
 
     try:
         from app.storage.redis_store import redis_client
@@ -7219,6 +7307,72 @@ async def _exec_add_to_waitlist(args: dict, session: dict) -> dict:
     except Exception as exc:
         logger.error("Waitlist add failed: %r", exc)
         return {"error": "I wasn't able to add you to the waitlist — the team will follow up."}
+
+
+async def _exec_request_callback(args: dict, session: dict) -> dict:
+    """Notify the clinic owner that a caller wants a callback / quick chat.
+
+    The durable half of 'I'll pass that on to Jonathan' — without this tool the
+    promise is spoken and nobody is told (CAc36368cbeb, Dylan Wilson, 2026-08-13).
+    """
+    patient_name = (args.get("patient_name") or "").strip()
+    phone = (args.get("phone") or "").strip()
+    notes = (args.get("notes") or "").strip() or "wants a quick chat"
+
+    if not patient_name or not phone:
+        return {
+            "success": False,
+            "error": "Name and phone are required before requesting a callback.",
+        }
+
+    session["human_requested"] = True
+    session.setdefault("callback_request", {
+        "patient_name": patient_name,
+        "phone": phone,
+        "notes": notes,
+        "added_at": _iso_now(),
+        "call_sid": session.get("call_sid", ""),
+    })
+
+    queued = _queue_owner_callback_sms(
+        session,
+        patient_name=patient_name,
+        phone=phone,
+        notes=notes,
+        kind="callback",
+    )
+
+    # Also persist alongside waitlist entries so an operator can recover the
+    # lead from Redis even if the SMS is suppressed (SMS_ENABLED=false).
+    try:
+        from app.storage.redis_store import redis_client
+        if redis_client:
+            import json as _json
+            key = f"callback:{phone}:{patient_name.lower().replace(' ', '_')}"
+            await redis_client.setex(
+                key,
+                60 * 60 * 24 * 30,
+                _json.dumps(session["callback_request"]),
+            )
+    except Exception as exc:
+        logger.warning("callback redis persist failed (non-fatal): %r", exc)
+
+    if not queued and not session.get("_waitlist_pinged"):
+        return {
+            "success": False,
+            "error": (
+                "Could not notify the clinic yet. Do NOT promise a callback — "
+                "offer to transfer them, or take an email address instead."
+            ),
+        }
+
+    return {
+        "success": True,
+        "message": (
+            f"Clinic notified — {patient_name} ({phone}) will get a callback. "
+            "You may now tell the caller the practitioner will be in touch."
+        ),
+    }
 
 
 def _iso_now() -> str:
@@ -7700,6 +7854,7 @@ TOOL_EXECUTORS: Dict[str, Any] = {
     "lookup_patient":         _exec_lookup_patient,
     "transfer_to_human":      _exec_transfer_to_human,
     "add_to_waitlist":        _exec_add_to_waitlist,
+    "request_callback":       _exec_request_callback,
     # Internal executors — not in TOOL_SCHEMAS but called by state machine / other executors
     "get_clinic_info":        _exec_get_clinic_info,
     "collect_and_store":      _exec_collect_and_store,

@@ -3636,6 +3636,8 @@ class LLMStream:
             # this branch, so neither can be spoken over a blocked write.
             "cancel_appointment":     CANCEL_WRITE_FILLERS,
             "reschedule_appointment": RESCHEDULE_WRITE_FILLERS,
+            "request_callback":       LOOKUP_FILLERS,
+            "add_to_waitlist":        LOOKUP_FILLERS,
         }
 
         result_blocks: List[dict] = []

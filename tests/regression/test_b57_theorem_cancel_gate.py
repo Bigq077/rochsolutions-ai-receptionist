@@ -285,7 +285,10 @@ UNMOVED_PROMPTS = {
     # byte-identical, so the reason-question mechanism is still per-clinic and
     # has not leaked into shared text.
     # See tests/regression/test_reason_gate_is_clinic_scoped.py.
-    "jv_v1": "2c377ec8e1d6b181",
+    # Re-pinned 2026-08-13: request_callback tool + CALLBACK CONTRACT — the
+    # Dylan Wilson miss (CAc36368cbeb). jv_v1 / theorem_v3 / vital_edge move
+    # together; demo and theorem stay byte-identical.
+    "jv_v1": "9f6979d0c76e53b3",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -301,15 +304,8 @@ UNMOVED_PROMPTS = {
     # ADDITION is identical. It is confined to the TOOLS block, nowhere near
     # the cancel wording, and the other three pins here are unchanged — which
     # is the containment assertion that matters.
-    "theorem_v3": "31dcedf2fd28f98e",
-    # Re-pinned 2026-08-11: 5e82ee27d3febeae -> 366fd05251985af7, alongside
-    # jv_v1 above. The RESCHEDULE / CANCEL flow no longer assumes a caller ID
-    # exists. Both template_v1 clinics render that block, so both move — that
-    # they move TOGETHER is the containment claim, and demo / theorem /
-    # theorem_v3 staying byte-identical is what proves it stayed in the
-    # template builder.
-    # See tests/regression/test_reschedule_phone_without_caller_id_template.py.
-    "vital_edge": "366fd05251985af7",
+    "theorem_v3": "761036c8d0da91ed",
+    "vital_edge": "91800b39f28cf047",
 }
 
 

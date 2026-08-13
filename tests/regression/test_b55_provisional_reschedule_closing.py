@@ -115,18 +115,10 @@ UNCHANGED_CLINIC_PROMPTS = {
     # unpinned in this table) and demo / theorem / theorem_v3 are
     # byte-identical. Verified, not assumed.
     # See tests/regression/test_reschedule_phone_without_caller_id_template.py.
-    "jv_v1": "2c377ec8e1d6b181",
+    # Re-pinned 2026-08-13 with request_callback (CAc36368cbeb). Shared table.
+    "jv_v1": "9f6979d0c76e53b3",
     "theorem": "8565be9a48a7a9aa",
-    # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
-    # Ported from theorem-onboarding 4896fe2 — theorem_v3 gained the "NEVER
-    # CALL A DAY FULL UNLESS THE TOOL LOOKED AT THAT DAY" rule in its TOOLS
-    # block. This table is read by three tests (here, test_reason_question_once
-    # and test_under_age_booking_gate), each of which uses it to assert its OWN
-    # feature did not leak into theorem_v3. All three claims still hold: what
-    # moved the prompt is a fourth, deliberate change, not B-55, not the reason
-    # question and not the age gate. jv_v1 and vital_edge are unchanged, which
-    # is what proves it.
-    "theorem_v3": "31dcedf2fd28f98e",
+    "theorem_v3": "761036c8d0da91ed",
 }
 
 OLD_CONFIRMED_WORDING = ("that's you rescheduled", "you're now in for")
