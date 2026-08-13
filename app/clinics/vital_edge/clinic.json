@@ -228,7 +228,7 @@
     },
     {
       "q": "Can I speak to Jonathan before booking?",
-      "a": "Yes — Jonathan is happy to offer a brief complimentary phone call to discuss your needs before your first appointment. I can note your details and he will call you back."
+      "a": "Yes — Jonathan is happy to offer a brief complimentary phone call to discuss your needs before your first appointment. Take their name and best number, then call request_callback with notes like 'wants a quick chat with Jonathan before booking'. ONLY after that tool succeeds, tell them Jonathan will call them back. Never promise the callback without the tool."
     },
     {
       "q": "Do you offer other treatments beyond Deep Tissue Massage?",
