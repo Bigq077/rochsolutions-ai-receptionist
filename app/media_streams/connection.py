@@ -947,6 +947,42 @@ def _extract_time_preference(text: str) -> "str | None":
     return None
 
 
+def _extract_day_preference(text: str) -> "str | None":
+    """Extract a day / relative-day preference that is enough to look up slots.
+
+    Companion to `_extract_time_preference`. A bare "friday" or "what'll you
+    got friday" is a real lookup trigger, but it never set
+    `time_of_day_preference`, so `expect_slot_presentation` stayed False and
+    the hold clip stayed holstered through ~3s of silence (Job 3c.4 /
+    CAce1457d1, confirmed on Theorem too).
+
+    Returns a short label for logs/session, or None.
+    """
+    t = text.lower()
+    # Relative / open day first — more specific phrases before bare weekday.
+    if "as soon as possible" in t or re.search(r"\basap\b", t):
+        return "as soon as possible"
+    if "next week" in t:
+        return "next week"
+    if "this week" in t:
+        return "this week"
+    if re.search(r"\btoday\b", t):
+        return "today"
+    if re.search(r"\btomorrow\b", t):
+        return "tomorrow"
+    if re.search(r"\btonight\b", t):
+        return "tonight"
+    if re.search(r"\bwhenever\b", t) or re.search(r"\bany\s*day\b", t):
+        return "whenever"
+    for day in (
+        "monday", "tuesday", "wednesday", "thursday",
+        "friday", "saturday", "sunday",
+    ):
+        if re.search(rf"\b{day}\b", t):
+            return day
+    return None
+
+
 # Question signals — used to detect FAQ / question utterances that arrive
 # while the location gate is active and Haiku returns unknown.  Any transcript
 # matching one of these signals is a caller question, not an unclear location
@@ -11586,6 +11622,24 @@ class WebSocketCallHandler:
                                         utterance,
                                     )
 
+                            # Day-only preference (Job 3c.4 / CAce1457d1). Same
+                            # timing as time-of-day: must land BEFORE
+                            # expect_slot_presentation runs later this turn, or
+                            # "what'll you got friday" leaves the hold clip
+                            # holstered and the caller hears ~3s of silence.
+                            # v3_last_presented_date_hint only exists AFTER a
+                            # presentation, so it cannot arm the first lookup.
+                            if not self.session.get("day_preference"):
+                                _day_pref = _extract_day_preference(utterance)
+                                if _day_pref:
+                                    self.session["day_preference"] = _day_pref
+                                    logger.info(
+                                        "[ms_conn v3] day_preference captured: %s"
+                                        " (from utterance %r)",
+                                        _day_pref,
+                                        utterance,
+                                    )
+
                             # ── Session-length choice, captured here for the
                             # same reason and at the same point in the turn.
                             #
@@ -11939,6 +11993,7 @@ class WebSocketCallHandler:
                                 # utterance still qualifies.
                                 timing_preference_known=bool(
                                     self.session.get("time_of_day_preference")
+                                    or self.session.get("day_preference")
                                     or self.session.get(
                                         "v3_last_presented_date_hint"
                                     )
