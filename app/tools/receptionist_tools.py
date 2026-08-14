@@ -7602,6 +7602,13 @@ async def _exec_request_callback(args: dict, session: dict) -> dict:
         "added_at": _iso_now(),
         "call_sid": session.get("call_sid", ""),
     })
+    # Persist onto collected so the call row / Sheets / judge see the name
+    # (CA9d48f8f7ce: SMS had "Raymond from Treetop", collected.name stayed null).
+    _collected = session.setdefault("collected", {})
+    if isinstance(_collected, dict) and patient_name and not (_collected.get("name") or "").strip():
+        _collected["name"] = patient_name
+    if isinstance(_collected, dict) and phone and not (_collected.get("phone") or "").strip():
+        _collected["phone"] = phone
 
     queued = _queue_owner_callback_sms(
         session,
