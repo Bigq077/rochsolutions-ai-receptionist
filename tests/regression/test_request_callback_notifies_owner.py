@@ -60,6 +60,7 @@ async def test_request_callback_texts_owner_and_arms_flags():
     assert session.get("callback_write_confirmed") is True
     assert session.get("_waitlist_pinged") is True
     assert session.get("human_requested") is True
+    assert session.get("collected", {}).get("name") == "Dylan Wilson"
     assert "Dylan Wilson" in sent["message"]
     assert "+13102695437" in sent["message"]
     assert "quick chat" in sent["message"].lower()

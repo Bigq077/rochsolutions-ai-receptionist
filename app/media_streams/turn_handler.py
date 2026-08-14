@@ -745,6 +745,110 @@ def _get_reasoning_drop_reason(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Gate 5cb — callback promise / retract (CA9d48f8f7ce, Raymond, 2026-08-14)
+# ---------------------------------------------------------------------------
+# Vital Edge refund call: Susie said "I've passed that on to Jonathan" then,
+# after the caller thanked her, contradicted herself with "I need to actually
+# log that request properly before I can promise he'll call" — then promised
+# again. Twilio shows the CALLBACK SMS did deliver; the spoken contradiction
+# is what the judge scored.
+#
+# Two arms, both required:
+#   1. Without callback_write_confirmed — a completion claim ("passed that on",
+#      "he'll be in touch", "that's all sent over") is a phantom. Re-steer once
+#      per turn to a non-promise hold; further claims drop.
+#   2. With callback_write_confirmed — a retract ("need to log… before I can
+#      promise") is stripped so she cannot undo a promise that already went out.
+#
+# Questions / offers stand down ("could I arrange for Jonathan to call you
+# back?"). Known same-turn limit as Gate 5f: a claim streamed in the same
+# assistant message as the tool_use, before the result lands, can escape.
+_FALSE_CALLBACK_PROMISE_RE = re.compile(
+    r"""\b(
+        (ive|i\s+have)\s+passed\s+that\s+on
+      | passed\s+that\s+on\s+to
+      | thats\s+all\s+sent(\s+over)?\s+to
+      | sent(\s+that|\s+it|\s+this)?\s+(all\s+)?over\s+to
+      | (hell|he\s+will|shell|she\s+will)\s+be\s+in\s+touch
+      | (hell|he\s+will|shell|she\s+will)\s+(give\s+you\s+a\s+call|call\s+you|ring\s+you)
+      | (jonathan|marcus|mark)\s+will\s+(be\s+in\s+touch|call\s+you|ring\s+you)
+    )""",
+    re.X,
+)
+_FALSE_CALLBACK_PROMISE_NEG_RE = re.compile(
+    r"\b(not|havent|cannot|cant|wont|shall\s+i|would\s+you|can\s+i|could\s+i"
+    r"|do\s+you\s+want|want\s+me\s+to|like\s+me\s+to|going\s+to|ill\b|i\s+will"
+    r"|let\s+me|need\s+to|before\s+i|to\s+arrange|arrange\s+for)\b"
+)
+_CALLBACK_RETRACT_RE = re.compile(
+    r"[^.!?]*\b(?:"
+    r"need\s+to\s+(?:actually\s+)?log"
+    r"|log\s+that\s+request\s+properly"
+    r"|before\s+i\s+can\s+promise"
+    r"|i\s+(?:actually\s+)?need\s+to\s+log"
+    r"|let\s+me\s+do\s+that\s+now"
+    r")\b[^.!?]*[.!?]?",
+    re.IGNORECASE,
+)
+_FALSE_CALLBACK_RESTEER = (
+    "One moment — I'll get that logged for Jonathan now."
+)
+
+
+def _false_callback_promise(text: str) -> bool:
+    """True if `text` CLAIMS a callback was already sent / promised."""
+    if not text:
+        return False
+    norm = _norm_for_claim(text)
+    if _FALSE_CALLBACK_PROMISE_NEG_RE.search(norm):
+        return False
+    declarative = _declarative_part(text)
+    if not declarative:
+        return False
+    return bool(_FALSE_CALLBACK_PROMISE_RE.search(_norm_for_claim(declarative)))
+
+
+def _strip_callback_retract(text: str) -> str:
+    """Remove sentences that undo a callback promise already confirmed."""
+    if not text or not _CALLBACK_RETRACT_RE.search(text):
+        return text
+    cleaned = _CALLBACK_RETRACT_RE.sub(" ", text)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -,")
+    return cleaned.strip()
+
+
+def _apply_callback_promise_gate(text: str, session: Dict[str, Any]) -> str:
+    """Gate 5cb: no phantom callback promise; no retract after a real one."""
+    if session.get("callback_write_confirmed"):
+        cleaned = _strip_callback_retract(text)
+        if cleaned != text:
+            logger.info(
+                "[ms_gate5cb] stripped callback retract after confirmed write: %r → %r",
+                text[:80], cleaned[:80],
+            )
+        return cleaned
+
+    if not _false_callback_promise(text):
+        return text
+
+    session["_callback_promise_guard_fired"] = (
+        int(session.get("_callback_promise_guard_fired") or 0) + 1
+    )
+    if not session.get("_callback_promise_resteered"):
+        session["_callback_promise_resteered"] = True
+        logger.error(
+            "[ms_gate5cb] false callback promise with no confirmed write — "
+            "re-steering: %r",
+            text[:80],
+        )
+        return _FALSE_CALLBACK_RESTEER
+    logger.error(
+        "[ms_gate5cb] additional false callback promise dropped: %r",
+        text[:80],
+    )
+    return ""
+
+
 # Gate 5f — false-confirmation guard (P1 #5 / F-023 / B-36 cause 2)
 # ---------------------------------------------------------------------------
 # CALL 5: book_appointment was REJECTED (confirmation_required, no calendar
@@ -1641,6 +1745,13 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
         if _diag_cleaned != result and _diag_cleaned.strip():
             logger.info("[ms_gate5] removed diagnostic assertion (standard tier)")
             result = _diag_cleaned
+
+    # ── Gate 5cb: callback promise / retract (CA9d48f8f7ce) ──────────────────
+    # Runs before Gate 5f so a callback claim is not mis-read as a provisional
+    # booking "sent … to Jonathan" under the booking family.
+    result = _apply_callback_promise_gate(result, session)
+    if not result:
+        return ""
 
     # ── Gate 5f: false-confirmation guard (P1 #5 / F-023 / B-36) ─────────────
     # A chunk that CLAIMS a write is done, on a turn where that write was
