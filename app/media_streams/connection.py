@@ -1033,6 +1033,49 @@ def _extract_day_preference(text: str) -> "str | None":
     return None
 
 
+_TIMING_QUESTION_AFTER_BOOKING_ACK = (
+    "Is there a particular day or time that works best for you?"
+)
+
+
+def _reason_already_known(session: dict) -> bool:
+    """True when the call already has a booking reason on record."""
+    if (session.get("reason") or "").strip():
+        return True
+    collected = session.get("collected")
+    if isinstance(collected, dict) and (collected.get("reason") or "").strip():
+        return True
+    soft = session.get("soft_context")
+    if isinstance(soft, dict) and (soft.get("reason") or "").strip():
+        return True
+    return False
+
+
+def _next_question_after_booking_ack(session: dict) -> str:
+    """What the engine injects after bare 'Right —' on booking start.
+
+    Job 3a / CAce1457d1: BOOKING STEPS 1b says reason BEFORE timing, and
+    jv_v1 opts in via prompt_facts.reason_question — but the injector always
+    queued the day/time question, so Susie asked timing first and doubled
+    back. Clinics without the opt-in keep timing (Theorem / VE unchanged).
+    """
+    from app.media_streams.turn_handler import _clinic_asks_its_own_reason_question
+
+    if (
+        _clinic_asks_its_own_reason_question(session)
+        and not _reason_already_known(session)
+        and not session.get("_reason_question_asked")
+    ):
+        try:
+            from app.clinic_config import get_clinic
+            pf = (get_clinic(session.get("clinic_id")) or {}).get("prompt_facts") or {}
+            q = (pf.get("reason_question") or "").strip()
+        except Exception:
+            q = ""
+        return q or "What's the appointment for?"
+    return _TIMING_QUESTION_AFTER_BOOKING_ACK
+
+
 # Question signals — used to detect FAQ / question utterances that arrive
 # while the location gate is active and Haiku returns unknown.  Any transcript
 # matching one of these signals is a caller question, not an unclear location
@@ -12654,27 +12697,16 @@ class WebSocketCallHandler:
                                             "v3_awaiting_phone_confirm"
                                         ] = True
                                     else:
-                                        # Always ask the timing question at the
-                                        # booking ack.  We deliberately do NOT
-                                        # skip it when a soft time_preference
-                                        # already exists, because:
-                                        #  (1) the old skip path re-queued the
-                                        #      pref as a 2-tuple transcript, which
-                                        #      the C8-2 location-ack guard armed
-                                        #      ~80 lines below then dropped (it
-                                        #      lacked synthetic=True) → the ack
-                                        #      said "Let me get that sorted" then
-                                        #      stalled → dead air / abandon; and
-                                        #  (2) soft_context["time_preference"] is
-                                        #      populated from ANY utterance incl.
-                                        #      FAQs (e.g. "are you open Easter
-                                        #      Monday"), so it is frequently a
-                                        #      phantom the caller never stated for
-                                        #      this booking.
-                                        # Asking is safe; the caller confirms the
-                                        # timing in one breath.  Clear the stale
-                                        # pref so their fresh answer wins cleanly
-                                        # (soft_context is otherwise first-wins).
+                                        # Job 3a / CAce1457d1: clinics that opt
+                                        # into prompt_facts.reason_question get
+                                        # that question FIRST (BOOKING STEPS 1b).
+                                        # Timing stays the default for everyone
+                                        # else, and for callers who already said
+                                        # why they are coming in.
+                                        # Soft time_preference is still cleared
+                                        # so a phantom FAQ day does not stick —
+                                        # but we no longer force the timing ask
+                                        # ahead of an opted-in reason ask.
                                         _sc2 = self.session.get("soft_context")
                                         if isinstance(_sc2, dict) and _sc2.get(
                                             "time_preference"
@@ -12682,14 +12714,16 @@ class WebSocketCallHandler:
                                             logger.info(
                                                 "[ms_conn v3] cleared stale soft"
                                                 " time_preference (%r) at booking"
-                                                " ack — will ask timing Q",
+                                                " ack",
                                                 _sc2.get("time_preference"),
                                             )
                                             _sc2.pop("time_preference", None)
-                                        _next_q = (
-                                            "Is there a particular day"
-                                            " or time that works best"
-                                            " for you?"
+                                        _next_q = _next_question_after_booking_ack(
+                                            self.session
+                                        )
+                                        logger.info(
+                                            "[ms_conn v3] booking-ack next Q: %r",
+                                            _next_q[:60],
                                         )
                                     # ── Suppress timing Q if slots already
                                     # presented this turn (e.g. inline booking
@@ -12735,6 +12769,16 @@ class WebSocketCallHandler:
                                         self.session[
                                             "last_question"
                                         ] = _next_q
+                                        # Latch once-only reason ask when we
+                                        # injected it (Job 3a) — same guarantee
+                                        # as when the LLM speaks it itself.
+                                        try:
+                                            from app.media_streams.llm_stream import (
+                                                note_reason_question_asked as _nrqa,
+                                            )
+                                            _nrqa(self.session, _next_q)
+                                        except Exception:
+                                            pass
                                         # Inject into conversation_history so
                                         # the LLM has context on next turn.
                                         self.session.setdefault(
