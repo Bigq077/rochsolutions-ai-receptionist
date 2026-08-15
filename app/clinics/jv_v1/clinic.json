@@ -108,6 +108,8 @@
     "discipline": "physiotherapy",
     "_reason_question_note": "Owner decision 2026-08-11: Joint Venture DOES ask what the appointment is for. Setting this key is the whole fix — it turns OFF Gate 5b-r for this clinic (turn_handler._clinic_asks_its_own_reason_question) and turns ON the once-only tightening. Without it the model asked, the gate deleted the sentence, no reason was ever collected, and book_appointment refused every booking on the A2 gate. Do NOT remove without reading that gate.",
     "reason_question": "What's the appointment for?",
+    "_keep_pre_slot_speech_note": "Job 3c.3 / CAce1457d1: when true, empathy/physio lines streamed before check_availability are NOT dropped by _pre_slot_cancelled. Engine-wide suppress stays on for every other clinic — do not flip this without hearing a live call (caller may hear empathy then the hold clip then slots).",
+    "keep_pre_slot_speech": true,
     "first_appt_noun": "assessment",
     "home_visit_area": "Bolton and Greater Manchester",
     "sole_practitioner": true,
