@@ -4130,6 +4130,7 @@ class LLMStream:
                         remaining_slots_after_offer,
                         next_slot_batch,
                         utterance_requests_more_slots,
+                        utterance_accepts_offered_slot,
                         resolve_requested_time,
                         apply_next_batch_to_session,
                         apply_resolved_time_to_session,
@@ -4162,21 +4163,52 @@ class LLMStream:
                             [s.get("start") for s in _batch], call_sid,
                         )
                     else:
-                        logger.warning(
-                            "[ms_llm] check_availability BLOCKED — slots already retrieved "
-                            "this turn (last_offered_slots present); returning cached result "
-                            "call_sid=%s", call_sid,
-                        )
-                        result = {
-                            "status": "already_retrieved",
-                            "message": (
-                                "check_availability has already returned slot data. "
-                                "Use the data in available_days that was already returned. "
-                                "Do NOT call check_availability again — present the existing "
-                                "slots to the caller."
-                            ),
-                            "available_days": session.get("available_days", {}),
-                        }
+                        # Job 3c.1 / CAce1457d1: on "that works for me" the model
+                        # re-called check_availability. The old already_retrieved
+                        # message told it to "present the existing slots" — so
+                        # the caller heard the same offer again and had to accept
+                        # twice (~24s when Spec I had also wiped the cache).
+                        if utterance_accepts_offered_slot(_user):
+                            logger.warning(
+                                "[ms_llm] check_availability BLOCKED — caller is "
+                                "accepting an already-offered slot; do not re-list "
+                                "call_sid=%s user=%r",
+                                call_sid, (_user or "")[:60],
+                            )
+                            result = {
+                                "status": "slot_offer_still_live",
+                                "message": (
+                                    "The caller is responding to the slots you "
+                                    "already offered. Do NOT call "
+                                    "check_availability again and Do NOT re-list "
+                                    "the times. If they accepted a specific time, "
+                                    "confirm that slot and move to collecting "
+                                    "their name. If they said a non-specific "
+                                    "'that works' / 'any of those', ask which of "
+                                    "the offered times they want — then move on. "
+                                    "Do NOT present the existing slots again."
+                                ),
+                                "available_days": session.get(
+                                    "available_days", {}
+                                ),
+                            }
+                            session[FORCE_TEXT_NEXT_ITERATION] = True
+                        else:
+                            logger.warning(
+                                "[ms_llm] check_availability BLOCKED — slots already retrieved "
+                                "this turn (last_offered_slots present); returning cached result "
+                                "call_sid=%s", call_sid,
+                            )
+                            result = {
+                                "status": "already_retrieved",
+                                "message": (
+                                    "check_availability has already returned slot data. "
+                                    "Use the data in available_days that was already returned. "
+                                    "Do NOT call check_availability again — present the existing "
+                                    "slots to the caller."
+                                ),
+                                "available_days": session.get("available_days", {}),
+                            }
                 elif (
                     tool_name == "book_appointment"
                     and under_age_blocks_booking(session)
