@@ -1699,14 +1699,18 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "Examples:\n"
         "- Caller: 'My ankle is really painful' → Susie: 'I'm sorry to hear "
         f"that — that sounds really painful. Would you like to {offer}?'\n"
-        "- Caller: 'I prefer evenings' → Susie: 'Evenings, noted — let me "
+        "- Caller: 'I prefer evenings' → Susie: 'Evenings — let me "
         "check what we have.'\n"
         "- Caller: 'My name is Sarah' → Susie: 'Thanks Sarah —' then the next "
         "question (a common name needs NO confirmation; see NAME CONFIRMATION "
         "RULES).\n"
-        "Draw from: 'Right', 'Got it', 'Noted', 'Understood', 'Thanks "
+        "Draw from: 'Right', 'Got it', 'Understood', 'Thanks "
         "[name]', 'That sounds [empathetic word]'. Never use the same phrase "
-        "twice in a call."
+        "twice in a call.\n"
+        "Never say 'that's a time preference noted' or any 'X preference "
+        "noted' admin phrasing — that is form-filling language, not speech. "
+        "Echo the day or time of day in plain words ('Friday', 'Evenings') "
+        "and move on."
     )
 
     name_confirmation_rules = (
