@@ -91,6 +91,29 @@ logger = logging.getLogger(__name__)
 # reach ElevenLabs.  Uses the same marker+flag pattern as ACK_FILLER_MARKER.
 PRE_SLOT_MARKER = "\x01PRE_SLOT\x01"
 
+
+def _clinic_keeps_pre_slot_speech(session: Dict[str, Any]) -> bool:
+    """True when this clinic opts in to keeping pre-check_availability speech.
+
+    Engine-wide, text streamed before a check_availability tool_use is marked
+    with PRE_SLOT_MARKER and dropped when the tool is detected — otherwise the
+    caller hears a half-finished sentence, then the hold clip, then slots.
+    That suppress is load-bearing and must not be deleted.
+
+    Job 3c.3 / CAce1457d1: on Joint Venture the dropped text was the physio
+    empathy line Quentin wanted callers to hear ("I'm sorry to hear that —
+    ankle problems can really stop you…"). Opt-in via
+    prompt_facts.keep_pre_slot_speech so only clinics that ask for it keep the
+    line; everyone else keeps the silence-safe default.
+    """
+    try:
+        from app.clinic_config import get_clinic
+        _pf = (get_clinic(session.get("clinic_id")) or {}).get("prompt_facts") or {}
+        return bool(_pf.get("keep_pre_slot_speech"))
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Guaranteed end-of-turn fallbacks (C8-5 silence eradication)
 # ---------------------------------------------------------------------------
@@ -3398,11 +3421,21 @@ class LLMStream:
                         _prev_ran = bool(session.get("_check_av_ran_turn"))
                         _prev_had = bool(session.get("_check_av_had_slots"))
                         if not (_prev_ran and not _prev_had):
-                            session["_pre_slot_cancelled"] = True
-                            logger.info(
-                                "[ms_gate5] pre-tool TTS output cancelled — "
-                                "slot buffer taking over (check_availability detected)"
-                            )
+                            if _clinic_keeps_pre_slot_speech(session):
+                                # Job 3c.3: JV opt-in — let empathy / physio
+                                # knowledge reach the caller before slots.
+                                # Suppress remains the default elsewhere.
+                                logger.info(
+                                    "[ms_gate5] pre-tool TTS preserved — "
+                                    "clinic keep_pre_slot_speech "
+                                    "(check_availability detected)"
+                                )
+                            else:
+                                session["_pre_slot_cancelled"] = True
+                                logger.info(
+                                    "[ms_gate5] pre-tool TTS output cancelled — "
+                                    "slot buffer taking over (check_availability detected)"
+                                )
                         else:
                             logger.info(
                                 "[ms_gate5] pre-tool TTS preserved — "
