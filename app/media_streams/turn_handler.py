@@ -349,9 +349,11 @@ _BANNED_SENTENCE_RE = [
     # owner decision) — "The earliest I have is …" is now the WELCOME warm
     # lead-in for ASAP slot requests (SLOT_FORMATTER lead_in="earliest"), not
     # scarcity.  Only the robotic "closest"/"nearest" openers are still stripped.
+    # Job 3c.2 / CAce1457d1: keep "closest/nearest … to [requested window]"
+    # (out-of-window acknowledgement). Bare scarcity without "to" still strips.
     ("closest_nearest_opener",
      re.compile(
-         r"^[Tt]he (?:closest|nearest)\b[^.!?—–]*?"
+         r"^[Tt]he (?:closest|nearest)\b(?![^.!?—–]*\bto\b)[^.!?—–]*?"
          r"(?:\bis\s+|\bwould be\s+|[—–]\s*)",
          re.IGNORECASE,
      )),
@@ -360,11 +362,13 @@ _BANNED_SENTENCE_RE = [
     # opener-strip above.  Runs after the opener-strip so cases already rescued
     # by that pattern are never double-processed.
     # ("soonest"/"earliest" intentionally excluded — see note above.)
+    # Same 3c.2 exemption: "I've got to [request]" must not be wiped.
     ("closest_ive_got",
      re.compile(
          r"[^.!?]*\b[Tt]he (?:closest|nearest)\s+"
          r"(?:I'?ve\s+got|I\s+have|we\s+have|available)\b"
-         r"[^.!?]*[.!?]?",
+         r"(?!\s+to\b)"
+         r"[^.!?]*[.!]?",
          re.IGNORECASE,
      )),
 

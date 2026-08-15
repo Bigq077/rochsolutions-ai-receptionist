@@ -117,7 +117,9 @@ UNCHANGED_CLINIC_PROMPTS = {
     # See tests/regression/test_reschedule_phone_without_caller_id_template.py.
     # Re-pinned 2026-08-15 Job 3c.5: ban "time preference noted" form-filling
     # in ACKNOWLEDGEMENT RULE (CAce1457d1).
-    "jv_v1": "11093c3461628cf9",
+    # Re-pinned 2026-08-15 Job 3c.2: OUT-OF-WINDOW acknowledgement in SLOT
+    # PRESENTATION (CAce1457d1).
+    "jv_v1": "fc9ab1efe3dee428",
     "theorem": "8565be9a48a7a9aa",
     "theorem_v3": "761036c8d0da91ed",
 }

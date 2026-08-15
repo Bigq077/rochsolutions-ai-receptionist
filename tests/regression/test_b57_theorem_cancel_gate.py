@@ -290,7 +290,9 @@ UNMOVED_PROMPTS = {
     # together; demo and theorem stay byte-identical.
     # Re-pinned 2026-08-15 Job 3c.5: ACKNOWLEDGEMENT RULE bans
     # "time preference noted" form-filling (CAce1457d1).
-    "jv_v1": "11093c3461628cf9",
+    # Re-pinned 2026-08-15 Job 3c.2: OUT-OF-WINDOW acknowledgement mandatory
+    # when offering outside the caller's requested window.
+    "jv_v1": "fc9ab1efe3dee428",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -307,7 +309,7 @@ UNMOVED_PROMPTS = {
     # the cancel wording, and the other three pins here are unchanged — which
     # is the containment assertion that matters.
     "theorem_v3": "761036c8d0da91ed",
-    "vital_edge": "1eaae1afcd6b3dfa",
+    "vital_edge": "fe2db0c99340707a",
 }
 
 
