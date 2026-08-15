@@ -7560,6 +7560,7 @@ LOOKUP_AMBIGUOUS_KEY   = "_lookup_ambiguous"
 LOOKUP_NAME_SPOKEN_KEY = "_lookup_name_spoken"
 LOOKUP_SLOT_SPOKEN_KEY = "_lookup_slot_spoken"
 LOOKUP_MATCH_COUNT_KEY = "_lookup_match_count"
+LOOKUP_PURPOSE_KEY     = "_lookup_purpose"  # "cancel" | "reschedule" from last lookup
 
 
 # B-44 — steering, attached to the ambiguous lookup result itself.
@@ -7597,7 +7598,12 @@ _LOOKUP_AMBIGUOUS_RULE = (
 )
 
 
-def _note_lookup_ambiguity(session: Dict[str, Any], total: int) -> None:
+def _note_lookup_ambiguity(
+    session: Dict[str, Any],
+    total: int,
+    *,
+    prev_appointment_id: str = "",
+) -> None:
     """Record whether the caller's identifier resolved to more than one person.
 
     Called from BOTH lookup back-ends (Google Calendar and Acuity) so template
@@ -7609,14 +7615,34 @@ def _note_lookup_ambiguity(session: Dict[str, Any], total: int) -> None:
     to the next match changes WHICH APPOINTMENT is about to be written to, which
     is the whole of B-54. Carrying a previous match's confirmation forward would
     reproduce the defect one step further down the list.
+
+    Exception — CA3b303f (Emma Clifton, theorem_v3, 2026-08-14): re-calling
+    lookup_patient on the *same* appointment id (model throat-clearing between
+    "yes, cancel that one" and cancel_appointment) was resetting both latches
+    and forcing the B-44 script again. The caller confirmed the 1st of September
+    five times and never got a cancel. Same-id re-emit keeps the latches.
     """
+    new_id = str(session.get("_lookup_appointment_id") or "")
+    same_match = bool(
+        prev_appointment_id
+        and new_id
+        and prev_appointment_id == new_id
+    )
+    keep_name = same_match and bool(session.get(LOOKUP_NAME_SPOKEN_KEY))
+    keep_slot = same_match and bool(session.get(LOOKUP_SLOT_SPOKEN_KEY))
     session[LOOKUP_AMBIGUOUS_KEY] = total > 1
-    session[LOOKUP_NAME_SPOKEN_KEY] = False
-    session[LOOKUP_SLOT_SPOKEN_KEY] = False
+    session[LOOKUP_NAME_SPOKEN_KEY] = keep_name
+    session[LOOKUP_SLOT_SPOKEN_KEY] = keep_slot
     # The COUNT itself, not just the boolean. The write-gate refusal message in
     # llm_stream has to be able to tell the caller how many there are, and it
     # only has the session — B-54 turns on the caller knowing that others exist.
     session[LOOKUP_MATCH_COUNT_KEY] = total
+    if same_match and (keep_name or keep_slot):
+        logger.info(
+            "[ms_tools] lookup ambiguity: same appointment_id=%r re-emitted — "
+            "keeping spoken latches name=%s slot=%s",
+            new_id, keep_name, keep_slot,
+        )
 
 
 def _with_ambiguity_rule(
@@ -7649,11 +7675,12 @@ async def _lookup_patient_gcal(args: Dict[str, Any], session: Dict[str, Any]) ->
         _id = ev.get("id", "")
         start = (ev.get("start") or {}).get("dateTime", "")
         svc = _gcal_event_service(ev)
+        _prev_id = str(session.get("_lookup_appointment_id") or "")
         session["_lookup_patient_name"] = nm
         session["_lookup_appointment_id"] = _id
         session["_lookup_appointment_datetime"] = start
         session["_lookup_appointment_type"] = svc
-        _note_lookup_ambiguity(session, total)
+        _note_lookup_ambiguity(session, total, prev_appointment_id=_prev_id)
         logger.info(
             "[ms_tools] lookup_patient (gcal): match %d/%d name=%r id=%r%s",
             idx + 1, total, nm, _id,
@@ -7725,6 +7752,9 @@ async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) ->
     if purpose == "history":
         return await _exec_get_patient_history(args, session)
 
+    if purpose in ("cancel", "reschedule"):
+        session[LOOKUP_PURPOSE_KEY] = purpose
+
     # cancel / reschedule: look up upcoming appointment
     if session.get("clinic_id") not in ("theorem", "theorem_v2", "theorem_v3"):
         return await _lookup_patient_gcal(args, session)
@@ -7741,6 +7771,7 @@ async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) ->
         appointment (so cancel/reschedule target it by exact id)."""
         _nm = f"{appt.get('firstName', '')} {appt.get('lastName', '')}".strip()
         _id = str(appt.get("id", ""))
+        _prev_id = str(session.get("_lookup_appointment_id") or "")
         session["_lookup_patient_name"] = _nm
         session["_lookup_appointment_id"] = _id
         session["_lookup_appointment_datetime"] = appt.get("datetime", "")
@@ -7775,7 +7806,7 @@ async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) ->
                     _appt_type, _appt_loc, session.get("selected_location"),
                 )
             session["selected_location"] = _appt_loc
-        _note_lookup_ambiguity(session, total)
+        _note_lookup_ambiguity(session, total, prev_appointment_id=_prev_id)
         logger.info(
             "[ms_tools] lookup_patient: match %d/%d name=%r appointment_id=%r",
             idx + 1, total, _nm, _id,
