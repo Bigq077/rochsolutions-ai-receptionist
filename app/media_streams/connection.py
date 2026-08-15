@@ -9835,7 +9835,17 @@ class WebSocketCallHandler:
                                 # check_availability call hits Acuity fresh.
                                 # (Mid-turn re-query blocking is handled inside
                                 # llm_stream.py and is NOT affected by this.)
-                                if self.session.get("last_offered_slots") is not None:
+                                #
+                                # Job 3c.1 / CAce1457d1: do NOT clear while
+                                # v3_awaiting_slot_selection is live. Wiping the
+                                # offer on the accept turn forced a full Acuity
+                                # re-fetch and the same slots were read back.
+                                if (
+                                    self.session.get("last_offered_slots") is not None
+                                    and not self.session.get(
+                                        "v3_awaiting_slot_selection"
+                                    )
+                                ):
                                     _prev_hint = self.session.get("last_date_hint")
                                     _prev_slots = self.session.get("last_offered_slots") or []
                                     logger.info(
@@ -9879,6 +9889,14 @@ class WebSocketCallHandler:
                                             " date hint=%r preserved",
                                             _prev_hint,
                                         )
+                                elif (
+                                    self.session.get("last_offered_slots") is not None
+                                    and self.session.get("v3_awaiting_slot_selection")
+                                ):
+                                    logger.info(
+                                        "[ms_llm] slot cache kept — awaiting "
+                                        "slot selection [FAQ path]"
+                                    )
                                 # Change B: arm filler before LLM call.
                                 # No-op here (non-v3 path, booking_flow_active absent).
                                 #
@@ -11714,7 +11732,16 @@ class WebSocketCallHandler:
                             # check_availability call hits Acuity fresh.
                             # (Mid-turn re-query blocking in llm_stream.py is
                             # unaffected — it only fires within the same turn.)
-                            if self.session.get("last_offered_slots") is not None:
+                            #
+                            # Job 3c.1 / CAce1457d1: keep the offer while
+                            # v3_awaiting_slot_selection is live — clearing on
+                            # the accept turn forced a duplicate Acuity lookup.
+                            if (
+                                self.session.get("last_offered_slots") is not None
+                                and not self.session.get(
+                                    "v3_awaiting_slot_selection"
+                                )
+                            ):
                                 _prev_hint = self.session.get("last_date_hint")
                                 _prev_slots = self.session.get("last_offered_slots") or []
                                 logger.info(
@@ -11758,6 +11785,14 @@ class WebSocketCallHandler:
                                         " date hint=%r preserved",
                                         _prev_hint,
                                     )
+                            elif (
+                                self.session.get("last_offered_slots") is not None
+                                and self.session.get("v3_awaiting_slot_selection")
+                            ):
+                                logger.info(
+                                    "[ms_llm] slot cache kept — awaiting "
+                                    "slot selection"
+                                )
                             # ── Spec Y REVISED: pre-run_turn treatment gate ───
                             # Must fire BEFORE run_turn because the LLM streams
                             # "Of course —" to TTS in real time (booking_flow

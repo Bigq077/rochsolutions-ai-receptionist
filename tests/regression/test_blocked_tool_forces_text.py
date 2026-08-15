@@ -135,16 +135,18 @@ def test_the_overload_retry_reuses_the_same_tool_choice():
 
 # ── 5. Scope ────────────────────────────────────────────────────────────────
 
-def test_only_the_readback_block_arms_it():
+def test_only_speech_next_blocks_arm_it():
     """
     Deliberately narrow. Other guards in the same elif chain block a tool
     because a DIFFERENT tool should run next (the slot-locked guard, the cancel
     retention question) — suppressing tools there would strand the turn with no
-    way to act. Only the readback block, whose every branch ends in "say
-    exactly this, then stop", wants speech.
+    way to act. Only branches whose required next action is SPEECH arm this.
+
+    Count 2 as of Job 3c.1: the post-collect readback block, and the
+    slot-accept / do-not-relist arm (CAce1457d1).
     """
     src = _SRC.read_text(encoding="utf-8")
-    assert src.count("session[FORCE_TEXT_NEXT_ITERATION] = True") == 1, (
-        "the suppression is armed in more than one place — verify each one "
-        "genuinely wants SPEECH next and not another tool"
+    assert src.count("session[FORCE_TEXT_NEXT_ITERATION] = True") == 2, (
+        "the suppression is armed in an unexpected number of places — verify "
+        "each one genuinely wants SPEECH next and not another tool"
     )
