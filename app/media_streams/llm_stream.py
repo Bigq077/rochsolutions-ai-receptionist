@@ -1152,6 +1152,7 @@ def _note_write_result(session: dict, tool_name: str, result):
         # speech all within one turn. Leaving the marker set here would arm
         # Gate 5f against the turn's own LEGITIMATE confirmation — the exact
         # over-fire that abandoned a completed booking on 2026-06-12.
+        #
         # CA3b303f: clear the reschedule/cancel lookup purpose so a later
         # legitimate book_appointment in the same call is not blocked.
         from app.tools.receptionist_tools import LOOKUP_PURPOSE_KEY
@@ -4405,6 +4406,36 @@ class LLMStream:
                             "for the caller's answer, then read back the booking "
                             "summary and ask \"Shall I go ahead and book that "
                             "in?\" before calling book_appointment."
+                        ),
+                    }
+                elif (
+                    tool_name == "book_appointment"
+                    and session.get("_lookup_purpose") == "reschedule"
+                    and session.get("_lookup_appointment_id")
+                ):
+                    # CA3b303f (Emma Clifton, theorem_v3, 2026-08-14): caller
+                    # asked to MOVE 1 Sep → 8 Sep; Susie called book_appointment
+                    # instead of reschedule_appointment, left the original in
+                    # place, then looped forever trying to cancel it. While a
+                    # reschedule lookup is still active, a new book is the wrong
+                    # tool — steer to the move.
+                    logger.warning(
+                        "[ms_llm] book_appointment BLOCKED — active reschedule "
+                        "lookup (appointment_id=%r); use reschedule_appointment "
+                        "call_sid=%s",
+                        session.get("_lookup_appointment_id"), call_sid,
+                    )
+                    result = {
+                        "status": "reschedule_required",
+                        "message": (
+                            "book_appointment cannot fire — this caller already "
+                            "has an appointment looked up for reschedule "
+                            f"(id {session.get('_lookup_appointment_id')}). "
+                            "Do NOT create a second booking. Call "
+                            "reschedule_appointment with that appointment_id "
+                            "and the new slot once they have confirmed the move. "
+                            "If they instead want to cancel the old one and book "
+                            "fresh, cancel_appointment first, then book."
                         ),
                     }
                 elif tool_name == "book_appointment" and not (
