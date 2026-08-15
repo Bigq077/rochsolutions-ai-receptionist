@@ -288,7 +288,9 @@ UNMOVED_PROMPTS = {
     # Re-pinned 2026-08-13: request_callback tool + CALLBACK CONTRACT — the
     # Dylan Wilson miss (CAc36368cbeb). jv_v1 / theorem_v3 / vital_edge move
     # together; demo and theorem stay byte-identical.
-    "jv_v1": "9f6979d0c76e53b3",
+    # Re-pinned 2026-08-15 Job 3c.5: ACKNOWLEDGEMENT RULE bans
+    # "time preference noted" form-filling (CAce1457d1).
+    "jv_v1": "11093c3461628cf9",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -305,7 +307,7 @@ UNMOVED_PROMPTS = {
     # the cancel wording, and the other three pins here are unchanged — which
     # is the containment assertion that matters.
     "theorem_v3": "761036c8d0da91ed",
-    "vital_edge": "91800b39f28cf047",
+    "vital_edge": "1eaae1afcd6b3dfa",
 }
 
 

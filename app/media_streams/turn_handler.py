@@ -176,6 +176,21 @@ _BANNED_SENTENCE_RE = [
                 re.IGNORECASE)),
     # "Lovely, [name]" acknowledgement — patronising opener, banned everywhere
     ("lovely_opener", re.compile(r"^[Ll]ovely[,\s!]+",                            re.IGNORECASE)),
+    # Job 3c.5 / CAce1457d1: "That's a time preference noted — but could you
+    # tell me what…" is form-filling, not speech. Em-dash counts as a boundary
+    # so the real follow-up question survives.
+    ("time_preference_noted",
+     re.compile(
+         r"[^.!?—–]*\b(?:that'?s\s+a\s+)?time\s+preference\s+noted\b"
+         r"[^.!?—–]*[—.!?—–,]?\s*",
+         re.IGNORECASE,
+     )),
+    ("preference_noted_admin",
+     re.compile(
+         r"[^.!?—–]*\b(?:day|date|timing|slot)\s+preference\s+noted\b"
+         r"[^.!?—–]*[—.!?—–,]?\s*",
+         re.IGNORECASE,
+     )),
     # Internal/meta orchestration text — must never reach caller TTS
     ("lookup_already_done",   re.compile(r"[^.!?]*\blookup (?:has )?already (?:been )?done\b[^.!?]*[.!?]?", re.IGNORECASE)),
     ("let_me_confirm_caller", re.compile(r"[^.!?]*\blet me confirm this with the caller\b[^.!?]*[.!?]?",    re.IGNORECASE)),
