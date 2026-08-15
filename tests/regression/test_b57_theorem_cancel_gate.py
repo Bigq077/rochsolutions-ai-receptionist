@@ -286,8 +286,10 @@ UNMOVED_PROMPTS = {
     # has not leaked into shared text.
     # See tests/regression/test_reason_gate_is_clinic_scoped.py.
     # Re-pinned 2026-08-15 Job 3c.5: ACKNOWLEDGEMENT RULE bans
+    # Re-pinned 2026-08-15 Job 3c.5: ACKNOWLEDGEMENT RULE bans
     # "time preference noted" form-filling (CAce1457d1). Hash is jv_v2-local.
-    "jv_v1": "ada4450021be1b59",
+    # Re-pinned 2026-08-15 Job 3c.2: OUT-OF-WINDOW acknowledgement mandatory.
+    "jv_v1": "5fc63705ef29aaad",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -304,10 +306,9 @@ UNMOVED_PROMPTS = {
     # the cancel wording, and the other three pins here are unchanged — which
     # is the containment assertion that matters.
     "theorem_v3": "31dcedf2fd28f98e",
-    # Re-pinned 2026-08-15 Job 3c.5 alongside jv_v1: template ACKNOWLEDGEMENT
-    # RULE change moves both template_v1 clinics. theorem_v3 stays put.
-    # See tests/regression/test_time_preference_noted_is_not_speech.py.
-    "vital_edge": "a723b1fd9c365aee",
+    # Re-pinned 2026-08-15 Job 3c.2 alongside jv_v1: OUT-OF-WINDOW template
+    # rule moves both template_v1 clinics. theorem_v3 stays put.
+    "vital_edge": "38fd38a37189ccf0",
 }
 
 
