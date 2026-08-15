@@ -162,6 +162,48 @@ def utterance_requests_more_slots(text: str) -> bool:
     return any(s in t for s in signals)
 
 
+# Job 3c.1 / CAce1457d1: caller accepting an already-offered slot must not be
+# steered to "present the existing slots" again (forced a second accept).
+_SLOT_ACCEPT_PHRASES: frozenset = frozenset({
+    "suits me", "any of them", "any of those", "that works",
+    "fine with me", "any is fine", "any is good", "whatever",
+    "any of those suit me", "they all work", "all good",
+    "anytime", "any", "fine", "good", "okay", "ok",
+    "that works for me", "works for me", "all fine", "all work",
+    "either", "either works", "either of those", "both fine",
+    "sounds good", "sounds fine", "any would work", "any works",
+    "yes", "yeah", "yep", "yup", "sure", "perfect", "great",
+    "go ahead", "go for it", "book that", "book it", "take that",
+    "i'll take that", "ill take that", "the first one", "the second one",
+    "number one", "number two", "option one", "option two",
+})
+
+
+def utterance_accepts_offered_slot(text: str) -> bool:
+    """True when the caller is accepting / locking an already-offered slot.
+
+    Excludes "more times" and "different day" requests — those still need the
+    follow-up / re-fetch paths.
+    """
+    t = (text or "").lower().strip().strip(".,!?;:")
+    if not t:
+        return False
+    if utterance_requests_more_slots(t) or utterance_requests_different_day(t):
+        return False
+    if t in _SLOT_ACCEPT_PHRASES:
+        return True
+    # Short affirmatives with filler ("yeah that works", "yes please")
+    if len(t.split()) <= 5 and any(
+        t == p or t.startswith(p + " ") or t.endswith(" " + p) or f" {p} " in f" {t} "
+        for p in (
+            "that works", "works for me", "sounds good", "go ahead",
+            "book that", "book it", "perfect", "yes please", "yeah please",
+        )
+    ):
+        return True
+    return False
+
+
 _BARE_HOUR_WORDS = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
     "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
