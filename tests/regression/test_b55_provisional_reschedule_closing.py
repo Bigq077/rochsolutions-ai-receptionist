@@ -115,7 +115,9 @@ UNCHANGED_CLINIC_PROMPTS = {
     # unpinned in this table) and demo / theorem / theorem_v3 are
     # byte-identical. Verified, not assumed.
     # See tests/regression/test_reschedule_phone_without_caller_id_template.py.
-    "jv_v1": "2c377ec8e1d6b181",
+    # Re-pinned 2026-08-15 Job 3c.5: ban "time preference noted" form-filling
+    # in ACKNOWLEDGEMENT RULE (CAce1457d1). Hash is jv_v2-local (not latency-eval).
+    "jv_v1": "ada4450021be1b59",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2 — theorem_v3 gained the "NEVER
