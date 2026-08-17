@@ -71,6 +71,16 @@ popped both. The caller has just heard two options and can select neither — no
 by voice, because `v3_awaiting_slot_selection` is gone, and not by keypad,
 because the map `connection.py`'s "keypad" fallback arms from went with it.
 
+**How often, measured.** Scanned all 2,280 assistant turns in the obs store
+(280 calls, 25 Jul - 17 Aug, i.e. natural composition before `3c40057` shipped):
+**131** turns arm >=2 slots and **266** read as a write CTA, but only **1** does
+both - `CAbad8422e3c5e`, one call in 280. It is genuine, not a regex artefact,
+and its shape is worth knowing: the model asked the booking CTA, caught itself
+mid-turn - *"Wait - I need to offer a slot first"* - and listed three slots in
+the same reply. So the combined turn arrives as a model **self-correction**,
+which is why it is rare and why it would not have been found by imagining
+ordinary phrasings. Real but ~0.4% of calls: worth fixing, not a P1.
+
 **The structural fact worth keeping:** `run_turn` writes slot state at two points
 in one turn, ~200 lines apart in different methods, and `turn_count` increments
 after both. So *any* end-of-turn cleanup keyed off `last_bot_prompt` /
@@ -2471,6 +2481,24 @@ defect in that session is tagged `jv_v2`). Expect build `66dd7a1`:
    option 2 by voice, and again by keypad.
 
 Paste the SID and `[build_info] running build <sha>` against the row.
+
+> **Partial evidence, 17 Aug — offline replay, phone unavailable.** `CAba5b1629`
+> is in the obs store (`calls.transcript`, `jv_v1`, 16 Aug). Its turns show the
+> defect verbatim: T14/T15 present the two slots, **T17** asks the move CTA,
+> T18 is *"yep"*, **T19** fires *"Still with you — which of those days suits
+> you?"*. Replaying that state through the shipped code:
+>
+> ```
+> after slot turn  -> map={'1': 'five in the evening',
+>                          '2': 'quarter to six in the evening'} flag=True stamp=7
+> CTA turn (8)     -> cleared=True, flag=None
+> T19 would now be -> "Still with you - shall I go ahead and move it?"
+> ```
+>
+> So the fix changes the exact live turn that failed, and to wording the move
+> gate recognises. **This does not close the row** — the rule is that `U` rows
+> close on a call, and the half this cannot reach is the one that matters most:
+> whether the caller's "yes" then lands in the diary.
 
 ### `U-06` · reschedule lookup matched phrases instead of judging consent
 **CLOSED — `48d9e57`, 2 Aug.**
