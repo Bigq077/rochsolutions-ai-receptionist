@@ -41,6 +41,59 @@ implying more confidence than exists.
 
 ---
 
+## `B-60` · a caller heard two options and could pick **neither** — **FIXED `3b6695e`, ported to all four branches**
+
+> ✅ `latency-eval` **`3b6695e`** · `jv_v2` **`66dd7a1`** · `theorem-onboarding`
+> **`73b2839`** · `vitaledge-onboarding` **`033c678`**. Regression:
+> `tests/regression/test_write_cta_keeps_a_window_armed_this_turn.py`.
+> **`U`-debt: never exercised on a call.** See `JOB2_WAVE1_FINDINGS` B1.2.
+
+**Introduced by a fix, not by a caller.** `3c40057` (B1.2) made the write-CTA
+turn authoritative for closing the slot-selection window — correct for the
+defect it was written for, `CAba5b1629` A9b, where the CTA turn *follows* the
+pick and the flag is a leftover.
+
+But one turn can do both, and Susie composes exactly that. Verified by running
+the two real functions over one string, in the order `run_turn` calls them —
+not by reading them:
+
+```
+"I can move that for you. Number 1 - Monday the 24th at 9am,
+ Number 2 - Tuesday the 25th at 2pm. Shall I go ahead and move it?"
+
+_flush_slot_buf                    -> map={'1': …, '2': …}  flag=True
+_clear_slot_window_after_write_cta -> cleared=True, map=None, flag=None
+```
+
+`_flush_slot_buf` arms the map **mid-stream** off that text; a few lines later in
+the **same** `run_turn` the cleanup matched the move CTA in the same sentence and
+popped both. The caller has just heard two options and can select neither — not
+by voice, because `v3_awaiting_slot_selection` is gone, and not by keypad,
+because the map `connection.py`'s "keypad" fallback arms from went with it.
+
+**The structural fact worth keeping:** `run_turn` writes slot state at two points
+in one turn, ~200 lines apart in different methods, and `turn_count` increments
+after both. So *any* end-of-turn cleanup keyed off `last_bot_prompt` /
+`last_question` is reading the very sentence that armed what it is about to
+clear. A "clear X when Y is spoken" rule reads as obviously safe because the
+mental model is that the *previous* turn spoke Y. It isn't.
+
+**Fix.** `v3_slot_map_armed_turn` is stamped where the map is armed; a window
+stamped with the current `turn_count` is left alone. What the cleanup clears is
+unchanged — only **when** it runs is narrower. The A9b case still clears, pinned
+by a test.
+
+**Sibling, same commit family:** `36a7e5b` — the silence re-ask `3c40057` chose
+(*"Still with you — shall I go ahead?"*) satisfies `_booking_confirmation_asked`
+but not `_move_confirmation_asked`, so on a reschedule it overwrote a valid move
+CTA with one the move gate cannot recognise: consent dropped, move never happens,
+booking gate armed mid-reschedule. Fourth instance of `B-36` cause 1 / `B-38` /
+`CA23199d08`. Fixed by `_write_cta_reask_phrase`, which returns the wording for
+whichever family is outstanding; the move-before-cancel-before-booking test order
+is load-bearing and commented as such.
+
+---
+
 ## `B-55` · Vital Edge is **instructed** to narrate a reschedule as confirmed — **FIXED 2026-08-04** (prompt half), gate half **left open deliberately**
 
 **Not found by dialling. Found while running `VITALEDGE_PORT_PLAN.md` §7.1
@@ -2401,6 +2454,21 @@ worth writing down. Option 3 is fifteen minutes and independent of all of it.
 ---
 
 ## Closed
+
+### `U-07` · the whole B1.2 family has never been exercised on a call — **OPEN**
+Three commits (`3c40057` → `36a7e5b` → `3b6695e`, see `B-60`) are live on all
+four branches on the strength of unit tests alone. Two of the three shipped a
+defect that a green suite could not see, in the flow they were written to repair
+— so a green suite is precisely the evidence that has already failed here twice.
+
+Closes only on a call. Theorem first, since `CAba5b1629` came from there:
+1. Reschedule → slots → move CTA → **pause**. Silence must re-ask the *move*
+   confirmation, not a day. Say "yes" — then confirm the move **reached the
+   diary**, not merely that it sounded right.
+2. A turn that lists numbered options **and** asks the CTA in one breath: pick
+   option 2 by voice, and again by keypad.
+
+Paste the SID and `[build_info] running build <sha>` against the row.
 
 ### `U-06` · reschedule lookup matched phrases instead of judging consent
 **CLOSED — `48d9e57`, 2 Aug.**

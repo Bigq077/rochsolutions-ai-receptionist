@@ -44,16 +44,42 @@ Ship canonical-first on `latency-eval`, then port `jv_v2` (+ theorem where share
 | **SHAs** | `latency-eval` **`a59a7ab`** · `jv_v2` **`8add945`** (revert `jv_v2` → `cf0b516`) |
 | **Call-proof** | Dial `#31#+447367002651` · book path to phone step · must hear **“can't see a phone number”** before keypad. Paste SID + confirm `[build_info] running build 8add945`. |
 
-### B1.2 Slot flag survives write CTA → wrong silence re-ask — HIGH · **fixed on `latency-eval` (suite)**
+### B1.2 Slot flag survives write CTA → wrong silence re-ask — HIGH · **all four branches — awaiting call-proof**
 
 | | |
 |---|---|
 | **SID** | `CAba5b162932ff73cc9c5b847f8e86aeeb` |
 | **Symptom** | After move CTA + “yep”, silence said *“Still with you — which of those days suits you?”* |
-| **Fix (a)** | Speaking a write CTA clears `v3_awaiting_slot_selection` (+ DTMF map). Silence/watchdog: if write CTA still outstanding, re-ask *“shall I go ahead?”* not days. |
-| **Tests** | `tests/regression/test_b12_write_cta_clears_slot_selection.py` |
-| **Still open** | (b) re-speak barge-cut confirm after successful write · (c) short post-write “anything else / take care” close — next if needed after call-proof of (a). |
-| **Verify** | Reschedule → slots → move CTA → pause (or soft barge) → silence must **not** ask which day. Prefer staging first; `jv_v2` port after you say so. |
+| **Fix (a)** | Speaking a write CTA clears `v3_awaiting_slot_selection` (+ DTMF map). Silence/watchdog re-asks the confirmation rather than a day. |
+| **SHAs** | `latency-eval` **`3b6695e`** · `jv_v2` **`66dd7a1`** · `theorem-onboarding` **`73b2839`** · `vitaledge-onboarding` **`033c678`** — three commits each (`3c40057` → `36a7e5b` → `3b6695e`) |
+| **Revert** | `jv_v2` → `9b369bf` · `theorem-onboarding` → `068223b` · `vitaledge-onboarding` → `d17e9b5` |
+| **Tests** | `test_b12_write_cta_clears_slot_selection.py` · `test_write_cta_reask_matches_its_gate.py` · `test_write_cta_keeps_a_window_armed_this_turn.py` |
+| **Suite** | 98→98 canonical · 98→98 `jv_v2` · 102→102 theorem · 98→98 VE — identical failing sets, baselines run per branch |
+| **Still open** | (b) re-speak barge-cut confirm after successful write · (c) short post-write “anything else / take care” close. |
+| **Call-proof** | Theorem first (the SID came from there). Reschedule → slots → move CTA → **pause** → silence must re-ask the *move* confirmation, not a day; then say “yes” and confirm the move **reaches the diary**. Second pass: a turn that lists numbered options *and* asks the CTA in one breath — pick option 2 by voice **and** by keypad. Paste SID + `[build_info] running build <sha>`. |
+
+> ⚠️ The first two attempts at (a) each shipped a defect in the flow they were
+> written to repair, and both were invisible to a green suite. Neither is fixed
+> by reading the code — both were found by running the predicates.
+>
+> **`3c40057` → `36a7e5b`.** The generic re-ask *“Still with you — shall I go
+> ahead?”* satisfies `_booking_confirmation_asked` but **not**
+> `_move_confirmation_asked`. On the reschedule it was written for, it
+> overwrote a valid move CTA with one the move gate cannot recognise: the
+> caller's “yes” is dropped, the move never happens, and the **booking** gate is
+> armed mid-reschedule. `_write_cta_reask_phrase` now returns the wording for
+> whichever family is outstanding; the move/cancel/booking test order is
+> load-bearing (see the docstring). Fourth instance of a single-phrasing gate
+> meeting a sentence composed elsewhere — B-36 cause 1, `CA23199d08`.
+>
+> **`3c40057` → `3b6695e`.** `_flush_slot_buf` arms the slot map **mid-stream**
+> from this turn's text; the cleanup runs at the **end of the same `run_turn`**
+> and read the very sentence that armed it. Verified over one string:
+> *“I can move that for you. Number 1 — Monday…, Number 2 — Tuesday…. Shall I go
+> ahead and move it?”* → armed `map={'1':…,'2':…} flag=True` → cleared both. The
+> caller heard two options and could pick **neither** — not by voice, not by
+> keypad. A window stamped with the current turn (`v3_slot_map_armed_turn`) is
+> now left alone; the A9b case still clears, pinned by a test.
 
 ### B1.3 Greeting stolen by early STT — MEDIUM (recurring)
 

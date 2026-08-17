@@ -71,5 +71,6 @@ superseded queues. See [`archive/README.md`](archive/README.md).
 | 19 | 5 Aug | Housekeeping — dated session docs → `archive/` |
 | 20 | 15–16 Aug | Job 3 closed; Job 2 Wave 1 complete; Emma CA3b303f fixed (`ffceb94` / theorem `02fd991`); Batch 1 queued in findings |
 | 21 | 16 Aug | Housekeeping — 5–8 Aug demo/session docs → `archive/`; live index is this file |
+| 22 | 17 Aug | **A fix can be wrong inside the flow it repairs, and the suite stays green.** B1.2 shipped twice with a defect in the reschedule path it was written for — a re-ask the move gate could not recognise (`36a7e5b`), then a slot window armed and destroyed by one reply (`3b6695e`). Both found by *running* the predicates, neither by reading the code. Run a new phrase through the gate that will read it, and a new end-of-turn cleanup against the same turn's arming |
 
 If you find another contradiction, the code wins — add a row above.
