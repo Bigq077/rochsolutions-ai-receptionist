@@ -44,12 +44,15 @@ from app.prompts.clinic_template_prompt import build_clinic_prompt
 # reaches only one of them is the bug this repo keeps re-finding.
 TEMPLATE_CLINICS = ["jv_v1", "vital_edge"]
 
-# The line the flow mandates for capturing typed digits. Byte-identical in the
-# static flow and in the CALL STATE override on purpose: two competing keypad
-# scripts in one prompt is how the model ends up improvising a third.
+# Decline / wrong-number keypad (caller already knows why). Kept for (a).
 KEYPAD_LINE = (
     "No problem — go ahead and type the number on your keypad. "
     "You can press the star key to reset at any time."
+)
+# Withheld / no CLI (CA86dfad89 A9a): say why, then the same keypad arming.
+KEYPAD_LINE_WITHHELD = (
+    "I can't see a phone number on this call — could you type the number on "
+    "your keypad? You can press the star key to reset at any time."
 )
 
 
@@ -120,10 +123,12 @@ def test_the_no_caller_id_branch_asks_for_the_keypad_and_arms_it(clinic_id):
     b = flow.find("(b) CALL STATE SAYS THERE IS NO CALLER ID")
     branch_b = flow[b:b + 900]
 
-    assert KEYPAD_LINE in branch_b, "branch (b) does not mandate the keypad line"
-    assert _is_keypad_arming_line(KEYPAD_LINE), (
-        "the mandated line no longer arms keypad capture — typed digits will "
-        "land in a closed buffer"
+    assert KEYPAD_LINE_WITHHELD in branch_b, (
+        "branch (b) does not mandate the withheld keypad line"
+    )
+    assert _is_keypad_arming_line(KEYPAD_LINE_WITHHELD), (
+        "the mandated withheld line no longer arms keypad capture — typed "
+        "digits will land in a closed buffer"
     )
 
 
@@ -167,7 +172,7 @@ def test_call_state_still_disclaims_the_static_readback(clinic_id):
     dyn = _dynamic(clinic_id, cli="")
     assert "NO caller ID on this call" in dyn
     assert "does NOT apply on this call" in dyn
-    assert KEYPAD_LINE in dyn
+    assert KEYPAD_LINE_WITHHELD in dyn
 
     # ...and it must NOT fire when a caller ID is present, or the common case
     # gets told it has no number.

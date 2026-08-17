@@ -119,7 +119,9 @@ UNCHANGED_CLINIC_PROMPTS = {
     # in ACKNOWLEDGEMENT RULE (CAce1457d1).
     # Re-pinned 2026-08-15 Job 3c.2: OUT-OF-WINDOW acknowledgement in SLOT
     # PRESENTATION (CAce1457d1).
-    "jv_v1": "fc9ab1efe3dee428",
+    # Re-pinned 2026-08-16 Batch 1.1: withheld keypad line says why first
+    # (CA86dfad89 A9a).
+    "jv_v1": "63eb3b1a2899513b",
     "theorem": "8565be9a48a7a9aa",
     "theorem_v3": "761036c8d0da91ed",
 }

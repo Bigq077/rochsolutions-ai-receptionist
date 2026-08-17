@@ -650,7 +650,7 @@ def _phone_question_for(session: Dict[str, Any]) -> str:
       (a) a caller ID is held  → offer it, SPEAKING THE DIGITS. Never "is that
           the number you're calling from?" — the caller has not heard what we
           hold, so a blind yes can write a stranger's number to the booking.
-      (b) no caller ID         → straight to the keypad.
+      (b) no caller ID         → say you can't see a number, then the keypad.
 
     Both forms are checked by the sibling test against the two predicates that
     consume them downstream: the keypad line must satisfy
@@ -671,8 +671,8 @@ def _phone_question_for(session: Dict[str, Any]) -> str:
             "for you? If so, just say use this number."
         )
     return (
-        "Before I do that — could you type the number on your keypad? "
-        "You can press the star key to reset at any time."
+        "I can't see a phone number on this call — could you type the number on your "
+        "keypad? You can press the star key to reset at any time."
     )
 
 

@@ -213,12 +213,14 @@ def test_an_early_booking_offer_is_not_a_write_cta():
 
 # ── the substituted question must work downstream ──────────────────────────
 
-def test_the_keypad_form_arms_the_keypad():
+def test_the_keypad_form_explains_why_and_arms_the_keypad():
     """
-    Otherwise the caller types their number into a closed keypad — the exact
-    failure CA6e1024db records, where nine digits were discarded silently.
+    CA86dfad89 (A9a, 2026-08-16): jumping straight to "type on your keypad"
+    with no reason confused the caller. The withheld form must say why first,
+    and still arm DTMF capture.
     """
     ask = _phone_question_for({"twilio_from": ""})
+    assert "can't see a phone number" in ask.lower()
     assert _is_keypad_arming_line(ask)
 
 
