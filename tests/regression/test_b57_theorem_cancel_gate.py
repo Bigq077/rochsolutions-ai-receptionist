@@ -247,7 +247,13 @@ def test_consent_reads_the_uncapped_question_too():
 # different values here by design — do not copy one table over the other.
 UNMOVED_PROMPTS = {
     "demo": "9d3beae14e4f2493",
-    "jv_v1": "fe9fa898963dd95a",
+    # Re-pinned 2026-08-17: ported the ring-back fixes (34becd6, 3938720),
+    # which touch clinic_template_prompt.py and susie_system_prompt.py.
+    # demo and theorem hold either side — the containment proof.
+    # NB the b55 table is NOT re-pinned here: its four rows were already
+    # red before this port and each move needs attributing to a commit
+    # first. Fixing them silently would shrink the failing set.
+    "jv_v1": "e0c5c5f6dc2e768a",
     "theorem": "b770bcbee81dd601",
     # Re-pinned 2026-08-05 — JOINT INJECTIONS usage rule (CA0f74573f).
     # Cancel wording untouched; this table is proving containment, and it is.
@@ -302,8 +308,20 @@ UNMOVED_PROMPTS = {
     # wording; the assertions above are what prove that, and they pass. The
     # other four pins are unchanged — the tool fields are emitted by the Acuity
     # executor, which only Theorem uses.
-    "theorem_v3": "9f22c6b5168512a9",
-    "vital_edge": "706299246fa856dc",
+    # Re-pinned 2026-08-17: ported the ring-back fixes (34becd6, 3938720),
+    # which touch clinic_template_prompt.py and susie_system_prompt.py.
+    # demo and theorem hold either side — the containment proof.
+    # NB the b55 table is NOT re-pinned here: its four rows were already
+    # red before this port and each move needs attributing to a commit
+    # first. Fixing them silently would shrink the failing set.
+    "theorem_v3": "1d5ae042b4a29854",
+    # Re-pinned 2026-08-17: ported the ring-back fixes (34becd6, 3938720),
+    # which touch clinic_template_prompt.py and susie_system_prompt.py.
+    # demo and theorem hold either side — the containment proof.
+    # NB the b55 table is NOT re-pinned here: its four rows were already
+    # red before this port and each move needs attributing to a commit
+    # first. Fixing them silently would shrink the failing set.
+    "vital_edge": "6bfea2211c2696fc",
 }
 
 
