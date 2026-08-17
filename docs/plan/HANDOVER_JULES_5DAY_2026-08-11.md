@@ -457,3 +457,7 @@ normalise that one.
 | 2026-08-14 | Job 3c.4 in progress on `latency-eval`: day-only hint (`friday`) now arms the hold clip via `day_preference` + `_extract_day_preference`. Tests green locally; needs call proof + port. |
 | 2026-08-14 | Test booking IDs located in obs: Jack Thompson Acuity `1752726653`; Quentin Road gcal `21jornld8dvoqk5nov9jl74d3g`. Cleanup script: `scripts/cleanup_handover_test_bookings.py`. |
 | 2026-08-14 | Jack Thompson cancelled (Acuity needs `admin=true` — client cancel hit policy). Quentin Road already gone (`410 Resource has been deleted`). |
+| 2026-08-15 | **Job 3 closed.** Synthesis: `docs/plan/JOB3_SYNTHESIS_2026-08-15.md`. Call-proven on `jv_v2` `cf0b516`: 3a, 3c.1–3c.5. 3b suite-only (SMS off). 3c.6/3c.7 await Quentin env. 3d + adversarial 50 skipped/parked. |
+| 2026-08-15 | **Job 2 started.** Sheet: `docs/plan/ADVERSARIAL_SESSION_2026-08-15.md`. Dial JV `+447367002651`, build `cf0b516`. |
+| 2026-08-15–16 | **Job 1 Emma:** reschedule→book + cancel loop fixed `ffceb94` → theorem `02fd991`. No patient callback (diary already OK). |
+| 2026-08-16 | **Job 2 Wave 1 complete** A1–A10. Synthesis + findings for Quentin. Batch 1 started (B1.1 withheld keypad why). Docs housekeeping → archive. |

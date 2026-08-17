@@ -1,8 +1,7 @@
 # docs/plan — what's live
 
-Housekeeping pass **2026-08-05**: dated session briefs, expired countdown docs,
-and one-off verify scripts moved to [`archive/`](archive/). If you need them,
-they're there — they are not the working set.
+Housekeeping pass **2026-08-16**: Wave 1 adversarial complete; dated demo/session
+docs from 5–8 Aug moved to [`archive/`](archive/). Working set below.
 
 **If these documents and the code disagree, the code wins.** Record a correction
 in §Corrections below.
@@ -21,22 +20,24 @@ in §Corrections below.
 | 6 | [`SKILL_PLAYBOOK.md`](SKILL_PLAYBOOK.md) | Which engineering skill when |
 | 7 | [`KICKOFF_PROMPT.md`](KICKOFF_PROMPT.md) | Paste-ready first message |
 
-Phase 0 templates (fill / keep current): `TEST_BASELINE.md`,
-`DELETED_TEST_TRIAGE.md`, `LATENCY_BASELINE.md`, `DEPLOYMENT_INVENTORY.md`.
+Phase 0 templates: `TEST_BASELINE.md`, `DELETED_TEST_TRIAGE.md`,
+`LATENCY_BASELINE.md`, `DEPLOYMENT_INVENTORY.md`.
 
 > ⚠️ **ID collision.** `archive/DEFECT_REGISTER.md` uses `B1`/`B2`/`B3` (no
-> hyphen) for an older obs sweep. Those are **unrelated** to `B-01`… in
-> `REGISTER_B_U.md`. Always write the hyphen.
+> hyphen) for an older obs sweep. Unrelated to `B-01`… in `REGISTER_B_U.md`.
 
 ---
 
-## Today / this week
+## This week (Jules / Quentin away)
 
 | Document | What it is |
 |---|---|
-| [`HANDOVER_JULES_5DAY_2026-08-11.md`](HANDOVER_JULES_5DAY_2026-08-11.md) | **Quentin away — Jules owns the week.** Standing rules, Jobs 1–3, adversarial scripts A1–A10 |
-| [`DEMO_SWEEP_2026-08-05.md`](DEMO_SWEEP_2026-08-05.md) | Demo call script — Sweep A (JV) + Sweep B (Theorem) |
-| [`SESSION_2026-08-05.md`](SESSION_2026-08-05.md) | 5 Aug synthesis — fixes + **Sweep A 6/6 PASS** |
+| [`HANDOVER_JULES_5DAY_2026-08-11.md`](HANDOVER_JULES_5DAY_2026-08-11.md) | Standing rules, Jobs 1–3, adversarial scripts A1–A10 |
+| [`JOB2_WAVE1_SYNTHESIS_2026-08-16.md`](JOB2_WAVE1_SYNTHESIS_2026-08-16.md) | **For Quentin** — Wave 1 + Job 1 Emma verdict |
+| [`JOB2_WAVE1_FINDINGS_2026-08-16.md`](JOB2_WAVE1_FINDINGS_2026-08-16.md) | Batch 1 fix queue + SIDs |
+| [`ADVERSARIAL_SESSION_2026-08-15.md`](ADVERSARIAL_SESSION_2026-08-15.md) | Live call sheet A1–A10 |
+| [`JOB3_SYNTHESIS_2026-08-15.md`](JOB3_SYNTHESIS_2026-08-15.md) | Job 3 closed — JV call-proven |
+| [`JOB3_STATUS_2026-08-14.md`](JOB3_STATUS_2026-08-14.md) | Job 3 SID/SHA tracker |
 
 ---
 
@@ -53,41 +54,22 @@ Phase 0 templates (fill / keep current): `TEST_BASELINE.md`,
 
 ## Archive
 
-[`archive/`](archive/) — Jules briefs, old call suites, pre–5 Aug countdown docs,
-superseded queues (`FIX_QUEUE_PRE_DEMO`, `DEFECT_REGISTER`). See
-[`archive/README.md`](archive/README.md).
+[`archive/`](archive/) — Jules briefs, old call suites, demo sweeps (incl.
+`DEMO_SWEEP_2026-08-05`, `SESSION_2026-08-05`, `CANONICAL_BACKPORT_2026-08-08`),
+superseded queues. See [`archive/README.md`](archive/README.md).
 
 ---
 
 ## Corrections log
 
-Kept so the next reader does not re-learn these the hard way. Older entries that
-only mattered during drafting stay; the actionable ones are bolded.
-
-### Provenance (21 Jul 2026)
-
-Drafted from a repo read, then corrected repeatedly. Big ones already folded in:
-
-1. **Observability is not missing** — `app/obs/` exists, flag-gated off. Do not
-   merge `feat/obs-*`.
-2. **SMS is not missing** — `SMS_ENABLED` defaults `false`.
-3. **Latency baseline work already exists** — map it, don't re-measure from zero.
-4. **`latency-eval` is THE engine branch** (settled); clinic branches inherit by
-   cherry-pick.
-
-### Later corrections (abridged)
-
 | # | Date | Finding |
 |---|---|---|
-| 13 | 26 Jul | CONFIRM_PHONE bare-yes was a defect, not drift |
-| 14 | 1 Aug | A4 phone-confirm was LLM-path only; flow already accepted |
 | 15 | 2 Aug | **`latency-eval` is not a live deploy** — gated branches are the clinic ones |
-| 16 | 3 Aug | **`FIX_QUEUE_PRE_DEMO` is stale** — live queue is `REGISTER_B_U.md` (now in archive) |
+| 16 | 3 Aug | Live queue is `REGISTER_B_U.md` (`FIX_QUEUE_PRE_DEMO` archived) |
 | 17 | 3 Aug | **`/health` is useless for SHA** — only `[build_info] running build <sha>` |
-| 18 | 5 Aug | **Standing "~95 failures" baseline is stale** — measure your own; see `SESSION_2026-08-05.md` |
-| 19 | 5 Aug | **Housekeeping** — dated session docs → `archive/` |
-
-Full original correction prose for #5–#14 lived in earlier README revisions; git
-history has it. Do not re-expand this file into another dump.
+| 18 | 5 Aug | Standing "~95 failures" baseline is stale — measure your own |
+| 19 | 5 Aug | Housekeeping — dated session docs → `archive/` |
+| 20 | 15–16 Aug | Job 3 closed; Job 2 Wave 1 complete; Emma CA3b303f fixed (`ffceb94` / theorem `02fd991`); Batch 1 queued in findings |
+| 21 | 16 Aug | Housekeeping — 5–8 Aug demo/session docs → `archive/`; live index is this file |
 
 If you find another contradiction, the code wins — add a row above.
