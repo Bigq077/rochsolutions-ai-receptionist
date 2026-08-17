@@ -654,6 +654,52 @@ def _write_cta_outstanding(session: dict) -> bool:
     )
 
 
+def _write_cta_reask_phrase(session: dict) -> str:
+    """The silence re-ask for an outstanding write CTA, in ITS OWN family.
+
+    A single generic "shall I go ahead?" is not safe here, and the reason is the
+    defect this function exists to prevent. That phrase satisfies
+    `_booking_confirmation_asked` but NOT `_move_confirmation_asked` — verified,
+    not assumed. So on a RESCHEDULE (the exact flow B1.2 was written for, A9b /
+    `CAba5b1629`) the re-ask would overwrite a valid move CTA with one the move
+    gate cannot recognise:
+
+        move CTA spoken -> caller silent -> re-ask "shall I go ahead?"
+          -> caller says "yes" -> _move_confirmation_asked is False
+            -> consent dropped, the move never happens
+            -> and the BOOKING gate is armed instead, mid-reschedule
+
+    That is B-36 cause 1 and `CA23199d08` a third time: a single-phrasing gate
+    meeting a sentence composed somewhere else. So the re-ask is chosen to
+    satisfy the predicate for the family that is actually outstanding.
+
+    Order matters. Move is tested before cancel and cancel before booking,
+    because the move and cancel phrases ALSO satisfy the booking predicate
+    (they contain "shall i go ahead"), so a booking-first test would return the
+    booking wording for every family and reintroduce the bug.
+
+    Returns "" when no write CTA is outstanding, so the caller keeps whatever
+    prompt it would otherwise have used.
+    """
+    try:
+        from app.media_streams.llm_stream import (
+            _booking_confirmation_asked,
+            _cancel_retention_asked,
+            _cta_asked,
+            _move_confirmation_asked,
+        )
+    except Exception:          # pragma: no cover - import guard only
+        return ""
+    _sess = session or {}
+    if _cta_asked(_sess, _move_confirmation_asked):
+        return "Still with you — shall I go ahead and move it?"
+    if _cta_asked(_sess, _cancel_retention_asked):
+        return "Still with you — shall I go ahead and cancel it?"
+    if _cta_asked(_sess, _booking_confirmation_asked):
+        return "Still with you — shall I go ahead and book that in?"
+    return ""
+
+
 def _slot_guard_bypass_for_write_cta(session: dict, utterance: str) -> bool:
     """B-37 — should the slot guard let this utterance reach the LLM?
 
@@ -4585,8 +4631,9 @@ class SilenceHandler:
                     # B1.2 defence: if a write CTA is outstanding, the slot window
                     # is stale (cleared in run_turn; this catches any race / path
                     # that left the flag set). Re-ask the confirmation, not a day.
-                    if _write_cta_outstanding(_sess or {}):
-                        phrase = "Still with you — shall I go ahead?"
+                    _cta_reask = _write_cta_reask_phrase(_sess or {})
+                    if _cta_reask:
+                        phrase = _cta_reask
                     else:
                         phrase = "Still with you — which of those would you like?"
                 # ── v3 location retry ladder ──────────────────────────────────
@@ -15194,8 +15241,9 @@ class WebSocketCallHandler:
                         self.session["last_bot_prompt"] = _phrase_1
                     elif self.session.get("v3_awaiting_slot_selection"):
                         # B1.2: write CTA beats a stale slot flag (CAba5b1629 A9b).
-                        if _write_cta_outstanding(self.session):
-                            _phrase_1 = "Still with you — shall I go ahead?"
+                        _cta_reask = _write_cta_reask_phrase(self.session)
+                        if _cta_reask:
+                            _phrase_1 = _cta_reask
                         else:
                             _phrase_1 = "Still with you — which of those days suits you?"
                     elif _is_patience_response(self.session.get("last_bot_prompt") or ""):
