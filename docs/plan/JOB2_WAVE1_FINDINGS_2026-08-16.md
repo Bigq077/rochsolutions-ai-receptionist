@@ -34,23 +34,26 @@
 
 Ship canonical-first on `latency-eval`, then port `jv_v2` (+ theorem where shared).
 
-### B1.1 Withheld keypad has no “why” — HIGH UX · **porting → call-proof**
+### B1.1 Withheld keypad has no “why” — HIGH UX · **ported — awaiting call-proof**
 
 | | |
 |---|---|
-| **SID** | `CA86dfad89d61fa92c9696a5b7ecf81914` |
+| **SID (defect)** | `CA86dfad89d61fa92c9696a5b7ecf81914` |
 | **Symptom** | Jumps to “type the number on your keypad” with no explanation. Caller: “sorry what are you asking.” |
-| **Fix** | Withheld line is now: *“I can't see a phone number on this call — could you type the number on your keypad? …”* (prompt CALL STATE + reschedule branch (b) + Gate 5g `_phone_question_for`). Decline/wrong-number still uses “No problem — go ahead…”. |
-| **Status** | On `latency-eval`; cherry-pick to `jv_v2`; call-proof with `#31#` (hear the “can't see” beat before keypad). |
+| **Fix** | Withheld line: *“I can't see a phone number on this call — could you type the number on your keypad? …”* Decline/wrong-number still *“No problem — go ahead…”*. |
+| **SHAs** | `latency-eval` **`a59a7ab`** · `jv_v2` **`8add945`** (revert `jv_v2` → `cf0b516`) |
+| **Call-proof** | Dial `#31#+447367002651` · book path to phone step · must hear **“can't see a phone number”** before keypad. Paste SID + confirm `[build_info] running build 8add945`. |
 
-### B1.2 Slot flag survives write CTA → wrong silence re-ask — HIGH
+### B1.2 Slot flag survives write CTA → wrong silence re-ask — HIGH · **fixed on `latency-eval` (suite)**
 
 | | |
 |---|---|
 | **SID** | `CAba5b162932ff73cc9c5b847f8e86aeeb` |
-| **Symptom** | After move CTA + “yep”, move likely succeeded; confirm TTS barge-cut; silence then said *“Still with you — which of those days suits you?”* |
-| **Cause** | `v3_awaiting_slot_selection` still true. Silence path prefers that flag over write-CTA context. Speaking the CTA does **not** clear the flag (reschedule never asks name → Spec J never closes the window). Related to B-37 (bypass only). |
-| **Wanted** | (a) Clear / ignore flag when write CTA outstanding or just spoken. (b) If confirm TTS barge-cut after successful write, re-speak outcome once. (c) Post-write close: *“That’s done — anything else today? If not, take care.”* |
+| **Symptom** | After move CTA + “yep”, silence said *“Still with you — which of those days suits you?”* |
+| **Fix (a)** | Speaking a write CTA clears `v3_awaiting_slot_selection` (+ DTMF map). Silence/watchdog: if write CTA still outstanding, re-ask *“shall I go ahead?”* not days. |
+| **Tests** | `tests/regression/test_b12_write_cta_clears_slot_selection.py` |
+| **Still open** | (b) re-speak barge-cut confirm after successful write · (c) short post-write “anything else / take care” close — next if needed after call-proof of (a). |
+| **Verify** | Reschedule → slots → move CTA → pause (or soft barge) → silence must **not** ask which day. Prefer staging first; `jv_v2` port after you say so. |
 
 ### B1.3 Greeting stolen by early STT — MEDIUM (recurring)
 

@@ -1707,6 +1707,32 @@ async def _book_reply_verdict(messages, session) -> bool:
     return _result
 
 
+def _clear_slot_window_after_write_cta(session: dict) -> bool:
+    """B1.2 — drop the slot-selection window once a write CTA has been spoken.
+
+    Reschedule never asks for a name after the slot pick, so Spec J never clears
+    `v3_awaiting_slot_selection`. The flag then survives the move CTA and silence
+    re-asks *"which of those days suits you?"* (CAba5b1629… A9b) instead of
+    staying on the confirmation. Booking usually clears via Spec J; this makes
+    the write-CTA turn itself authoritative for every write family.
+    """
+    if not session or not session.get("v3_awaiting_slot_selection"):
+        return False
+    if not (
+        _cta_asked(session, _booking_confirmation_asked)
+        or _cta_asked(session, _move_confirmation_asked)
+        or _cta_asked(session, _cancel_retention_asked)
+    ):
+        return False
+    session.pop("v3_awaiting_slot_selection", None)
+    session.pop("v3_dtmf_slot_map", None)
+    session.pop("v3_slot_dtmf_active", None)
+    logger.info(
+        "[ms_llm] write CTA spoken — cleared v3_awaiting_slot_selection"
+    )
+    return True
+
+
 def _cta_asked(session: dict, predicate) -> bool:
     """B-38 — apply a CTA predicate to what was ASKED, not only to the capped prompt.
 
@@ -2452,6 +2478,9 @@ class LLMStream:
             # matching; F_LAST_QUESTION is narrowed to the actual question
             # sentence so the re-ask watchdog only replays real questions.
             session[F_LAST_QUESTION] = _question_from_response(_display_reply)
+            # B1.2: write CTA closes the slot-selection window (reschedule has no
+            # Spec J name-ask to clear it). Silence must not re-ask for a day.
+            _clear_slot_window_after_write_cta(session)
 
         session["turn_count"] = session.get("turn_count", 0) + 1
         await save_session(call_sid, session)

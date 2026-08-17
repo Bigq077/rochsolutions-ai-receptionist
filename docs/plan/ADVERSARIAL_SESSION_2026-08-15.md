@@ -51,7 +51,7 @@ Delete every test booking before you stop. Log Acuity/gcal IDs here if useful.
 
 Post-sweep **Batch 1** — see [`JOB2_WAVE1_FINDINGS_2026-08-16.md`](JOB2_WAVE1_FINDINGS_2026-08-16.md) · Quentin note [`JOB2_WAVE1_SYNTHESIS_2026-08-16.md`](JOB2_WAVE1_SYNTHESIS_2026-08-16.md).
 
-1. ~~Withheld keypad: say why~~ — **code on `latency-eval` (uncommitted)**  
+1. ~~Withheld keypad: say why~~ — **`jv_v2` `8add945`** — call-proof `#31#` (expect “can't see a phone number…”)  
 2. Clear `v3_awaiting_slot_selection` when write CTA spoken; harden/re-speak confirm; post-write closing  
 3. Greeting: don’t let early STT barge steal the opening  
 4. Phone readback: slower digit pacing

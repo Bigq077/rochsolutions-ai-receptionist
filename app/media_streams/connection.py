@@ -4661,7 +4661,13 @@ class SilenceHandler:
                 # Do NOT use "Sorry, I didn't catch that" (G2 banned phrase).
                 # Use a neutral prompt that doesn't presuppose they missed it.
                 if (_sess or {}).get("v3_awaiting_slot_selection"):
-                    phrase = "Still with you — which of those would you like?"
+                    # B1.2 defence: if a write CTA is outstanding, the slot window
+                    # is stale (cleared in run_turn; this catches any race / path
+                    # that left the flag set). Re-ask the confirmation, not a day.
+                    if _write_cta_outstanding(_sess or {}):
+                        phrase = "Still with you — shall I go ahead?"
+                    else:
+                        phrase = "Still with you — which of those would you like?"
                 # ── v3 location retry ladder ──────────────────────────────────
                 # When the location question is active, escalate on the 2nd
                 # re-ask to "Did you say the Alcester clinic?" — a biased binary
@@ -15321,7 +15327,11 @@ class WebSocketCallHandler:
                         self.session["last_question"] = _phrase_1
                         self.session["last_bot_prompt"] = _phrase_1
                     elif self.session.get("v3_awaiting_slot_selection"):
-                        _phrase_1 = "Still with you — which of those days suits you?"
+                        # B1.2: write CTA beats a stale slot flag (CAba5b1629 A9b).
+                        if _write_cta_outstanding(self.session):
+                            _phrase_1 = "Still with you — shall I go ahead?"
+                        else:
+                            _phrase_1 = "Still with you — which of those days suits you?"
                     elif _is_patience_response(self.session.get("last_bot_prompt") or ""):
                         # P15: the caller asked us to wait and Susie granted it
                         # ("take your time"); a dead-air re-ask must stay gentle
