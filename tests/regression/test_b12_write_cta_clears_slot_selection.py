@@ -61,16 +61,20 @@ def test_no_flag_is_a_no_op():
 
 
 def test_silence_prefers_write_cta_over_stale_slot_flag():
-    """Defence in depth: even if the flag leaked, silence must not ask for a day."""
+    """Defence in depth: even if the flag leaked, silence must not ask for a day.
+
+    Calls `_write_cta_reask_phrase` rather than re-typing the branch. An earlier
+    version of this test mirrored the `if` by hand and asserted the literal
+    "Still with you — shall I go ahead?" — a string 36a7e5b then deleted for
+    being booking-shaped on a reschedule. A hand-mirrored branch keeps passing
+    while the code it claims to cover says something else entirely.
+    """
     session = _session_with_slot_window(
         **{F_LAST_BOT_PROMPT: _MOVE_CTA, F_LAST_QUESTION: _MOVE_CTA}
     )
     assert c._write_cta_outstanding(session) is True
-    # Mirror the safety-net branch: write CTA wins over slot phrase.
-    if session.get("v3_awaiting_slot_selection"):
-        if c._write_cta_outstanding(session):
-            phrase = "Still with you — shall I go ahead?"
-        else:
-            phrase = "Still with you — which of those days suits you?"
-    assert phrase == "Still with you — shall I go ahead?"
+    phrase = c._write_cta_reask_phrase(session)
+    assert phrase, "a write CTA is outstanding — silence must re-ask it"
     assert "days" not in phrase
+    # And it must be the MOVE re-ask, since a move CTA is what is outstanding.
+    assert ls._move_confirmation_asked(phrase) is True

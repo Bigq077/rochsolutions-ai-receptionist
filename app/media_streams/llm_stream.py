@@ -1687,6 +1687,26 @@ def _clear_slot_window_after_write_cta(session: dict) -> bool:
     re-asks *"which of those days suits you?"* (CAba5b1629… A9b) instead of
     staying on the confirmation. Booking usually clears via Spec J; this makes
     the write-CTA turn itself authoritative for every write family.
+
+    NOT when the window was armed by the very reply that carried the CTA. One
+    turn can do both — verified by running `_flush_slot_buf` and this function
+    over a single string:
+
+        "I can move that for you. Number 1 - Monday the 24th at 9am,
+         Number 2 - Tuesday the 25th at 2pm. Shall I go ahead and move it?"
+
+    `_flush_slot_buf` arms the map and the flag off that text mid-stream; a few
+    lines later in the SAME `run_turn` this function matched the move CTA in the
+    same sentence and popped both. The caller heard two options and could then
+    select neither — not verbally (the flag is gone) nor by keypad (the map that
+    the "keypad" fallback arms from, connection.py, is gone with it). Arming and
+    destroying a window from one sentence is never what B1.2 was for: it exists
+    for the CTA turn that FOLLOWS the pick, where the flag is a leftover.
+
+    So a window stamped with the current turn is left alone. In the A9b case the
+    stamp is from an earlier turn — or `_flush_slot_buf` has already dropped the
+    map itself, having found no numbered options this turn — and the clear runs
+    exactly as before.
     """
     if not session or not session.get("v3_awaiting_slot_selection"):
         return False
@@ -1696,9 +1716,16 @@ def _clear_slot_window_after_write_cta(session: dict) -> bool:
         or _cta_asked(session, _cancel_retention_asked)
     ):
         return False
+    if session.get("v3_slot_map_armed_turn") == session.get("turn_count", 0):
+        logger.info(
+            "[ms_llm] write CTA spoken, but the slot window was armed by this "
+            "same reply — leaving it open so the caller can still pick"
+        )
+        return False
     session.pop("v3_awaiting_slot_selection", None)
     session.pop("v3_dtmf_slot_map", None)
     session.pop("v3_slot_dtmf_active", None)
+    session.pop("v3_slot_map_armed_turn", None)
     logger.info(
         "[ms_llm] write CTA spoken — cleared v3_awaiting_slot_selection"
     )
@@ -2643,6 +2670,13 @@ class LLMStream:
             if len(_slot_map) >= 2:
                 session["v3_dtmf_slot_map"] = _slot_map
                 session["v3_awaiting_slot_selection"] = True
+                # Stamp the turn that armed this window. run_turn's write-CTA
+                # cleanup runs LATER IN THIS SAME TURN and would otherwise wipe
+                # a window whose options the caller has only just heard — see
+                # _clear_slot_window_after_write_cta. turn_count is incremented
+                # at the very end of run_turn, so a stamp equal to the current
+                # turn_count means "armed by the reply being spoken right now".
+                session["v3_slot_map_armed_turn"] = session.get("turn_count", 0)
                 _slot_map_count = len(_slot_map)
                 # Fresh slots have now been presented for the CURRENT modality,
                 # so the "stale after modality switch" mark no longer applies —
@@ -2674,6 +2708,7 @@ class LLMStream:
         if _slot_map_count == 0:
             if session.pop("v3_dtmf_slot_map", None) is not None:
                 session.pop("v3_awaiting_slot_selection", None)
+                session.pop("v3_slot_map_armed_turn", None)
                 logger.info(
                     "[ms_gate5] slot buf: no numbered options this turn"
                     " — cleared stale slot map (v3_last_offered_day_iso preserved)"
