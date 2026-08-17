@@ -122,7 +122,12 @@ UNCHANGED_CLINIC_PROMPTS = {
     # PRESENTATION (CAce1457d1).
     # Re-pinned 2026-08-16 Batch 1.1: withheld keypad line says why first
     # (CA86dfad89 A9a). jv_v2-local hash.
-    "jv_v1": "6b70cd4d091796ad",
+    # Re-pinned 2026-08-17: ported the two ring-back fixes (34becd6, 3938720)
+    # from canonical, which touch clinic_template_prompt.py and
+    # susie_system_prompt.py. demo and theorem are byte-identical either
+    # side — that containment is what proves the port stayed in the
+    # callback path. Recomputed with THIS file's own _sha.
+    "jv_v1": "63eb3b1a2899513b",
     "theorem": "8565be9a48a7a9aa",
     "theorem_v3": "761036c8d0da91ed",
 }

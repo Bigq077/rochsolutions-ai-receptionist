@@ -291,7 +291,12 @@ UNMOVED_PROMPTS = {
     # Re-pinned 2026-08-15 Job 3c.2: OUT-OF-WINDOW acknowledgement mandatory.
     # Re-pinned 2026-08-16 Batch 1.1: withheld keypad line says why first
     # (CA86dfad89 A9a). jv_v2-local hash.
-    "jv_v1": "6b70cd4d091796ad",
+    # Re-pinned 2026-08-17: ported the two ring-back fixes (34becd6, 3938720)
+    # from canonical, which touch clinic_template_prompt.py and
+    # susie_system_prompt.py. demo and theorem are byte-identical either
+    # side — that containment is what proves the port stayed in the
+    # callback path. Recomputed with THIS file's own _sha.
+    "jv_v1": "63eb3b1a2899513b",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -307,11 +312,21 @@ UNMOVED_PROMPTS = {
     # ADDITION is identical. It is confined to the TOOLS block, nowhere near
     # the cancel wording, and the other three pins here are unchanged — which
     # is the containment assertion that matters.
-    "theorem_v3": "31dcedf2fd28f98e",
+    # Re-pinned 2026-08-17: ported the two ring-back fixes (34becd6, 3938720)
+    # from canonical, which touch clinic_template_prompt.py and
+    # susie_system_prompt.py. demo and theorem are byte-identical either
+    # side — that containment is what proves the port stayed in the
+    # callback path. Recomputed with THIS file's own _sha.
+    "theorem_v3": "761036c8d0da91ed",
     # Re-pinned 2026-08-15 Job 3c.2 alongside jv_v1: OUT-OF-WINDOW template
     # rule moves both template_v1 clinics. theorem_v3 stays put.
     # Re-pinned 2026-08-16 Batch 1.1: vital_edge moves with shared withheld why-line.
-    "vital_edge": "e0d1e2000f151b73",
+    # Re-pinned 2026-08-17: ported the two ring-back fixes (34becd6, 3938720)
+    # from canonical, which touch clinic_template_prompt.py and
+    # susie_system_prompt.py. demo and theorem are byte-identical either
+    # side — that containment is what proves the port stayed in the
+    # callback path. Recomputed with THIS file's own _sha.
+    "vital_edge": "10bd9f5d9cb71e45",
 }
 
 
