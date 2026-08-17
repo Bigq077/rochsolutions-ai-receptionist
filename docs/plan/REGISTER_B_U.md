@@ -2461,7 +2461,9 @@ four branches on the strength of unit tests alone. Two of the three shipped a
 defect that a green suite could not see, in the flow they were written to repair
 — so a green suite is precisely the evidence that has already failed here twice.
 
-Closes only on a call. Theorem first, since `CAba5b1629` came from there:
+Closes only on a call. **`jv_v2`, dial `+447367002651`** — `CAba5b1629` came
+from there, not from Theorem (`ADVERSARIAL_SESSION_2026-08-15.md` header; every
+defect in that session is tagged `jv_v2`). Expect build `66dd7a1`:
 1. Reschedule → slots → move CTA → **pause**. Silence must re-ask the *move*
    confirmation, not a day. Say "yes" — then confirm the move **reached the
    diary**, not merely that it sounded right.

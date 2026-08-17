@@ -56,7 +56,7 @@ Ship canonical-first on `latency-eval`, then port `jv_v2` (+ theorem where share
 | **Tests** | `test_b12_write_cta_clears_slot_selection.py` · `test_write_cta_reask_matches_its_gate.py` · `test_write_cta_keeps_a_window_armed_this_turn.py` |
 | **Suite** | 98→98 canonical · 98→98 `jv_v2` · 102→102 theorem · 98→98 VE — identical failing sets, baselines run per branch |
 | **Still open** | (b) re-speak barge-cut confirm after successful write · (c) short post-write “anything else / take care” close. |
-| **Call-proof** | Theorem first (the SID came from there). Reschedule → slots → move CTA → **pause** → silence must re-ask the *move* confirmation, not a day; then say “yes” and confirm the move **reaches the diary**. Second pass: a turn that lists numbered options *and* asks the CTA in one breath — pick option 2 by voice **and** by keypad. Paste SID + `[build_info] running build <sha>`. |
+| **Call-proof** | `jv_v2` · dial **`+447367002651`** — A9b came from there (`ADVERSARIAL_SESSION` header). Confirm `[build_info] running build 66dd7a1`. Reschedule → slots → move CTA → **pause** → silence must re-ask the *move* confirmation, not a day; then say “yes” and confirm the move **reaches the diary**. Second pass: a turn that lists numbered options *and* asks the CTA in one breath — pick option 2 by voice **and** by keypad. Paste SID + `[build_info] running build <sha>`. |
 
 > ⚠️ The first two attempts at (a) each shipped a defect in the flow they were
 > written to repair, and both were invisible to a green suite. Neither is fixed
