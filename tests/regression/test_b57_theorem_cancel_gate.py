@@ -289,7 +289,9 @@ UNMOVED_PROMPTS = {
     # Re-pinned 2026-08-15 Job 3c.5: ACKNOWLEDGEMENT RULE bans
     # "time preference noted" form-filling (CAce1457d1). Hash is jv_v2-local.
     # Re-pinned 2026-08-15 Job 3c.2: OUT-OF-WINDOW acknowledgement mandatory.
-    "jv_v1": "5fc63705ef29aaad",
+    # Re-pinned 2026-08-16 Batch 1.1: withheld keypad line says why first
+    # (CA86dfad89 A9a). jv_v2-local hash.
+    "jv_v1": "6b70cd4d091796ad",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -308,7 +310,8 @@ UNMOVED_PROMPTS = {
     "theorem_v3": "31dcedf2fd28f98e",
     # Re-pinned 2026-08-15 Job 3c.2 alongside jv_v1: OUT-OF-WINDOW template
     # rule moves both template_v1 clinics. theorem_v3 stays put.
-    "vital_edge": "38fd38a37189ccf0",
+    # Re-pinned 2026-08-16 Batch 1.1: vital_edge moves with shared withheld why-line.
+    "vital_edge": "e0d1e2000f151b73",
 }
 
 
