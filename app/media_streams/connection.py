@@ -3149,6 +3149,12 @@ class SilenceHandler:
         # Used by _restart_timer() to skip watchdog re-creation when on_tts_finished()
         # fires multiple times for the same logical question (multi-chunk TTS).
         self._watchdog_q_gen: int = -1
+        # armed_at of the live watchdog.  The deadline is
+        # max(armed_at, last_engagement_at, _watchdog_grace_until) + wait, so
+        # anything that cancels the watchdog speculatively and then discovers it
+        # should not have needs this to put the ORIGINAL deadline back rather
+        # than start a fresh window.  _handle_dtmf is the one such caller.
+        self._watchdog_armed_at: Optional[float] = None
         # Spec Z: deferred watchdog state.  Set when _restart_timer() is called
         # while _llm_busy=True or the current last_question has no question — the
         # watchdog start is deferred until on_llm_finished() fires (and TTS is idle).
@@ -5061,6 +5067,7 @@ class SilenceHandler:
                 # ── end Spec Z ─────────────────────────────────────────────────
                 _armed_at = time.time()
                 self._watchdog_q_gen = _my_q_gen
+                self._watchdog_armed_at = _armed_at
                 self._no_input_watchdog_task = asyncio.create_task(
                     self._no_input_watchdog(_armed_at, _my_q_gen),
                     name="ms_silence_no_input_watchdog",
@@ -5085,6 +5092,45 @@ class SilenceHandler:
             self._no_input_watchdog_task.cancel()
         self._no_input_watchdog_task = None
         self.currently_reasking = False
+
+    def _rearm_no_input_watchdog(self, armed_at: float, q_gen: int) -> None:
+        """Put a speculatively-cancelled watchdog back on its ORIGINAL deadline.
+
+        Distinct from _restart_timer(), which arms a FRESH window.  A caller
+        that cancelled the watchdog before knowing whether it needed to — see
+        _handle_dtmf — must not hand the caller a brand new window: on
+        CA9a405cd2d6249fd3e3748630d1f2cec2 a fresh 10 s window from the keypress
+        would have expired 2.5 s AFTER the safety-net backstop that already
+        fired, so the caller would have heard the same greeting reset and
+        nothing would have been fixed.
+
+        Passing the original armed_at restores the deadline exactly, because
+        _no_input_watchdog computes it as
+            max(armed_at, last_engagement_at, _watchdog_grace_until) + wait
+        and a discarded digit never touches last_engagement_at.
+
+        No-ops if the call is tearing down, if a watchdog is somehow already
+        live, or if this q_gen has already had its audible re-ask — mirroring
+        the guards _restart_timer applies before arming.
+        """
+        if self._cancelled:
+            return
+        if (
+            self._no_input_watchdog_task is not None
+            and not self._no_input_watchdog_task.done()
+        ):
+            return
+        if self._no_input_reask_count > 0 and self._watchdog_q_gen == q_gen:
+            return
+        self._watchdog_q_gen    = q_gen
+        self._watchdog_armed_at = armed_at
+        self._no_input_watchdog_task = asyncio.create_task(
+            self._no_input_watchdog(armed_at, q_gen),
+            name="ms_silence_no_input_watchdog",
+        )
+        logger.info(
+            "[ms_watchdog] WATCHDOG_REARM q_gen=%d — original deadline kept", q_gen
+        )
 
     async def _run(self, q_gen: int = 0) -> None:
         """
@@ -6010,9 +6056,19 @@ class WebSocketCallHandler:
         # silence cascade.  The caller has switched to the keypad channel; any
         # pending speech-first "Sorry, I didn't catch that" re-ask must not
         # fire on top of the DTMF interaction.
+        # This cancel is SPECULATIVE: it fires on every digit, before any handler
+        # has claimed it.  Capture what the live watchdog was armed with so the
+        # discard branch below can put it back exactly — see the comment there.
+        _wdg_prev_armed_at: Optional[float] = None
+        _wdg_prev_q_gen:    Optional[int]   = None
         if self._silence_handler is not None:
             _wdg = getattr(self._silence_handler, "_no_input_watchdog_task", None)
             _tsk = getattr(self._silence_handler, "_task", None)
+            if _wdg is not None and not _wdg.done():
+                _wdg_prev_armed_at = getattr(
+                    self._silence_handler, "_watchdog_armed_at", None
+                )
+                _wdg_prev_q_gen = self._silence_handler._watchdog_q_gen
             if (_wdg is not None and not _wdg.done()) or (_tsk is not None and not _tsk.done()):
                 logger.info("[ms_conn] DTMF digit received — cancelling speech watchdog")
                 self._silence_handler._cancel_timer()
@@ -6387,6 +6443,28 @@ class WebSocketCallHandler:
             # summary row called that call clean. Three separate classes of
             # loss have now been invisible to this metric in one day.
             self._note_utterance_lost("dtmf_digit_discarded", digit)
+            # …and put the speech watchdog back.  The cancel above assumed the
+            # caller had switched to the keypad channel; no handler wanted this
+            # digit, so they had not, and the question they were actually
+            # answering still needs its dead-air cover.  Without this the
+            # watchdog is cancelled and never rearmed — on JV Bolton
+            # CA9a405cd2d6249fd3e3748630d1f2cec2 (2026-08-18) a confirmation
+            # keypress mid-booking bought 7.5 s of silence and then the 10 s
+            # backstop, which is not context-aware and reset a caller who was
+            # one word from a booking to "how can I help today?".
+            #
+            # The ORIGINAL armed_at, not a fresh window: the untouched watchdog
+            # would have fired 1.2 s BEFORE the backstop, with the caller's real
+            # question replayed. A fresh window would have landed after it and
+            # changed nothing.
+            if (
+                _wdg_prev_armed_at is not None
+                and _wdg_prev_q_gen is not None
+                and self._silence_handler is not None
+            ):
+                self._silence_handler._rearm_no_input_watchdog(
+                    _wdg_prev_armed_at, _wdg_prev_q_gen
+                )
             return
 
         buf = self.session.get("phone_dtmf_buffer", "") + digit
