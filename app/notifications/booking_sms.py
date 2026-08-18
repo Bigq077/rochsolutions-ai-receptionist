@@ -100,10 +100,19 @@ async def send_booking_confirmation(
                     **ck,
                 )
 
-        await send_sms(to=patient_phone, message=message)
+        # Log what actually happened, not what was attempted. `send_sms` returns
+        # the Twilio SID or None, and returns None for a SUPPRESSED send as well
+        # as a failed one — SMS_ENABLED off is the common case on a branch cut
+        # from latency-eval. JV call CA38e5603142, 2026-08-18, logged
+        # "Booking confirmation SMS sent to ***1207" one millisecond after
+        # "[sms] SMS_ENABLED is off — outbound SMS suppressed (not sent)".
+        # Reading the log top-down, the patient was texted. They were not.
+        # owner_alert already checks this return; this path never did.
+        _sid = await send_sms(to=patient_phone, message=message)
 
         logger.info(
-            "Booking confirmation SMS sent to ***%s",
+            "Booking confirmation SMS %s ***%s",
+            "sent to" if _sid else "NOT sent (suppressed or failed) to",
             patient_phone[-4:] if patient_phone else "????",
             extra={
                 "patient_name": patient_name,
