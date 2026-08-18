@@ -1707,8 +1707,37 @@ def _clear_slot_window_after_write_cta(session: dict) -> bool:
     stamp is from an earlier turn — or `_flush_slot_buf` has already dropped the
     map itself, having found no numbered options this turn — and the clear runs
     exactly as before.
+
+    U-07-a — the trigger is the MAP, not the flag, and that distinction is the
+    whole reason this function was dead on the path it was written for.
+
+    `v3_awaiting_slot_selection` is not owned here. connection.py derives it from
+    the map after every turn: a map present re-sets it True, a map absent pops it.
+    A second writer — connection.py's "caller is responding, the slot window has
+    closed" pop — clears the FLAG on the caller's reply and deliberately leaves
+    the map alone, so that a keypad press still resolves. Reading the flag as the
+    trigger therefore made this function early-return on exactly the turn it
+    exists for:
+
+        caller picks a day   -> flag popped (map kept)
+        Susie speaks the move CTA
+        this function        -> flag already gone, early return, MAP KEPT
+        connection.py        -> map present, so flag re-armed True
+        silence              -> "which of those days suits you?"
+
+    Verified against `CA3eccc7c153bb92cc8142f625dfcc5414`: the watchdog logged
+    `slot_selection_grace (v3_awaiting_slot_selection)` eight seconds after this
+    clear was supposed to have run. That call passed on `36a7e5b`'s family-aware
+    re-ask wording instead — which is still the load-bearing mechanism and must
+    not be trimmed on the strength of this fix.
+
+    So the window is open if EITHER key is live, and closing it means dropping
+    the map. Leave the flag to its one owner; take away what that owner reads.
     """
-    if not session or not session.get("v3_awaiting_slot_selection"):
+    if not session or not (
+        session.get("v3_awaiting_slot_selection")
+        or session.get("v3_dtmf_slot_map")
+    ):
         return False
     if not (
         _cta_asked(session, _booking_confirmation_asked)
@@ -1727,7 +1756,8 @@ def _clear_slot_window_after_write_cta(session: dict) -> bool:
     session.pop("v3_slot_dtmf_active", None)
     session.pop("v3_slot_map_armed_turn", None)
     logger.info(
-        "[ms_llm] write CTA spoken — cleared v3_awaiting_slot_selection"
+        "[ms_llm] write CTA spoken — dropped the slot window "
+        "(map + v3_awaiting_slot_selection)"
     )
     return True
 

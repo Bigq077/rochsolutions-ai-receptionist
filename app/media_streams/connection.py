@@ -11280,6 +11280,19 @@ class WebSocketCallHandler:
                                 # always sees it regardless of which extraction path
                                 # produced the map.  Must be set before on_question_asked
                                 # arms the watchdog a few lines below.
+                                #
+                                # U-07-a — THIS BLOCK OWNS v3_awaiting_slot_selection.
+                                # It is derived from the map, unconditionally, after
+                                # every turn: map present → True, map absent → popped
+                                # (the else below).  Anything earlier in the turn that
+                                # pops the flag WITHOUT dropping the map is overwritten
+                                # here and is intra-turn only — that is by design for
+                                # the "caller is responding" pop, which keeps the map so
+                                # a keypad press still resolves, but it silently killed
+                                # llm_stream's write-CTA clear until that clear was
+                                # changed to key off the map instead.  To close the
+                                # window for real, drop v3_dtmf_slot_map; popping the
+                                # flag alone does not survive this line.
                                 self.session["v3_awaiting_slot_selection"] = True
                                 if _is_time_map(_new_map):
                                     # Day→time context shift: the new map contains
