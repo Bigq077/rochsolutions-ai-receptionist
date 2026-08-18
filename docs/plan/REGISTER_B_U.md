@@ -41,6 +41,89 @@ implying more confidence than exists.
 
 ---
 
+## `B-61` · a **successful** reschedule was called a lie, and the caller was asked to book it again — **OPEN**
+
+> ⚠️ Anchored, not fixed. `_armed_write_families`
+> [turn_handler.py:1220](../../app/media_streams/turn_handler.py), the R1 arm at
+> **:1237**; `booking_write_confirmed` set at
+> [llm_stream.py:1104](../../app/media_streams/llm_stream.py). Live on all four
+> branches. Evidence: JV `CAb045ba3d85dbc44552d5e1a45710290c`, 18 Aug 2026.
+> Same root cause as the note in `B-55`/`test_reschedule_closing.py`; the
+> **consequence** is worse than that row records, which is why this is its own
+> row rather than an amendment.
+
+**The reschedule worked.** `reschedule_appointment` returned
+`{"success": true, "rescheduled_to": "Thursday 27 August at 18:15"}`, the
+confirmation SMS went out, the owner alert went out, `outcome=rescheduled`, and
+the diary was checked afterwards and is correct. Nothing about the write is in
+question.
+
+Then the caller asked whether it had happened, and was told to book it again:
+
+```
+22:24:58  caller: 'um have you moved it then'
+22:25:01  [ms_gate5f] false booking confirmation with no successful write
+          (armed=booking) — re-steering to that family's confirmation question:
+          "Yes — that's all done. You're booked in for Thursday the 27th of
+           August at quart…"
+22:25:01  → spoken: 'Sorry — before I confirm anything, shall I go ahead and book…'
+22:25:08  caller: 'um yeah go for it'
+22:25:12  tool: lookup_patient {"purpose": "reschedule"}
+22:25:14  "I've got two appointments on this number…"
+22:25:23  call ends
+```
+
+**Two independent things had to line up, and each is harmless alone.**
+
+1. The model narrated a *reschedule* outcome in **booking** vocabulary —
+   "you're **booked in** for" — so `_claim_family` resolved to `booking`.
+2. The booking family was **armed** although the caller never asked to book
+   anything. `_armed_write_families` re-adds it unconditionally:
+
+```python
+if (
+    WRITE_FAMILY_BOOKING not in armed
+    and session.get("booking_flow_active")
+    and not session.get("booking_write_confirmed")
+):
+    armed.append(WRITE_FAMILY_BOOKING)
+```
+
+`booking_write_confirmed` is set **only** when `family == WRITE_FAMILY_BOOKING`
+(llm_stream.py:1104). A successful reschedule sets `succeeded[reschedule]` and
+nothing that this arm reads. `booking_flow_active` is true throughout a
+reschedule. So on **every** reschedule, the booking family is armed for the
+whole call and any confirmation worded in the booking family is treated as a
+phantom.
+
+**Why this outranks the closing-stripped version of the same fault.** The
+re-steer does not merely delete a sentence — it **asks the caller to authorise a
+write that has already succeeded**, and this caller said yes. The call ended one
+turn short of a second `reschedule_appointment` on an appointment that had
+already moved. That is the `B-58` / `CA3b303f` duplicate-write shape reached
+from a new direction: not a refusal narrated as success, but a success narrated
+as a refusal.
+
+**The obvious fix is a trap.** "Do not arm booking when the reschedule family
+has succeeded this call" breaks the real sequence *reschedule one appointment,
+then book a new one* — which is exactly what the R1 arm exists to catch (its own
+comment says it is "the only one that catches a phantom the model produced
+having called no tool at all"). Any fix has to distinguish *which* write the
+sentence is describing, not merely *which* writes have happened.
+
+**Not yet established** — do not treat these as known:
+- whether a second write actually fires when the call continues past that turn
+  (this one ended first; it needs a deliberate reproduction, not an assumption);
+- how often a reschedule confirmation lands in booking vocabulary at all. `B-60`
+  showed how badly an imagined frequency estimate performs here — measure it
+  against the obs store's assistant turns before sizing this.
+
+**Reproduction.** Reschedule an existing appointment to a new slot, let it
+succeed, then ask "have you moved it then". Watch for `[ms_gate5f] false booking
+confirmation` with `armed=booking`.
+
+---
+
 ## `B-60` · a caller heard two options and could pick **neither** — **FIXED `3b6695e`, ported to all four branches**
 
 > ✅ `latency-eval` **`3b6695e`** · `jv_v2` **`66dd7a1`** · `theorem-onboarding`
