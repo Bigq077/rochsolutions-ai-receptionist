@@ -6459,6 +6459,25 @@ class WebSocketCallHandler:
                             "[ms_conn] theorem_v3: slot DTMF digit=%r — no mapping, ignored",
                             digit,
                         )
+                        # Second door into the defect fixed on the discard exit
+                        # below.  "ignored" means nothing is spoken and nothing
+                        # is queued, so unlike every other exit past the
+                        # speculative watchdog cancel above, nothing rearms it:
+                        # a caller who presses 7 against a 1–3 list gets silence
+                        # until the 10 s backstop resets them to the greeting.
+                        #
+                        # Its own reason code, so the two doors stay countable
+                        # apart in the [ms_lost] CALL SUMMARY row — this one was
+                        # not counted at all.
+                        self._note_utterance_lost("dtmf_slot_no_mapping", digit)
+                        if (
+                            _wdg_prev_armed_at is not None
+                            and _wdg_prev_q_gen is not None
+                            and self._silence_handler is not None
+                        ):
+                            self._silence_handler._rearm_no_input_watchdog(
+                                _wdg_prev_armed_at, _wdg_prev_q_gen
+                            )
                     return
 
             # ASK_LOCATION: digit 1 → alcester, digit 2 → redditch (immediate, no accumulation)
