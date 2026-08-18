@@ -2184,6 +2184,41 @@ def _parse_v3_slot_options(text: str) -> dict:
 # theorem_v3 slot map context helper
 # ---------------------------------------------------------------------------
 
+def _derive_slot_window(session: dict) -> bool:
+    """U-07-a — the ONE place `v3_awaiting_slot_selection` is decided.
+
+    The flag is DERIVED from `v3_dtmf_slot_map`, re-evaluated after every turn:
+    a map present means the window is open, a map absent means it is closed.
+    Returns True when the window is open.
+
+    This is the rule, and it is why popping the flag on its own never sticks.
+    Two other places in a turn clear it — the "caller is responding" branch here
+    and llm_stream's write-CTA clear — and whatever they did to the flag is
+    overwritten by this function at the end of the turn. Only their effect on
+    the MAP survives. The "caller is responding" pop keeps the map on purpose,
+    so a keypad press still resolves; it is therefore intra-turn only, which is
+    correct but silently disarmed the write-CTA clear for as long as that clear
+    was guarded on the flag instead of the map.
+
+    Extracted so the regression test can call the real rule. It previously
+    mirrored this branch by hand, which is the failure mode the B1.2 test file
+    already warns about in its own docstring: a hand-copied branch goes on
+    passing while the code it claims to cover says something else.
+
+    Pure and session-only: the slot_map_stage bookkeeping stays at the call
+    site, which owns connection state rather than session state.
+    """
+    if session.get("v3_dtmf_slot_map"):
+        session["v3_awaiting_slot_selection"] = True
+        return True
+    # No numbered options this turn — clear any stale map so phone DTMF
+    # auto-activate is not blocked.
+    session.pop("v3_slot_dtmf_active",  None)
+    session.pop("v3_awaiting_slot_selection", None)
+    session.pop("v3_dtmf_slot_context", None)
+    return False
+
+
 def _is_time_map(slot_map: dict) -> bool:
     """
     Returns True when slot map values contain times rather than day names.
@@ -11762,27 +11797,13 @@ class WebSocketCallHandler:
                             # Here we only clear stale state when _flush_slot_buf
                             # did not produce a map this turn (no slot presentation
                             # in this response, or slot buf was not used).
-                            if self.session.get("v3_dtmf_slot_map"):
+                            # U-07-a — _derive_slot_window is the sole owner of
+                            # v3_awaiting_slot_selection; see its docstring. The
+                            # flag must be settled before on_question_asked arms
+                            # the watchdog a few lines below, which reads it for
+                            # the slot-selection grace period.
+                            if _derive_slot_window(self.session):
                                 _new_map = self.session["v3_dtmf_slot_map"]
-                                # Arm slot-selection wait flag here (not solely in
-                                # _flush_slot_buf) so the watchdog grace period check
-                                # always sees it regardless of which extraction path
-                                # produced the map.  Must be set before on_question_asked
-                                # arms the watchdog a few lines below.
-                                #
-                                # U-07-a — THIS BLOCK OWNS v3_awaiting_slot_selection.
-                                # It is derived from the map, unconditionally, after
-                                # every turn: map present → True, map absent → popped
-                                # (the else below).  Anything earlier in the turn that
-                                # pops the flag WITHOUT dropping the map is overwritten
-                                # here and is intra-turn only — that is by design for
-                                # the "caller is responding" pop, which keeps the map so
-                                # a keypad press still resolves, but it silently killed
-                                # llm_stream's write-CTA clear until that clear was
-                                # changed to key off the map instead.  To close the
-                                # window for real, drop v3_dtmf_slot_map; popping the
-                                # flag alone does not survive this line.
-                                self.session["v3_awaiting_slot_selection"] = True
                                 if _is_time_map(_new_map):
                                     # Day→time context shift: the new map contains
                                     # time options, not day options.  _flush_slot_buf
@@ -11806,11 +11827,8 @@ class WebSocketCallHandler:
                                         _new_map,
                                     )
                             else:
-                                # No numbered options this turn — clear any stale
-                                # map so phone DTMF auto-activate is not blocked.
-                                self.session.pop("v3_slot_dtmf_active",         None)
-                                self.session.pop("v3_awaiting_slot_selection",  None)
-                                self.session.pop("v3_dtmf_slot_context",        None)
+                                # Session keys already cleared by
+                                # _derive_slot_window; only connection state left.
                                 if self.slot_map_stage != SlotMapStage.NONE:
                                     self.slot_map_stage = SlotMapStage.NONE
                                     logger.info(
