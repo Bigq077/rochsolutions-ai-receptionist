@@ -1600,6 +1600,70 @@ def _is_conversational_during_dtmf(transcript: str) -> bool:
     return not _DTMF_DIGIT_RUN_RE.search(transcript)
 
 
+# Shortest keypad buffer that any finalize path will accept (see the ladder in
+# _handle_dtmf: >=11 immediate, >=10 idle window, >=9 safety net). Anything
+# shorter can never become a phone number no matter how long it sits there.
+_DTMF_MIN_FINALIZE_DIGITS = 9
+
+
+def _stray_dtmf_buffer_yields_to_speech(
+    session: Dict[str, Any], buffer: str, utterance: str
+) -> bool:
+    """True when a part-typed keypad buffer must give way to the caller talking.
+
+    A non-empty buffer suppresses every transcript for the rest of the call
+    (see the `elif _dtmf_buf:` branch in handle_transcript). That is correct
+    while the caller is actually typing a number — but on JV
+    CA29d50a41db9234a16037a5c3f04c836d (18 Aug 2026, a reschedule) it deafened
+    the call outright:
+
+        21:58:39  "Just to confirm — I'm moving your appointment to Monday the
+                   31st… Shall I go ahead and move it for you?"
+        21:58:40  DTMF raw digit='2' → phone DTMF auto-armed by the block
+                  above ("booking in progress, no number on record") → buf='2'
+                  NB: the log wording is deliberately NOT quoted verbatim here.
+                  Sibling tests locate that site with src.index() over this
+                  module, comments included, and a second copy moves the anchor.
+        21:58:58  transcript suppressed — phone DTMF active: 'um yeah go for it'
+        21:59:15  transcript suppressed — phone DTMF active: 'hello'
+        21:59:22  transcript suppressed — phone DTMF active: 'you still there'
+        21:59:48  call ends, outcome=reached_confirmation — nothing written
+
+    A reschedule never collects a phone number, so `phone_confirmed` is never
+    set and `_phone_outstanding` stays true for the WHOLE call. One stray
+    keypress therefore armed phone collection against a question that was not
+    about phones, and a 1-digit buffer never finalizes, so nothing ever cleared
+    it. Susie asked, the caller answered, and the answer was binned. Three
+    times, and `lost_total=0` said the call was clean.
+
+    Four conditions, because the opposite mistake is just as bad — CA9758ceab
+    (7 Aug) binned eleven digits by disarming a caller who WAS about to type:
+
+      1. the buffer is too short to ever finalize, so nothing is thrown away
+         that could have become a number;
+      2. the speech is conversational by the existing test (>4 words, no digit
+         run) — reused deliberately, not re-invented;
+      3. DTMF was armed SPECULATIVELY, off `_phone_outstanding` alone, rather
+         than because anyone asked for a number;
+      4. and no phone request is on the table right now either.
+
+    3 and 4 are belt and braces. 3 is the real discriminator — it separates
+    "we guessed a digit was a phone digit" from "we asked for a number" — while
+    4 catches the case where a speculative arm is followed by a genuine ask.
+    CA9758ceab cannot regress through here at all: its buffer was empty
+    throughout, so it never reaches this branch.
+    """
+    if not buffer or len(buffer) >= _DTMF_MIN_FINALIZE_DIGITS:
+        return False
+    if not _is_conversational_during_dtmf(utterance):
+        return False
+    if not session.get("v3_phone_dtmf_armed_speculatively"):
+        return False
+    if _is_phone_keypad_prompt(session.get("last_bot_prompt", "")):
+        return False
+    return not _phone_question_on_the_table(session)
+
+
 # Phrases confirming "use the number I'm calling from" during the verbal
 # phone-collection step.  Substring-matched against a lower-cased transcript.
 _USE_THIS_NUMBER_SIGNALS: tuple = (
@@ -6524,6 +6588,17 @@ class WebSocketCallHandler:
                 else "booking in progress with no number on record",
             )
             self.session["v3_phone_dtmf_active"] = True
+            # Record WHY. When the keypad-prompt test is what matched, someone
+            # actually asked for a number and the strict suppression below is
+            # right. When only _phone_outstanding matched we are GUESSING that
+            # a digit was a phone digit — and on a reschedule that guess is
+            # true for the entire call, because a reschedule never sets
+            # phone_confirmed. See _stray_dtmf_buffer_yields_to_speech.
+            self.session["v3_phone_dtmf_armed_speculatively"] = (
+                not _is_phone_keypad_prompt(
+                    self.session.get("last_bot_prompt", "")
+                )
+            )
 
         # Only accumulate DTMF while in phone-collection state, keypad lookup
         # recovery, or theorem_v3 DTMF phone collection.
@@ -8299,13 +8374,46 @@ class WebSocketCallHandler:
                                     utterance[:40],
                                 )
                                 continue
-                            # Buffer non-empty, no reset word → suppress.
-                            logger.info(
-                                "[ms_conn] transcript suppressed — "
-                                "phone DTMF active: %r",
-                                utterance[:60],
-                            )
-                            continue
+                            # ── Stray-digit escape hatch ─────────────────────
+                            # A buffer too short to ever finalize, armed on a
+                            # guess, with no phone question anywhere in sight,
+                            # must not outrank the caller's voice. Without this
+                            # one stray keypress deafens the rest of the call —
+                            # CA29d50a41db9234a16037a5c3f04c836d binned "um yeah
+                            # go for it", "hello" and "you still there" in a row
+                            # and the reschedule never happened.
+                            if _stray_dtmf_buffer_yields_to_speech(
+                                self.session, _dtmf_buf, utterance
+                            ):
+                                self.session["v3_phone_dtmf_active"] = False
+                                self.session["phone_dtmf_buffer"] = ""
+                                self.session.pop(
+                                    "v3_phone_dtmf_armed_speculatively", None
+                                )
+                                # Count the digits we are throwing away. They
+                                # were a real caller input and nothing else
+                                # records them — the call that found this
+                                # finished lost_total=0 having lost three whole
+                                # utterances plus this buffer.
+                                self._note_utterance_lost(
+                                    "dtmf_stray_buffer_discarded", _dtmf_buf
+                                )
+                                await save_session(self.call_sid, self.session)
+                                logger.info(
+                                    "[ms_conn] stray keypad buffer %r discarded"
+                                    " — caller is talking, not typing, and no"
+                                    " number was ever asked for: %r",
+                                    _dtmf_buf, utterance[:60],
+                                )
+                                # Fall through to normal LLM dispatch.
+                            else:
+                                # Buffer non-empty, no reset word → suppress.
+                                logger.info(
+                                    "[ms_conn] transcript suppressed — "
+                                    "phone DTMF active: %r",
+                                    utterance[:60],
+                                )
+                                continue
 
                         else:
                             # ── Buffer empty (Changes 1 + 3) ─────────────────
