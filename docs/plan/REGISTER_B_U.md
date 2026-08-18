@@ -2465,7 +2465,47 @@ worth writing down. Option 3 is fifteen minutes and independent of all of it.
 
 ## Closed
 
-### `U-07` · the whole B1.2 family has never been exercised on a call — **OPEN**
+### `U-07` · the B1.2 family exercised on a call — **CLOSED 2026-08-18**
+
+> ✅ **`CA3eccc7c153bb92cc8142f625dfcc5414`**, `jv_v2`, build `66dd7a1a12bd`.
+> The A9b shape reproduced deliberately and passed end to end:
+>
+> ```
+> 11:27:23  CTA      "Just to confirm — I'm moving your appointment to Friday the 21st…
+>                     Shall I go ahead and move it for you?"
+> 11:27:31  watchdog START q_gen=10 (slot_selection_grace — flag STILL set)
+> 11:27:41  WATCHDOG_FIRE  'Still with you — shall I go ahead and move it?'   <-- 36a7e5b
+> 11:27:46  'um yes'  ->  write CTA outstanding — bypassing slot guard        <-- B-37
+> 11:27:54  reschedule_appointment -> {"success": true,
+>                                      "rescheduled_to": "Friday 21 August at 18:45"}
+> ```
+>
+> The silence re-ask was the **move** wording, the caller's consent was accepted,
+> and the write landed. On the pre-`36a7e5b` code this is the turn that dropped
+> the "yes" and armed the booking gate mid-reschedule.
+
+> ⚠️ **It passed on the second mechanism, not the first — and that is worth
+> knowing before anyone trims either.** `3c40057`'s flag clear **does not
+> survive**. `connection.py:11414` re-sets `v3_awaiting_slot_selection = True`
+> unconditionally whenever a map exists, and it runs **after** `run_turn`, where
+> `_clear_slot_window_after_write_cta` lives. The live log proves it: the
+> watchdog still logged `slot_selection_grace (v3_awaiting_slot_selection)` at
+> 11:27:31, eight seconds *after* the CTA turn cleared it.
+>
+> So the defect was carried by the **family-aware re-ask wording**, not by the
+> flag clear. `3c40057` alone would still have failed this call. Do not treat
+> the clear as the fix, and do not remove the wording as redundant — it is the
+> only mechanism actually load-bearing on this path.
+
+### `U-07-a` · the flag clear is undone one layer up — **OPEN, low priority**
+
+`_clear_slot_window_after_write_cta` (llm_stream) and the re-arm at
+`connection.py:11414` disagree, and the later writer wins. Not caller-visible
+today, because `36a7e5b` makes the re-ask correct either way — but the clear is
+dead code on this path while reading as live protection, which is the shape that
+produced `B-60`. Decide which layer owns the flag before either is edited.
+
+### `U-07-old` · the whole B1.2 family has never been exercised on a call — **SUPERSEDED**
 Three commits (`3c40057` → `36a7e5b` → `3b6695e`, see `B-60`) are live on all
 four branches on the strength of unit tests alone. Two of the three shipped a
 defect that a green suite could not see, in the flow they were written to repair
