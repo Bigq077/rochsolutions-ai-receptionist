@@ -7662,6 +7662,47 @@ def _with_ambiguity_rule(
     return result
 
 
+_GCAL_UPCOMING_CACHE_KEY = "_gcal_upcoming_cache"
+
+
+def _invalidate_gcal_lookup_cache(session: Dict[str, Any], reason: str) -> None:
+    """Drop the per-call upcoming-events cache. Called after EVERY write attempt.
+
+    Deliberately not conditioned on the write reporting success. A write that
+    reports failure may still have mutated the calendar — that exact gap is most
+    of this repo's defect history — and the cost of being wrong is asymmetric:
+    an unnecessary invalidation costs one ~250 ms refetch, while a missed one
+    reads a stale appointment back to a caller as though it were current.
+    """
+    if session.pop(_GCAL_UPCOMING_CACHE_KEY, None) is not None:
+        logger.info(
+            "[ms_tools] lookup cache invalidated after %s — next lookup refetches",
+            reason,
+        )
+
+
+def _invalidates_lookup_cache(fn):
+    """Wrap a write executor so the cache cannot outlive a calendar mutation.
+
+    Registered in TOOL_EXECUTORS rather than called inside each executor,
+    because the executors are dispatched from four separate call sites
+    (llm_stream x2, realtime, conversation) and a rule enforced at the call
+    site is a rule that the fifth call site will not have.
+
+    `finally`, so a raising write invalidates too.
+    """
+    import functools as _functools
+
+    @_functools.wraps(fn)
+    async def _wrapped(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            return await fn(args, session)
+        finally:
+            _invalidate_gcal_lookup_cache(session, fn.__name__)
+
+    return _wrapped
+
+
 async def _lookup_patient_gcal(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     """Find an upcoming appointment on the clinic's Google Calendar by phone or
     name. Mirrors the Acuity lookup_patient contract (found / patient_name /
@@ -7716,12 +7757,32 @@ async def _lookup_patient_gcal(args: Dict[str, Any], session: Dict[str, Any]) ->
         return {"found": False, "message": "Calendar not connected"}
     clinic = get_clinic(session.get("clinic_id"))
     calendar_id = _resolve_calendar_id(clinic, (args.get("location") or ""))
-    try:
-        events = await asyncio.to_thread(list_upcoming_events, tokens, 60, 50, calendar_id)
-        await _save_gcal_tokens(tokens, _resolve_clinic_id(session))
-    except Exception as exc:
-        logger.warning("_lookup_patient_gcal: list_upcoming_events failed: %r", exc)
-        return {"found": False, "message": "Could not retrieve appointments"}
+    # Per-call cache of the upcoming-events fetch. jv_v2 call CA38e5603142,
+    # 2026-08-18: lookup_patient ran THREE times in one call on the same phone
+    # and returned the identical appointment each time, the third sitting
+    # directly in front of the reschedule write on the turn the caller waited
+    # 10.9 s for. Each repeat cost a ~250 ms Google Calendar round-trip.
+    #
+    # Only the FETCH is cached. Selection, `_emit` and its session side effects
+    # (`_lookup_*`, the B-42 ambiguity note, the T-18 location inference) still
+    # run on every call, because they are what the rest of the turn reads. The
+    # `next=true` stepping path above never reaches here at all.
+    _cache = session.get(_GCAL_UPCOMING_CACHE_KEY) or {}
+    events = _cache.get(calendar_id)
+    if events is None:
+        try:
+            events = await asyncio.to_thread(list_upcoming_events, tokens, 60, 50, calendar_id)
+            await _save_gcal_tokens(tokens, _resolve_clinic_id(session))
+        except Exception as exc:
+            logger.warning("_lookup_patient_gcal: list_upcoming_events failed: %r", exc)
+            return {"found": False, "message": "Could not retrieve appointments"}
+        session[_GCAL_UPCOMING_CACHE_KEY] = {**_cache, calendar_id: events}
+    else:
+        logger.info(
+            "[ms_tools] lookup_patient (gcal): %d upcoming event(s) served from "
+            "the per-call cache — no calendar round-trip",
+            len(events),
+        )
 
     name_lower = name.lower()
     pk = _phone_key(phone)
@@ -7886,9 +7947,11 @@ async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) ->
 
 TOOL_EXECUTORS: Dict[str, Any] = {
     "check_availability":     _exec_check_availability,
-    "book_appointment":       _exec_book_appointment,
-    "cancel_appointment":     _exec_cancel_appointment,
-    "reschedule_appointment": _exec_reschedule_appointment,
+    # Wrapped: any write mutates the calendar, so the cached upcoming-events
+    # list must not survive it. See _invalidates_lookup_cache.
+    "book_appointment":       _invalidates_lookup_cache(_exec_book_appointment),
+    "cancel_appointment":     _invalidates_lookup_cache(_exec_cancel_appointment),
+    "reschedule_appointment": _invalidates_lookup_cache(_exec_reschedule_appointment),
     "lookup_patient":         _exec_lookup_patient,
     "transfer_to_human":      _exec_transfer_to_human,
     "add_to_waitlist":        _exec_add_to_waitlist,
