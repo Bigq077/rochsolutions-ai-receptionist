@@ -41,7 +41,7 @@ implying more confidence than exists.
 
 ---
 
-## `B-61` · a **successful** reschedule was called a lie, and the caller was asked to book it again — **OPEN**
+## `B-61` · a **successful** reschedule was called a lie, and the caller was asked to book it again — **OPEN, but NOT a duplicate-write risk (reproduced 18 Aug)**
 
 > ⚠️ Anchored, not fixed. `_armed_write_families`
 > [turn_handler.py:1220](../../app/media_streams/turn_handler.py), the R1 arm at
@@ -111,12 +111,55 @@ comment says it is "the only one that catches a phantom the model produced
 having called no tool at all"). Any fix has to distinguish *which* write the
 sentence is describing, not merely *which* writes have happened.
 
-**Not yet established** — do not treat these as known:
-- whether a second write actually fires when the call continues past that turn
-  (this one ended first; it needs a deliberate reproduction, not an assumption);
-- how often a reschedule confirmation lands in booking vocabulary at all. `B-60`
-  showed how badly an imagined frequency estimate performs here — measure it
-  against the obs store's assistant turns before sizing this.
+### Reproduced, and the severity is LOWER than the paragraph above claimed
+
+`CA36c9a2e8cc270ae185e563e8f788a34a`, 18 Aug, build `6c9305a` — a deliberate
+reproduction that carried on past the point where the first call hung up, saying
+**yes** to the bogus re-book prompt. The sentence above ("one turn short of a
+second write") is **falsified**: the second write *did* fire, and was blocked
+twice over.
+
+```
+23:20:32  reschedule_appointment  success=true  → Wednesday 26 August 17:30
+23:20:47  caller: 'um have you moved it then'
+23:20:49  [ms_gate5f] false booking confirmation … (armed=booking)
+          → 'Sorry — before I confirm anything, shall I go ahead and book that in for you?'
+23:20:57  caller: 'um yeah go for it'          ← consent to the bogus prompt
+23:21:00  reschedule_appointment  ← SECOND ATTEMPT
+23:21:00  [ms_llm] reschedule_appointment BLOCKED — the move confirmation
+          question was never asked
+          (last_bot_prompt='…shall I go ahead and book that in for you?')
+23:21:00  [ms_llm] … the reschedule family already completed this call —
+          guard NOT armed, duplicate-write rule attached instead
+23:21:02  "That's all sorted — you're in for Wednesday the 26th of August…"
+23:21:10  outcome=rescheduled, lost_total=0 — diary correct, ONE appointment
+```
+
+Two independent guards held, and the second is a pleasing accident of the first:
+
+1. **The move gate** — `_cta_asked(session, _move_confirmation_asked)` at
+   [llm_stream.py:4501](../../app/media_streams/llm_stream.py). The bogus
+   re-steer is a *booking* CTA, so it does not satisfy the *move* gate, and the
+   write is refused. **The defect's own wrong wording is what stopped it.**
+2. **Layer 2b** — [llm_stream.py:1128](../../app/media_streams/llm_stream.py):
+   the reschedule family already succeeded this call, so the refusal is treated
+   as a duplicate rather than a failure, `_WRITE_ALREADY_DONE_RULE` is attached,
+   and the model closes with a correct "that's all sorted" instead of an apology
+   for a failure that never happened.
+
+Also note what the model did **not** do: despite being re-steered with the word
+"**book**", it called `reschedule_appointment`, not `book_appointment`. No second
+appointment was ever attempted.
+
+**Revised severity: caller-experience defect, not a safety defect.** The caller
+is told it is done, asked to authorise it again, then told it is done — confusing
+and unprofessional on a demo call, but the diary ends correct and no duplicate is
+reachable through this path. It drops below `Fix B` and the `state`-pinning work.
+
+**Still not established:** how often a reschedule confirmation lands in booking
+vocabulary at all. `B-60` showed how badly an imagined frequency estimate
+performs here — measure it against the obs store's assistant turns before
+sizing any fix.
 
 **Reproduction.** Reschedule an existing appointment to a new slot, let it
 succeed, then ask "have you moved it then". Watch for `[ms_gate5f] false booking
