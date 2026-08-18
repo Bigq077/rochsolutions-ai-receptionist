@@ -6564,10 +6564,31 @@ class WebSocketCallHandler:
         # the location and intro branches have already returned before this
         # point, so the only digits reaching here are ones no other handler
         # wanted.
+        # A reschedule or a cancel never collects a phone number — the patient
+        # is found from the number they are calling on — so `phone_confirmed`
+        # is never set and the three tests below are true for the WHOLE call.
+        # "No number on record" therefore carries no information there, and on
+        # JV CA29d50a41db9234a16037a5c3f04c836d it armed phone collection off a
+        # single stray keypress against "Shall I go ahead and move it for you?".
+        #
+        # LOOKUP_PURPOSE_KEY is the narrowest signal that says so: set to
+        # "cancel"/"reschedule" by lookup_patient, and popped the moment any
+        # write succeeds. Three consequences worth stating, because each is a
+        # thing this must not break:
+        #   * a booking never sets it, so the CA9758ceab net below — arm off
+        #     STATE because a reply overwrote last_bot_prompt — is untouched;
+        #   * reschedule-then-book works, because the key is gone once the move
+        #     lands;
+        #   * an explicit "type your number on your keypad" during a reschedule
+        #     still arms, because that is the FIRST arm and this narrows only
+        #     the second.
+        from app.tools.receptionist_tools import LOOKUP_PURPOSE_KEY
+        _lookup_purpose = self.session.get(LOOKUP_PURPOSE_KEY)
         _phone_outstanding = bool(
             self.session.get("booking_flow_active")
             and not self.session.get("phone_confirmed")
             and not self.session.get("phone_entered_by_keypad")
+            and _lookup_purpose not in ("reschedule", "cancel")
         )
         if (
             _is_freeform(self.session.get("clinic_id"))
