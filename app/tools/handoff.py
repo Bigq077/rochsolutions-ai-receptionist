@@ -17,7 +17,28 @@ logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-SHEET_ID = os.getenv("GOOGLE_SHEETS_ID", "").strip()
+def _normalise_sheet_id(raw: str) -> str:
+    """Accept what an operator actually pastes into Render, not just a bare id.
+
+    JV, 2026-08-18: GOOGLE_SHEETS_ID was set with a TRAILING SLASH. `.strip()`
+    removes whitespace, not slashes, so the id went into the request path as
+    `...P2qRis%2F` and every append returned **HTTP 404 "Requested entity was
+    not found"** — for both tabs, on every call, silently. The clinic wrote no
+    call record at all and the only symptom was one WARNING per call.
+
+    A sheet id is copied out of a URL, so the paste is routinely a fragment of
+    one. Take the id out of whatever arrives rather than trusting the operator
+    to trim it: a full URL, a `/edit#gid=0` suffix, or a stray slash all reduce
+    to the same id. The 404 is indistinguishable from a deleted sheet or a
+    permissions fault, which is why this cost a live clinic ten days of records.
+    """
+    val = (raw or "").strip().strip("\"'")
+    if "/spreadsheets/d/" in val:                       # full URL pasted
+        val = val.split("/spreadsheets/d/", 1)[1]
+    return val.split("/", 1)[0].strip()                 # drop /edit#gid=… and any stray slash
+
+
+SHEET_ID = _normalise_sheet_id(os.getenv("GOOGLE_SHEETS_ID", ""))
 
 # latency-eval isolation: Google Sheets writes are OFF unless explicitly enabled.
 # This guarantees eval calls never pollute a live clinic's Sheet even if
