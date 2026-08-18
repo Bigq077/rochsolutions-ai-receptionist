@@ -23,10 +23,16 @@ load-bearing, deliberately not touched here.
 
 The fix: the window is the MAP. Close it by dropping the map, which is what the
 one owner reads.
+
+`_rearm` here is `connection.py._derive_slot_window` itself, imported, not a
+copy. An earlier version of this file mirrored that branch by hand — the same
+mistake the B1.2 test file calls out in its own docstring, and it would have let
+someone change the ownership rule with these tests still green.
 """
 from __future__ import annotations
 
 from app.media_streams import llm_stream as ls
+from app.media_streams.connection import _derive_slot_window as _rearm
 from app.media_streams.config import F_LAST_BOT_PROMPT, F_LAST_QUESTION
 
 
@@ -35,21 +41,6 @@ _MOVE_CTA = (
     "August at 6:45pm. Shall I go ahead and move it for you?"
 )
 _SLOT_OFFER = "I've got Thursday or Friday — which of those suits you?"
-
-
-def _rearm(session: dict) -> None:
-    """connection.py's post-turn block, reduced to the rule it enforces.
-
-    Mirrored rather than imported: the real block sits ~200 lines into
-    `_run_v3_loop` behind a live websocket. What is asserted below is only that
-    the clear survives THIS rule, so the rule is all that needs standing in —
-    and it is stated in one line at the re-arm site.
-    """
-    if session.get("v3_dtmf_slot_map"):
-        session["v3_awaiting_slot_selection"] = True
-    else:
-        session.pop("v3_awaiting_slot_selection", None)
-        session.pop("v3_slot_dtmf_active", None)
 
 
 def _session_after_caller_picked_a_day(**extra) -> dict:
@@ -119,3 +110,30 @@ def test_window_armed_by_this_same_reply_is_still_left_open():
 def test_no_window_at_all_is_still_a_no_op():
     session = {F_LAST_BOT_PROMPT: _MOVE_CTA, F_LAST_QUESTION: _MOVE_CTA}
     assert ls._clear_slot_window_after_write_cta(session) is False
+
+
+def test_the_owner_decides_the_flag_in_both_directions():
+    """The ownership rule itself — the reason `_rearm` is imported, not copied.
+
+    Added after a revert-probe: sabotaging `_derive_slot_window` so a closed
+    window kept its flag left every test above green, because they all start
+    from a session whose flag is ALREADY absent (popped on the caller's reply).
+    They pin the composition — clear, then re-arm — and not the rule. Without
+    this case the import buys nothing that a hand-copy would not.
+    """
+    # Map present → window open.
+    open_window = {"v3_dtmf_slot_map": {"1": "Thursday", "2": "Friday"}}
+    assert _rearm(open_window) is True
+    assert open_window["v3_awaiting_slot_selection"] is True
+
+    # Map gone → window closed, and the flag must not outlive it. This is the
+    # direction that makes dropping the map an effective way to close a window.
+    closed_window = {
+        "v3_awaiting_slot_selection": True,
+        "v3_slot_dtmf_active": True,
+        "v3_dtmf_slot_context": "day",
+    }
+    assert _rearm(closed_window) is False
+    assert closed_window.get("v3_awaiting_slot_selection") is None
+    assert closed_window.get("v3_slot_dtmf_active") is None
+    assert closed_window.get("v3_dtmf_slot_context") is None
