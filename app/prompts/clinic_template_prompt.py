@@ -2545,8 +2545,9 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "number you're calling from', and do NOT ask whether the calling "
         "number is the right one — the caller cannot answer any of that. Ask "
         "for the keypad in that SAME turn, straight after the ack phrase — say "
-        "EXACTLY: 'No problem — go ahead and type the number on your keypad. "
-        "You can press the star key to reset at any time.' STOP there on that "
+        "EXACTLY: 'I can't see a phone number on this call — could you type the number "
+        "on your keypad? You can press the star key to reset at any time.' STOP "
+        "there on that "
         "turn.\n"
         "In BOTH cases: never invite them to say the number aloud, "
         "and never ask 'what number was it booked under' as an open question — "
@@ -2890,8 +2891,8 @@ def _b7_call_state(session: Dict[str, Any], clinic: Dict[str, Any], tk: Dict[str
             "use this number\", and never ask whether the calling number is "
             "the best one: there is nothing to offer and the caller cannot "
             "answer it. Go STRAIGHT to the keypad line instead — say EXACTLY: "
-            "'No problem — go ahead and type the number on your keypad. You "
-            "can press the star key to reset at any time.'"
+            "'I can't see a phone number on this call — could you type the number on "
+            "your keypad? You can press the star key to reset at any time.'"
         )
     if (session.get("acuity_booking_id")
             or session.get("booking_id")

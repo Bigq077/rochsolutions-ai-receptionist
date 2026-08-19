@@ -111,8 +111,16 @@ UNCHANGED_CLINIC_PROMPTS = {
     # clinics move (jv_v1 here, vital_edge deliberately unpinned in this table)
     # and demo / theorem / theorem_v3 are byte-identical. Verified, not assumed.
     # See tests/regression/test_reschedule_phone_without_caller_id_template.py.
-    # Re-pinned 2026-08-13 with request_callback (CAc36368cbeb). Shared table.
-    "jv_v1": "9f6979d0c76e53b3",
+    # Re-pinned 2026-08-15 Job 3c.5: ban "time preference noted" form-filling
+    # in ACKNOWLEDGEMENT RULE (CAce1457d1).
+    # Re-pinned 2026-08-15 Job 3c.2: OUT-OF-WINDOW acknowledgement in SLOT
+    # PRESENTATION (CAce1457d1).
+    # Re-pinned 2026-08-16 Batch 1.1: withheld keypad line says why first
+    # (CA86dfad89 A9a).
+        # Re-pinned 2026-08-19: withheld keypad line says why first
+    # (partial port of a59a7ab). Recomputed on THIS branch — the hash
+    # differs per branch and must never be copied from latency-eval.
+    "jv_v1": "0dd202798498bed6",
     "theorem": "8565be9a48a7a9aa",
     "theorem_v3": "761036c8d0da91ed",
 }

@@ -92,6 +92,7 @@ def test_it_points_at_the_keypad_line_this_prompt_already_mandates(clinic_id):
     state = _call_state(clinic_id, twilio_from_local="")
     assert "type the number on your keypad" in state
     assert "star key to reset" in state
+    assert "can't see a phone number" in state.lower()
 
 
 @pytest.mark.parametrize("clinic_id", TEMPLATE_CLINICS)
