@@ -56,6 +56,7 @@ def _get_engine() -> Optional[Engine]:
         _engine = create_engine(url, pool_pre_ping=True, future=True)
         _engine_url = url
         _Session = sessionmaker(bind=_engine, future=True)
+        _ensure_schema(_engine)
     return _engine
 
 
@@ -67,6 +68,9 @@ def reset_engine() -> None:
     _engine = None
     _engine_url = None
     _Session = None
+    # CPython reuses freed ids, so a new engine could land on the address of a
+    # disposed one and inherit its "already checked" mark. Clear it.
+    _schema_checked.clear()
 
 
 def init_db() -> bool:
@@ -79,10 +83,57 @@ def init_db() -> bool:
     if engine is None:
         _log.warning("[obs.store] init_db skipped — OBS_DATABASE_URL/DATABASE_URL not set")
         return False
-    Base.metadata.create_all(engine, checkfirst=True)
-    _ensure_new_columns(engine)
+    # _get_engine already ran _ensure_schema when it built the engine; run it
+    # again rather than depend on that, so `python -m app.obs.migrate` against an
+    # engine this process built earlier is still a real migration.
+    _ensure_schema(engine, force=True)
     _log.info("[obs.store] schema ensured (calls table)")
     return True
+
+
+# Engines whose schema has already been checked this process (by id, since an
+# Engine is not hashable by URL alone and reset_engine may build several).
+_schema_checked: set = set()
+
+
+def _ensure_schema(engine: Engine, force: bool = False) -> None:
+    """Create the table and add any missing columns. Idempotent, never raises.
+
+    Run when the engine is BUILT, not only from `python -m app.obs.migrate`.
+
+    This is a deploy-safety fix, and the failure it prevents is severe. session.merge
+    SELECTs every mapped column, so a single column present in the model and absent
+    in the database fails the whole write — not just that column. capture_call
+    raises, capture_call_async swallows it and returns False, and obs capture stops
+    for that service: no transcript, no screening, no guard counters, nothing for
+    the judge to score. Silently, because the only trace is one log line per call.
+
+    Measured, not assumed: against a store missing one column, capture_call raised
+    OperationalError and the table ended with zero rows.
+
+    That hazard was latent for every column added since the Phase 1 schema
+    (build_sha, calendar_event_id, the judge columns), and depended entirely on an
+    operator remembering to run the migration before the code that needs it
+    deploys. Render's autoDeploy does not wait for that. Checking at engine build
+    costs one inspect() per process and removes the ordering requirement.
+
+    Never raises: a store that cannot be migrated (no DDL rights) must fail at the
+    write, where it is logged with the call_sid, rather than at engine creation
+    where it would take down every read path too.
+    """
+    if not force and id(engine) in _schema_checked:
+        return
+    _schema_checked.add(id(engine))
+    try:
+        from sqlalchemy import inspect as _inspect
+
+        if not _inspect(engine).has_table("calls"):
+            Base.metadata.create_all(engine, checkfirst=True)
+            _log.info("[obs.store] created calls table")
+            return  # freshly created from the model: no columns can be missing
+        _ensure_new_columns(engine)
+    except Exception as exc:  # pragma: no cover - defensive; must not break reads
+        _log.error("[obs.store] schema check failed: %r", exc)
 
 
 # Columns added after the initial Phase 1 schema. create_all(checkfirst=True) only
