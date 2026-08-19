@@ -129,8 +129,77 @@ failures live.
 ### The gap that matters
 
 `LATENCY_TIMING` defaults to **`false` on all four branches** and is not set in
-`.env`. **No live clinic emits per-turn timing at all.** Every number above was
-reconstructed from ordinary log lines, which is why n=14 and not 300.
+`.env`. Every number above was reconstructed from ordinary log lines, which is
+why n=14 and not 300.
+
+---
+
+## Latency is now persisted (2026-08-19)
+
+**The second gap, and the worse one: nothing was ever stored.** Turning
+`LATENCY_TIMING` on only produces `[LAT]` log lines, and a log line has a
+lifetime. obs held ~294 calls and no latency column, so a baseline could only be
+assembled by exporting a Render log window — and at ~13 calls/day against a
+retention measured in hours, an export can never contain more than the handful of
+calls inside the window. Two sessions of exporting produced a largest sample of
+**29 turns across 3 calls**, one caller, one clinic, mostly reschedules. The
+second export was a superset of the first, and doubling the sample moved p50 by
+0.6%: the numbers were stable, but stable *for that scenario*. There was no
+bigger scroll to do.
+
+What it did establish, and what still stands as directional:
+
+- **~86% of turns miss the 1.5 s bar**, consistent across both samples.
+- **`llm_ttft` dominates** — 6.5–7.6 s at p95, several times any other component.
+  `chunk_gate` is second at ~3.2 s.
+- So this is a **model-and-prompt problem before it is a pipeline problem**.
+  Tuning timeouts or TTS would not touch the largest term.
+
+Enough to direct the work. Not enough to size it, and it must not be written into
+a plan as *the* baseline.
+
+### What changed
+
+Each call's turns are now stored on its obs row, so the sample accumulates
+instead of sliding out of the window.
+
+| Piece | Where |
+|---|---|
+| `TurnTiming.as_record()` — the `[LAT]` fields as a dict | `app/media_streams/latency_timing.py` |
+| Per-call buffer, bounded on turns and on calls | same file (`_buffer` / `drain_call`) |
+| `call_sid` on the turn — the one hot-path change | `connection.py`, one keyword argument |
+| Drain at teardown into the call record | `app/call_logger.py` (`_latency_block`) |
+| `calls.latency` JSON column + migration | `app/obs/models.py`, `app/obs/store.py` |
+| Read it back as the usual table | `scripts/lat_baseline.py` |
+
+`emit()` formats the log line **from** `as_record()`, so the stored figures and
+the logged ones cannot drift; `lat_baseline.py` renders stored turns back into
+`[LAT]` lines and hands them to `lat_parse.py`, so the table comes from the same
+parser and the same percentile method as the locked baseline.
+
+The earlier note in `call_logger._screening_summary` that latency needed
+`connection.py` surgery was over-cautious: `emit()` already held every timing, and
+the only real gap was that a turn did not know its `call_sid`.
+
+### Two switches, not one
+
+- `LATENCY_TIMING=true` — **measures**. Default `false`; with it off `new_turn`
+  returns `None` and nothing is allocated, buffered or stored.
+- `OBS_CAPTURE_ENABLED` + `OBS_DATABASE_URL` — **stores**. Without these the
+  turns are logged and dropped, exactly as before.
+
+Both must be on, on the service serving the clinic. Run
+`python -m app.obs.migrate` once to add the column; it is idempotent and safe to
+re-run.
+
+**A NULL `latency` means "not measured", never "fast".** Every call before the
+column existed is NULL by absence, and `lat_baseline.py` reports those as skipped
+rather than counting them.
+
+### What it buys
+
+At ~13 calls/day: ~30 calls in two to three days, ~300 in a month, queryable —
+with no exports, ever again.
 
 ---
 
@@ -151,9 +220,15 @@ reconstructed from ordinary log lines, which is why n=14 and not 300.
    floor. Not a measurement question.
 2. **Cache `lookup_patient` per call.** Smallest change with a real effect on the
    worst turns; needs no flag.
-3. **Turn `LATENCY_TIMING` on for one clinic** long enough to collect ≥30 turns.
-   Without it, every future latency claim is another hand-parsed log.
-4. Only then WS-C, shipped and unmeasured since Phase 1.
+3. **Turn `LATENCY_TIMING` on for one clinic and leave it on.** The storage
+   half is now built (above), so this is the only remaining step between here
+   and a real baseline — and unlike before, the sample now accumulates rather
+   than expiring with the log window. Read it with
+   `python scripts/lat_baseline.py --clinic <id>`.
+4. **Do not go at latency blind.** `llm_ttft` dominating is directional enough to
+   aim at the model/prompt cost first, but without stored turns there is no way
+   to tell whether a change worked.
+5. Only then WS-C, shipped and unmeasured since Phase 1.
 
 > **Do not overwrite `LATENCY.md`'s locked baseline with the numbers above.**
 > Different service, different method, n=14. A validity check beside the

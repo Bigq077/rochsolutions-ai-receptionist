@@ -8048,7 +8048,13 @@ class WebSocketCallHandler:
                         # the abandoned-rate line Jules reads in lat_parse.
                         self._turn_timing.outcome = "superseded"
                         self._turn_timing.emit()
-                    self._turn_timing = _lat_new_turn(t0=_enqueue_ts)
+                    # call_sid is what makes the turn durable: it is the key
+                    # latency_timing files the emitted turn under, and the key
+                    # CallLogger drains at teardown into the obs row. Without
+                    # it the [LAT] line is logged and then lost with the log.
+                    self._turn_timing = _lat_new_turn(
+                        t0=_enqueue_ts, call_sid=self.call_sid
+                    )
                     if self._turn_timing is not None:
                         self._turn_timing.capture_phase = _lat_capture_phase(self.session)
                         # WS-C: carry the endpoint silence the STT loop measured

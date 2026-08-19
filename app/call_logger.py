@@ -45,6 +45,10 @@ class CallLogger:
         # These are updated from the live session reference just before flush
         self._session_ref: Dict[str, Any] = session
 
+        # Per-turn latency, drained once from the timing buffer (see
+        # _latency_block). None = not drained yet; {} = drained and empty.
+        self._latency: Optional[Dict[str, Any]] = None
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -209,6 +213,7 @@ class CallLogger:
             "turn_count":         len(turns),
             "tone":               (s.get("_tone_state") or {}).get("tone"),
             "screening":          self._screening_summary(),
+            "latency":            self._latency_block(),
         }
 
     def _screening_summary(self) -> Dict[str, Any]:
@@ -226,11 +231,12 @@ class CallLogger:
         only the model did. An `orphan` with no `trigger` anywhere in a day's
         calls is the dormant-Layer-1 signature, and it is now one SQL query.
 
-        Deliberately NOT latency: the per-turn timings live on the connection
-        object rather than the session, so capturing them means editing
-        connection.py (12k lines, the danger zone in CLAUDE.md §4). The `[LAT]`
-        log lines already feed scripts/analyse_calls.py, which is the right tool
-        for that until it can be done safely.
+        Latency is captured separately, by _latency_block below — this method's
+        earlier note that it could not be was over-cautious. The timings do live
+        on the connection object rather than the session, but they did not need
+        to be reached from here: TurnTiming.emit() already holds every figure,
+        so the only genuine gap was that a turn did not know its call_sid. That
+        cost one keyword argument in connection.py, not surgery on it.
 
         Returns {} for clinics without screening, so the column stays null
         rather than filling with empty structures.
@@ -257,3 +263,38 @@ class CallLogger:
             "truncated":       list(truncated),
             "safety_escalation": escalated,
         }
+
+    def _latency_block(self) -> Optional[Dict[str, Any]]:
+        """Per-turn latency for this call: {"summary": {...}, "turns": [...]}.
+
+        Drains app.media_streams.latency_timing's per-call buffer, which
+        TurnTiming.emit() has been filling turn by turn. Returns None when there
+        is nothing — LATENCY_TIMING OFF (the default), or a call that never
+        reached a measured turn — so the obs column stays NULL rather than
+        filling with empty structures, the same convention _screening_summary
+        follows.
+
+        DRAINED ONCE, THEN CACHED. This is load-bearing, not an optimisation:
+        _build_record runs three times per teardown — flush() writes the JSONL,
+        then connection.py calls build_record() again for obs capture and a third
+        time for alert routing. A drain on each call would hand the turns to the
+        JSONL and leave obs and the alert route with nothing, which is precisely
+        the row this whole change exists to populate.
+
+        Never raises. This runs at teardown on every call, and an observability
+        layer must not be able to break one.
+        """
+        if self._latency is not None:
+            return self._latency or None
+        try:
+            from app.media_streams import latency_timing as _lat
+
+            turns = _lat.drain_call(self.call_sid)
+            self._latency = (
+                {"summary": _lat.summarise(turns), "turns": turns} if turns else {}
+            )
+        except Exception as exc:  # pragma: no cover - defensive; teardown path
+            _log.warning("[call_logger] latency drain failed call_sid=%s: %r",
+                         self.call_sid, exc)
+            self._latency = {}
+        return self._latency or None

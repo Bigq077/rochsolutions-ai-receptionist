@@ -96,6 +96,10 @@ _ADDED_COLUMNS = {
     # reconstructed from deploy timestamps. NULL on every earlier call.
     "build_sha": "VARCHAR(16)",
     "calendar_event_id": "VARCHAR(128)",
+    # Per-turn latency. Until this column existed the [LAT] lines were logged and
+    # nothing else, so no historical latency can be back-filled: every row before
+    # the migration is NULL by absence, not by measurement.
+    "latency": "JSON",
     "outcome": "VARCHAR(32)",
     "quality_score": "INTEGER",
     "intent_resolved": "BOOLEAN",
@@ -161,6 +165,7 @@ def _row_from_record(record: Dict[str, Any], turns: List[Dict[str, str]]) -> Cal
         tone=record.get("tone"),
         collected=record.get("collected"),
         screening=record.get("screening") or None,
+        latency=record.get("latency") or None,
         transcript=list(turns or []),
         raw=record,
     )
