@@ -652,8 +652,8 @@ def _phone_question_for(session: Dict[str, Any]) -> str:
             "for you? If so, just say use this number."
         )
     return (
-        "Before I do that — could you type the number on your keypad? "
-        "You can press the star key to reset at any time."
+        "I can't see a phone number on this call — could you type the number on your "
+        "keypad? You can press the star key to reset at any time."
     )
 
 
