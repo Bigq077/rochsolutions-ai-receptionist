@@ -188,9 +188,22 @@ the only real gap was that a turn did not know its `call_sid`.
 - `OBS_CAPTURE_ENABLED` + `OBS_DATABASE_URL` — **stores**. Without these the
   turns are logged and dropped, exactly as before.
 
-Both must be on, on the service serving the clinic. Run
-`python -m app.obs.migrate` once to add the column; it is idempotent and safe to
-re-run.
+Both must be on, on the service serving the clinic.
+
+The `calls.latency` column is added automatically the first time the process
+builds its store engine, so the migration no longer has to run before the deploy.
+`python -m app.obs.migrate` still works and is still idempotent; it is now a way
+to do it early and confirm DDL rights, not a prerequisite.
+
+> **Why that changed, and it matters beyond latency.** `session.merge` SELECTs
+> every mapped column, so ONE column present in the model and missing in the
+> database failed the whole write — `capture_call` raised, `capture_call_async`
+> swallowed it, and obs capture stopped for that service: no transcript, no
+> screening, no guard counters, nothing for the judge to score. Reproduced: zero
+> rows written. That hazard was latent for every column added since the Phase 1
+> schema (`build_sha`, `calendar_event_id`, the judge columns) and depended on an
+> operator migrating before the code deployed — which Render's `autoDeploy` does
+> not wait for. The schema is now checked when the engine is built.
 
 **A NULL `latency` means "not measured", never "fast".** Every call before the
 column existed is NULL by absence, and `lat_baseline.py` reports those as skipped

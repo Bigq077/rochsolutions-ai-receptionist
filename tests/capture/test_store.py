@@ -110,3 +110,86 @@ async def test_capture_async_noop_when_disabled(monkeypatch, fixture_record, fix
         assert await store.capture_call_async(fixture_record, fixture_turns) is False
     finally:
         store.reset_engine()
+
+
+# ---------------------------------------------------------------------------
+# Deploy safety: a store missing a column must heal, not silently stop capturing
+# ---------------------------------------------------------------------------
+
+def test_an_unmigrated_store_heals_itself_on_first_use(tmp_path, monkeypatch,
+                                                       fixture_record, fixture_turns):
+    """A missing column used to cost the WHOLE row, not just that column.
+
+    session.merge SELECTs every mapped column, so one column present in the model
+    and absent in the database fails the entire write. capture_call raised,
+    capture_call_async swallowed it and returned False, and obs capture stopped
+    for that service — no transcript, no screening, no guard counters, nothing for
+    the judge to score — with one log line per call as the only trace.
+
+    Reproduced before the fix: capture_call raised OperationalError and the table
+    ended with zero rows.
+
+    It could happen to any column added since the Phase 1 schema, and it depended
+    on an operator running the migration before the code that needs it deploys.
+    Render's autoDeploy does not wait for that. The schema is now checked when the
+    engine is built, so the ordering no longer matters.
+    """
+    monkeypatch.setattr(config, "DATABASE_URL", f"sqlite:///{tmp_path/'calls.db'}")
+    monkeypatch.setattr(config, "OBS_CAPTURE_ENABLED", True)
+    store.reset_engine()
+    try:
+        assert store.init_db() is True
+
+        # Roll the store back to a schema that predates the `latency` column.
+        with store._get_engine().begin() as conn:
+            conn.execute(text("ALTER TABLE calls DROP COLUMN latency"))
+        store.reset_engine()  # a fresh process, engine rebuilt on first use
+
+        record = dict(fixture_record)
+        record["latency"] = {"summary": {"turns_measured": 1},
+                             "turns": [{"turn_seq": 1, "ttfa_ms": 1200}]}
+
+        assert store.capture_call(record, fixture_turns) is True
+        got = store.get_call("CAfixture0001")
+        # The whole row, not just the new column — that is what was being lost.
+        assert got is not None
+        assert got["transcript"] == fixture_turns
+        assert got["latency"]["turns"][0]["ttfa_ms"] == 1200
+    finally:
+        store.reset_engine()
+
+
+def test_the_schema_check_never_raises(tmp_path, monkeypatch, caplog):
+    """A store that cannot be migrated must fail at the write, not at engine build.
+
+    Failing at engine creation would take down every READ path too — get_call,
+    list_calls, the dashboard — for what is at worst one unwritable column.
+    """
+    def _boom(_engine):
+        raise RuntimeError("no DDL rights")
+
+    monkeypatch.setattr(config, "DATABASE_URL", f"sqlite:///{tmp_path/'calls.db'}")
+    monkeypatch.setattr(store, "_ensure_new_columns", _boom)
+    store.reset_engine()
+    try:
+        assert store.init_db() is True
+        with caplog.at_level("ERROR"):
+            store.reset_engine()
+            assert store._get_engine() is not None   # must not raise
+    finally:
+        monkeypatch.undo()
+        store.reset_engine()
+
+
+def test_a_brand_new_store_is_created_without_migrate(tmp_path, monkeypatch,
+                                                      fixture_record, fixture_turns):
+    """First use against an empty database creates the table from the model."""
+    monkeypatch.setattr(config, "DATABASE_URL", f"sqlite:///{tmp_path/'fresh.db'}")
+    monkeypatch.setattr(config, "OBS_CAPTURE_ENABLED", True)
+    store.reset_engine()
+    try:
+        # No init_db() call at all — the engine build is the only schema step.
+        assert store.capture_call(fixture_record, fixture_turns) is True
+        assert store.get_call("CAfixture0001") is not None
+    finally:
+        store.reset_engine()
