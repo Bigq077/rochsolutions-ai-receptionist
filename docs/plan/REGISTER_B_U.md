@@ -41,7 +41,28 @@ implying more confidence than exists.
 
 ---
 
-## `B-62` · a caller was told **quarter past six**; the diary says **half past five** — **OPEN, P1**
+## `B-62` · a caller was told **quarter past six**; the diary says **half past five** — **FIXED `2c3b7ad` on `latency-eval`. `U`-debt: not yet exercised on a call, not yet ported.**
+
+> ✅ `latency-eval` **`2c3b7ad`**. Regression:
+> `tests/regression/test_b62_refused_move_to_a_different_slot.py` (6 tests —
+> three were red before the fix, three were green and pin what must not change).
+> Full suite 108 → 105, zero regressions, baseline taken in the same session.
+>
+> **Still owed:** a live reproduction (move to slot A, get refused on a move to
+> slot B, confirm she does NOT announce B), and the port to `jv_v2`,
+> `vitaledge-onboarding` and `theorem-onboarding` — all three still carry the
+> defect.
+>
+> **What the fix does.** `_refusal_is_a_genuine_duplicate` compares the slot
+> that landed against the slot that was refused, instead of asking only whether
+> the family ever succeeded. It **fails safe**: when either slot is unknown the
+> answer is "not a duplicate" and the guard arms — a spurious arm costs a
+> stripped sentence, a missed one costs a caller with the wrong time.
+>
+> **Scope kept narrow deliberately.** Reschedule only. Booking and cancel are
+> untouched and still family-level; cancel's success payload carries no id, so
+> widening this needs executor changes and its own evidence. `B-63` and `B-61`
+> are both still open, and `B-61` remains this row's commonest entry point.
 
 > 🔴 **The worst failure mode in the system, observed.** `CLAUDE.md` §6.1 —
 > "every booking the caller believes was made exists" — failing outright.
