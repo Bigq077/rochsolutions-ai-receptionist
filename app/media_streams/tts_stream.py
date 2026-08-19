@@ -50,6 +50,8 @@ from .config import (
     ELEVENLABS_MODEL_ID,
     ELEVENLABS_STABILITY,
     ELEVENLABS_SIMILARITY_BOOST,
+    ELEVENLABS_SPEED,
+    ELEVENLABS_PHONE_SPEED,
     TTS_STREAM_CHUNK_SIZE,
 )
 from .audio_out import AudioOutputProcessor
@@ -171,12 +173,44 @@ def _spell_phone(m: "_re.Match") -> str:
     # rushed run this rule exists to fix.  Only a bare unseparated run gets the
     # default grouping — which mirrors flow._format_phone_readback, so the
     # caller-ID readback and the dictation readback stay paced alike.
+    #
+    # `max(len) >= 2` is the difference between GROUPING and digit-SPACING.
+    # The Theorem prompt (config.py, step "Caller gives phone number") asks the
+    # model for "0 7 8 7 0 1 6 6 8 6 1" — eleven one-digit tokens.  Read as
+    # authored that becomes a comma after every single digit, which is neither
+    # the three groups every other readback on the call uses nor something a
+    # caller can hold in their head.  Spaced digits carry no grouping intent, so
+    # they fall through to the 5/3/3 default like any other bare run.
     _authored = [g for g in _re.split(r"[\s,‑-]+", span.strip()) if g.isdigit()]
-    if len(_authored) > 1 and not _was_intl:
+    if len(_authored) > 1 and not _was_intl and max(len(g) for g in _authored) >= 2:
         groups = _authored
     else:
         groups = [digits[:5], digits[5:8], digits[8:]]
 
+    return _pace_digit_groups(groups)
+
+
+def _pace_digit_groups(groups: "list[str]") -> str:
+    """Render already-grouped digits as the spoken, paced form.
+
+    The single owner of what a spoken phone number sounds like.  Both callers
+    reach it — `_spell_phone` for numerals the model emitted, and
+    `_respell_spoken_digits` for the word form the template prompt asks for —
+    so a number is paced identically no matter which one produced it.
+
+        ["07502", "211", "207"] -> "oh seven five oh two, two one one, two oh seven"
+
+    The separator is a comma, and it must stay a comma.  " — " reads as a longer
+    pause and was the obvious improvement, but chunker._SPLIT_MIN_LEFT is 40:
+    given "I've got you on <number> — is that the best number for the booking?",
+    split_tts_text finds the em-dash after the SECOND group at 52 chars, accepts
+    it, and sends "two oh seven" to ElevenLabs as a separate request from the
+    first eight digits.  The number would then straddle two synthesis calls,
+    with an uncontrolled gap in the middle and a barge-in able to land between
+    them.  "..." splits the same way (priority 2 matches the ". " inside it).
+    Pacing that needs to be slower than a comma belongs in `speed`, not in
+    punctuation the chunker also reads.
+    """
     # No group should run longer than five digits without a pause, however it
     # was written — "01527 123456" needs a breath in the second half too.
     _paced: list[str] = []
@@ -189,6 +223,108 @@ def _spell_phone(m: "_re.Match") -> str:
     # ", " between groups is the pause; ElevenLabs honours comma prosody even
     # with normalization off.
     return ", ".join(" ".join(_DIGIT_WORDS[d] for d in g) for g in _paced)
+
+
+# The other half of the same defect.
+#
+# _spell_phone only ever fires on NUMERALS.  But the template prompt used by
+# every template_v1 clinic (clinic_template_prompt.py, booking step 8 and the
+# reschedule/cancel lookup step) asks the model for the already-spoken form —
+# "I've got you on oh seven five oh two, two one one, two oh seven" — and the
+# model generally complies.  There are no digits in that, so _spell_phone
+# declines it, correctly, and the readback reaches ElevenLabs paced however the
+# model happened to write it.  The booking, reschedule and cancel readbacks —
+# the three the caller most needs to be able to check — were therefore the ones
+# with NO deterministic pacing at all.
+#
+# So the word form is parsed back to digits and re-emitted through the same
+# _pace_digit_groups as the numeral form.  Output is a fixed point: re-running
+# the rule over its own output yields the same string, which matters because
+# substitutions are applied twice on the live path (connection.py _tts_loop and
+# again inside synthesise_chunk).
+#
+# Conservatism is the whole game here, exactly as with _PHONE_SPAN_RE.  The run
+# must START on "oh"/"zero" and be at least ten digit-words long before it is
+# touched.  That prefix rule is what keeps ordinary speech out: "one or two",
+# "four or five minutes", "the first, the second" are nowhere near ten
+# consecutive digit-words, and none of them open on a zero.
+_WORD_DIGITS = {
+    "oh": "0", "zero": "0",
+    "one": "1", "two": "2",   "three": "3", "four": "4", "five": "5",
+    "six": "6", "seven": "7", "eight": "8", "nine": "9",
+}
+
+_DIGIT_WORD_ALT = "|".join(_WORD_DIGITS)          # oh|zero|one|two|...
+_RUN_SEP = r"[\s,\u2014\u2013-]+"                 # space, comma, em/en dash, hyphen
+
+_SPOKEN_DIGIT_RUN_RE = _re.compile(
+    rf"(?<![A-Za-z])((?:oh|zero)(?:{_RUN_SEP}(?:{_DIGIT_WORD_ALT})){{9,}})(?![A-Za-z])",
+    _re.IGNORECASE,
+)
+
+
+# In the spoken form the comma is the GROUP separator and the space is the
+# digit separator, which is the same distinction _spell_phone draws between
+# authored grouping and bare digit-spacing — just written the other way round.
+_RUN_GROUP_SEP = _re.compile(r"[,—–]+")
+
+
+def _spoken_run_groups(span: str) -> "Optional[list[str]]":
+    """Digit groups behind a spoken run, or None when it is not a UK number.
+
+    Same acceptance rule as _spell_phone: 0-prefixed, 10 or 11 digits.  A run
+    longer than a phone number (a model reading out a reference code, say) fails
+    the length check and is left alone rather than guessed at.
+    """
+    groups: list[str] = []
+    for chunk in _RUN_GROUP_SEP.split(span):
+        words = [w for w in _re.split(r"[\s-]+", chunk.strip()) if w]
+        if not words:
+            continue
+        digits = "".join(_WORD_DIGITS.get(w.lower(), "") for w in words)
+        if len(digits) != len(words):
+            return None
+        groups.append(digits)
+
+    joined = "".join(groups)
+    if not joined.startswith("0") or not (10 <= len(joined) <= 11):
+        return None
+    return groups
+
+
+def _respell_spoken_digits(m: "_re.Match") -> str:
+    """Re-pace a spoken digit run into the canonical grouped form.
+
+    Honours grouping the model already chose, and ignores mere digit-spacing —
+    the same rule, and for the same reasons, as _spell_phone.  Without this the
+    rule would re-impose 5/3/3 on the landline _spell_phone had just correctly
+    left as 0121 / 496 / 0000, since the numeral rule runs first and this one
+    reads its output.
+    """
+    span   = m.group(1)
+    groups = _spoken_run_groups(span)
+    if groups is None:
+        return span
+    if len(groups) > 1 and max(len(g) for g in groups) >= 2:
+        return _pace_digit_groups(groups)
+    digits = "".join(groups)
+    return _pace_digit_groups([digits[:5], digits[5:8], digits[8:]])
+
+
+def _is_spoken_phone_number(text: str) -> bool:
+    """True when `text` reads a phone number back to the caller.
+
+    Run on the FINAL, post-substitution text, where every producer of a readback
+    has been normalised to the same spoken form — so this one predicate covers
+    the numerals the model emitted, the words it emitted, and the deterministic
+    keypad readback in connection.py alike.  Used only to choose a speaking
+    rate: a false positive slows one utterance slightly, a false negative leaves
+    today's pace, and neither can change what is said.
+    """
+    for m in _SPOKEN_DIGIT_RUN_RE.finditer(text):
+        if _spoken_run_groups(m.group(1)) is not None:
+            return True
+    return False
 
 
 # OpenAI fallback path.
@@ -210,6 +346,10 @@ def _apply_tts_substitutions_elevenlabs(text: str) -> str:
     # like a digit span to the phone rule below.
     text = _CURRENCY_RE.sub(_spell_currency, text)
     text = _PHONE_SPAN_RE.sub(_spell_phone, text)
+    # Last: the numeral rule above emits the spoken form, so running the spoken
+    # rule after it re-reads that output and confirms it is already canonical.
+    # Ordering it the other way round would leave numerals unpaced.
+    text = _SPOKEN_DIGIT_RUN_RE.sub(_respell_spoken_digits, text)
     return text
 
 
@@ -226,6 +366,7 @@ def _apply_tts_substitutions_openai(text: str) -> str:
     # Applied here too so the dev-bypass path does not sound different from the
     # ElevenLabs one; words are read as words by either engine.
     text = _PHONE_SPAN_RE.sub(_spell_phone, text)
+    text = _SPOKEN_DIGIT_RUN_RE.sub(_respell_spoken_digits, text)
     return text
 
 
@@ -241,6 +382,16 @@ def _apply_tts_substitutions_openai(text: str) -> str:
 # All subsequent synthesise_chunk() calls skip ElevenLabs and go straight
 # to the OpenAI TTS fallback.
 _ELEVENLABS_EXHAUSTED: bool = False
+
+# Set True if ElevenLabs ever rejects `speed` in voice_settings (422).  The
+# parameter is model- and account-dependent, and the failure mode if it is not
+# accepted is the worst one this system has: a 422 on the phone-readback turn
+# returns from synthesise_chunk without enqueuing a single audio frame, so the
+# caller hears silence in the middle of a booking.  Rather than risk that on a
+# live call, the first rejection retries the same chunk without `speed` and
+# latches the flag so no later chunk on this process pays the round trip.
+# Same shape as _ELEVENLABS_EXHAUSTED above, deliberately.
+_ELEVENLABS_SPEED_UNSUPPORTED: bool = False
 
 # ---------------------------------------------------------------------------
 # ElevenLabs pronunciation dictionary — REMOVED 2026-08-02 (B-14)
@@ -439,7 +590,7 @@ class TTSStream:
             return
 
         # Fast-path: ElevenLabs known-exhausted → use OpenAI TTS directly
-        global _ELEVENLABS_EXHAUSTED
+        global _ELEVENLABS_EXHAUSTED, _ELEVENLABS_SPEED_UNSUPPORTED
         if _ELEVENLABS_EXHAUSTED:
             await self._synthesise_openai_fallback(text, audio_out_queue)
             return
@@ -460,9 +611,25 @@ class TTSStream:
                 "similarity_boost": ELEVENLABS_SIMILARITY_BOOST,
             },
         }
+
+        # A phone number being read back is synthesised slower than the rest of
+        # the call.  The decision is made HERE, on the post-substitution text,
+        # rather than being passed in by connection.py: this is the only place
+        # that has seen the final words, and keeping it here means the change
+        # costs nothing in the 12k-line _tts_loop.
+        #
+        # `speed` is omitted entirely at 1.0 so a deployment that has not tuned
+        # anything sends a request byte-identical to today's.
+        _is_phone = _is_spoken_phone_number(text)
+        _speed    = ELEVENLABS_PHONE_SPEED if _is_phone else ELEVENLABS_SPEED
+        if abs(_speed - 1.0) > 1e-9 and not _ELEVENLABS_SPEED_UNSUPPORTED:
+            body["voice_settings"]["speed"] = _speed
+
         logger.info(
-            "[ms_tts] synthesise_chunk: model=%s len=%d text=%r",
-            ELEVENLABS_MODEL_ID, len(text), text[:60],
+            "[ms_tts] synthesise_chunk: model=%s len=%d speed=%s phone=%s text=%r",
+            ELEVENLABS_MODEL_ID, len(text),
+            body["voice_settings"].get("speed", "default"), _is_phone,
+            text[:60],
         )
 
         max_attempts = 3
@@ -493,6 +660,25 @@ class TTSStream:
                             await asyncio.sleep(retry_after)
                             continue  # retry the for loop
                         return  # all retries exhausted
+                    if (
+                        resp.status_code == 422
+                        and "speed" in body["voice_settings"]
+                    ):
+                        # Validation error while we are sending a parameter the
+                        # account or model may not accept. Drop it and retry the
+                        # SAME chunk — the alternative is returning with no
+                        # audio, which is dead air mid-booking.
+                        err = await resp.aread()
+                        _ELEVENLABS_SPEED_UNSUPPORTED = True
+                        body["voice_settings"].pop("speed", None)
+                        logger.error(
+                            "[ms_tts] ElevenLabs rejected voice_settings.speed "
+                            "(422) — retrying without it and disabling it for "
+                            "this process: %s",
+                            err[:300],
+                        )
+                        continue  # retry the for loop
+
                     if resp.status_code != 200:
                         err = await resp.aread()
                         logger.error(
@@ -592,6 +778,18 @@ class TTSStream:
             "input":           text,
             "response_format": "pcm",       # 24kHz PCM16 signed little-endian
         }
+
+        # Match the ElevenLabs path's phone-readback pacing so the dev bypass and
+        # the credit-exhausted fallback do not sound different from production.
+        # OpenAI's `speed` is a top-level field, not a voice setting, and its
+        # accepted range (0.25-4.0) is wider than the one config.py clamps to,
+        # so any value that reaches here is already valid.
+        _speed = (
+            ELEVENLABS_PHONE_SPEED if _is_spoken_phone_number(text)
+            else ELEVENLABS_SPEED
+        )
+        if abs(_speed - 1.0) > 1e-9:
+            body["speed"] = _speed
 
         logger.info("[ms_tts_openai] synthesising (fallback): %r", text[:60])
 
