@@ -51,6 +51,15 @@ from app.media_streams.turn_handler import (
 
 
 # (tool, the executor's success payload, the refusal the gate then constructs)
+#
+# B-62 (19 Aug 2026): reschedule's two entries additionally carry
+# `attempted_slot_iso`. That field is not the executor's — it is attached at the
+# `_note_write_result` call site from the tool args, so the funnel can tell a
+# repeat of the move that landed from a move to a DIFFERENT time. Both entries
+# name the SAME slot here, which is what makes this a duplicate and keeps these
+# tests testing what they were written to test. A reschedule refusal that names
+# a different slot, or none at all, now arms the guard by design — see
+# test_b62_refused_move_to_a_different_slot.py.
 _FAMILIES = [
     (
         "cancel_appointment",
@@ -60,8 +69,15 @@ _FAMILIES = [
     ),
     (
         "reschedule_appointment",
-        {"success": True, "new_time": "Tue 11 Aug 09:00"},
-        {"status": "reschedule_confirmation_required"},
+        {
+            "success": True,
+            "new_time": "Tue 11 Aug 09:00",
+            "attempted_slot_iso": "2026-08-11T09:00:00+01:00",
+        },
+        {
+            "status": "reschedule_confirmation_required",
+            "attempted_slot_iso": "2026-08-11T09:00:00+01:00",   # the SAME slot
+        },
         WRITE_FAMILY_RESCHEDULE,
     ),
     (
