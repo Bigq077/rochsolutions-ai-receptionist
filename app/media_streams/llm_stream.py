@@ -937,6 +937,72 @@ _WRITE_NO_CLAIM_RULE = {
 # and _WRITE_ALREADY_DONE_RULE is worded so that is still true.
 WRITE_SUCCEEDED_KEY = "_write_families_succeeded"
 
+# B-62 — the wall clock of the move that actually succeeded this call.
+#
+# Kept beside WRITE_SUCCEEDED_KEY rather than inside it because
+# test_b58_duplicate_write_after_success asserts that key's values are literally
+# True, and because "did this family succeed" and "which slot did it write" are
+# different questions with different lifetimes.
+RESCHEDULE_SUCCEEDED_SLOT_KEY = "_reschedule_succeeded_slot"
+
+
+def _slot_wall_clock(slot_iso: Optional[str]) -> Optional[str]:
+    """'2026-08-19T18:15:00+01:00' -> '2026-08-19T18:15'. None when unusable.
+
+    Offset-insensitive deliberately: the model passes `new_slot_iso` both with
+    and without an offset for the same slot — both shapes appear on
+    CA6bd7fb424a72246a38671d4690913850 — and every clinic slot is local wall
+    time. The wall clock is also what the caller actually heard, which is the
+    thing this comparison is protecting.
+
+    Returns None rather than guessing on anything malformed, and None means
+    "cannot tell", which the caller of this function must treat as NOT a
+    duplicate. See _refusal_is_a_genuine_duplicate.
+    """
+    if not isinstance(slot_iso, str):
+        return None
+    s = slot_iso.strip()
+    if len(s) < 16 or s[10] not in ("T", " "):
+        return None
+    if not (s[:4].isdigit() and s[5:7].isdigit() and s[8:10].isdigit()):
+        return None
+    return s[:16]
+
+
+def _refusal_is_a_genuine_duplicate(
+    session: dict, family: str, result: dict
+) -> bool:
+    """True when a refused write really is a repeat of one that already landed.
+
+    B-62 (P1), JV CA6bd7fb424a72246a38671d4690913850, 19 Aug 2026. A caller
+    moved his appointment to 17:30, was confused into restarting the
+    reschedule (B-61), and the second move — to 18:15 — was refused. Layer 2b
+    asked only "has the reschedule family succeeded this call?", said yes, and
+    so did not arm the false-confirmation guard. Susie announced the refused
+    move as done, at the new time, and promised a text that was never sent.
+    The caller left believing quarter past six; the diary said half past five.
+
+    The family-level test is right for a genuine repeat (CA0f9a12) and wrong the
+    moment the second write names a different target. So compare targets.
+
+    **Fails safe.** When either slot is unknown the answer is False — not a
+    duplicate — so the guard arms. A spurious arm costs a stripped sentence and
+    a re-ask; a missed one costs a caller walking away with the wrong time.
+
+    Scoped to reschedule on purpose. Booking and cancel keep the family-level
+    behaviour: cancel's success payload carries no appointment id at all (see
+    the note above WRITE_SUCCEEDED_KEY), so widening this needs executor changes
+    and its own evidence. Returning True for them leaves them exactly as they
+    were.
+    """
+    if family != WRITE_FAMILY_RESCHEDULE:
+        return True
+    succeeded_slot = session.get(RESCHEDULE_SUCCEEDED_SLOT_KEY)
+    refused_slot = _slot_wall_clock((result or {}).get("attempted_slot_iso"))
+    if not succeeded_slot or not refused_slot:
+        return False
+    return succeeded_slot == refused_slot
+
 # Call-scoped: book_appointment reached the provider and came back failed.
 #
 # Deliberately NOT WRITE_REFUSED_KEY, which is turn-scoped and covers all three
@@ -1072,6 +1138,15 @@ def _note_write_result(session: dict, tool_name: str, result):
         session[WRITE_REFUSED_KEY] = refused
         succeeded[family] = True
         session[WRITE_SUCCEEDED_KEY] = succeeded
+        # B-62: remember WHICH slot landed, so a later refusal can be told apart
+        # from a repeat of this one. Taken from the target that was requested —
+        # the funnel attaches it at the call site — because the two reschedule
+        # executors return differently-shaped success payloads and neither
+        # carries an ISO.
+        if family == WRITE_FAMILY_RESCHEDULE:
+            session[RESCHEDULE_SUCCEEDED_SLOT_KEY] = _slot_wall_clock(
+                result.get("attempted_slot_iso")
+            )
         if family == WRITE_FAMILY_BOOKING:
             session["booking_write_confirmed"] = True
             # A real booking now exists, so the availability blocks are correct
@@ -1087,7 +1162,23 @@ def _note_write_result(session: dict, tool_name: str, result):
             if _line:
                 session["_booking_outcome_unspoken"] = _line
         return result
-    if succeeded.get(family):
+    if succeeded.get(family) and not _refusal_is_a_genuine_duplicate(
+        session, family, result
+    ):
+        # B-62 — the family succeeded, but THIS refusal named a different slot
+        # (or one we cannot identify). Calling that a duplicate is what let
+        # "you're now in for quarter past six" reach a caller whose diary said
+        # half past five. Fall through and arm the guard, exactly as a refusal
+        # with no prior success would.
+        logger.warning(
+            "[ms_llm] %s refused for a DIFFERENT target than the move that "
+            "succeeded this call (succeeded=%r refused=%r) — NOT a duplicate, "
+            "arming the false-confirmation guard",
+            tool_name,
+            session.get(RESCHEDULE_SUCCEEDED_SLOT_KEY),
+            _slot_wall_clock((result or {}).get("attempted_slot_iso")),
+        )
+    elif succeeded.get(family):
         # CA0f9a12 — a duplicate write in a family that already completed this
         # call. Arming here is wrong: Gate 5f would strip the turn's speech on
         # the strength of an attempt that changed nothing, and the no-claim rule
@@ -4512,6 +4603,13 @@ class LLMStream:
             # attach a do-not-claim-success rule to a blocked/failed one
             # (Layer 2) before the model sees the result. Covers all three write
             # families — booking, reschedule and cancel.
+            # B-62: carry the slot this call ASKED for into the funnel. Both the
+            # success and the refusal reach _note_write_result as bare results
+            # that never say which slot they concern — the executors' payloads
+            # differ and neither carries an ISO — so without this the duplicate
+            # test can only be family-level, which is the defect.
+            if tool_name == "reschedule_appointment" and isinstance(result, dict):
+                result.setdefault("attempted_slot_iso", args.get("new_slot_iso"))
             result = _note_write_result(session, tool_name, result)
 
             logger.info(
