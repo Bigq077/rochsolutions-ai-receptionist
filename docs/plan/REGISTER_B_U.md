@@ -183,7 +183,48 @@ does not settle it and I have not read that path.
 
 ---
 
-## `B-61` · a **successful** reschedule was called a lie, and the caller was asked to book it again — **OPEN. Not a duplicate-write risk, but it is the entry point to `B-62` (P1)**
+## `B-61` · a **successful** reschedule was called a lie, and the caller was asked to book it again — **OPEN, DEFERRED. Measured 19 Aug: 3 occurrences in 294 calls, all three self-induced. Do not fix without new evidence.**
+
+> 📊 **Measured before fixing, and the measurement said stop.** Scanned all
+> **294** stored calls in the obs store (25 Jul – 19 Aug; jv_v1 227,
+> theorem_v3 40, vital_edge 27) for the literal re-steer strings, which is the
+> right predicate because the stored transcript is POST-Gate-5 — a fired
+> re-steer REPLACES the false claim, so searching for the claim undercounts and
+> searching for the re-steer is exact.
+>
+> | re-steer variant | calls |
+> |---|---|
+> | booking (`…shall I go ahead and book that in for you?`) | **6** |
+> | provisional (`…shall I put that request through for you?`) | 0 |
+> | reschedule (`…would you like me to move it for you?`) | 0 |
+> | cancel (`…keep this appointment, or cancel it altogether?`) | 0 |
+>
+> Of the six booking fires, **three are the guard doing its job** on genuine
+> bookings — 1, 3 and 5 Aug, each a model confirmation claimed before the write:
+>
+> ```
+> [assistant] So that's Quentin, Friday the 7th of August at half past seven — shall I go ahead and book that in?
+> [user]      um go for it
+> [assistant] Sorry — before I confirm anything, shall I go ahead and book that in for you?
+> ```
+>
+> The other **three are this row** — 18 Aug 22:22, 18 Aug 23:18, 19 Aug 12:45 —
+> and all three are **my own test calls**, provoked by deliberately asking "have
+> you moved it then" after a completed move. In **48** reschedule-ish calls over
+> 25 days there is **not one organic occurrence**.
+>
+> **Recommendation: do not fix this now.** The fix means narrowing the R1 arm in
+> `_armed_write_families` — the same arm that produced the three legitimate
+> catches above in the same window. That trades a guard with three demonstrated
+> real catches against zero demonstrated real harms. The register's own history
+> (`B-60`, `B-29`, `B-32`) is a list of rows that looked urgent until someone
+> counted.
+>
+> **Reopen if** the re-steer starts appearing on calls nobody staged — the scan
+> above is cheap and repeatable, and it is the trigger to watch, not the code.
+> Note also that `B-62`, which this row is the commonest entry to, is now fixed
+> independently (`2c3b7ad`), so the harmful downstream outcome is closed whether
+> or not this row ever is.
 
 > ⛔ **Severity corrected 19 Aug — read this before acting on the downgrade
 > below.** On 18 Aug I reproduced this, found the duplicate write blocked twice
