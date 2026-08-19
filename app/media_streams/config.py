@@ -67,6 +67,41 @@ ELEVENLABS_STABILITY       = 0.5
 ELEVENLABS_SIMILARITY_BOOST = 0.75
 
 # ---------------------------------------------------------------------------
+# Speaking rate
+# ---------------------------------------------------------------------------
+# `speed` is a voice_settings field on eleven_flash_v2_5.  Below 1.0 is slower.
+# ElevenLabs documents the accepted band as 0.7-1.2 and rejects anything outside
+# it with a 422, so both values are clamped here: a typo in the Render dashboard
+# must not be able to turn every TTS request on a live call into a validation
+# error.
+#
+# ELEVENLABS_SPEED is the whole-call default and stays at 1.0 — this is not a
+# licence to slow Susie down generally, which would cost turn latency on every
+# utterance for no benefit.
+#
+# ELEVENLABS_PHONE_SPEED applies to ONE kind of utterance: a phone number being
+# read back to the caller, in the booking, reschedule and cancel flows alike.
+# That turn is the one place where the caller has to check eleven digits against
+# the number in their own hand, and where getting it wrong writes a wrong number
+# to the calendar and the confirmation SMS.  Slower articulation is worth the
+# extra second there and nowhere else.  Both are env-overridable so the rate can
+# be tuned from the Render dashboard against a real call without a code deploy.
+_SPEED_MIN, _SPEED_MAX = 0.7, 1.2
+
+
+def _clamped_speed(raw: str, default: float) -> float:
+    """Parse a speed from the environment, falling back to `default` on junk."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(_SPEED_MIN, min(_SPEED_MAX, value))
+
+
+ELEVENLABS_SPEED       = _clamped_speed(os.getenv("ELEVENLABS_SPEED", ""), 1.0)
+ELEVENLABS_PHONE_SPEED = _clamped_speed(os.getenv("ELEVENLABS_PHONE_SPEED", ""), 0.8)
+
+# ---------------------------------------------------------------------------
 # AssemblyAI STT constants
 # ---------------------------------------------------------------------------
 
