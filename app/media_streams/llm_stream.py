@@ -1152,6 +1152,10 @@ def _note_write_result(session: dict, tool_name: str, result):
         # speech all within one turn. Leaving the marker set here would arm
         # Gate 5f against the turn's own LEGITIMATE confirmation — the exact
         # over-fire that abandoned a completed booking on 2026-06-12.
+        # CA3b303f: clear the reschedule/cancel lookup purpose so a later
+        # legitimate book_appointment in the same call is not blocked.
+        from app.tools.receptionist_tools import LOOKUP_PURPOSE_KEY
+        session.pop(LOOKUP_PURPOSE_KEY, None)
         if refused.pop(family, None):
             logger.info(
                 "[ms_llm] %s succeeded after an earlier refusal this turn — "
