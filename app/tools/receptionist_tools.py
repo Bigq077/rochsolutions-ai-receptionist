@@ -7829,6 +7829,7 @@ LOOKUP_AMBIGUOUS_KEY   = "_lookup_ambiguous"
 LOOKUP_NAME_SPOKEN_KEY = "_lookup_name_spoken"
 LOOKUP_SLOT_SPOKEN_KEY = "_lookup_slot_spoken"
 LOOKUP_MATCH_COUNT_KEY = "_lookup_match_count"
+LOOKUP_PURPOSE_KEY     = "_lookup_purpose"  # "cancel" | "reschedule" from last lookup
 
 
 # B-44 — steering, attached to the ambiguous lookup result itself.
@@ -8054,6 +8055,9 @@ async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) ->
 
     if purpose == "history":
         return await _exec_get_patient_history(args, session)
+
+    if purpose in ("cancel", "reschedule"):
+        session[LOOKUP_PURPOSE_KEY] = purpose
 
     # cancel / reschedule: look up upcoming appointment
     if session.get("clinic_id") not in ("theorem", "theorem_v2", "theorem_v3"):
