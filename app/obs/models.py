@@ -91,6 +91,17 @@ class Call(Base):
     # took a human reading a full log to spot in the 2026-07-25 sweep.
     screening: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
+    # Per-turn latency: {"summary": {...}, "turns": [{turn_seq, ttfa_ms, ...}]}.
+    # The [LAT] log lines verbatim, as built by TurnTiming.as_record(), so the
+    # figures here and the figures lat_parse.py prints from a log export are the
+    # same measurement. NULL on every call before this column existed, and NULL
+    # whenever LATENCY_TIMING is OFF — which is the default, so a clinic that has
+    # not enabled it stores nothing rather than storing zeros.
+    #
+    # Fleet percentiles come from the UNION of `turns` across rows. The nested
+    # `summary` is per-call and must not be averaged; see latency_timing.summarise.
+    latency: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     # The transcript — ordered [{"role","text"}] turns. The input to every
     # downstream layer (judge, regression). Never dropped.
     transcript: Mapped[list | None] = mapped_column(JSON, nullable=True)
@@ -143,6 +154,7 @@ class Call(Base):
             "tone": self.tone,
             "collected": self.collected,
             "screening": self.screening,
+            "latency": self.latency,
             "transcript": self.transcript or [],
             "created_at": self.created_at.isoformat() if self.created_at else None,
             # Phase 3 judge fields
