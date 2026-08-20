@@ -1398,6 +1398,10 @@ def _map_json_to_clinic_contract(loaded: Dict[str, Any]) -> Dict[str, Any]:
     clinic["display_name"] = loaded.get("clinic_name", loaded.get("display_name", "the clinic"))
     clinic["timezone"] = op.get("timezone", "Europe/London")
     clinic["sms_name"] = op.get("sms_name", clinic["display_name"])
+    # Modality word in reminder SMS: "your {noun} appointment". Absent → the
+    # neutral "your appointment", which is the right answer for a clinic whose
+    # book spans several disciplines. Never guess a speciality here.
+    clinic["sms_appointment_noun"] = op.get("sms_appointment_noun", "")
     clinic["phone"] = op.get("phone", loaded.get("primary_phone", ""))
     if op.get("transfer_phone"):
         clinic["transfer_phone"] = op["transfer_phone"]

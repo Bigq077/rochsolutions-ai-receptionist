@@ -20,6 +20,22 @@ _DEFAULT_CLINIC_NAME  = "Theorem Health"
 _DEFAULT_CLINIC_PHONE = "07366 530580"
 
 
+def _appt_noun(appointment_noun: Optional[str]) -> str:
+    """
+    Modality word for "your ___ appointment", or "" for a bare "your
+    appointment".
+
+    The reminder body used to hardcode "physiotherapy" for every tenant. Vital
+    Edge sells only massage and Theorem's book runs from acupuncture to
+    psychotherapy, so two of the three live clinics were texting patients the
+    wrong word for what they had booked. The noun now comes from the clinic's
+    own config (operational.sms_appointment_noun); a clinic that sets nothing
+    gets the neutral wording rather than another clinic's speciality.
+    """
+    n = (appointment_noun or "").strip()
+    return f"{n} " if n else ""
+
+
 def _cn(clinic_name: Optional[str]) -> str:
     return clinic_name  or _DEFAULT_CLINIC_NAME
 
@@ -143,6 +159,7 @@ def format_24hr_reminder(
     has_insurance: bool = False,
     clinic_name:  Optional[str] = None,
     clinic_phone: Optional[str] = None,
+    appointment_noun: Optional[str] = None,
 ) -> str:
     """Reminder — 24 hours before."""
     day_name = appointment_time.strftime("%A")
@@ -150,7 +167,8 @@ def format_24hr_reminder(
     loc_str  = location.title() if location else "our"
 
     msg = (
-        f"Hi {patient_name}, just a reminder — your physiotherapy appointment is tomorrow "
+        f"Hi {_first(patient_name)}, just a reminder — your "
+        f"{_appt_noun(appointment_noun)}appointment is tomorrow "
         f"({day_name}) at {time_str} at our {loc_str} clinic."
     )
     if what_to_bring or is_new_patient:
@@ -165,13 +183,15 @@ def format_same_day_reminder(
     location: str,
     clinic_name:  Optional[str] = None,
     clinic_phone: Optional[str] = None,
+    appointment_noun: Optional[str] = None,
 ) -> str:
     """Reminder — same day, 2 hours before."""
     time_str = appointment_time.strftime("%I:%M%p").lstrip("0").lower()
     loc_str  = location.title() if location else "our"
 
     return (
-        f"Hi {patient_name}, just a reminder — your physiotherapy appointment is today at {time_str} "
+        f"Hi {_first(patient_name)}, just a reminder — your "
+        f"{_appt_noun(appointment_noun)}appointment is today at {time_str} "
         f"at our {loc_str} clinic. See you soon! {_cn(clinic_name)} - {_cp(clinic_phone)}"
     )
 

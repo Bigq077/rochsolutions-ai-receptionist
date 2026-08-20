@@ -148,6 +148,7 @@ async def send_24hr_reminder(
     clinic_name: Optional[str] = None,
     clinic_phone: Optional[str] = None,
     from_number: Optional[str] = None,
+    appointment_noun: Optional[str] = None,
 ) -> bool:
     """
     Send 24-hour reminder SMS.
@@ -178,9 +179,21 @@ async def send_24hr_reminder(
             what_to_bring=is_new_patient,  # Only remind new patients what to bring
             clinic_name=clinic_name,
             clinic_phone=clinic_phone,
+            appointment_noun=appointment_noun,
         )
-        
-        await send_sms(to=patient_phone, message=message, from_number=from_number)
+
+        # `send_sms` returns the Twilio SID, or None for a SUPPRESSED send
+        # (SMS_ENABLED off) as well as a rejected one. This path used to discard
+        # it and log "24hr reminder sent" either way — the same false success the
+        # booking confirmation carried until 2026-08-18. A reminder nobody
+        # received must not read as delivered.
+        _sid = await send_sms(to=patient_phone, message=message, from_number=from_number)
+        if not _sid:
+            logger.warning(
+                "24hr reminder NOT sent (suppressed or rejected) to ***%s",
+                patient_phone[-4:] if patient_phone else "????",
+            )
+            return False
 
         # If new patient, send additional "what to bring" reminder
         if is_new_patient:
@@ -200,7 +213,7 @@ async def send_24hr_reminder(
             await send_sms(to=patient_phone, message=insurance_msg, from_number=from_number)
         
         logger.info(
-            f"24hr reminder sent to {patient_phone}",
+            f"24hr reminder sent to ***{patient_phone[-4:] if patient_phone else '????'}",
             extra={
                 "patient_name": patient_name,
                 "appointment_time": appointment_time.isoformat(),
@@ -226,6 +239,7 @@ async def send_same_day_reminder(
     clinic_name: Optional[str] = None,
     clinic_phone: Optional[str] = None,
     from_number: Optional[str] = None,
+    appointment_noun: Optional[str] = None,
 ) -> bool:
     """
     Send same-day reminder (2 hours before appointment).
@@ -248,12 +262,20 @@ async def send_same_day_reminder(
             location=location_short,
             clinic_name=clinic_name,
             clinic_phone=clinic_phone,
+            appointment_noun=appointment_noun,
         )
 
-        await send_sms(to=patient_phone, message=message, from_number=from_number)
+        # Same honest-result rule as the 24hr reminder above.
+        _sid = await send_sms(to=patient_phone, message=message, from_number=from_number)
+        _tail = patient_phone[-4:] if patient_phone else "????"
+        if not _sid:
+            logger.warning(
+                "Same-day reminder NOT sent (suppressed or rejected) to ***%s", _tail,
+            )
+            return False
 
-        logger.info(f"Same-day reminder sent to {patient_phone}")
-        
+        logger.info("Same-day reminder sent to ***%s", _tail)
+
         return True
     
     except Exception as e:

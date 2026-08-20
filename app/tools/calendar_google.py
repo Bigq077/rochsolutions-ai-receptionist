@@ -9,6 +9,7 @@ import pytz
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from google.auth.transport.requests import Request
 from google.auth.exceptions import RefreshError
 
@@ -405,6 +406,29 @@ def patch_event_time(
         "end": {"dateTime": end_dt.isoformat(), "timeZone": "Europe/London"},
     }
     return service.events().patch(calendarId=calendar_id, eventId=event_id, body=body).execute()
+
+
+def get_event(
+    stored_tokens: Dict[str, Any],
+    event_id: str,
+    calendar_id: str = DEFAULT_CALENDAR_ID,
+) -> Optional[Dict[str, Any]]:
+    """
+    Fetch a single event by id, or None if it no longer exists.
+
+    Used by the reminder worker to re-read a provisional booking's current
+    title before texting the patient about it — a deleted or declined slot
+    must not produce a reminder.
+    """
+    service = get_calendar_service(stored_tokens)
+    try:
+        return service.events().get(
+            calendarId=calendar_id, eventId=event_id
+        ).execute()
+    except HttpError as e:
+        if getattr(e, "status_code", None) in (404, 410) or "404" in str(e) or "410" in str(e):
+            return None
+        raise
 
 
 def delete_event(
