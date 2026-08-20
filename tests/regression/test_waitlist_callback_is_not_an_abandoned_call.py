@@ -58,7 +58,12 @@ def waitlist_session(monkeypatch):
     )
     monkeypatch.setattr("app.storage.redis_store.redis_client", None, raising=False)
 
-    session: dict = {"clinic_id": "vital_edge"}
+    # phone_confirmed is what a caller who reached the waitlist has always had
+    # in real life — every route into it runs after the number is settled. It
+    # became load-bearing for these tests with B-69 (2026-08-20), which put the
+    # A1 phone gate on add_to_waitlist: without it the tool now refuses ONCE,
+    # so the assertions below would be measuring the gate rather than the ping.
+    session: dict = {"clinic_id": "vital_edge", "phone_confirmed": True}
     return session, sent
 
 

@@ -36,7 +36,16 @@ def test_vital_edge_owner_number_is_jonathan():
 
 @pytest.mark.asyncio
 async def test_request_callback_texts_owner_and_arms_flags():
-    session = {"clinic_id": "vital_edge", "call_sid": "CAtest"}
+    # Dylan's number WAS confirmed on CAc36368cbeb — the miss was that nothing
+    # was told, not that the number was unchecked. Stating it here keeps this
+    # test about the notification: B-69 (2026-08-20) put the A1 phone gate on
+    # request_callback, so an unconfirmed session now buys a confirmation turn
+    # instead of a text, and this would be asserting that instead.
+    session = {
+        "clinic_id": "vital_edge",
+        "call_sid": "CAtest",
+        "phone_confirmed": True,
+    }
     sent = {}
 
     async def _fake_send(*, to, message, **_kwargs):

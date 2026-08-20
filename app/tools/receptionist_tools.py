@@ -6986,6 +6986,69 @@ def _owner_callback_number(clinic: dict) -> str:
     )
 
 
+def _unconfirmed_callback_number(session: dict, tool_name: str) -> Optional[dict]:
+    """Refuse ONCE per call when no number has ever been confirmed, else None.
+
+    book_appointment has had this guard since 26 July (the A1 gate): a write
+    must not use the calling number until the caller has agreed to it. Its two
+    owner-notifying siblings never got one, so on
+    CAa0f76e2c2851f9eb3f28eddc38b75e3b (VE, 2026-08-20) Jonathan was texted
+    Ray's caller ID at 15:32:09.349 and the number was read back to Ray 13
+    seconds later, at 15:32:22.45. The read-back was decorative: had he
+    corrected it, the text had already gone.
+
+    The engine agreed the number was unconfirmed the whole time - 15:32:05 and
+    again at 15:32:26 both logged "phone DTMF STAYS ARMED - the caller spoke but
+    no number is on record yet", twenty seconds after the SMS.
+
+    ONE-SHOT, deliberately, and this is the part not to simplify away. Only
+    three paths in the engine set phone_confirmed: keypad entry, and two verbal
+    branches that need the caller to say YES to a question carrying a
+    _PHONE_STEP_MARKERS phrase. There is NO path by which a spoken number arms
+    it. So a caller who answers the confirmation with a different number spoken
+    aloud can never satisfy a permanent gate, and would be asked forever - the
+    "had to say it twice" failure, which is worse than the defect being fixed.
+    Refusing once buys the confirmation turn; refusing twice risks the call.
+    That is the same asymmetry _is_garbage_transcript documents: a guard that
+    strands a caller costs more than the thing it prevents.
+
+    Sets human_requested but NOT _waitlist_pinged, which is load-bearing rather
+    than incidental: if the caller drops on the confirmation turn, teardown's
+    should_notify_unreached_caller() reads exactly that pair and tells staff
+    anyway. Without it this guard would trade a wrong number for a silently
+    lost lead - re-creating the Dylan Wilson miss the tool exists to prevent.
+    """
+    if session.get("phone_confirmed") is True:
+        return None
+    if session.get("_callback_phone_gate_fired"):
+        logger.info(
+            "[callback] phone gate already spent this call - allowing %s "
+            "with an unconfirmed number rather than looping",
+            tool_name,
+        )
+        return None
+
+    session["_callback_phone_gate_fired"] = True
+    session["human_requested"] = True
+    logger.warning(
+        "[callback] BLOCKED once - phone not confirmed (%s) phone_confirmed=%r "
+        "clinic=%s",
+        tool_name, session.get("phone_confirmed"), session.get("clinic_id"),
+    )
+    return {
+        "success": False,
+        "error": (
+            f"{tool_name} has not fired - the caller has not confirmed a number "
+            "to be reached on. Do NOT tell them anyone will be in touch, and do "
+            "NOT treat the number they are calling from as confirmed. Read the "
+            "number you already have back to them and ask for a plain yes or no "
+            "- \"I've got you on <number>, is that the best number for you?\" "
+            "If they want a different one, ask them to type it on their keypad. "
+            f"Then call {tool_name} again."
+        ),
+    }
+
+
 def _queue_owner_callback_sms(
     session: dict,
     *,
@@ -7053,6 +7116,10 @@ async def _exec_add_to_waitlist(args: dict, session: dict) -> dict:
     if not patient_name or not phone:
         return {"error": "Name and phone are required for the waitlist."}
 
+    _gate = _unconfirmed_callback_number(session, "add_to_waitlist")
+    if _gate is not None:
+        return _gate
+
     # A waitlist entry is a promise that a human will make contact. Say so, or
     # infer_call_outcome has nothing to read and falls through to "abandoned" —
     # which sends the caller the "give us a call back and book" copy moments
@@ -7115,6 +7182,12 @@ async def _exec_request_callback(args: dict, session: dict) -> dict:
             "success": False,
             "error": "Name and phone are required before requesting a callback.",
         }
+
+    # Above every mutation below: a refused attempt must not leave a
+    # callback_request on the record for a callback nobody was told about.
+    _gate = _unconfirmed_callback_number(session, "request_callback")
+    if _gate is not None:
+        return _gate
 
     session["human_requested"] = True
     session.setdefault("callback_request", {
