@@ -51,6 +51,7 @@
     "_note": "Flattened by get_clinic into the legacy clinic contract. working_hours end = last_appointment + slot_minutes so the last slot stays bookable (is_within_working_hours uses start <= t < end).",
     "timezone": "Europe/London",
     "sms_name": "Joint Venture Physiotherapy",
+    "sms_appointment_noun": "physiotherapy",
     "phone": "+44 7367 002651",
     "transfer_phone": "+447586605462",
     "_call_overflow_note": "Human-first overflow: an inbound call rings Marcus's own phone (dial_phone) FIRST; he presses 1 to take it, otherwise (no answer / voicemail / any other key) the call falls through to Susie as a full receptionist after ~ring_timeout seconds. Set enabled=true to activate — brief Marcus to press 1 first. Flip enabled=false to instantly revert to Susie-answers-immediately. JV-only; no other clinic has this block.",
