@@ -56,6 +56,7 @@
     "_note": "Flattened by get_clinic into the legacy clinic contract. booking_system google_calendar_provisional drives the calendar-read + provisional-write + notify path. working_hours is intentionally all-closed — availability comes from the published calendar, not generated.",
     "timezone": "Europe/London",
     "sms_name": "Vital Edge Therapy",
+    "sms_appointment_noun": "massage",
     "phone": "+44 7426 779875",
     "transfer_phone": "+447545862307",
     "booking_system": "google_calendar_provisional",

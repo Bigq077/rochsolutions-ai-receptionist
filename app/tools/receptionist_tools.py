@@ -3324,6 +3324,8 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
         # Fires for reschedules too (new appointment time gets its own reminders).
         try:
             from app.notifications.scheduler import schedule_appointment_reminders
+            from app.clinic_config import twilio_number_for_clinic
+            _clinic_id = clinic.get("clinic_id") or session.get("clinic_id") or ""
             await schedule_appointment_reminders(
                 patient_phone=phone,
                 patient_name=patient_name,
@@ -3334,6 +3336,16 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
                 insurer=insurer or None,
                 clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
                 clinic_phone=clinic.get("sms_phone") or clinic.get("phone"),
+                appointment_noun=clinic.get("sms_appointment_noun"),
+                clinic_id=_clinic_id,
+                # Pin the sender to THIS clinic's line. `pending_reminders` is a
+                # global Redis key, so on a shared Redis another tenant's worker
+                # may drain this entry — unpinned it would go out from that
+                # worker's ambient TWILIO_PHONE_NUMBER, and the patient's reply
+                # would land on the wrong clinic's inbound webhook and be lost.
+                # The session booking path was pinned; this one was missed, and
+                # it is the ONLY path Theorem uses.
+                from_number=twilio_number_for_clinic(_clinic_id),
             )
         except Exception as e:
             logger.warning("_book_appointment_acuity reminder scheduling failed (non-fatal): %r", e)
@@ -5431,6 +5443,50 @@ async def _book_appointment_provisional(
     except Exception as e:
         logger.warning("provisional caller ack SMS failed (non-fatal): %r", e)
 
+    # Schedule day-before (24hr) + 2-hour reminders — non-fatal.
+    #
+    # This path had NO reminder scheduling at all. _exec_book_appointment
+    # early-returns here for provisional clinics, and its own reminder block
+    # sits further down the function, so Vital Edge never queued a single
+    # reminder while appearing "on" by virtue of carrying no kill switch.
+    #
+    # The gate is what makes this safe to turn on. A provisional booking is a
+    # REQUEST — the caller has just been texted "not yet confirmed" — so the
+    # reminder is queued now but only released if the practitioner has since
+    # confirmed it, which the sender checks by re-reading the event's title.
+    # No calendar event means nothing the practitioner can ever confirm, and so
+    # nothing the gate below could ever release. Queue nothing rather than queue
+    # a reminder that would have to fail open.
+    if not event_id:
+        logger.info(
+            "[reminders] provisional booking has no calendar event — no "
+            "reminders queued for %s", phone,
+        )
+    else:
+        try:
+            from app.notifications.scheduler import schedule_appointment_reminders
+            from app.clinic_config import twilio_number_for_clinic
+            _clinic_id = _resolve_clinic_id(session)
+            await schedule_appointment_reminders(
+                patient_phone=phone,
+                patient_name=patient_name,
+                appointment_time=start_dt,
+                location=location.title() if location else "",
+                is_new_patient=False,
+                clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
+                clinic_phone=clinic.get("sms_phone") or clinic.get("phone"),
+                appointment_noun=clinic.get("sms_appointment_noun"),
+                clinic_id=_clinic_id,
+                from_number=twilio_number_for_clinic(_clinic_id),
+                confirm_gate={
+                    "event_id": event_id,
+                    "calendar_id": calendar_id,
+                    "clinic_id": _clinic_id,
+                },
+            )
+        except Exception as e:
+            logger.warning("provisional reminder scheduling failed (non-fatal): %r", e)
+
     return {
         "success": True,
         "provisional": True,
@@ -6089,6 +6145,8 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
             insurer=insurer or None,
             clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
             clinic_phone=clinic.get("sms_phone") or clinic.get("phone"),
+            appointment_noun=clinic.get("sms_appointment_noun"),
+            clinic_id=clinic.get("clinic_id") or session.get("clinic_id") or "",
             from_number=twilio_number_for_clinic(
                 clinic.get("clinic_id") or session.get("clinic_id") or ""
             ),
@@ -6332,6 +6390,14 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
     session["cancellation_completed"] = True
     session["cancel_confirmed"] = True
 
+    # Retract the pending 24hr/2hr reminders for the appointment just removed.
+    # The Acuity cancel path has done this since reminders existed; this
+    # Google-Calendar path never did, so a JV or Vital Edge patient who
+    # cancelled was still texted "just a reminder — your appointment is
+    # tomorrow" the next day. Matches on the exact instant, so a reschedule's
+    # newly-queued reminders are untouched.
+    await _cancel_reminders_for(session, args, event_start)
+
     # SMS notification — non-fatal
     try:
         from app.notifications.booking_sms import send_cancellation_confirmation
@@ -6534,6 +6600,51 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
             return {"success": False, "error": str(e)}
 
     session["calendar_status"] = "patched"
+
+    # Move the reminders with the appointment. This path is an in-place event
+    # move, NOT an internal book+cancel, so neither half of the reminder
+    # bookkeeping happened here before: the OLD time's reminders stayed queued
+    # (the patient would be reminded of the time they had just moved away from)
+    # and the NEW time got none at all.
+    #
+    # Retract first, then queue: cancel_reminders_for_appointment matches on the
+    # exact instant, so this order is not load-bearing, but a reschedule onto a
+    # slot 24h out can legitimately queue nothing (both reminder times already
+    # passed) and the retraction must still happen.
+    try:
+        _old_start_for_reminders = (found.get("start") or {}).get("dateTime", "")
+        await _cancel_reminders_for(session, args, _old_start_for_reminders)
+
+        from app.notifications.scheduler import schedule_appointment_reminders
+        from app.clinic_config import twilio_number_for_clinic
+        _rs_clinic_id = _resolve_clinic_id(session)
+        _is_provisional = clinic.get("booking_system") == "google_calendar_provisional"
+        await schedule_appointment_reminders(
+            patient_phone=args.get("phone", "") or _gcal_event_phone(found),
+            patient_name=_appt_name,
+            appointment_time=new_start,
+            location=_gcal_event_location(found).title(),
+            is_new_patient=False,
+            clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
+            clinic_phone=clinic.get("sms_phone") or clinic.get("phone"),
+            appointment_noun=clinic.get("sms_appointment_noun"),
+            clinic_id=_rs_clinic_id,
+            from_number=twilio_number_for_clinic(_rs_clinic_id),
+            # A rescheduled provisional booking is still a REQUEST — the owner
+            # is texted "please confirm with the client" below — so it carries
+            # the same confirmation gate a fresh provisional booking does.
+            confirm_gate=(
+                {
+                    "event_id": session.get("calendar_event_id") or event_id,
+                    "calendar_id": calendar_id,
+                    "clinic_id": _rs_clinic_id,
+                }
+                if _is_provisional
+                else None
+            ),
+        )
+    except Exception as e:
+        logger.warning("reschedule reminder re-scheduling failed (non-fatal): %r", e)
 
     # SMS notification — non-fatal
     try:

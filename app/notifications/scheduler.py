@@ -95,6 +95,9 @@ async def schedule_appointment_reminders(
     clinic_name: Optional[str] = None,
     clinic_phone: Optional[str] = None,
     from_number: Optional[str] = None,
+    appointment_noun: Optional[str] = None,
+    clinic_id: Optional[str] = None,
+    confirm_gate: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """
     Schedule all appointment reminders (24hr and same-day).
@@ -167,6 +170,9 @@ async def schedule_appointment_reminders(
                 clinic_name=clinic_name,
                 clinic_phone=clinic_phone,
                 from_number=from_number,
+                appointment_noun=appointment_noun,
+                clinic_id=clinic_id,
+                confirm_gate=confirm_gate,
             )
             reminders_scheduled.append(reminder_id_24hr)
             logger.info(f"24hr reminder scheduled for {reminder_24hr}")
@@ -186,6 +192,9 @@ async def schedule_appointment_reminders(
                 clinic_name=clinic_name,
                 clinic_phone=clinic_phone,
                 from_number=from_number,
+                appointment_noun=appointment_noun,
+                clinic_id=clinic_id,
+                confirm_gate=confirm_gate,
             )
             reminders_scheduled.append(reminder_id_2hr)
             logger.info(f"2hr reminder scheduled for {reminder_2hr}")
@@ -219,6 +228,9 @@ async def _schedule_reminder(
     clinic_name: Optional[str] = None,
     clinic_phone: Optional[str] = None,
     from_number: Optional[str] = None,
+    appointment_noun: Optional[str] = None,
+    clinic_id: Optional[str] = None,
+    confirm_gate: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Schedule a single reminder in Redis."""
     if not REDIS_AVAILABLE or not redis_client:
@@ -240,13 +252,31 @@ async def _schedule_reminder(
         "clinic_name": clinic_name,
         "clinic_phone": clinic_phone,
         "from_number": from_number or "",
+        # Modality noun for the SMS body ("physiotherapy", "massage", or "").
+        # Resolved from clinic.json at BOOKING time and carried in the payload:
+        # the worker that drains this queue may belong to another tenant on a
+        # shared Redis and cannot look the booking clinic's config up.
+        "appointment_noun": appointment_noun or "",
+        "clinic_id": clinic_id or "",
+        # Provisional clinics only — {"event_id": ..., "calendar_id": ...}. The
+        # sender re-reads that event and stays silent while it is still titled
+        # PENDING CONFIRMATION. See _confirmed_enough_to_remind().
+        "confirm_gate": confirm_gate or None,
         "status": "pending",
         "created_at": datetime.utcnow().isoformat(),
     }
-    
+
+    # The key must outlive the moment it is due. A flat 7-day TTL silently
+    # dropped every reminder for an appointment booked more than 8 days out:
+    # the key expired, and process_due_reminders treats a missing key as an
+    # orphan and quietly zrem's it. Nobody was ever texted and nothing was
+    # logged. Keep the key until a week PAST its due time instead, so the
+    # already-sent record is still inspectable afterwards.
+    _ttl = int((reminder_time - datetime.now(timezone.utc)).total_seconds()) + 60 * 60 * 24 * 7
+
     await redis_client.setex(
         name=reminder_id,
-        time=60 * 60 * 24 * 7,
+        time=max(_ttl, 60 * 60 * 24 * 7),
         value=json.dumps(reminder_data),
     )
 
@@ -410,19 +440,40 @@ async def process_due_reminders() -> int:
                 reminder_data_json = await redis_client.get(reminder_id)
 
                 if not reminder_data_json:
+                    # Was silent. A due entry whose key has vanished means a
+                    # reminder nobody received, which is exactly the failure
+                    # worth seeing in the Render log rather than inferring.
+                    logger.warning(
+                        "[reminders] due entry %r has no payload (key expired) "
+                        "— dropped WITHOUT sending", reminder_id,
+                    )
                     await redis_client.zrem(PENDING_REMINDERS_SET, reminder_id)
                     continue
 
                 reminder_data = json.loads(reminder_data_json)
-                await _send_reminder(reminder_data)
+                outcome = await _send_reminder(reminder_data)
 
-                reminder_data["status"] = "sent"
+                # Record what actually happened. This used to stamp "sent"
+                # unconditionally and drop the entry, so a Twilio rejection, a
+                # suppressed send and a real delivery were indistinguishable
+                # afterwards — the same false-success the booking confirmation
+                # SMS had until 2026-08-18.
+                reminder_data["status"] = outcome
                 reminder_data["sent_at"] = datetime.utcnow().isoformat()
                 await redis_client.setex(
                     name=reminder_id,
                     time=60 * 60 * 24 * 7,
                     value=json.dumps(reminder_data),
                 )
+
+                if outcome != "sent":
+                    logger.warning(
+                        "[reminders] %s reminder for ***%s @ %s was NOT sent (%s)",
+                        reminder_data.get("reminder_type"),
+                        str(reminder_data.get("patient_phone") or "")[-4:],
+                        reminder_data.get("appointment_time"),
+                        outcome,
+                    )
 
                 await redis_client.zrem(PENDING_REMINDERS_SET, reminder_id)
                 processed += 1
@@ -441,8 +492,86 @@ async def process_due_reminders() -> int:
         return 0
 
 
-async def _send_reminder(reminder_data: Dict[str, Any]) -> bool:
-    """Send a single reminder SMS."""
+# Provisional bookings are written to the calendar with this title prefix and
+# keep it until the practitioner confirms with the client. Same literal the
+# booking and cancel paths write in receptionist_tools.
+_PENDING_TITLE_PREFIX = "PENDING CONFIRMATION"
+
+
+async def _confirmed_enough_to_remind(gate: Optional[Dict[str, Any]]) -> bool:
+    """
+    True when a reminder may go out.
+
+    Only provisional clinics carry a gate. There the booking is a REQUEST: the
+    caller is texted "not yet confirmed - {practitioner} will be in touch", and
+    the calendar event stays titled "PENDING CONFIRMATION - ..." until he
+    confirms. Texting "your appointment is tomorrow at 3pm" for one of those
+    would contradict the text they already have and might name a slot that was
+    never agreed, so the event is re-read at send time and a still-pending one
+    stays silent.
+
+    Fails OPEN on an unreadable calendar (no tokens, API error, event gone).
+    The alternative is silently withholding reminders from a clinic whose
+    Google auth has lapsed, which looks identical to the feature being off.
+    A confirmed appointment reminded about is recoverable; a confirmed
+    appointment silently NOT reminded about is the failure this whole change
+    exists to fix.
+    """
+    if not gate:
+        return True
+
+    event_id = (gate.get("event_id") or "").strip()
+    calendar_id = (gate.get("calendar_id") or "").strip()
+    clinic_id = (gate.get("clinic_id") or "").strip()
+    if not event_id or not clinic_id:
+        return True
+
+    try:
+        from app.storage.redis_store import redis_get_json
+        from app.tools.calendar_google import get_event, resolve_tokens_key
+
+        # Per-clinic token key (google_tokens:<clinic_id>). Resolved here rather
+        # than reusing receptionist_tools._get_tokens to keep the notifications
+        # package free of a dependency on the tools package.
+        tokens = await redis_get_json(await resolve_tokens_key(clinic_id))
+        if not tokens:
+            logger.warning(
+                "[reminders] provisional gate: no Google tokens for clinic %r "
+                "— sending anyway rather than going silent", clinic_id,
+            )
+            return True
+
+        event = await asyncio.to_thread(get_event, tokens, event_id, calendar_id)
+        if not event:
+            logger.info(
+                "[reminders] provisional gate: event %r is gone — not sending",
+                event_id,
+            )
+            return False
+
+        summary = (event.get("summary") or "").strip().upper()
+        if summary.startswith(_PENDING_TITLE_PREFIX):
+            logger.info(
+                "[reminders] provisional gate: %r still reads %r — staying "
+                "silent, the practitioner has not confirmed it",
+                event_id, event.get("summary"),
+            )
+            return False
+        return True
+    except Exception as e:
+        logger.warning(
+            "[reminders] provisional gate check failed (%r) — sending anyway", e,
+        )
+        return True
+
+
+async def _send_reminder(reminder_data: Dict[str, Any]) -> str:
+    """
+    Send a single reminder SMS.
+
+    Returns one of "sent" / "suppressed" / "failed" so the caller can record
+    what actually happened instead of assuming success.
+    """
     from app.notifications.booking_sms import (
         send_24hr_reminder,
         send_same_day_reminder,
@@ -460,6 +589,10 @@ async def _send_reminder(reminder_data: Dict[str, Any]) -> bool:
     clinic_phone = reminder_data.get("clinic_phone")
     # Pinned booking-clinic sender (falls back to env for legacy/absent entries)
     from_number = reminder_data.get("from_number") or None
+    appointment_noun = reminder_data.get("appointment_noun")
+
+    if not await _confirmed_enough_to_remind(reminder_data.get("confirm_gate")):
+        return "suppressed"
 
     try:
         if reminder_type == "24hr":
@@ -474,6 +607,7 @@ async def _send_reminder(reminder_data: Dict[str, Any]) -> bool:
                 clinic_name=clinic_name,
                 clinic_phone=clinic_phone,
                 from_number=from_number,
+                appointment_noun=appointment_noun,
             )
         elif reminder_type == "2hr":
             success = await send_same_day_reminder(
@@ -484,16 +618,17 @@ async def _send_reminder(reminder_data: Dict[str, Any]) -> bool:
                 clinic_name=clinic_name,
                 clinic_phone=clinic_phone,
                 from_number=from_number,
+                appointment_noun=appointment_noun,
             )
         else:
             logger.error(f"Unknown reminder type: {reminder_type}")
-            return False
-        
-        return success
-    
+            return "failed"
+
+        return "sent" if success else "suppressed"
+
     except Exception as e:
         logger.error(f"Failed to send reminder: {e}", exc_info=True)
-        return False
+        return "failed"
 
 
 # ============================================================================
