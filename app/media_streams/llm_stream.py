@@ -3842,6 +3842,8 @@ class LLMStream:
             LOOKUP_FILLERS,
             CANCEL_WRITE_FILLERS,
             RESCHEDULE_WRITE_FILLERS,
+            CALLBACK_FILLERS,
+            WAITLIST_FILLERS,
         )
 
         # Tools that get filler phrases → list to draw from
@@ -3858,8 +3860,12 @@ class LLMStream:
             # this branch, so neither can be spoken over a blocked write.
             "cancel_appointment":     CANCEL_WRITE_FILLERS,
             "reschedule_appointment": RESCHEDULE_WRITE_FILLERS,
-            "request_callback":       LOOKUP_FILLERS,
-            "add_to_waitlist":        LOOKUP_FILLERS,
+            # NOT LOOKUP_FILLERS: every phrase there is about an appointment
+            # the caller already has, and a caller asking for a ring-back or a
+            # waitlist place has none. CAa0f76e2c (VE, 2026-08-20) heard "just
+            # pulling your appointment up" having never booked anything.
+            "request_callback":       CALLBACK_FILLERS,
+            "add_to_waitlist":        WAITLIST_FILLERS,
         }
 
         result_blocks: List[dict] = []
