@@ -172,6 +172,82 @@ async def _cache_call_ids(call_sid: str, caller_number: str, to_number: str) -> 
         logger.warning("[ms_router] Redis cache failed: %r", _exc)
 
 
+async def _cached_caller_number(call_sid: str) -> str:
+    """The caller's number for *call_sid*, read back from `_cache_call_ids`.
+
+    Returns "" on EVERY failure path — no sid, no Redis, no key, a decode
+    error. This is called from the screening whisper, which runs after the
+    practitioner has already picked up, so every millisecond here is silence in
+    their ear. Degrading to the caller-less whisper is always better than
+    delaying it.
+    """
+    if not call_sid:
+        return ""
+    try:
+        from .session import _get_redis
+        _redis = _get_redis()
+        if not _redis:
+            return ""
+        raw = await _redis.get(f"ms_caller:{call_sid}")
+    except Exception as _exc:
+        logger.warning("[ms_router] whisper caller-id read failed: %r", _exc)
+        return ""
+    if raw is None:
+        return ""
+    if isinstance(raw, (bytes, bytearray)):
+        try:
+            raw = raw.decode("utf-8", "ignore")
+        except Exception:
+            return ""
+    return str(raw).strip()
+
+
+def _whisper_caller_phrase(raw: str) -> str:
+    """Spoken form of the caller's number for the screening whisper, or "".
+
+    Empty means "say nothing about who is calling", and the practitioner hears
+    exactly the whisper they hear today. Empty is returned for a withheld
+    number, a number we cannot pace confidently, and any exception — announcing
+    nothing is always safe, announcing something wrong is not.
+
+    Paced through `tts_stream._pace_digit_groups`, which its own docstring names
+    as the single owner of what a spoken phone number sounds like here. Reusing
+    it means the number the practitioner hears in the whisper is grouped
+    identically to the one Susie reads back to the caller.
+
+    Both imports are lazy. `.connection` is warm — `router` imports it at module
+    scope. `.tts_stream` and the `.receptionist_tools` that `_is_usable_caller_id`
+    reaches for are NOT guaranteed warm by importing `router`; measured cold they
+    cost 4ms and 76ms respectively, so the worst case is ~80ms of added silence,
+    once per worker, on the first overflow call after a cold start. Measured
+    rather than assumed, because this runs on an answered leg — if either module
+    ever grows an expensive import, re-measure before assuming it is still fine.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    try:
+        from .connection import _is_usable_caller_id
+        if not _is_usable_caller_id(raw):
+            return ""
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        # Spoken back in the 0-form a UK practitioner recognises, exactly as
+        # _spell_phone does — never "plus four four".
+        if digits.startswith("44"):
+            digits = "0" + digits[2:]
+        # Deliberately narrow: only numbers we can group the way every other
+        # read-back on the call is grouped. A non-UK caller falls through to
+        # the caller-less whisper rather than being read out in a shape nobody
+        # can check.
+        if not digits.startswith("0") or not (10 <= len(digits) <= 11):
+            return ""
+        from .tts_stream import _pace_digit_groups
+        return _pace_digit_groups([digits[:5], digits[5:8], digits[8:]])
+    except Exception as _exc:
+        logger.warning("[ms_router] whisper caller phrasing failed: %r", _exc)
+        return ""
+
+
 def _stream_twiml(
     request: Request, to_number: str, caller_number: str, overflow: bool = False
 ) -> str:
@@ -345,27 +421,71 @@ async def ms_screen(request: Request) -> Response:
     call bridges. Asks them to press 1 to accept; no key press (or hang-up, or
     their carrier voicemail) falls through to <Hangup/> so the caller reaches
     Susie via the <Dial> action. `parent` = the caller-leg CallSid, carried in
-    the query string because this leg has a different CallSid."""
+    the query string because this leg has a different CallSid.
+
+    The whisper also announces the caller's number when it can be said
+    confidently, because <Dial callerId> shows the clinic's own line rather
+    than the caller's — Twilio only presents numbers we own — so the
+    practitioner would otherwise answer with no idea who is on the other end.
+
+    Nothing here may raise or dawdle: it runs after the practitioner has picked
+    up, so any delay is silence in their ear and any exception drops a call
+    they just answered. Every lookup degrades to the caller-less whisper, and
+    the press-1 contract is unchanged — that is what keeps voicemail from
+    swallowing the call."""
     parent = request.query_params.get("parent", "")
+    _whisper, _with_caller = "", ""
     try:
         form  = await request.form()
         _from = form.get("From", "") or ""  # the clinic callerId on this leg
         from app.clinic_config import clinic_id_from_twilio_to, get_clinic
-        _clinic  = get_clinic(clinic_id_from_twilio_to(_from)) or {}
-        _whisper = (_clinic.get("call_overflow") or {}).get("whisper_text") or ""
+        _clinic   = get_clinic(clinic_id_from_twilio_to(_from)) or {}
+        _overflow = _clinic.get("call_overflow") or {}
+        _whisper     = _overflow.get("whisper_text") or ""
+        _with_caller = _overflow.get("whisper_text_with_caller") or ""
     except Exception:
-        _whisper = ""
+        _whisper, _with_caller = "", ""
     if not _whisper:
         _whisper = (
             "Business call from your Susie line. "
             "Press 1 to take it, or hang up and Susie will handle it."
         )
+    if not _with_caller:
+        _with_caller = (
+            "Business call, from {caller}. "
+            "Press 1 to take it, or hang up and Susie will handle it."
+        )
+
+    # Tell the practitioner WHO is calling. The <Dial callerId> is a number we
+    # own — the clinic's own Susie line — because Twilio will not present the
+    # caller's number, so without this the phone rings showing the clinic's own
+    # number and they answer blind.
+    #
+    # `.replace`, never `.format`: this template comes from clinic.json, and a
+    # stray brace in operator-edited config would raise, killing the whisper on
+    # a live call. A template with no {caller} placeholder simply never gets a
+    # caller announced, which is a legitimate way to switch this off per clinic.
+    _caller_phrase = _whisper_caller_phrase(await _cached_caller_number(parent))
+    if _caller_phrase and "{caller}" in _with_caller:
+        _whisper = _with_caller.replace("{caller}", _caller_phrase)
+
+    # The prompt got ~5s longer, and the gather timeout runs from the END of it.
+    # Left at 8 the caller would wait that much longer on ringback before Susie
+    # picks up a call the practitioner is ignoring. Digits are accepted DURING
+    # the prompt, so the practitioner has strictly more time to press 1 than
+    # before, not less — the shorter timeout only trims the dead tail.
+    _timeout = 5 if _caller_phrase else 8
+
     _gather = _abs_ms_url(request, f"/ms/screen-gather?parent={parent}")
+    # Escaped because it is operator-edited config interpolated into XML: one
+    # ampersand in whisper_text is malformed TwiML, and malformed TwiML on this
+    # leg drops the call the practitioner just answered.
+    from xml.sax.saxutils import escape as _xml_escape
     twiml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         "<Response>"
-        f'<Gather numDigits="1" timeout="8" action="{_gather}" method="POST">'
-        f'<Say language="en-GB">{_whisper}</Say>'
+        f'<Gather numDigits="1" timeout="{_timeout}" action="{_gather}" method="POST">'
+        f'<Say language="en-GB">{_xml_escape(_whisper)}</Say>'
         "</Gather>"
         "<Hangup/>"
         "</Response>"

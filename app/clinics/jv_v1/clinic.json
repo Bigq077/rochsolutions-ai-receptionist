@@ -58,6 +58,8 @@
       "enabled": false,
       "dial_phone": "+447586605462",
       "ring_timeout": 20,
+      "_whisper_with_caller_note": "Spoken to the practitioner when the caller ID can be paced confidently (UK 0-form, 10-11 digits, not withheld). {caller} is substituted with the spoken number; remove the placeholder to stop announcing callers on this clinic without a deploy. Falls back to whisper_text for withheld or non-UK numbers. Substitution is a literal .replace, so braces other than {caller} are safe.",
+      "whisper_text_with_caller": "Business call, from {caller}. Press 1 to take it, or hang up and Susie will handle it.",
       "whisper_text": "Business call from your Susie line. Press 1 to take it, or hang up and Susie will handle it.",
       "greeting": "Hi there, I'm Susie, Joint Venture Physiotherapy's AI receptionist — Marcus isn't free to take your call right now, but I can help. How can I help you today?"
     },
