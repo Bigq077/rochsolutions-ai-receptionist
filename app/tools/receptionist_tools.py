@@ -4003,7 +4003,17 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
                 appt_type, appt_time_str,
             )
             await _cancel_reminders_for(session, args, appt_time_str)
-            return {"success": True, "cancelled": appt_type, "was_at": appt_time_str}
+            # B-65: report WHICH appointment was removed. Theorem short-circuits
+            # to this Acuity executor, so without an id here the
+            # different-target guard in _note_write_result stays permanently
+            # disarmed on this clinic while it protects the Google Calendar
+            # ones. All three success returns below report it.
+            return {
+                "success": True,
+                "cancelled": appt_type,
+                "was_at": appt_time_str,
+                "cancelled_appointment_id": cached_appt_id,
+            }
         # End RC fast-path — fall through to legacy name-search below
 
         # Exact-ID path: cancel the EXACT appointment when its id is known —
@@ -4048,7 +4058,12 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
                 _explicit_appt_id, _appt_time_str,
             )
             await _cancel_reminders_for(session, args, _appt_time_str)
-            return {"success": True, "cancelled": _appt_type, "was_at": _appt_time_str}
+            return {
+                "success": True,
+                "cancelled": _appt_type,
+                "was_at": _appt_time_str,
+                "cancelled_appointment_id": _explicit_appt_id,   # B-65
+            }
 
         patient_name_lower = (args.get("patient_name") or "").strip().lower()
         today = datetime.now(LONDON_TZ).date()
@@ -4114,6 +4129,7 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
             "success": True,
             "cancelled": appt_type,
             "was_at": appt_time_str,
+            "cancelled_appointment_id": provider_id,   # B-65
         }
 
     except Exception as e:
