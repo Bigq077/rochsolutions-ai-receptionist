@@ -8,6 +8,8 @@ Two lists:
   - THINKING_FILLERS_SECONDARY — played if the API takes > 4 seconds
   - BOOKING_WRITE_FILLERS      — played when book_appointment is called
   - LOOKUP_FILLERS             — played when lookup_patient is called
+  - CALLBACK_FILLERS           — played when request_callback is called
+  - WAITLIST_FILLERS           — played when add_to_waitlist is called
 
 Usage:
     from app.filler_phrases import with_filler, THINKING_FILLERS_PRIMARY, BOOKING_WRITE_FILLERS
@@ -126,6 +128,41 @@ LOOKUP_FILLERS: List[str] = [
     "Let me bring that up for you…",
     "One moment while I find that for you…",
     "Let me take a look for you…",
+]
+
+# request_callback and add_to_waitlist used to draw from LOOKUP_FILLERS, which
+# was never a decision — 34becd6 added the tool and copied lookup_patient's
+# mapping. Every phrase in that list is about an appointment the caller already
+# has, and neither of these tools is.
+#
+# Live on Vital Edge, CAa0f76e2c2851f9eb3f28eddc38b75e3b (2026-08-20 15:32:09):
+# Ray rang to ask for Jonathan, had never booked anything, and heard "Of course
+# — just pulling your appointment up…" while the owner was texted.
+#
+# Two rules these have to keep, both learned by the sibling lists above:
+#
+#   * Describe the action, never the outcome. `with_filler` queues the primary
+#     phrase BEFORE awaiting the executor, so a phrase claiming the clinic has
+#     been told is spoken even when the executor refuses — which the phone
+#     gate in `_exec_request_callback` now does. "I'll let them know" would be
+#     BOOKING_WRITE_FILLERS' "Getting that all booked in for you…" again.
+#   * Say nothing the caller has to already have. A callback and a waitlist
+#     both start from nothing on file, so no phrase may reference a booking,
+#     an appointment, or the diary.
+#
+# Checked against `turn_handler._BANNED_SENTENCE_RE` before landing: a filler is
+# queued straight to TTS and never passes through `sanitise_response`, so that
+# list does not protect these — it has to be done by hand, here.
+CALLBACK_FILLERS: List[str] = [
+    "Taking those details down for you…",
+    "Let me get that message over for you…",
+    "Getting those details across now…",
+]
+
+WAITLIST_FILLERS: List[str] = [
+    "Taking those details down for you…",
+    "Let me get you onto that list…",
+    "Adding those details now…",
 ]
 
 BOOKING_WRITE_FILLERS: List[str] = [
