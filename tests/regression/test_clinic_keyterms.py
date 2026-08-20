@@ -22,6 +22,7 @@ tests below exist to hold.
 """
 from app.clinic_config import get_clinic
 from app.media_streams.stt_stream import (
+    _CONTROL_KEYTERMS,
     _GENERIC_KEYTERMS,
     _KEYTERMS_MAX,
     build_keyterms,
@@ -80,8 +81,16 @@ def test_a_clinic_without_the_key_is_unchanged():
     assert theorem & YORKSHIRE, "the generic tier stopped applying to Theorem"
 
 
-def test_no_clinic_at_all_yields_the_generic_list():
-    assert build_keyterms(None) == list(_GENERIC_KEYTERMS)[:_KEYTERMS_MAX]
+def test_no_clinic_at_all_yields_the_engine_vocabulary():
+    """Clinic unresolved -> the two lists the engine owns, in tier order.
+
+    Was an equality against _GENERIC_KEYTERMS alone until 2026-08-20, when the
+    cancel family moved into its own unconditional tier ahead of it.  Kept as
+    an equality rather than relaxed to a subset: this is the assertion that
+    catches a new tier being appended in the wrong place.
+    """
+    expected = (list(_CONTROL_KEYTERMS) + list(_GENERIC_KEYTERMS))[:_KEYTERMS_MAX]
+    assert build_keyterms(None) == expected
 
 
 def test_an_empty_override_does_not_silently_drop_the_generic_list():

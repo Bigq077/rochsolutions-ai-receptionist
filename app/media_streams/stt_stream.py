@@ -135,6 +135,42 @@ _GENERIC_KEYTERMS: list[str] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# CONTROL vocabulary — the words that decide what Susie DOES, not what she
+# knows.  Its own tier because it is neither clinical knowledge nor clinic
+# knowledge, and because it must reach every clinic (see build_keyterms).
+#
+# 2026-08-20, JV live call CAae25b8345d781f56b5d31eb69a353034.  The caller
+# answered the cancel retention question ("...or cancel it altogether?") with
+# "cancel it".  The PARTIAL transcript was right; the FINAL rewrote it to
+# "uh can't see the rotator cuff", and Susie answered the shoulder complaint
+# she had just been handed.  The next attempt, "let's cancel it altogether",
+# came back as "uh let's i can't see it all together".
+#
+# That is keyterm bias, not a mumbling caller.  Every word it drifted toward
+# was boosted and "cancel" was not: "cancer" is one of jv_v1's own red-flag
+# screening triggers, and "rotator"/"cuff" sit in _GENERIC_KEYTERMS — so the
+# clinical vocabulary was out-competing its own near-homophone.  The
+# FM-23 consent gate then refused to fire cancel_appointment three times, on
+# the corrupted text, which is the gate working correctly.  The repetition the
+# caller heard was the symptom; this list is the cause.
+#
+# Measured over the 1,942 stored caller utterances in obs before writing it:
+# "cancel" is said 58 times and mis-transcribed twice; "book" (211),
+# "appointment" (144), "reschedule" (15) and "move" (37) transcribe cleanly
+# every single time.  So ONLY the cancel family is here.  Adding the rest
+# would repeat the mistake this file already documents twice — spending the
+# scarce cap on ordinary English that STT never gets wrong, and starving the
+# anatomy that it does.  Do not add a word here without that measurement.
+#
+# "cancel it" earns its slot as a phrase because the confusion is at the
+# bigram level: "cancel it" -> "can't see".
+# ---------------------------------------------------------------------------
+_CONTROL_KEYTERMS: list[str] = [
+    "cancel", "cancel it", "cancelled",
+]
+
+
 # AssemblyAI v3 keyterms_prompt limits.  Conservative: the documented ceiling
 # is 100 terms of up to 6 words each.  Over-long terms are dropped rather than
 # truncated — a half-term boosts nothing and costs a slot.
@@ -280,10 +316,14 @@ def build_keyterms(clinic: Optional[dict]) -> list[str]:
       2. clinic proper nouns — name, brand names, practitioner, locations and
          the clinic's own hand-written stt_variants.  Unguessable by a general
          model, and wrong ones send the caller to the wrong site.
-      3. generic physio / British-idiom vocabulary (_GENERIC_KEYTERMS).
+      3. control vocabulary (_CONTROL_KEYTERMS) — the cancel family.  A word
+         that decides whether a DESTRUCTIVE tool fires; boosted because JV's
+         own red-flag trigger "cancer" was out-competing it (2026-08-20).
+      4. generic physio / British-idiom vocabulary (_GENERIC_KEYTERMS).
 
     Pure and side-effect free so the composition is testable without a socket.
-    Passing None (clinic unresolved) yields the generic list alone.
+    Passing None (clinic unresolved) yields the two engine-owned lists
+    alone — control vocabulary then generic.
     """
     clinic = clinic or {}
     triggers: list[str] = []
@@ -350,8 +390,23 @@ def build_keyterms(clinic: Optional[dict]) -> list[str]:
         list(_GENERIC_KEYTERMS) if _kt_cfg.get("use_generic", True) else []
     )
 
+    # _CONTROL_KEYTERMS is UNCONDITIONAL — it is deliberately not part of
+    # _generic, which "stt_keyterms": {"use_generic": false} switches off.
+    # vital_edge does exactly that and ships its own 68-term list with no
+    # control vocabulary in it, so a fix placed in _GENERIC_KEYTERMS would
+    # have reached jv_v1 and theorem and silently skipped the third clinic.
+    #
+    # Ranked below the two screening tiers on purpose: a red-flag trigger or
+    # answer keyword that loses its slot is a missed safety screen, which is
+    # worse than a mis-heard cancel (the consent gate refuses and re-asks).
+    # Above _clinic_terms/_generic so a clinic with a long vocabulary of its
+    # own cannot starve it.  Cost measured 2026-08-20: theorem and vital_edge
+    # have headroom and lose nothing; jv_v1 is at the cap and gives up three
+    # generic anatomy terms ("cuff", "plantar", "fasciitis") — no screening
+    # trigger and no red-flag answer keyword moves.
     tiers: list[list[str]] = [
-        triggers, proper_nouns, answers, _clinic_terms, _generic,
+        triggers, proper_nouns, answers, _CONTROL_KEYTERMS,
+        _clinic_terms, _generic,
     ]
 
     seen: set[str] = set()
