@@ -41,6 +41,42 @@ except ImportError:
 
 
 # ============================================================================
+# KILL SWITCH — AUTOMATIC APPOINTMENT REMINDERS
+# ============================================================================
+
+# ⚑ LIVE branch: reminders default ON, deliberately the opposite of
+# latency-eval, which this branch was cut from.
+#
+# The switch was added to latency-eval on 2026-08-07 by owner decision, so an
+# isolated timing-eval service could not text real patients. This branch serves
+# a real clinic and had no switch at all, sending unconditionally. A named
+# switch is better than none — but it defaults ON, so a forgotten Render env
+# var fails in the direction this clinic already runs in rather than silently
+# turning reminders off for live patients.
+#
+# Set APPOINTMENT_REMINDERS_ENABLED=false to deliberately silence reminders.
+#
+# Both halves of the pipeline are gated, so it does not matter which side of
+# the switch a booking lands on:
+#
+#   schedule_appointment_reminders()  queues nothing new
+#   process_due_reminders()           sends nothing already queued
+#
+# NOT gated here, because they are a different mechanism and still wanted: the
+# booking confirmation SMS, the name-confirmation nudge, and the home-visit
+# address nudge. The background worker still runs for the latter two.
+#
+# Read at call time, not import time, so the switch follows the environment
+# rather than the process — same convention as SMS_ENABLED in sms.py.
+
+def _appointment_reminders_enabled() -> bool:
+    """True unless APPOINTMENT_REMINDERS_ENABLED is explicitly switched off."""
+    return os.getenv("APPOINTMENT_REMINDERS_ENABLED", "true").strip().lower() in (
+        "true", "1", "yes", "on",
+    )
+
+
+# ============================================================================
 # REDIS KEYS
 # ============================================================================
 
@@ -87,6 +123,19 @@ async def schedule_appointment_reminders(
     Returns:
         True if scheduled successfully, False if Redis unavailable
     """
+    # Kill switch — the booking itself is already written by the time we get
+    # here, so declining to queue reminders must never look like a booking
+    # failure. Returns the same False the Redis-unavailable path returns, which
+    # every call site already tolerates, and never raises.
+    if not _appointment_reminders_enabled():
+        logger.info(
+            "[reminders] APPOINTMENT_REMINDERS_ENABLED is off — no 24hr/2hr "
+            "reminder queued for %s (the booking and its confirmation SMS are "
+            "unaffected)",
+            patient_phone,
+        )
+        return False
+
     if not REDIS_AVAILABLE:
         logger.warning(
             "Cannot schedule reminders - Redis not available. "
@@ -365,6 +414,13 @@ async def cancel_reminders_for_appointment(
 
 async def process_due_reminders() -> int:
     """Process all reminders that are due to be sent."""
+    # Kill switch — the second half. Anything queued before the switch (or by
+    # another tenant sharing this Redis) stays queued and unsent. Deliberately
+    # silent: the worker calls this every 5 minutes and a log line per tick is
+    # noise.
+    if not _appointment_reminders_enabled():
+        return 0
+
     if not REDIS_AVAILABLE or not redis_client:
         return 0
     
