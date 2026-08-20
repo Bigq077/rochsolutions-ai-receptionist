@@ -1710,6 +1710,33 @@ def _sender_is_authorised(sender: str, clinic: dict) -> bool:
     return bool(s) and s in _call_mode_authorised_numbers(clinic)
 
 
+# ── Replying to a MESSAGING webhook ─────────────────────────────────────────
+# Twilio parses the BODY of a messaging webhook response as TwiML and delivers
+# whatever <Message> it finds. That is the opposite of the voice `/status`
+# callback above, where the body really is ignored — and `return
+# PlainTextResponse("ok")` was copied from there.
+#
+# Cost, measured on the Joint Venture line 2026-08-20: a patient texted
+# "speak to marcus", got the intended acknowledgement, and then a second text
+# reading just "ok". Nothing in this repo sends that — it is this webhook's own
+# HTTP body coming back at the patient.
+#
+# Every reply on these paths is already sent out-of-band via the REST API
+# (`send_sms`), so the correct TwiML answer is an EMPTY document: "received,
+# say nothing". Returning 204 would also work, but an empty <Response/> is what
+# Twilio documents and what `xml()` above already models.
+_EMPTY_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
+
+
+def _twiml_noop() -> PlainTextResponse:
+    """An empty TwiML document: acknowledge the webhook, send the caller nothing.
+
+    Use this for EVERY return on an inbound-SMS path. A bare string body here is
+    not inert — Twilio speaks it to the patient.
+    """
+    return PlainTextResponse(_EMPTY_TWIML, media_type="application/xml")
+
+
 async def _handle_call_mode_command(
     *, cmd: str, sender: str, clinic: dict, clinic_id: str, to_number: str,
 ) -> PlainTextResponse:
@@ -1733,7 +1760,7 @@ async def _handle_call_mode_command(
                  if state["mode"] == MODE_HUMAN_FIRST
                  else "I'm answering all calls.")
         await _send_call_mode_reply(send_sms, sender, to_number, reply)
-        return PlainTextResponse("ok")
+        return _twiml_noop()
 
     prior = await current_mode(clinic_id, clinic)
     payload = await set_mode(clinic_id, cmd, sender)
@@ -1741,7 +1768,7 @@ async def _handle_call_mode_command(
         # Redis unavailable — the override was NOT stored. Say so; never claim
         # a routing change that did not happen.
         await _send_call_mode_reply(send_sms, sender, to_number, _FAIL)
-        return PlainTextResponse("ok")
+        return _twiml_noop()
 
     reply = (
         "Front desk mode on — calls will ring your phone first, and I'll pick "
@@ -1761,7 +1788,7 @@ async def _handle_call_mode_command(
             await set_mode(clinic_id, prior["mode"], sender)
         else:
             await clear_mode(clinic_id)
-    return PlainTextResponse("ok")
+    return _twiml_noop()
 
 
 async def _send_call_mode_reply(send_sms, sender: str, to_number: str, text: str):
@@ -1806,7 +1833,7 @@ async def sms_inbound(request: Request) -> PlainTextResponse:
         f"sms_inbound:{message_sid}", ttl_seconds=600
     ):
         logger.info("[SMS_INBOUND] duplicate sid=%r — skipping", message_sid)
-        return PlainTextResponse("ok")
+        return _twiml_noop()
 
     # Resolve which clinic this number belongs to (jv/theorem/…) so forwarding
     # and branding are clinic-aware.
@@ -1871,7 +1898,7 @@ async def sms_inbound(request: Request) -> PlainTextResponse:
                 clinic=_clinic,
                 send_sms=send_sms,
             )
-            return PlainTextResponse("ok")
+            return _twiml_noop()
 
         # ── Name validation ──────────────────────────────────────────────
         # Accept single-word replies for first-name-only SMS requests
@@ -1897,7 +1924,7 @@ async def sms_inbound(request: Request) -> PlainTextResponse:
                 logger.warning(
                     "[SMS_INBOUND] clarification SMS failed (non-fatal): %r", _ce
                 )
-            return PlainTextResponse("ok")
+            return _twiml_noop()
 
         # ── Valid name reply — update Acuity ─────────────────────────────
         # Single-word reply: first name only — update firstName, leave surname intact.
@@ -1956,4 +1983,4 @@ async def sms_inbound(request: Request) -> PlainTextResponse:
     except Exception as _outer:
         logger.error("[SMS_INBOUND] processing error (non-fatal): %r", _outer)
 
-    return PlainTextResponse("ok")
+    return _twiml_noop()
