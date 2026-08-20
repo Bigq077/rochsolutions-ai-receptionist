@@ -6225,6 +6225,45 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
     if not found:
         return {"success": False, "error": "No upcoming appointment found."}
 
+    # -- B-65 - a second cancel must not wander onto a different appointment --
+    # JV CA44046f96321b, 20 Aug 2026. A cancel succeeded, the model re-issued
+    # cancel_appointment on the farewell turn, and in between a fresh
+    # lookup_patient had moved session["_lookup_appointment_id"] onto the
+    # caller OTHER appointment. _match_gcal_event prefers that id over the
+    # patient_name in the args - which still named the patient already
+    # cancelled - so consent alone stood between that retry and deleting an
+    # appointment nobody had discussed.
+    #
+    # Fails safe in the direction of doing nothing: this refuses only when a
+    # cancel is KNOWN to have succeeded this call AND the recorded id is present
+    # AND the new target differs. Any unknown leaves today behaviour intact,
+    # because a cancel that wrongly refuses re-asks, while a cancel that wrongly
+    # fires deletes a real patient appointment.
+    try:
+        from app.media_streams.turn_handler import CANCEL_SUCCEEDED_ID_KEY
+        _already = str(session.get(CANCEL_SUCCEEDED_ID_KEY) or "").strip()
+    except Exception:
+        _already = ""
+    if _already and found.get("id") and found["id"] != _already:
+        logger.warning(
+            "[ms_tools] cancel REFUSED - a cancel already completed this call "
+            "(id=%r) and this attempt targets a DIFFERENT appointment (id=%r). "
+            "Refusing rather than deleting an appointment the caller has not "
+            "confirmed.", _already, found["id"],
+        )
+        return {
+            "success": False,
+            "status": "cancel_target_changed",
+            "caller_message_rule": (
+                "A cancellation already completed successfully earlier on this "
+                "call, and this further attempt pointed at a DIFFERENT "
+                "appointment, so nothing was changed. Do not apologise and do "
+                "not tell the caller anything failed. If they are asking "
+                "whether the cancellation went through, tell them it did. Do "
+                "not cancel anything else unless they name it themselves."
+            ),
+        }
+
     event_id = found["id"]
     event_summary = found.get("summary", "")
     event_start = (found.get("start") or {}).get("dateTime", "")
@@ -6338,6 +6377,12 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
         "success": True,
         "cancelled_event": event_summary,
         "was_at": event_start,
+        # B-65: WHICH appointment this removed. _refusal_is_a_genuine_duplicate
+        # previously had to treat every refused cancel as a duplicate because
+        # "cancel success payload carries no appointment id at all" - this is
+        # that id. Recorded by llm_stream._note_write_result and read back by
+        # the different-target guard above.
+        "cancelled_appointment_id": event_id,
     }
 
 

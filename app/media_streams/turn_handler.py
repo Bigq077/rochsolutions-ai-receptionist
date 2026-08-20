@@ -914,6 +914,23 @@ WRITE_FAMILY_BOOKING    = "booking"
 WRITE_FAMILY_RESCHEDULE = "reschedule"
 WRITE_FAMILY_CANCEL     = "cancel"
 
+# Session key: the calendar id of the appointment a SUCCESSFUL cancel removed.
+#
+# B-65. The reschedule family has carried its target since B-62
+# (RESCHEDULE_SUCCEEDED_SLOT_KEY) so a refused move to a DIFFERENT slot is not
+# mistaken for a duplicate. Cancel had no equivalent because its success payload
+# carried no appointment id at all, and _refusal_is_a_genuine_duplicate says so
+# in as many words - "widening this needs executor changes and its own
+# evidence". JV CA44046f96321b is that evidence: after a successful cancel the
+# model re-issued cancel_appointment while the session _lookup_appointment_id
+# had moved on to a DIFFERENT patient, and _match_gcal_event prefers that id
+# over the patient_name in the args. Only the consent gate stopped it.
+#
+# Written by llm_stream._note_write_result on a cancel success; read by
+# receptionist_tools._exec_cancel_appointment to refuse a second cancel aimed
+# somewhere new. Call-scoped, never cleared per turn.
+CANCEL_SUCCEEDED_ID_KEY = "_cancel_succeeded_appointment_id"
+
 # Session key: which families had a gated write REFUSED on the current turn.
 # Written by llm_stream._note_write_result, read by _armed_write_families, and
 # cleared per turn alongside _false_confirm_resteered.

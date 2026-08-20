@@ -81,6 +81,7 @@ from .turn_handler import (
     WRITE_FAMILY_CANCEL,
     WRITE_FAMILY_RESCHEDULE,
     WRITE_REFUSED_KEY,
+    CANCEL_SUCCEEDED_ID_KEY,
 )
 
 logger = logging.getLogger(__name__)
@@ -1175,6 +1176,14 @@ def _note_write_result(session: dict, tool_name: str, result):
             session[RESCHEDULE_SUCCEEDED_SLOT_KEY] = _slot_wall_clock(
                 result.get("attempted_slot_iso")
             )
+        if family == WRITE_FAMILY_CANCEL:
+            # B-65: remember WHICH appointment went, so a later cancel in the
+            # same call can tell "do it again" from "delete a different one".
+            # Recorded only when the executor actually reports an id - an empty
+            # value leaves the guard disarmed, which is today behaviour.
+            _cid = str((result or {}).get("cancelled_appointment_id") or "").strip()
+            if _cid:
+                session[CANCEL_SUCCEEDED_ID_KEY] = _cid
         if family == WRITE_FAMILY_BOOKING:
             session["booking_write_confirmed"] = True
             # A real booking now exists, so the availability blocks are correct
@@ -1221,6 +1230,29 @@ def _note_write_result(session: dict, tool_name: str, result):
             tool_name, result.get("status") or result.get("error"), family,
         )
         result = dict(result)
+        # B-65, JV CA44046f96321b, 20 Aug 2026. This rule used to be attached
+        # ALONGSIDE whatever the refusal already said, and that was the whole
+        # defect. A duplicate cancel is refused for lack of consent, and that
+        # refusal message reads "cancel_appointment cannot fire yet. Ask for
+        # consent..." - stating, in the same payload as the rule below, that the
+        # write has NOT happened.
+        #
+        # The model obeyed the message. Having just cancelled the appointment
+        # successfully and said so, Susie apologised - "I actually need to
+        # complete the cancellation properly" - for a cancellation that had
+        # already gone through, texted the caller and alerted the owner. The
+        # caller answered "i am lost have you cancelled it then".
+        #
+        # A rule cannot out-argue an instruction sitting next to it; that shape
+        # has now cost three live calls. So the misleading operational text is
+        # REMOVED rather than argued with. `status` is deliberately left alone,
+        # so the model still knows this particular attempt wrote nothing.
+        for _misleading in ("message", "error"):
+            result.pop(_misleading, None)
+        # setdefault, not assignment: an executor that has already explained its
+        # own refusal in caller-facing terms keeps the more specific wording.
+        # The B-65 different-target guard in _exec_cancel_appointment does
+        # exactly that, and it says more than this generic rule can.
         result.setdefault("caller_message_rule", _WRITE_ALREADY_DONE_RULE[family])
         return result
     # Layer 3's arming signal (B-36 cause 2a): Gate 5f is scoped to the write
