@@ -15048,6 +15048,82 @@ class WebSocketCallHandler:
             self._barge_in_duration = time.monotonic() - self._barge_in_ts
         self._clearing = False  # always reset — even garbage finals end the barge-in window
 
+        from app.media_streams.stt_stream import (
+            _is_garbage_transcript as _is_garbage_fc,
+        )
+
+        # ── B-67: resolve a barge-in whose final never reaches the queue ────
+        # _resolve_barge_in() is only ever called from the _llm_loop dequeue,
+        # so it can only run for a final that STTStream actually enqueued.
+        # STTStream drops empty and garbage finals at the socket boundary
+        # (`if not text: continue` / `if _is_garbage_transcript(text): continue`),
+        # which means a barge-in that resolves to noise is never resolved at
+        # all: _barge_in_pending stays True and — the part that ends the call —
+        # session["tts_inhibit"], set at barge-in start, is never cleared. Every
+        # chunk of the reply the caller was waiting for is discarded by the
+        # _tts_loop inhibit check, and nothing queues anything in its place.
+        #
+        # Both safety nets are down at the same moment, which is why this is
+        # silence rather than a slow recovery:
+        #   • the watchdog's own `cleared tts_inhibit before re-ask` repair only
+        #     helps if the watchdog is ARMED, and
+        #   • arming was handed to on_tts_finished() by WATCHDOG_DEFERRED_CLEAR
+        #     — which never fires, because every chunk of that turn was inhibited.
+        #
+        # Live on Vital Edge, CAa0f76e2c2851f9eb3f28eddc38b75e3b, 2026-08-20:
+        #   15:31:39.27  caller: "hi there uh can i speak to jonathan please"
+        #   15:31:41.47  barge-in on partial 'yeah yep'
+        #   15:31:41.99  tts_inhibit: discarding stale chunk "Jonathan isn't
+        #                available to take calls directly, but I can a…"
+        #   15:31:42.85  garbage_transcript='' — watchdog preserved
+        #   15:31:47.07  caller: "hello"
+        # He asked a question, was answered into a muted queue, and only got the
+        # call back by speaking again himself. Had he waited, that silence had
+        # no exit — no timer, no speech, until he hung up.
+        #
+        # This hook is the right place precisely because it is the one callback
+        # STTStream makes for EVERY final, before it decides whether to enqueue;
+        # it already computes _barge_in_duration two lines above for the same
+        # reason. Gated on the same predicate STTStream drops on, so a final that
+        # WILL be enqueued is untouched and still resolves in _resolve_barge_in()
+        # — there is exactly one resolver per barge-in.
+        if self._barge_in_pending and _is_garbage_fc(text or ""):
+            self._barge_in_pending = False
+            # The deadlock itself. Clear it before queueing anything, or the
+            # recovery speech below is discarded by the same check.
+            self.session["tts_inhibit"] = False
+            _bi_dur = self._barge_in_duration
+            if _bi_dur < _BARGE_IN_THRESHOLD_S:
+                # False trigger — identical treatment to _resolve_barge_in's
+                # short-duration arm: put back what the caller interrupted.
+                _interrupted = self.session.get("interrupted_tts_text", "")
+                if _interrupted:
+                    await self.tts_text_queue.put(_interrupted)
+                logger.info(
+                    "[ms_conn] barge-in unqueued-final false trigger (%.0fms) "
+                    "text=%r — tts_inhibit cleared, resuming %r",
+                    _bi_dur * 1000, (text or "")[:40], _interrupted[:60],
+                )
+            else:
+                # Confirmed barge-in carrying no intelligible words. Same
+                # ack-and-wait as _resolve_barge_in's noise arm — deliberately
+                # not a re-generation of the discarded reply, which would mean
+                # re-dispatching a turn from inside an STT callback.
+                _ack = random.choice(_BARGE_IN_ACKS)
+                self._in_barge_in_recovery = True
+                self.session["barge_in_count"] = (
+                    self.session.get("barge_in_count", 0) + 1
+                )
+                self._barge_in_flush_before = time.monotonic()
+                await self.tts_text_queue.put(_ack)
+                logger.info(
+                    "[ms_conn] barge-in #%d unqueued-final confirmed (%.0fms) "
+                    "text=%r ack=%r — tts_inhibit cleared",
+                    self.session["barge_in_count"], _bi_dur * 1000,
+                    (text or "")[:40], _ack,
+                )
+        # ── end B-67 ────────────────────────────────────────────────────────
+
         # Per-prompt speech guard: a final transcript is the strongest signal
         # that the caller has spoken for this prompt. Mark BEFORE any downstream
         # logic so a watchdog re-ask cannot slip through.
@@ -15063,9 +15139,6 @@ class WebSocketCallHandler:
         # with the SAME predicate (imported locally exactly as it is there) to
         # keep both guards aligned. A garbage final falls through to the tail-
         # fragment / echo handling below with the watchdog left running.
-        from app.media_streams.stt_stream import (
-            _is_garbage_transcript as _is_garbage_fc,
-        )
         if (text or "").strip() and not _is_garbage_fc(text):
             self._silence_handler._mark_prompt_speech_detected("final", text)
 
@@ -15078,9 +15151,9 @@ class WebSocketCallHandler:
                 self._tts_task.cancel()
                 logger.info("[ms_conn] stale watchdog TTS cancelled (valid transcript arrived)")
             # Drain any queued repair phrases
-            while not self._tts_text_queue.empty():
+            while not self.tts_text_queue.empty():
                 try:
-                    self._tts_text_queue.get_nowait()
+                    self.tts_text_queue.get_nowait()
                 except Exception:
                     break
 
