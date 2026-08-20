@@ -120,7 +120,14 @@ UNCHANGED_CLINIC_PROMPTS = {
         # Re-pinned 2026-08-19: withheld keypad line says why first
     # (partial port of a59a7ab). Recomputed on THIS branch — the hash
     # differs per branch and must never be copied from latency-eval.
-    "jv_v1": "0dd202798498bed6",
+    # Re-pinned 2026-08-20: the LE+JV batch port. Two of its commits touch
+    # clinic_template_prompt.py - 6d7c2ec (strip "time preference noted" from
+    # speech) and 14eba0e (keep the out-of-window acknowledgement in speech).
+    # Both deliberately change template text, so both template clinics move.
+    # vital_edge is THIS branch's live clinic, so its prompt moving is the
+    # point of the port, not a side effect. demo, theorem and theorem_v3 all
+    # held - the FlowEngine clinics render neither block.
+    "jv_v1": "63eb3b1a2899513b",
     "theorem": "8565be9a48a7a9aa",
     "theorem_v3": "761036c8d0da91ed",
 }

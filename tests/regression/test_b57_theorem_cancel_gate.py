@@ -294,7 +294,14 @@ UNMOVED_PROMPTS = {
         # Re-pinned 2026-08-19: withheld keypad line says why first
     # (partial port of a59a7ab). Recomputed on THIS branch — the hash
     # differs per branch and must never be copied from latency-eval.
-    "jv_v1": "0dd202798498bed6",
+    # Re-pinned 2026-08-20: the LE+JV batch port. Two of its commits touch
+    # clinic_template_prompt.py - 6d7c2ec (strip "time preference noted" from
+    # speech) and 14eba0e (keep the out-of-window acknowledgement in speech).
+    # Both deliberately change template text, so both template clinics move.
+    # vital_edge is THIS branch's live clinic, so its prompt moving is the
+    # point of the port, not a side effect. demo, theorem and theorem_v3 all
+    # held - the FlowEngine clinics render neither block.
+    "jv_v1": "63eb3b1a2899513b",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -314,7 +321,7 @@ UNMOVED_PROMPTS = {
         # Re-pinned 2026-08-19: withheld keypad line says why first
     # (partial port of a59a7ab). Recomputed on THIS branch — the hash
     # differs per branch and must never be copied from latency-eval.
-    "vital_edge": "396525923f9f5a83",
+    "vital_edge": "10bd9f5d9cb71e45",   # moved with jv_v1, same two commits
 }
 
 
