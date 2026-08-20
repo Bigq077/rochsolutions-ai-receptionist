@@ -253,7 +253,14 @@ UNMOVED_PROMPTS = {
     # NB the b55 table is NOT re-pinned here: its four rows were already
     # red before this port and each move needs attributing to a commit
     # first. Fixing them silently would shrink the failing set.
-    "jv_v1": "e0c5c5f6dc2e768a",
+    # Re-pinned 2026-08-20: ported the LE+JV batch, of which two commits
+    # touch clinic_template_prompt.py — 6d7c2ec (strip "time preference
+    # noted" form-filling speech) and 14eba0e (keep the out-of-window
+    # acknowledgement in speech). Both deliberately change template text,
+    # so the two template clinics move and the three FlowEngine ones do
+    # not — demo, theorem and theorem_v3 all held, which is the
+    # containment this table exists to prove.
+    "jv_v1": "536701ad044a9d8d",
     "theorem": "b770bcbee81dd601",
     # Re-pinned 2026-08-05 — JOINT INJECTIONS usage rule (CA0f74573f).
     # Cancel wording untouched; this table is proving containment, and it is.
@@ -321,7 +328,7 @@ UNMOVED_PROMPTS = {
     # NB the b55 table is NOT re-pinned here: its four rows were already
     # red before this port and each move needs attributing to a commit
     # first. Fixing them silently would shrink the failing set.
-    "vital_edge": "6bfea2211c2696fc",
+    "vital_edge": "4212c88e02694fd0",   # moved with jv_v1, same two commits
 }
 
 
