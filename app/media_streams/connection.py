@@ -15627,18 +15627,26 @@ class WebSocketCallHandler:
                 # ack-and-wait as _resolve_barge_in's noise arm — deliberately
                 # not a re-generation of the discarded reply, which would mean
                 # re-dispatching a turn from inside an STT callback.
-                _ack = random.choice(_BARGE_IN_ACKS)
+                # Named _barge_ack, not _ack: theorem-onboarding's
+                # test_no_reschedule_branch_can_fall_through_to_the_bare_ack
+                # counts `tts_text_queue.put(_ack)` sites to pin the FOUR bare
+                # CLINIC acks on the location ladder. This is a barge-in noise
+                # ack on a turn where no intent is known at all, so it is not a
+                # member of that family — and bumping that test's count to 5
+                # would blind it to a genuine fifth clinic ack later.
+                # _resolve_barge_in names its own `ack` for the same reason.
+                _barge_ack = random.choice(_BARGE_IN_ACKS)
                 self._in_barge_in_recovery = True
                 self.session["barge_in_count"] = (
                     self.session.get("barge_in_count", 0) + 1
                 )
                 self._barge_in_flush_before = time.monotonic()
-                await self.tts_text_queue.put(_ack)
+                await self.tts_text_queue.put(_barge_ack)
                 logger.info(
                     "[ms_conn] barge-in #%d unqueued-final confirmed (%.0fms) "
                     "text=%r ack=%r — tts_inhibit cleared",
                     self.session["barge_in_count"], _bi_dur * 1000,
-                    (text or "")[:40], _ack,
+                    (text or "")[:40], _barge_ack,
                 )
         # ── end B-67 ────────────────────────────────────────────────────────
 
