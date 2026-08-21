@@ -118,8 +118,21 @@ def test_unsure_is_not_a_no():
     """
     'not' contains 'no', so "im not sure" used to clear the screen outright.
     Unsure must leave it pending so the question is re-asked.
+
+    The property under test is the first sentence: a substring negator inside
+    "not sure" must never CLEAR a safety screen. That is what B-74 fixed and it
+    still holds.
+
+    The verdict itself moved on 2026-08-21: "im not sure" now grades `hedged`
+    rather than `unclear`. That is strictly stronger, not a loosening — `hedged`
+    also leaves the screen pending, and additionally earns one narrowing
+    question and escalates if the answer to that is not a clean no. Asserted as
+    "not clear" plus the specific current verdict, so the guarantee survives a
+    future verdict rename while the change stays visible.
     """
-    assert classify_screen_answer("im not sure", _screen()) == "unclear"
+    verdict = classify_screen_answer("im not sure", _screen())
+    assert verdict != "clear"
+    assert verdict == "hedged"
 
 
 # ---------------------------------------------------------------------------
