@@ -740,7 +740,7 @@ def _decisive_red_flag(text: str, screen: Dict[str, Any]) -> Optional[str]:
 
 def classify_screen_answer(text: str, screen: Dict[str, Any]) -> str:
     """Classify the caller's reply to a screen question:
-    'red_flag' | 'clear' | 'unclear'.
+    'red_flag' | 'clear' | 'hedged' | 'unclear'.
 
     Red-flag keywords are checked FIRST — an answer like "no feeling in my
     legs" contains 'no' but is a positive. A keyword the caller is explicitly
