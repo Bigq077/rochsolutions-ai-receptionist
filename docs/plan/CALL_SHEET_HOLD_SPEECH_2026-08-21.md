@@ -14,7 +14,7 @@ is the only thing a test cannot hear.
 
 1. **Build.** Render → `low-latency-joint-venture` → logs. Find
    `[build_info] running build <sha>` at the end of any call. It must say
-   **`cbde450`**. `/health` returns a hardcoded `1.0.0` and proves nothing.
+   **`f41868b`**. `/health` returns a hardcoded `1.0.0` and proves nothing.
    If the sha is older, **stop** — nothing below proves anything.
    *This service has previously been set to Manual Deploy. If the sha is stale,
    click Deploy rather than assuming the push shipped it.*
