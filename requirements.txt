@@ -66,7 +66,15 @@ websockets>=13.0
 # Anthropic (Phase 3 tool-calling receptionist — Claude Sonnet 4.6)
 # Used by conversation.py and via escalate_to_claude in the Realtime pipeline
 # ============================================================================
-anthropic>=0.40.0
+# PINNED 2026-08-21. anthropic 1.0.0 REMOVED `temperature` from
+# AsyncMessages.stream() (it moved into output_config). We call
+# client.messages.stream(..., temperature=CLAUDE_TEMPERATURE) at
+# app/media_streams/llm_stream.py:3129, so 1.0.0 raises TypeError on EVERY
+# turn and every reply degrades to the safe fallback phrase. `>=0.40.0`
+# resolved to 1.0.0 on the next dependency install, which took all four
+# services down mid-morning without a single line of our code changing.
+# Do not loosen this without running a real call.
+anthropic==0.84.0
 
 # ============================================================================
 # Observability
