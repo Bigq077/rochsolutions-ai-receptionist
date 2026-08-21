@@ -538,6 +538,23 @@ async def _handle_transfer(call_sid: str, session: Dict[str, Any]) -> None:
                 )
                 return
             client.calls(call_sid).update(twiml=twiml)
+            # The ONLY point at which a leg is actually placed, and therefore
+            # the only honest place to record that a transfer happened. Every
+            # earlier return in this function — TRANSFER_DISABLED, no dial
+            # target, call not in-progress — and the except: below must leave
+            # this False, because in each of those cases the caller was never
+            # put through.
+            #
+            # Until 2026-08-21 nothing on the media-streams path set this at
+            # all. The sole writer was /twilio/transfer-status, which belongs
+            # to the legacy HTTP flow *and* only fires when the dial FAILS.
+            # Every live clinic runs media streams, so a caller who was
+            # successfully put through was indistinguishable in the call
+            # record from one who hung up during the greeting: both landed as
+            # transfer_attempted=False, reason='caller_hung_up'. On Theorem,
+            # where press-1 is the dominant path, that read as 0% transfers.
+            # See B-72 in docs/plan/REGISTER_B_U.md.
+            session["transfer_attempted"] = True
             logger.info("[realtime] transfer initiated call_sid=%s → %s", call_sid, transfer_phone)
         except Exception as exc:
             logger.error("[realtime] transfer REST call failed: %r", exc)
