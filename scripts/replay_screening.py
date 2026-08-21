@@ -187,8 +187,15 @@ def replay_call(call: Dict[str, Any], clinic: Dict[str, Any]) -> Dict[str, Any]:
         graded_id = before_pending or (armed_this_turn[0] if armed_this_turn else None)
 
         if action == "ask_screen":
+            # A screen already in arm_paths is being RE-asked, not armed. The
+            # bounded re-ask (e595df5) and the hedge probe both return
+            # ask_screen on a screen that armed turns ago; counting those as
+            # arms inflates the arm column and fills the arming-utterance list
+            # with turns that armed nothing — "please book that in" appeared
+            # there as a cauda equina trigger and matches no keyword at all.
+            # Phase 3 is measured off that list, so the distinction must hold.
             events.append({
-                "kind": "arm",
+                "kind": "arm" if after_pending not in before_paths else "reask",
                 "screen": after_pending,
                 "path": arm_paths.get(after_pending),
                 "utterance": text,
@@ -292,18 +299,21 @@ def _print_report(results: List[Dict[str, Any]], summary: Dict[str, Any]) -> Non
         print("no screening events in this corpus")
         return
 
-    header = (f"\n{'screen':<18} {'arm':>5} {'esc':>5} {'esc/noask':>10} "
+    header = (f"\n{'screen':<18} {'arm':>5} {'reask':>6} {'esc':>5} {'esc/noask':>10} "
               f"{'clear':>6} {'unclear':>8} {'stranded':>9}")
     print(header)
     print("-" * 78)
     for sid in sorted(summary["per_screen"]):
         c = summary["per_screen"][sid]
-        print(f"{sid:<18} {c.get('arm', 0):>5} {c.get('escalate', 0):>5} "
+        print(f"{sid:<18} {c.get('arm', 0):>5} {c.get('reask', 0):>6} {c.get('escalate', 0):>5} "
               f"{c.get('escalate_without_asking', 0):>10} "
               f"{c.get('clear', 0):>6} {c.get('unclear', 0):>8} "
               f"{c.get('stranded', 0):>9}")
 
     print("")
+    print("  arm      = FIRST time this screen armed on this call")
+    print("  reask    = asked again (stranded re-ask / hedge probe), "
+          "not a new arm")
     print("  unclear  = graded, verdict undecidable (a classifier gap)")
     print("  stranded = pending but NOT gradable: Susie has since said "
           "something else,")
