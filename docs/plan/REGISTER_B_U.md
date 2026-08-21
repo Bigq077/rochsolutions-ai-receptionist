@@ -172,10 +172,20 @@ deploy of anything. A lockfile is the real fix and is not done.
 
 ## `B-74` · **"yes" did not flag a red-flag screen** — **FIXED on `latency-eval`, NOT yet ported**
 
-> ✅ `latency-eval` **`1bcc121`**. Regression:
+> ✅ `latency-eval` **`1bcc121`** · `jv_v2` **`a87812c`** ·
+> `theorem-onboarding` **`1619075`** · `vitaledge-onboarding` **`8e931e4`**.
+> Regression:
 > `tests/regression/test_a_plain_yes_flags_a_red_flag_screen.py`
 > (37 tests — **19 red before, 18 green both ways** pinning the negative path).
-> Suite: failing set identical before and after (101). **Not ported. `U`-debt.**
+> Failing set identical before and after on every branch: 101/101/105/101.
+> **`U`-debt: not yet exercised on a call.** Revert targets are the `B-73`
+> pin commits, so backing this out leaves the SDK fix in place.
+>
+> ⚠️ The port was blocked once by a **false** failing-set change: the port
+> worktrees had no `.env`, so `tests/auto/test_acuity_live.py`'s
+> `skipif`-on-credentials tests SKIPPED instead of FAILED and the count
+> dropped 101→98. Copy `.env` into a scratch worktree before trusting any
+> baseline diff.
 
 `classify_screen_answer` could return `red_flag` **only** by matching a
 `red_flag_answer_keywords` entry. No affirmative branch existed, so a plain
