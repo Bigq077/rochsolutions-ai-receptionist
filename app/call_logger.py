@@ -206,7 +206,34 @@ class CallLogger:
             # id. Booking integrity was unmeasurable, which is bar #1 in
             # CLAUDE.md §6.
             "calendar_event_id": s.get("calendar_event_id") or None,
-            "transfer_attempted": s.get("transfer_attempted", False),
+            # bool() for the same reason as booking_confirmed above: a
+            # seeded None must record False, not NULL.
+            "transfer_attempted": bool(s.get("transfer_attempted")),
+            # WHY the transfer happened, plus the outcome that looks like
+            # neither a transfer nor a hang-up. transfer_attempted alone
+            # cannot tell a caller who was put through from one who hung up
+            # mid-greeting, and on a press-1 clinic that is the single most
+            # important operational number there is (B-72).
+            #
+            # Persisted through raw= in app/obs/store.py, so this needs no
+            # schema change and cannot break capture on an unmigrated store.
+            "transfer": {
+                "requested_by_caller": bool(s.get("transfer_requested_by_caller")),
+                "medical_emergency":   bool(s.get("medical_emergency_detected")),
+                "requested_by_tool":   bool(s.get("request_transfer")),
+                "after_silence":       bool(s.get("silence_transfer")),
+                # Susie promised a transfer and there was no target to dial.
+                # The caller was neither transferred nor lost — they were
+                # recovered in-line. Invisible before this.
+                "unavailable":         bool(s.get("transfer_unavailable")),
+                # Only ever populated by the LEGACY /twilio/transfer-status
+                # flow. The media-streams miss handler (/twilio/transfer-miss)
+                # deliberately does not write it: by the time it fires the
+                # socket has closed and the record is already built, so a
+                # write there would be instrumentation that silently does
+                # nothing. Expect None on every live clinic.
+                "failed_status":       s.get("transfer_failed_status") or None,
+            },
             "graceful_exit":      s.get("graceful_exit", False),
             "total_retries":      total_retries,
             "slot_retry_counts":  slot_retry_counts,
