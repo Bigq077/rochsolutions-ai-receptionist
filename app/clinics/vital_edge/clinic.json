@@ -59,6 +59,15 @@
     "sms_appointment_noun": "massage",
     "phone": "+44 7426 779875",
     "transfer_phone": "+447545862307",
+    "_call_overflow_note": "Human-first overflow, DISABLED by default. Present so Jonathan has an emergency bypass he can operate from a phone: he texts OFF to the Susie line and inbound calls ring dial_phone FIRST (press 1 to take it), falling through to Susie after ring_timeout; he texts ON to revert, and any override expires at the next London midnight (app/clinic_call_mode.py). Added 2026-08-21 because the toggle was built but this clinic had no block for it to flip, so the bypass — the one item PRODUCTION_READINESS_PLAN.md marks 'never cut' — had nothing to ring. Setting enabled=true here makes human-first the permanent default instead; leave it false and use the text toggle.",
+    "call_overflow": {
+      "enabled": false,
+      "dial_phone": "+447545862307",
+      "ring_timeout": 20,
+      "_whisper_with_caller_note": "{caller} is substituted with the spoken caller number when it can be paced confidently (UK 0-form, 10-11 digits, not withheld); withheld or non-UK numbers fall back to whisper_text. Substitution is a literal .replace, so braces other than {caller} are safe. Remove the placeholder to stop announcing callers without a deploy.",
+      "whisper_text_with_caller": "Business call, from {caller}. Press 1 to take it, or hang up and Susie will handle it.",
+      "whisper_text": "Business call from your Susie line. Press 1 to take it, or hang up and Susie will handle it."
+    },
     "booking_system": "google_calendar_provisional",
     "_availability_mode_note": "8 Aug 2026. The calendar holds Jonathan's BOOKED work, not published availability, so the 'published' reader offered callers the times he already had clients (it offered his flight to Ibiza as a massage slot). 'diary' subtracts the calendar from working_hours below and is the intended mode; 'handoff' offers no times at all and is the safe fallback — switching back is editing this one value, not a revert. 'published' is wrong for this clinic and must not be restored.",
     "availability_mode": "diary",
