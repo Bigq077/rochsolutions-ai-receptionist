@@ -6463,6 +6463,12 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
     return {
         "success": True,
         "rescheduled_to": new_start.strftime("%A %d %B at %H:%M"),
+        # Mirrors book_appointment: a provisional clinic has NOT confirmed this
+        # move, it has requested it. The deferred outcome backstop in llm_stream
+        # reads this to choose between "that is moved" and "that is requested" -
+        # telling a Vital Edge caller they are moved would be the false
+        # confirmation the whole write-guard family exists to prevent.
+        "provisional": clinic.get("booking_system") == "google_calendar_provisional",
     }
 
 
