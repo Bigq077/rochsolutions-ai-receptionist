@@ -10,7 +10,7 @@ screening threads that kept being confused with each other:
 | `B-74` | the answer classifier had no affirmative path. **FIXED**, all four branches. |
 | `S-nn` | Layer 1 — trigger arming and answer handling in `clinical_screening.py`. |
 
-All anchors are on `latency-eval` at **`168e0d2`**.
+All anchors are on `latency-eval` at **`69a68a5`**.
 
 ---
 
@@ -91,7 +91,7 @@ tests red. `trigger_all_groups` stays on `vbi_neck`, the one screen where the AN
 bar is the syndrome rather than the answer.
 
 The over-screening complaint behind Phase 3 is real but is a **tone** problem —
-routine framing before the question, at no cost to recall. Not yet done.
+routine framing before the question, at no cost to recall. Done under **`S-6`**.
 
 **Evidence limits, stated so they are not overstated.** Replay is a
 change-detector here, not a validator: 37 of the 38 screen-touching calls in the
@@ -104,13 +104,59 @@ must be confirmed on the demo line.
 
 ---
 
+## `S-6` · the safety questions **apologised for themselves** — **FIXED `latency-eval` `69a68a5`, NOT ported**
+
+**Anchors**
+- [`clinic.json`](../../app/clinics/jv_v1/clinic.json) — `screen_question` on cauda_equina / dvt / serious_spinal / vbi_neck
+- [`clinical_screening.py:374`](../../app/media_streams/clinical_screening.py) — `_ORPHAN_STOPWORDS`
+
+Phase 4, and load-bearing rather than cosmetic: with the Phase 3 narrowing
+rejected under **S-3**, framing is the only remaining lever on "the bladder
+question is alarming for someone who just wants a massage".
+
+"Sorry to ask" and "Just to be safe" tell a benign caller there is something
+to worry about. The four lead-ins now say the question is routine and asked of
+everyone. Clinical content byte-identical; `trauma_fracture` (live polarity fix
+`becd7f8`, under review) and `inflammatory` (already neutral, advisory) left
+alone on purpose.
+
+**The line held, and why.** The plan's own example ended *"almost everyone says
+no to these"*. `classify_screen_answer` is single-polarity — a negative lead is
+`clear`, full stop — so priming toward "no" manufactures **false clears** on the
+one path where a false clear is the dangerous direction. Measured: `"no"`,
+`"no i don't think so"`, `"no nothing like that"`, `"erm no"` all clear and
+unblock the booking. **Normalise the asking; never suggest the answer.**
+
+**Two hazards the plan did not know about**, both found by measuring, both now
+pinned:
+
+1. `_screen_evidence_words` builds orphan detection from words **unique to one**
+   screen question. The first draft made `everyone` and `theres` unique evidence
+   for cauda_equina — a false ORPHAN generator against the screen `B-20` is
+   scored on, and the `"proper"` collision of 3 Aug repeating. Evidence sets are
+   now byte-identical before and after the pass.
+2. `B-31`: `last_bot_prompt` truncates at 200 and a long paraphrase loses its
+   `?`, switching orphan matching off. The questions land at 178–193; the cap is
+   pinned per field.
+
+Prompt hashes re-pinned `243a1be416ea9fc9` → `11fc9c7fcab478d9` in **both**
+tables (four tests read them), with containment verified by rendering every
+clinic before and after — exactly four `ASK:` lines differ, the other four
+clinics byte-identical.
+
+Regression: `tests/regression/test_a_screen_question_is_framed_as_routine.py`
+(55 tests), each pin demonstrated to fail on the wording it exists to catch.
+
+**`U`-debt: not exercised on a call.**
+
+---
+
 ## Open, not fixed
 
 | # | Defect | Anchor | Note |
 |---|---|---|---|
 | `S-4` | **21 stranded screens** — armed, asked, never resolved | [`clinical_screening.py`](../../app/media_streams/clinical_screening.py) `SCREEN_TRUNCATED_KEY` / bounded re-ask `e595df5` | The bounded re-ask should cut this. **Unmeasurable by replay** — stored transcripts predate it, so replay shows how many screens would now get a re-ask, never whether the caller answered it. Needs a live call. |
 | `S-5` | `vbi_neck`'s AND group is **14/14 the question's own answer** | [`clinic.json`](../../app/clinics/jv_v1/clinic.json) `vbi_neck.trigger_all_groups` | Same structural flaw as the rejected Phase 3, pre-existing. Mitigated but not closed by the `S-3` decisive keywords. Un-grouping it would screen every neck caller for blackouts — an owner call, not an engineering one. |
-| `S-6` | Screening framing is **alarming for a benign presentation** | [`clinic.json`](../../app/clinics/jv_v1/clinic.json) `screen_question` | Phase 4. Constrained by `test_screen_wording_no_body_part_assertion.py` (the escalation must not assert a symptom the caller denied — this cost two rewrites) and `test_screen_cauda_lay_phrasing.py`. |
 
 ---
 
