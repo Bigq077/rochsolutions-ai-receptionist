@@ -131,6 +131,90 @@ Alcester/Redditch location ladder that owns its opening turn.
 
 ---
 
+## `B-73` · an unpinned dependency took **all four services down** on a deploy that changed no relevant code — **FIXED**
+
+> ✅ `latency-eval` **`a7fa1fe`** · `jv_v2` **`e82168a`** ·
+> `theorem-onboarding` **`cacc544`** · `vitaledge-onboarding` **`d3b1d97`**.
+> No regression test — **the suite structurally cannot catch this** (see below).
+
+`requirements.txt` carried `anthropic>=0.40.0`. **anthropic 1.0.0 removed
+`temperature` from `AsyncMessages.stream()`** (it moved into `output_config`).
+`app/media_streams/llm_stream.py:3129` passes it, so once a dependency install
+resolved `>=` to the new major, every turn raised:
+
+```
+[ms_llm] Claude API error: TypeError("AsyncMessages.stream() got an
+unexpected keyword argument 'temperature'")
+```
+
+Every reply degraded to the safe fallback ("Sorry, I had a bit of a blip
+there"), followed by `duplicate response discarded` as the same fallback
+repeated. Observed on JV build `8953fa5`, call
+`CA6246ecb88d7a7fb0d33f3f8f66ef4905`, four consecutive turns.
+
+**The deploy that triggered it changed only `app/routes/realtime.py` and
+`app/call_logger.py` (B-72, observability).** Not one line of the changed code
+was involved. A deploy is also a dependency install — that is the whole lesson.
+
+> ⚠️ **Three things make this the nastiest failure shape in this repo.**
+> 1. **The suite cannot catch it.** The local venv already holds a working
+>    version, so the tests are green while production is broken.
+> 2. **A revert does not fix it.** Reverting redeploys, which reinstalls the
+>    same broken version. Only a pin does.
+> 3. **It presents as a model failure** — "Susie stopped making sense" — so the
+>    instinct is to look at prompts. The tell is `[ms_llm] Claude API error:`.
+
+**Residual: `requirements.txt` still uses `>=` for twilio, elevenlabs,
+assemblyai and fastapi.** The same thing can happen to any of them on the next
+deploy of anything. A lockfile is the real fix and is not done.
+
+---
+
+## `B-74` · **"yes" did not flag a red-flag screen** — **FIXED on `latency-eval`, NOT yet ported**
+
+> ✅ `latency-eval` **`1bcc121`**. Regression:
+> `tests/regression/test_a_plain_yes_flags_a_red_flag_screen.py`
+> (37 tests — **19 red before, 18 green both ways** pinning the negative path).
+> Suite: failing set identical before and after (101). **Not ported. `U`-debt.**
+
+`classify_screen_answer` could return `red_flag` **only** by matching a
+`red_flag_answer_keywords` entry. No affirmative branch existed, so a plain
+"yes" fell through to `unclear` while "no" cleared reliably.
+
+`unclear` leaves the screen pending and hands the decision back to the LLM —
+which defeats the point of a deterministic safety layer.
+
+Live on JV 2026-08-21, same call as `B-73`:
+
+```
+10:53:14  screen cauda_equina ARMED by: "...losing feeling in my legs and i've
+          had a bit of trouble controlling my bladder"
+10:53:14  screen cauda_equina asked deterministically
+10:53:26  screen cauda_equina answer unclear: 'yeah i do'
+          -> no escalation, ever
+```
+
+Layer 1 armed and asked **correctly** — that layer is healthy. The failure is
+one branch downstream. And it was **never cauda-equina-specific**: a plain "yes"
+missed on all six screens.
+
+**Second defect found while fixing it.** The bare negatives
+`no/nope/nah/none/neither` were matched as **substrings**, so `"no"` matched
+inside `"know"` and `"yes i know i do"` classified as `clear`. Whole-word now —
+without it the affirmative branch would have been swallowed in exactly the cases
+it exists for.
+
+> ⚠️ **The affirmative branch runs LAST, after every negative check.** It can
+> only turn `unclear` into `red_flag`; it can never flip an answer that already
+> classified `clear`. `"yeah no i dont have that"` is caught by the word `no`
+> and never reaches it. Keep that ordering — over-escalation blocks legitimate
+> bookings and teaches a clinic to ignore the alert.
+
+**Behaviour change:** `"im not sure"` now returns `unclear` rather than `clear`
+(it used to clear on the `no` inside `not`). It re-asks instead of passing.
+
+---
+
 ## `B-72` · a **successful transfer is indistinguishable from a hang-up** in the obs store — **FIXED on `latency-eval`**
 
 > ✅ `latency-eval` **`5181f78`** · `jv_v2` **`8953fa5`** ·
