@@ -4675,6 +4675,48 @@ def _spoken_day_label(date_iso: str) -> str:
         return ""
 
 
+def _same_interval(a, b, tol_s: int = 60) -> bool:
+    """True when two (start, end) pairs describe the same block.
+
+    B-77. A tolerance because the interval is rebuilt from the stored ISO start
+    plus a whole number of minutes, while freebusy returns Google's own
+    timestamps; a stray second must not stop the vacated slot being recognised.
+    A minute is far tighter than any real gap between distinct appointments.
+    """
+    try:
+        return (
+            abs((a[0] - b[0]).total_seconds()) <= tol_s
+            and abs((a[1] - b[1]).total_seconds()) <= tol_s
+        )
+    except (TypeError, IndexError, AttributeError):
+        return False
+
+
+def _reschedule_busy_block(session: Dict[str, Any]):
+    """The (start, end) of the appointment currently being moved, or None.
+
+    B-77. Built only from what lookup_patient recorded, and only while a
+    reschedule is actually in flight - `_lookup_purpose` is cleared by
+    _note_write_result on any successful write, so this stops applying the
+    moment the move lands.
+
+    Returns None on anything unusable so the caller keeps every busy block it
+    already had. Failing closed here means a slightly over-restrictive grid;
+    failing open would mean offering a slot that is genuinely taken.
+    """
+    if session.get(LOOKUP_PURPOSE_KEY) != "reschedule":
+        return None
+    _iso = (session.get("_lookup_appointment_datetime") or "").strip()
+    _dur = session.get(LOOKUP_DURATION_KEY)
+    if not _iso or not isinstance(_dur, int) or _dur <= 0:
+        return None
+    try:
+        _start = datetime.fromisoformat(_iso.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    return (_start, _start + timedelta(minutes=_dur))
+
+
 async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     # ── PROMPT L hard gate: reject any service name other than the valid set ──
     # This fires BEFORE any Acuity or Google Calendar request so invalid
@@ -4842,6 +4884,45 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     duration_min = _resolve_duration_minutes(
         clinic, _raw_service, args, session, _slot_minutes
     )
+    # ── B-77: a RESCHEDULE is sized by the appointment being moved ──────────
+    #
+    # JV CAac066043 (21 Aug). A 60-minute Sports Massage was being moved. The
+    # model called check_availability with service="msk_initial_assessment", so
+    # the grid was built at 40 minutes and offered 17:15;
+    # _exec_reschedule_appointment then wrote the appointment's TRUE 60 minutes
+    # and the diary got 17:15-18:15. Two things were wrong at once:
+    #
+    #   * generate_candidate_slots emits (start, start+duration) and
+    #     filter_free_slots overlap-tests THAT. Only [17:15,17:55) was ever
+    #     checked against the calendar - the last 20 minutes of the event that
+    #     actually got written was never collision-tested.
+    #   * the stride is (duration + break), so at 40+5 the grid steps 45 min.
+    #     At the true 60+5 it steps 65, and 17:15 is not an offered start at all.
+    #
+    # The model's `service` argument cannot be trusted to name the service the
+    # caller already has - it is a free choice from the catalogue, and the
+    # appointment itself is the authority. So on a reschedule the appointment
+    # wins. Fixing the OFFER is sufficient: _resolve_slot_iso refuses any ISO
+    # that matches no offered slot once availability has run this call, so the
+    # write can only land on a slot this function produced.
+    #
+    # Gated on _lookup_purpose == "reschedule", which _exec_lookup_patient sets
+    # and _note_write_result clears on ANY successful write - so a caller who
+    # books something NEW after their move is sized by the service again.
+    _resched_dur = session.get(LOOKUP_DURATION_KEY)
+    if (
+        session.get(LOOKUP_PURPOSE_KEY) == "reschedule"
+        and isinstance(_resched_dur, int)
+        and 0 < _resched_dur <= 8 * 60
+        and _resched_dur != duration_min
+    ):
+        logger.info(
+            "[ms_tools] check_availability: RESCHEDULE - sizing the grid by the "
+            "appointment being moved (%d min), not by service=%r (%d min). "
+            "B-77: the slots offered must be able to hold what will be written.",
+            _resched_dur, _raw_service, duration_min,
+        )
+        duration_min = _resched_dur
     # Re-anchor each day's closing bound to the service length. working_hours end
     # was baked as last_appointment + slot_minutes (config default 40). Shift it by
     # (duration_min - slot_minutes) so the LAST offered start equals last_appointment
@@ -4924,6 +5005,29 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         # default to Free in Google, so they are added here or a blocked-out
         # week is offered as available.
         busy_blocks = parse_busy(busy_raw or []) + _all_day
+        # B-77: the appointment being MOVED is not a conflict with itself.
+        #
+        # It is on the calendar, so freebusy reports it busy - and now that the
+        # grid is sized by its TRUE length it blocks more candidates than it did
+        # when the grid was (wrongly) shorter. Without this, sizing the grid
+        # correctly would REMOVE same-day options that exist today: a caller
+        # moving a 60-minute 17:15 appointment would find every slot within an
+        # hour of it refused by the slot they are vacating.
+        #
+        # Matched on the exact interval rather than by id because freebusy returns
+        # bare intervals with no ids at all. An unrelated event occupying exactly
+        # the same start AND end would also be dropped; that is already a
+        # double-booking, and the slot is the caller's own either way.
+        _moved = _reschedule_busy_block(session)
+        if _moved:
+            _before = len(busy_blocks)
+            busy_blocks = [b for b in busy_blocks if not _same_interval(b, _moved)]
+            if len(busy_blocks) != _before:
+                logger.info(
+                    "[ms_tools] check_availability: freeing the slot being vacated "
+                    "(%s to %s) - it is not a conflict with its own move",
+                    _moved[0].isoformat(), _moved[1].isoformat(),
+                )
         free_slots = filter_free_slots(candidates, busy_blocks, break_min=_break_min)
     except Exception as e:
         # Calendar API failed — fall back to unfiltered candidate slots (same
@@ -6500,18 +6604,10 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
         # would silently lengthen e.g. a 30-min treatment session to 40 min on
         # reschedule. Derive the true length from the existing event; fall back to
         # the arg only if the original end time is unavailable.
-        _dur_minutes = None
-        _orig_start_s = (found.get("start") or {}).get("dateTime", "")
-        _orig_end_s = (found.get("end") or {}).get("dateTime", "")
-        if _orig_start_s and _orig_end_s:
-            try:
-                _os = datetime.fromisoformat(_orig_start_s.replace("Z", "+00:00"))
-                _oe = datetime.fromisoformat(_orig_end_s.replace("Z", "+00:00"))
-                _delta_min = int(round((_oe - _os).total_seconds() / 60))
-                if _delta_min > 0:
-                    _dur_minutes = _delta_min
-            except (ValueError, TypeError):
-                _dur_minutes = None
+        # B-77: one shared derivation - _exec_check_availability sizes the slot
+        # grid from the same helper, so the slots offered can hold what is
+        # written. The model's duration_minutes is the last resort only.
+        _dur_minutes = _gcal_event_duration_min(found)
         if _dur_minutes is None:
             _dur_minutes = int(args["duration_minutes"])
         new_end = new_start + timedelta(minutes=_dur_minutes)
@@ -7704,6 +7800,35 @@ def _gcal_event_service(ev: Dict[str, Any]) -> str:
     return segments[1] if len(segments) > 1 else ""
 
 
+def _gcal_event_duration_min(ev: Dict[str, Any]) -> Optional[int]:
+    """How long this calendar event actually is, in minutes. None if unusable.
+
+    B-77. ONE definition, deliberately. `_exec_reschedule_appointment` derives
+    the length of the appointment being moved so the diary keeps its true
+    duration (f46dd44 - a 90-minute booking had been written as 60), and
+    `_exec_check_availability` now needs the SAME number so the slots it offers
+    can actually hold it. Two implementations of "how long is this event" that
+    must agree is exactly the class of defect this fixes: on JV CAac066043 the
+    search said 40 minutes and the write said 60.
+
+    Returns None - never a guess - when either end of the event is missing or
+    unparseable, or the span is not positive. Both callers fall back to their
+    previous behaviour on None, so an odd event degrades to today rather than
+    to a wrong number.
+    """
+    _s = (ev.get("start") or {}).get("dateTime", "")
+    _e = (ev.get("end") or {}).get("dateTime", "")
+    if not _s or not _e:
+        return None
+    try:
+        _sd = datetime.fromisoformat(_s.replace("Z", "+00:00"))
+        _ed = datetime.fromisoformat(_e.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    _mins = int(round((_ed - _sd).total_seconds() / 60))
+    return _mins if _mins > 0 else None
+
+
 # Placeholder values the model emits into patient_name when it has not carried
 # the real name through from lookup_patient. Observed live: patient_name=
 # "Unknown" on CA1fc9cb13337ccc7eb936e0dbf5c8fc3d (2026-08-02) — harmless there
@@ -7796,6 +7921,11 @@ LOOKUP_NAME_SPOKEN_KEY = "_lookup_name_spoken"
 LOOKUP_SLOT_SPOKEN_KEY = "_lookup_slot_spoken"
 LOOKUP_MATCH_COUNT_KEY = "_lookup_match_count"
 LOOKUP_PURPOSE_KEY     = "_lookup_purpose"  # "cancel" | "reschedule" from last lookup
+# B-77 - the TRUE length of the appointment lookup_patient just found, so the
+# availability search for its new time can offer slots that actually hold it.
+# Written by _lookup_patient_gcal, read by _exec_check_availability. Absent
+# whenever the event was unusable, and both readers fall back to today.
+LOOKUP_DURATION_KEY    = "_lookup_appointment_duration_min"
 
 
 # B-44 — steering, attached to the ambiguous lookup result itself.
@@ -7956,6 +8086,15 @@ async def _lookup_patient_gcal(args: Dict[str, Any], session: Dict[str, Any]) ->
         session["_lookup_appointment_id"] = _id
         session["_lookup_appointment_datetime"] = start
         session["_lookup_appointment_type"] = svc
+        # B-77: persist the event's REAL length. Only `start` was kept, so the
+        # availability search for the new time had nothing to size itself by and
+        # fell back to the model's `service` argument - which on CAac066043 was
+        # msk_initial_assessment (40 min) for a 60-minute Sports Massage.
+        _dur = _gcal_event_duration_min(ev)
+        if _dur:
+            session[LOOKUP_DURATION_KEY] = _dur
+        else:
+            session.pop(LOOKUP_DURATION_KEY, None)
         _note_lookup_ambiguity(session, total, prev_appointment_id=_prev_id)
         logger.info(
             "[ms_tools] lookup_patient (gcal): match %d/%d name=%r id=%r%s",
