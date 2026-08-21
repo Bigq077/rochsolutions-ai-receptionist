@@ -294,7 +294,19 @@ UNMOVED_PROMPTS = {
     # when offering outside the caller's requested window.
     # Re-pinned 2026-08-16 Batch 1.1: withheld keypad line says why first
     # (CA86dfad89 A9a).
-    "jv_v1": "63eb3b1a2899513b",
+    # Re-pinned 2026-08-21, 63eb3b1a2899513b -> 243a1be416ea9fc9. ONE line of
+    # jv_v1's prompt moved, and it is a safety fix, not drift: the
+    # trauma_fracture screen question used to open "are you able to use it or
+    # put weight through it", which made "yes" the REASSURING answer. The block
+    # it sits in reads "IF ANY YES / positive -> do NOT book", and
+    # classify_screen_answer grades an affirmative lead as red_flag, so both
+    # layers had it backwards: the caller who could walk was refused and sent to
+    # A&E, and the caller who could not was cleared and booked in for hands-on
+    # physio. Now asks "is it too painful to use it or put your weight through
+    # it". Verified by diffing the rendered prompt: exactly that one ASK line
+    # differs, and demo/theorem/theorem_v3 are byte-identical, which is the
+    # containment claim this table exists for.
+    "jv_v1": "243a1be416ea9fc9",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL

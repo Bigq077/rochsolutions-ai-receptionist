@@ -216,13 +216,26 @@ class TestScreeningClassifier:
 
     def test_trauma_question_is_limb_aware_and_grip_is_a_red_flag(self, jv):
         """Call-2: a WRIST caller was asked the weight-bearing-only question,
-        and 'can't really grip' wasn't recognised as a red flag."""
+        and 'can't really grip' wasn't recognised as a red flag.
+
+        Asserted as the PROPERTY (the question covers both an upper and a lower
+        limb) rather than the exact sentence. The wording changed on 2026-08-21
+        when the screen's polarity was fixed — it used to open "are you able to
+        use it", which made "yes" the reassuring answer and inverted the whole
+        screen against a grader that reads an affirmative as red_flag. Pinning
+        the literal made a safety fix look like a regression.
+        """
         sess = {}
         r = cs.update_screening_state(
             sess, jv, "my lad came off his bike and hurt his wrist"
         )
         assert r["action"] == "ask_screen"
-        assert "use it or put weight through it" in r["speak"]
+        assert "use it" in r["speak"], (
+            f"lost the upper-limb limb of the question: {r['speak']!r}"
+        )
+        assert "weight" in r["speak"], (
+            f"lost the lower-limb limb of the question: {r['speak']!r}"
+        )
         sess["last_bot_prompt"] = r["speak"]
         r2 = cs.update_screening_state(
             sess, jv, "well yeah swelling and he can't really grip the bike"
