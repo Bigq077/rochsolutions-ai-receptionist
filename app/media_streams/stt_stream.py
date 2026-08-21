@@ -251,6 +251,18 @@ _KEYTERM_STOPWORDS: frozenset = frozenset({
     # already handled. Unlisted they cost jv_v1 "achilles", "hamstring" and
     # "rotator" — measured, not assumed.
     "painful", "stand", "too",
+    # 2026-08-21, third instance: vbi_neck gained decisive trigger keywords so a
+    # caller who leads with the dangerous half ("I blacked out twice this week")
+    # arms without ever saying "neck". The clinical content of those phrases is
+    # already boosted or already stopworded ("black" and "double" are both above),
+    # and what the new phrasings add is ordinary English: "blacked", "seeing",
+    # "attack", "vision", "between". None has a confusable clinical neighbour --
+    # AssemblyAI has never mis-heard "vision" on any reviewed call, whereas
+    # "bladder", "bowel", "saddle" and "incontinent" (the additions that DID earn
+    # their slots) are exactly the low-frequency words a general model fumbles.
+    # Unlisted they cost jv_v1 "achilles" and "hamstring", caught by
+    # test_anatomy_survives_the_cap_on_the_overflowing_clinic.
+    "attack", "between", "blacked", "seeing", "vision",
 })
 
 

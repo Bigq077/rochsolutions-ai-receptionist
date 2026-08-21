@@ -252,13 +252,25 @@ def _screen_triggered(text_norm: str, screen: Dict[str, Any]) -> bool:
                              least one hit. Used for compound presentations
                              (e.g. VBI = neck complaint AND a dizziness/
                              neuro signal) so a plain neck-pain caller is not
-                             over-screened."""
+                             over-screened.
+
+    The two are OR-ed, and a screen may carry both. `trigger_all_groups` gives
+    the two-signal bar that stops a bare body-part mention arming a screen;
+    `trigger_keywords` is then the short list of DECISIVE phrases that must arm
+    on their own regardless — "bladder", "heard a crack", "deformed". Nobody
+    mentions losing bladder control while describing a stiff back, so requiring
+    a second signal for those would be the wrong trade.
+
+    This used to `return` on the groups branch, which meant a screen defining
+    both silently ignored its keywords. Nothing depended on that: vbi_neck was
+    the only screen with groups and it has no keywords. OR-ing fails in the safe
+    direction — it can only ever arm a screen that would not have armed."""
     groups = screen.get("trigger_all_groups")
-    if groups:
-        return all(
-            any(_phrase_in(k, text_norm, _TRIGGER_MAX_GAP) for k in group)
-            for group in groups if group
-        )
+    if groups and all(
+        any(_phrase_in(k, text_norm, _TRIGGER_MAX_GAP) for k in group)
+        for group in groups if group
+    ):
+        return True
     return any(
         _phrase_in(k, text_norm, _TRIGGER_MAX_GAP)
         for k in (screen.get("trigger_keywords") or [])
