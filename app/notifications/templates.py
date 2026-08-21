@@ -322,6 +322,37 @@ def format_callback_confirmation(
     )
 
 
+def format_live_transfer_sms(
+    patient_name: str,
+    clinic_name:  Optional[str] = None,
+    clinic_phone: Optional[str] = None,
+) -> str:
+    """📞 Caller was put through to a person on this call.
+
+    Distinct from format_callback_confirmation, which promises contact the
+    caller has not had yet. A transferred caller is being connected right now,
+    so "someone will be in touch shortly" is at best confusing and at worst a
+    contradiction they read while the phone is still at their ear.
+
+    This text is sent at the moment of the redirect, before the dial outcome
+    is known, so it must be true whether or not the leg was answered: it
+    states what we did, promises nothing, and leaves the caller a number if
+    they did not get through.
+    """
+    name  = _cn(clinic_name)
+    phone = _cp(clinic_phone)
+    if patient_name:
+        return (
+            f"Hi {patient_name}, we've just put you through to the team. "
+            f"If you didn't manage to get through, call us on {phone} and "
+            f"we'll help. {name}"
+        )
+    return (
+        f"Hi, we've just put you through to the team at {name}. "
+        f"If you didn't manage to get through, call {phone}."
+    )
+
+
 def format_message_received_confirmation(
     patient_name: str,
     clinic_name:  Optional[str] = None,
