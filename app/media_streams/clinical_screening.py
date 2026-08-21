@@ -594,6 +594,19 @@ def _occurrence_negated(text_norm: str, keyword: str) -> bool:
     return found
 
 
+# Single-token negatives, matched as WHOLE WORDS. They used to sit in the
+# substring tuple below, which meant "no" matched inside "know": the answer
+# "yes i know i do" — an unambiguous positive to a red-flag screen — was
+# classified `clear`. Found 2026-08-21 while fixing the missing affirmative
+# path. Whole-word matching also stops "im not sure" clearing a screen on the
+# "no" inside "not", which is the right outcome: unsure is not a no.
+_NEGATIVE_WORDS: frozenset = frozenset({
+    "no", "nope", "nah", "none", "neither",
+})
+
+# Multi-word negatives, matched as substrings (a phrase cannot collide with the
+# inside of a single word the way a bare token can).
+#
 # NB: normalised through _norm at import. This is the one literal set compared
 # RAW against already-normalised text (see classify_screen_answer), so the
 # contractions below — "everything's fine", "i haven't", "i don't" — would stop
@@ -604,13 +617,26 @@ def _occurrence_negated(text_norm: str, keyword: str) -> bool:
 _NEGATIVE_PATTERNS = tuple(
     _norm(p)
     for p in (
-        "no", "nope", "nah", "none", "neither", "nothing like that",
+        "nothing like that",
         "nothing of the sort", "no nothing", "not that i", "no changes",
         "no change", "all fine", "everything's fine", "everything is fine",
         "i haven't", "i have not", "i don't", "i do not", "definitely not",
         "not at all", "thankfully not", "luckily not",
     )
 )
+
+# A leading affirmative to a red-flag screen. `classify_screen_answer` could
+# only ever return `red_flag` by KEYWORD, so a plain "yes" to a direct yes/no
+# question fell through to `unclear` — asymmetric in the dangerous direction,
+# because "no" cleared reliably. Two-word leads are listed separately because
+# "i" alone is far too generic to treat as agreement.
+_AFFIRMATIVE_LEAD: frozenset = frozenset({
+    "yes", "yeah", "yep", "yup", "aye", "correct",
+    "definitely", "absolutely", "certainly", "sometimes",
+})
+_AFFIRMATIVE_LEAD_PAIRS: frozenset = frozenset({
+    "i do", "i have", "i am", "i did", "i does", "i has",
+})
 
 
 def _red_flag_hits(text: str, screen: Dict[str, Any]) -> int:
@@ -647,11 +673,31 @@ def classify_screen_answer(text: str, screen: Dict[str, Any]) -> str:
     for k in screen.get("red_flag_answer_keywords") or []:
         if _kw_in(k, t) and not _occurrence_negated(t, k):
             return "red_flag"
-    first_word = t.split()[0] if t.split() else ""
-    if first_word in ("no", "nope", "nah", "none", "neither"):
+    words = t.split()
+    first_word = words[0] if words else ""
+    if first_word in _NEGATIVE_WORDS:
+        return "clear"
+    if any(w in _NEGATIVE_WORDS for w in words):
         return "clear"
     if any(p in t for p in _NEGATIVE_PATTERNS):
         return "clear"
+
+    # A leading affirmative, with no negator anywhere in the reply. This runs
+    # AFTER every negative branch on purpose, so it can only ever turn an
+    # `unclear` into a `red_flag` — it can never flip an answer that already
+    # classified as `clear`. "yeah no i dont have that" is caught above by the
+    # word "no" and never reaches here.
+    #
+    # 2026-08-21, JV call CA6246ecb88d7a7fb0d33f3f8f66ef4905: the caller
+    # reported leg weakness and loss of bladder control, the cauda equina screen
+    # armed and asked correctly, and the reply "yeah i do" logged as
+    # `answer unclear`. No escalation ever happened. `unclear` leaves the screen
+    # pending and hands the decision to the LLM — which defeats the entire point
+    # of a deterministic safety layer, and on that call the LLM was down.
+    if (first_word in _AFFIRMATIVE_LEAD
+            or " ".join(words[:2]) in _AFFIRMATIVE_LEAD_PAIRS):
+        return "red_flag"
+
     return "unclear"
 
 
