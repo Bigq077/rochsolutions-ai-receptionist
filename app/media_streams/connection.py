@@ -6040,6 +6040,7 @@ class WebSocketCallHandler:
         # flag discards an entire slot presentation before the caller hears any
         # option, re-queue the saved chunks once instead of going silent.
         self._inhibited_slot_chunks: list = []
+        self._inhibited_slot_obs: list = []
         self._slot_represented_once: bool = False
 
         # Spec J: True when the last LLM response confirmed a slot AND asked
@@ -14297,6 +14298,11 @@ class WebSocketCallHandler:
                 # Bug 5: discard stale LLM chunks that arrived after a confirmed barge-in.
                 # The flag is cleared in _llm_loop finally when the new turn starts.
                 if self.session.get("tts_inhibit"):
+                    # Local import: connection -> llm_stream is lazy throughout
+                    # this file (llm_stream imports turn_handler at module
+                    # scope). This branch runs only on a barge-in, never per
+                    # chunk, so the sys.modules lookup is not on a hot path.
+                    from .llm_stream import _unrecord_spoken
                     logger.info(
                         "[ms_conn] tts_inhibit: discarding stale chunk %r", chunk_text[:60]
                     )
@@ -14305,6 +14311,7 @@ class WebSocketCallHandler:
                     # are discarded before the patient hears any option.
                     # _slot_chunks_sent is set by _flush_slot_buf only when a
                     # real slot map (≥2 entries) was extracted this turn.
+                    _saved_for_represent = False
                     _sc_sent = self.session.get("_slot_chunks_sent", 0)
                     if _sc_sent > 0 and re.search(
                         r"\bNumber\s+\d\b", chunk_text, re.IGNORECASE
@@ -14312,6 +14319,12 @@ class WebSocketCallHandler:
                         # Save the discarded chunk so we can re-present it if the
                         # WHOLE presentation gets inhibited (Bug A recovery).
                         self._inhibited_slot_chunks.append(chunk_text)
+                        # B-76: keep the PRE-substitution form as well. If the
+                        # re-presentation below never happens, these were never
+                        # heard and must be un-recorded - and _record_spoken was
+                        # given this form, not the substituted one.
+                        self._inhibited_slot_obs.append(_obs_chunk_text)
+                        _saved_for_represent = True
                         _sc_inh = (
                             int(self.session.get("_slot_chunks_inhibited", 0)) + 1
                         )
@@ -14336,6 +14349,7 @@ class WebSocketCallHandler:
                                 self.session["_slot_chunks_inhibited"] = 0
                                 _saved = self._inhibited_slot_chunks
                                 self._inhibited_slot_chunks = []
+                                self._inhibited_slot_obs = []
                                 logger.info(
                                     "[ms_conn] all slot chunks inhibited — "
                                     "re-presenting %d chunk(s) (patient heard "
@@ -14347,6 +14361,11 @@ class WebSocketCallHandler:
                             else:
                                 # Already re-presented once and still inhibited —
                                 # give up to avoid a loop; clear the map.
+                                # B-76: given up on re-presenting - the patient
+                                # never heard these, so drop them from the record
+                                # of what was said this turn.
+                                for _oc in self._inhibited_slot_obs:
+                                    _unrecord_spoken(self.session, _oc)
                                 logger.info(
                                     "[ms_conn] all slot chunks inhibited again — "
                                     "clearing slot map (patient never heard options)"
@@ -14357,6 +14376,17 @@ class WebSocketCallHandler:
                                 self.session.pop("_slot_chunks_inhibited",     None)
                                 self.slot_map_stage = SlotMapStage.NONE
                                 self._inhibited_slot_chunks = []
+                                self._inhibited_slot_obs = []
+                    if not _saved_for_represent:
+                        # B-76: this chunk was recorded as spoken the instant it
+                        # was queued, and is being dropped here. Correct the
+                        # record - last_bot_prompt is derived from it and every
+                        # write gate in llm_stream reads that to decide whether
+                        # its confirmation question was asked. Saved slot chunks
+                        # are excluded: they may still play via the
+                        # re-presentation above, and are un-recorded only if that
+                        # path gives up.
+                        _unrecord_spoken(self.session, _obs_chunk_text)
                     continue
 
                 # A chunk is about to play (not inhibited) — allow a future
