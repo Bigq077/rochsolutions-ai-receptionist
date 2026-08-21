@@ -81,6 +81,7 @@ from .turn_handler import (
     WRITE_FAMILY_CANCEL,
     WRITE_FAMILY_RESCHEDULE,
     WRITE_REFUSED_KEY,
+    WRITE_SUCCEEDED_KEY,
     CANCEL_SUCCEEDED_ID_KEY,
 )
 
@@ -955,19 +956,8 @@ _WRITE_NO_CLAIM_RULE = {
 # second — it says only what this code actually knows, and tells the model that
 # a goodbye deserves a goodbye.
 #
-# CALL-scoped, deliberately — the opposite lifetime to WRITE_REFUSED_KEY, which
-# is turn-scoped and cleared at the top of every turn. A completed write is a
-# fact about the call; only `book_appointment` had such a latch
-# (`booking_write_confirmed`, which Gate 5f reads) and cancel and reschedule had
-# none, which is why a duplicate cancel on the farewell turn looked identical to
-# a first one that failed. Per family rather than per appointment id: the cancel
-# executor's success payload is {"success", "cancelled", "was_at"} with no id
-# (receptionist_tools.py `_exec_cancel_appointment`), so an id-keyed latch would
-# need the executor changed too. The cost of the coarser key is confined to the
-# refusal path — a second, genuine cancellation still runs and still succeeds;
-# only a second *refused* one is described as a duplicate rather than a failure,
-# and _WRITE_ALREADY_DONE_RULE is worded so that is still true.
-WRITE_SUCCEEDED_KEY = "_write_families_succeeded"
+# The latch itself is WRITE_SUCCEEDED_KEY, defined in turn_handler beside
+# WRITE_REFUSED_KEY and imported above — Gate 5f reads it too (B-75).
 
 # B-62 — the wall clock of the move that actually succeeded this call.
 #
