@@ -526,9 +526,21 @@ async def _handle_transfer(call_sid: str, session: Dict[str, Any]) -> None:
     # prefers RENDER_EXTERNAL_URL, which Render sets automatically, so this
     # no longer depends on a variable someone has to remember to add.
     _base = _public_base_url()
-    _action_attr = (
-        f' action="{_base}/twilio/transfer-miss" method="POST"' if _base else ""
-    )
+    if _base:
+        _action_attr = f' action="{_base}/twilio/transfer-miss" method="POST"'
+    else:
+        # Say so.  The original defect was not that the attribute went
+        # missing — it was that it went missing WITHOUT A WORD, so three
+        # no-answer legs dropped their callers before anyone noticed the
+        # net was down.
+        _action_attr = ""
+        logger.warning(
+            "[realtime] transfer safety net DOWN — neither RENDER_EXTERNAL_URL "
+            "nor BASE_URL is set, so <Dial> carries no action URL: an unanswered "
+            "transfer will drop the caller silently, with no voicemail and no "
+            "clinic SMS. call_sid=%s",
+            call_sid,
+        )
 
     twiml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
