@@ -460,6 +460,26 @@ def resolve_transfer_target(session: Dict[str, Any]) -> Optional[str]:
     return target or None
 
 
+def _public_base_url() -> str:
+    """Absolute https:// origin for this service, or "" if none can be resolved.
+
+    For Twilio callback URLs built OUTSIDE a request context — the transfer
+    <Dial> action URL — where there is no Host header to fall back on.
+
+    RENDER_EXTERNAL_URL first, BASE_URL second: the same precedence
+    media_streams/router.py already uses.  Render injects
+    RENDER_EXTERNAL_URL on every service automatically; BASE_URL is a
+    manual dashboard variable, absent from render.yaml, and is NOT set
+    everywhere.
+    """
+    base = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+    if not base:
+        base = os.getenv("BASE_URL", "").strip().rstrip("/")
+    if base and not base.startswith("http"):
+        base = f"https://{base}"
+    return base
+
+
 async def _handle_transfer(call_sid: str, session: Dict[str, Any]) -> None:
     """
     Inject <Say><Dial> into the live call using the Twilio REST API.
@@ -493,9 +513,19 @@ async def _handle_transfer(call_sid: str, session: Dict[str, Any]) -> None:
     # Action URL fires when the <Dial> finishes (answered/no-answer/busy/failed).
     # Without it, a missed transfer just drops the caller silently — the handler
     # at /twilio/transfer-miss instead notifies the clinic by SMS and takes a
-    # voicemail. Needs an absolute URL (BASE_URL); if unset we fall back to the
+    # voicemail. Needs an absolute URL; if none can be built we fall back to the
     # old bare <Dial> rather than emit a relative action Twilio can't reach.
-    _base = os.getenv("BASE_URL", "").rstrip("/")
+    #
+    # This read used to be BASE_URL alone, and BASE_URL was unset on the
+    # Theorem service — so every transfer there emitted a bare <Dial> and the
+    # safety net above was dead in production.  Four consecutive live
+    # transfers (CA82ec06, CA5eda55, CA9f7d8c, CAe057b1) show NO
+    # /twilio/transfer-miss request in their Twilio call events, and the
+    # history holds three no-answer legs that therefore dropped the caller
+    # with no voicemail and told the clinic nothing.  _public_base_url()
+    # prefers RENDER_EXTERNAL_URL, which Render sets automatically, so this
+    # no longer depends on a variable someone has to remember to add.
+    _base = _public_base_url()
     _action_attr = (
         f' action="{_base}/twilio/transfer-miss" method="POST"' if _base else ""
     )
