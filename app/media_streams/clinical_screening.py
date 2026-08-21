@@ -386,12 +386,26 @@ _ORPHAN_STOPWORDS: frozenset = frozenset(
         # evidence words; one more generic collision and this logs a false
         # ORPHAN — corrupting the exact metric B-20 is scored against.
         "proper",
+        # 2026-08-21, Phase 4 tone pass. The screen questions were re-framed
+        # to normalise the ASKING ("one routine question I ask everyone before
+        # booking back pain") rather than apologise for it ("Sorry to ask",
+        # "Just to be safe"), which is what made a benign caller hear a
+        # red-flag question as an accusation. The new lead-ins introduce
+        # exactly the collision "proper" above documents: "everyone" and
+        # "theres" appeared in ONE question each, so they became UNIQUE
+        # evidence words for cauda_equina, and any bot turn saying "there's"
+        # plus one more would have scored a false ORPHAN against the screen
+        # B-20 is measured on. Scaffolding, not clinical vocabulary — every
+        # question keeps its own substance as evidence. Pinned by
+        # test_a_screen_question_is_framed_as_routine.py.
+        "everyone", "routine", "theres",
         # booking / scheduling vocabulary
         "morning", "mornings", "afternoon", "afternoons", "evening",
         "evenings", "tomorrow", "monday", "tuesday", "wednesday",
         "thursday", "friday", "saturday", "sunday", "appointment",
         "appointments", "available", "availability", "minutes", "several",
         "booking", "booked", "session", "sessions", "practitioner",
+        "treatment", "treatments",
     )
 )
 

@@ -306,7 +306,21 @@ UNMOVED_PROMPTS = {
     # it". Verified by diffing the rendered prompt: exactly that one ASK line
     # differs, and demo/theorem/theorem_v3 are byte-identical, which is the
     # containment claim this table exists for.
-    "jv_v1": "243a1be416ea9fc9",
+    # Re-pinned 2026-08-21, 243a1be416ea9fc9 -> 11fc9c7fcab478d9. Phase 4 tone
+    # pass: FOUR ASK lines moved and nothing else. The lead-ins used to
+    # apologise for the question ("Sorry to ask", "Just to be safe before we
+    # book anything"), which is what made a benign caller hear a red-flag
+    # screen as an accusation; they now say the question is routine and asked
+    # of everyone. The clinical half of each question is byte-identical, and
+    # trauma_fracture + inflammatory were deliberately not touched.
+    # Verified by rendering every clinic before and after: exactly those four
+    # ASK lines differ, and demo / theorem / theorem_v3 / vital_edge are
+    # byte-identical, which is the containment claim this table exists for.
+    # Deliberately NOT reworded: any hint at the expected ANSWER ("almost
+    # everyone says no to these"). classify_screen_answer grades a negative
+    # lead as `clear`, so priming manufactures false clears — see
+    # tests/regression/test_a_screen_question_is_framed_as_routine.py.
+    "jv_v1": "11fc9c7fcab478d9",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
