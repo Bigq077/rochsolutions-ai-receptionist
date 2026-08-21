@@ -144,3 +144,61 @@ def test_every_screen_still_clears_on_a_plain_no(screen_id):
 
 def test_an_empty_answer_is_still_unclear():
     assert classify_screen_answer("", _screen()) == "unclear"
+
+
+# ---------------------------------------------------------------------------
+# A leading disfluency must not defeat the affirmative branch
+#
+# The branch above reads the FIRST word, so one filler token bypassed it
+# completely: "yeah i do" flagged, "er yeah i do" fell through to `unclear`.
+#
+# Live on JV 2026-08-21, call CA4feeeec6f9077d4912eb7d2a7f1d6846 at 11:19:46 —
+# ten minutes AFTER the affirmative branch shipped, on a cauda equina screen,
+# with the caller confirming saddle numbness / bladder change:
+#
+#     11:19:33  screen cauda_equina asked deterministically
+#     11:19:46  screen cauda_equina answer unclear: 'er yeah i do'
+#
+# People hesitate when answering a frightening question. Requiring a clean first
+# token made the safety branch fire only for callers who happen not to.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("answer", [
+    "er yeah i do",       # the exact reply from the live call
+    "um yeah",
+    "er yes",
+    "uh yeah i do",
+    "erm yes",
+    "um um yes",          # more than one filler
+    "hmm yeah i have",
+])
+def test_a_disfluency_does_not_hide_an_affirmative(answer):
+    assert classify_screen_answer(answer, _screen()) == "red_flag"
+
+
+@pytest.mark.parametrize("screen_id", [
+    "cauda_equina", "dvt", "serious_spinal",
+    "trauma_fracture", "vbi_neck", "inflammatory",
+])
+def test_every_screen_escalates_on_a_hesitant_yes(screen_id):
+    assert classify_screen_answer(
+        "er yeah i do", _screen(screen_id=screen_id)) == "red_flag"
+
+
+# The strip is for the AFFIRMATIVE lead only. Widening the negative branches the
+# same way would add false-CLEAR surface, which is the dangerous direction — so
+# pin that a hesitant negative still clears, and that the filler strip has not
+# turned a negative into a positive.
+@pytest.mark.parametrize("answer", [
+    "er no not really",
+    "um nah nope",
+    "uh no i dont",
+    "erm none of those",
+])
+def test_a_hesitant_negative_still_clears(answer):
+    assert classify_screen_answer(answer, _screen()) == "clear"
+
+
+def test_filler_alone_is_still_unclear():
+    """Stripping every word must not leave an empty lead reading as agreement."""
+    assert classify_screen_answer("er um", _screen()) == "unclear"
