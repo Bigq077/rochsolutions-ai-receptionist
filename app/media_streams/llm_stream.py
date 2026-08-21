@@ -2658,9 +2658,29 @@ class LLMStream:
             # paths speak without passing through the chunk seam (SAFE_FALLBACK,
             # the guaranteed fallback, the Gate-5 fallback, the ack filler). A
             # turn carried entirely by one of those must not blank the state.
+            # B-76: did ANY chunk go through the chunk seam this turn? The key
+            # is created by _record_spoken and left in place (empty) by
+            # _unrecord_spoken, so its PRESENCE separates "the seam was used and
+            # every chunk was then dropped" from "nothing ever reached the seam".
+            # Without this the fallback below reaches for full_reply and puts the
+            # unheard sentence straight back into last_bot_prompt - which is the
+            # entire defect.
+            _seam_used = isinstance(session.get(SPOKEN_CHUNKS_KEY), list)
             _spoken_turn = (session.pop("_spoken_this_turn", "") or "").strip()
+            # B-76: pop the backing store WITH it. Left behind, a drop arriving
+            # from the async TTS loop after turn end would rebuild
+            # `_spoken_this_turn` from a finished turn and resurrect it into the
+            # next one. _unrecord_spoken is a no-op once this is gone, which is
+            # the intended behaviour.
+            session.pop(SPOKEN_CHUNKS_KEY, None)
+            _nothing_spoken = _seam_used and not _spoken_turn
             if _spoken_turn:
                 _display_reply = _spoken_turn
+            elif _nothing_spoken:
+                # Every chunk was dropped before TTS. The caller heard nothing,
+                # so the "was X said out loud this turn" latches below must all
+                # see nothing - that is the honest answer and the safe one.
+                _display_reply = ""
             else:
                 _display_reply = sanitise_response(full_reply, session)
             # assistant_text -> conversation_history + obs (what was heard).
@@ -2672,9 +2692,23 @@ class LLMStream:
             # SPEC 4: store the phonetic (TTS-substituted) form so that
             # last_bot_prompt reflects what was actually spoken — used by the
             # silence watchdog re-ask and logging.
-            session[F_LAST_BOT_PROMPT] = _apply_tts_subs(
-                _display_reply
-            )[:200]
+            # B-76: a turn that spoke NOTHING must not blank these. They mean
+            # "the last thing Susie said", and if this turn said nothing then
+            # that is still the previous turn's question - which the caller is
+            # still answering. Blanking them fails the write gates just as
+            # surely as the unheard sentence did: on JV CAe84b871b the caller
+            # had approved the move twice and reschedule_appointment was still
+            # refused with "the move confirmation question was never asked".
+            if not _nothing_spoken:
+                session[F_LAST_BOT_PROMPT] = _apply_tts_subs(
+                    _display_reply
+                )[:200]
+            else:
+                logger.info(
+                    "[ms_llm] B-76: every chunk was dropped before TTS — "
+                    "last_bot_prompt left as %r",
+                    (session.get(F_LAST_BOT_PROMPT) or "")[:60],
+                )
             # B-42: was the looked-up patient's NAME actually said out loud this
             # turn? Read from _display_reply (what was HEARD) and not from
             # full_reply, and deliberately NOT from last_bot_prompt, which is
@@ -2693,7 +2727,10 @@ class LLMStream:
             # F_LAST_BOT_PROMPT keeps the full response for fast-path trigger
             # matching; F_LAST_QUESTION is narrowed to the actual question
             # sentence so the re-ask watchdog only replays real questions.
-            session[F_LAST_QUESTION] = _question_from_response(_display_reply)
+            # B-76: same reasoning - the outstanding question is unchanged by a
+            # turn that produced no audio.
+            if not _nothing_spoken:
+                session[F_LAST_QUESTION] = _question_from_response(_display_reply)
             # B1.2: write CTA closes the slot-selection window (reschedule has no
             # Spec J name-ask to clear it). Silence must not re-ask for a day.
             _clear_slot_window_after_write_cta(session)
@@ -3046,6 +3083,8 @@ class LLMStream:
         # post-Gate-5 chunk is released. Cleared here so a turn can never inherit
         # the previous turn's speech.
         session.pop("_spoken_this_turn", None)
+        # B-76: its per-chunk backing store shares the same lifetime exactly.
+        session.pop(SPOKEN_CHUNKS_KEY, None)
         # Gate 5b-r substitutes the outstanding booking step when stripping the
         # reason question leaves the turn with nothing to ask. TURN-scoped, and
         # it must be: sanitise_response runs once per streamed chunk, so without
@@ -5056,6 +5095,17 @@ def _advance_fp_state(session: Dict[str, Any], turn_type: Any) -> None:
     pass
 
 
+# B-76 — the per-chunk backing store for `_spoken_this_turn`.
+#
+# A list, not a string, so a chunk the TTS loop later DISCARDS can be removed
+# exactly. Substring surgery on the joined form would be ambiguous whenever a
+# turn repeats a phrase, and this key exists precisely to correct a record that
+# turned out to be wrong.
+#
+# TURN-scoped: cleared alongside `_spoken_this_turn` at the top of every turn.
+SPOKEN_CHUNKS_KEY = "_spoken_chunks"
+
+
 def _record_spoken(session: Dict[str, Any], chunk: str) -> None:
     """Accumulate one post-Gate-5 chunk — the text the caller actually hears.
 
@@ -5078,8 +5128,55 @@ def _record_spoken(session: Dict[str, Any], chunk: str) -> None:
     """
     if not chunk or not chunk.strip():
         return
-    _prev = session.get("_spoken_this_turn") or ""
-    session["_spoken_this_turn"] = (_prev + " " + chunk.strip()).strip() if _prev else chunk.strip()
+    _chunks = session.get(SPOKEN_CHUNKS_KEY)
+    if not isinstance(_chunks, list):
+        _chunks = []
+    _chunks.append(chunk.strip())
+    session[SPOKEN_CHUNKS_KEY] = _chunks
+    session["_spoken_this_turn"] = " ".join(_chunks)
+
+
+def _unrecord_spoken(session: Dict[str, Any], chunk: str) -> None:
+    """Undo one `_record_spoken` — the chunk was recorded but never spoken.
+
+    B-76. `_record_spoken` runs synchronously inside the turn, immediately
+    before the chunk is put on `tts_text_queue`. connection.py's TTS loop then
+    dequeues it and can still DROP it — for a confirmed barge-in
+    (`tts_inhibit`), a cancelled ack filler, or a cancelled pre-slot chunk. The
+    record was optimistic and nothing ever corrected it, so
+    `session["last_bot_prompt"]` could name a sentence the caller never heard.
+
+    That is not cosmetic. Every write gate in this module reads
+    `last_bot_prompt` to decide whether its confirmation question was asked. On
+    JV CAe84b871b (21 Aug) the duration question was discarded at 21:23:58.600
+    and at 21:24:07.230 `reschedule_appointment` was BLOCKED because
+    `last_bot_prompt` was that unheard question — the caller had already
+    approved the move, twice.
+
+    Recording early is deliberate and must stay (see `_record_spoken`: the TTS
+    loop is async, and anything read from it at turn end is empty or partial).
+    So the record is optimistic by design and this is its correction.
+
+    Removes the LAST matching entry: chunks are appended in order and dropped in
+    order, so on the rare turn that repeats a phrase the most recent one is the
+    one that did not make it. Silent no-op when the chunk is not found — the
+    turn may already have ended and popped the buffer, and a drop arriving after
+    that must never resurrect it.
+    """
+    if not chunk or not chunk.strip():
+        return
+    _chunks = session.get(SPOKEN_CHUNKS_KEY)
+    if not isinstance(_chunks, list) or not _chunks:
+        return
+    _target = chunk.strip()
+    for _idx in range(len(_chunks) - 1, -1, -1):
+        if _chunks[_idx] == _target:
+            del _chunks[_idx]
+            break
+    else:
+        return
+    session[SPOKEN_CHUNKS_KEY] = _chunks
+    session["_spoken_this_turn"] = " ".join(_chunks)
 
 
 def _append_history(
