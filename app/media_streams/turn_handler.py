@@ -203,6 +203,36 @@ _BANNED_SENTENCE_RE = [
     # is NOT matched.)
     ("lookup_reasoning_leak", re.compile(r"[^.!?]*\blook up (?:the |your )?(?:patient|details)\b[^.!?]*[.!?]?", re.IGNORECASE)),
     ("rc_stage_leak",         re.compile(r"[^.!?]*\brc_stage\b[^.!?]*[.!?]?",                               re.IGNORECASE)),
+
+    # B-75b - two CLASS rules, both from JV CA9262659c (21 Aug). Susie spoke
+    # "Let me look at what I have - the caller confirmed quarter past five" and
+    # then "I don't actually have the lookup data or the slot ISO." Both
+    # reached ElevenLabs. Neither matched anything: _REASONING_OPENER_RE is an
+    # enumerated list of sentence openers holding "Let me work out" and
+    # "Looking at the" but not "Let me look at what I have", and
+    # internal_identifier_token only ever sees the snake_case form.
+    #
+    # Adding those two phrasings would be the trap this codebase keeps falling
+    # into. These are classes instead:
+    #
+    # 1. Third-person reference to the person she is TALKING TO. Susie says
+    #    "you". "the caller" is the PROMPT's word for them, which is exactly
+    #    why the model reaches for it when it narrates instead of speaking.
+    #    sanitise_response only ever sees model output - never the greeting,
+    #    the whisper, or any code-built line - so no legitimate speech is at
+    #    risk. Same principle lookup_reasoning_leak states above for "the
+    #    patient".
+    ("third_person_caller_reference",
+     re.compile(r"[^.!?]*\bthe caller(?:'s)?\b[^.!?]*[.!?]?", re.IGNORECASE)),
+
+    # 2. A code identifier spoken with the underscore read out as a SPACE.
+    #    internal_identifier_token catches `slot_iso`; it cannot catch "slot
+    #    ISO", which is the same leak said aloud. "ISO" and "lookup" (one word,
+    #    as a noun) are machine vocabulary with no receptionist meaning. The
+    #    two-word verb "look up your appointment" is untouched, and word
+    #    boundaries keep real words containing them safe - both pinned by tests.
+    ("spoken_identifier_token",
+     re.compile(r"[^.!?]*\b(?:ISO|lookup)\b[^.!?]*[.!?]?", re.IGNORECASE)),
     # CALL STATE internal labels (BOOKING FLOW ACTIVE, CTA COUNT, etc.) spoken
     # aloud — Sonnet occasionally paraphrases the injected CALL STATE block into
     # speech (observed Call 4, 2026-06-17: "The booking flow is already active
