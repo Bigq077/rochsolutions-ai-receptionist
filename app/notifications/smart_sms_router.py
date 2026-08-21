@@ -426,6 +426,23 @@ def _choose_template(
 
     # 1. HUMAN CALLBACK REQUESTED
     if outcome == "human_requested":
+        # infer_call_outcome() collapses two different things into this one
+        # label: a caller put through to a person on THIS call, and a
+        # waitlist / callback entry taken on their behalf.  Only the second
+        # is owed "someone will be in touch".  Call CA82ec06 (2026-08-21)
+        # was transferred live to Mark and texted "you requested a callback
+        # from our team ... someone will be in touch shortly" 0.3s before
+        # the redirect — the caller could have been mid-conversation with
+        # him while reading it.
+        #
+        # transfer_attempted is written at the one point a leg is actually
+        # placed (realtime.py _do_transfer), so it is False for every
+        # refused or suppressed transfer and those keep the callback copy.
+        # should_notify_unreached_caller() already excludes the same flag
+        # for the OWNER alert; this is the caller-facing half of that rule.
+        if session.get("transfer_attempted"):
+            return templates.format_live_transfer_sms(
+                patient_name=patient_name, **ck)
         return templates.format_callback_confirmation(
             patient_name=patient_name, **ck)
 
