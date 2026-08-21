@@ -1092,6 +1092,42 @@ def _booking_outcome_line(result: dict) -> str:
     return f"That's booked in — you're down for {slot}."
 
 
+def _reschedule_outcome_line(result: dict) -> str:
+    """A caller-ready sentence describing a move that HAS just been written.
+
+    The reschedule twin of `_booking_outcome_line`, and it exists for the same
+    reason that one does. JV CA9262659c (21 Aug): reschedule_appointment
+    returned success at 19:59:30, the confirmation the model generated for it
+    was discarded 2.4s later as a stale chunk after a barge-in
+    ("tts_inhibit: discarding stale chunk 'That's you rescheduled - you're now
+    in for Friday the 28th o'"), the turn ended having emitted nothing, and the
+    caller was left asking "have you rescheduled it then".
+
+    Booking had this backstop; reschedule and cancel never did, because the
+    latch that feeds it was written only under `family == WRITE_FAMILY_BOOKING`
+    - the same booking-only scoping that caused B-75 one function away.
+
+    PROVISIONAL IS NOT CONFIRMED. A provisional clinic has REQUESTED the move,
+    not made it, so this returns two different sentences exactly as the booking
+    twin does. `_exec_reschedule_appointment` now reports which it was.
+
+    Returns "" when the result carries no slot to speak, so the caller gets the
+    ordinary fallback rather than a sentence with a hole in it.
+    """
+    if not isinstance(result, dict) or result.get("success") is not True:
+        return ""
+    slot = str(result.get("rescheduled_to") or "").strip()
+    if not slot:
+        return ""
+    if result.get("provisional") is True:
+        return (
+            f"Right - I've put that change through for {slot}. "
+            "It's not confirmed just yet; the practitioner will confirm it "
+            "with you shortly."
+        )
+    return f"That's you rescheduled - you're now in for {slot}."
+
+
 def _note_write_result(session: dict, tool_name: str, result):
     """P1 #5 / F-023 / B-36 — Layers 1 & 2 of the false-confirmation guard.
 
@@ -1166,6 +1202,16 @@ def _note_write_result(session: dict, tool_name: str, result):
             session[RESCHEDULE_SUCCEEDED_SLOT_KEY] = _slot_wall_clock(
                 result.get("attempted_slot_iso")
             )
+            # B-75c: the same deferred backstop booking has had since
+            # CAd8868396. On CA9262659c this move landed and the confirmation
+            # the model wrote for it was thrown away as a stale chunk after a
+            # barge-in, so the turn emitted nothing and the caller had to ask
+            # "have you rescheduled it then". Shares the booking key: it holds
+            # "the outcome sentence this turn owes the caller", whichever write
+            # produced it, and is popped and cleared exactly as before.
+            _r_line = _reschedule_outcome_line(result)
+            if _r_line:
+                session["_booking_outcome_unspoken"] = _r_line
         if family == WRITE_FAMILY_CANCEL:
             # B-65: remember WHICH appointment went, so a later cancel in the
             # same call can tell "do it again" from "delete a different one".
