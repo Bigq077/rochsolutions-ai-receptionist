@@ -234,6 +234,15 @@ _KEYTERM_STOPWORDS: frozenset = frozenset({
     "shape", "sides", "sleep", "sore", "straight", "things", "turn", "wake",
     "walk", "warm", "weight", "wet", "wrong", "black", "double", "angle",
     "ache", "aching",
+    # 2026-08-21: the cauda equina screen gained lay phrasings whose informative
+    # word is ALREADY boosted — "trouble controlling my bladder" adds nothing
+    # over "bladder", and "legs giving way" nothing over "legs". Those phrases
+    # exist for the classifier (a positive that contains its own negator cannot
+    # be matched any other way), not for the recogniser. Left unlisted they cost
+    # jv_v1 — already at the cap — "achilles", "hamstring", "neck", "spine" and
+    # "rotator", which is the exact starvation this section was written to stop.
+    "control", "controlling", "controls", "trouble", "way", "ways", "giving",
+    "weakness", "wetting",
 })
 
 

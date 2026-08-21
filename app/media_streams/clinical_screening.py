@@ -672,6 +672,37 @@ def _red_flag_hits(text: str, screen: Dict[str, Any]) -> int:
                if _kw_in(k, t) and not _occurrence_negated(t, k))
 
 
+def _decisive_red_flag(text: str, screen: Dict[str, Any]) -> Optional[str]:
+    """The first `decisive_red_flags` keyword the caller volunteered, or None.
+
+    The already-answered guard needs TWO ordinary red-flag keywords before it
+    will escalate off an unprompted description, because one is usually weak:
+    "my calf is painful and swollen" is an ordinary strain.
+
+    Some symptoms are not weak at any count. Nobody mentions losing bladder
+    control while describing a stiff back. For those, asking the screen question
+    back is not just slow — it reads as not having listened, and it asks a
+    frightened caller to repeat the worst thing they just said.
+
+    2026-08-21, JV call CA4feeeec6f9077d4912eb7d2a7f1d6846. The caller opened
+    with "really bad back pain ... losing feeling in my legs ... a bit of
+    trouble controlling my bladder". That scored ONE keyword (`bladder`;
+    "losing feeling" was not a configured phrase and "my legs" is not "both
+    legs"), so the guard did not fire and Susie asked him whether he had any
+    changes in bladder or bowel control. He abandoned the call.
+
+    Deliberately a short, separate list rather than a lower global threshold:
+    it bypasses the question entirely, so it must name only symptoms that are
+    decisive on their own. Denied occurrences do not count, exactly as in
+    _red_flag_hits — "no trouble with my bladder" is not a positive.
+    """
+    t = _norm(text)
+    for k in screen.get("decisive_red_flags") or []:
+        if _kw_in(k, t) and not _occurrence_negated(t, k):
+            return k
+    return None
+
+
 def classify_screen_answer(text: str, screen: Dict[str, Any]) -> str:
     """Classify the caller's reply to a screen question:
     'red_flag' | 'clear' | 'unclear'.
@@ -1045,12 +1076,20 @@ def update_screening_state(
             # is far weaker evidence than a direct answer, and a single keyword
             # over-escalates ("my calf is painful and swollen" is an ordinary
             # strain — that one gets the screen asked properly).
-            if _red_flag_hits(text, screen) >= 2:
+            #
+            # ...unless the one signal is DECISIVE. Nobody mentions losing
+            # bladder control while describing a stiff back, and asking that
+            # caller to repeat it reads as not having listened. See
+            # _decisive_red_flag for the JV call that added this.
+            _decisive = _decisive_red_flag(text, screen)
+            if _decisive or _red_flag_hits(text, screen) >= 2:
                 _arm(session, sid, ARM_IN_UTTERANCE)
                 logger.info(
                     "[clinical_screening] screen %s red flag present in the "
-                    "arming utterance — escalating without asking: %r",
-                    sid, text[:80],
+                    "arming utterance (%s) — escalating without asking: %r",
+                    sid,
+                    f"decisive: {_decisive!r}" if _decisive else "two signals",
+                    text[:80],
                 )
                 return _resolve_screen_answer(session, clinic, sid, screen, text)
 
