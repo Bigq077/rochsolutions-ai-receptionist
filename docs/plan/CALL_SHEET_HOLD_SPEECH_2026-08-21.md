@@ -14,8 +14,16 @@ is the only thing a test cannot hear.
 
 1. **Build.** Render → `low-latency-joint-venture` → logs. Find
    `[build_info] running build <sha>` at the end of any call. It must say
-   **`f41868b`**. `/health` returns a hardcoded `1.0.0` and proves nothing.
-   If the sha is older, **stop** — nothing below proves anything.
+   the tip of `latency-eval`. Get that with:
+
+   ```bash
+   git rev-parse --short origin/latency-eval
+   ```
+
+   Deliberately not a literal sha here: writing one into this file changes the
+   sha, so the sheet would always name the commit before itself. `/health`
+   returns a hardcoded `1.0.0` and proves nothing. If the build is older,
+   **stop** — nothing below proves anything.
    *This service has previously been set to Manual Deploy. If the sha is stale,
    click Deploy rather than assuming the push shipped it.*
 2. **Obs capture.** `OBS_CAPTURE_ENABLED=true` and `OBS_DATABASE_URL` set, or
