@@ -317,8 +317,15 @@ class CallLogger:
             from app.media_streams import latency_timing as _lat
 
             turns = _lat.drain_call(self.call_sid)
+            # Tool round-trips are collected on the session by llm_stream rather
+            # than by TurnTiming, because a tool belongs to a turn but its
+            # duration is not one of the turn's audio stages. Stored alongside so
+            # "was the hold phrase justified?" reads from one column: a hold
+            # phrase on a turn whose tools took 200ms did not need to be spoken.
+            tools = self._session_ref.get("lat_tools") or []
             self._latency = (
-                {"summary": _lat.summarise(turns), "turns": turns} if turns else {}
+                {"summary": _lat.summarise(turns), "turns": turns, "tools": tools}
+                if (turns or tools) else {}
             )
         except Exception as exc:  # pragma: no cover - defensive; teardown path
             _log.warning("[call_logger] latency drain failed call_sid=%s: %r",
