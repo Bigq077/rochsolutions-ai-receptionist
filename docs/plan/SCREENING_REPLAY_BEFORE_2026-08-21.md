@@ -13,17 +13,53 @@ python scripts/replay_screening.py > screening_before.txt
 Pure functions only — `match_screen_trigger`, `classify_screen_answer`,
 `_red_flag_hits`. No engine, no network, no LLM.
 
-## Corpus
+## Corpus — and why the split the plan specified does not work
 
 199 calls replayed, 19 (10%) touch a screen. Default floor is 2026-07-26, when
-screening capture landed — earlier columns are blank by instrumentation, not by
+screening capture landed; earlier columns are blank by instrumentation, not by
 absence, so replaying further back measures nothing.
 
-Not yet split by `build_sha`. The two escalating calls below are the 2026-08-21
-test calls, so the genuine-arm count for **real traffic** is currently zero and
-every trigger-path arm in this table is spurious. Worth re-running with
-`--build-sha` before the after-table so the two populations are not compared
-against each other.
+The plan called for splitting by `build_sha` branch membership. **That axis
+cannot answer the question.** Measured across the 214 stored jv_v1 calls:
+
+- 77 (36%) carry no `build_sha` at all, so they cannot be placed on any branch;
+- 50 of the 58 shas present *are* on a JV live branch — because the demo line
+  runs the same builds. "This sha is on `jv_v2`" says nothing about who rang.
+
+The number dialled fails too: both Susie lines are rung by the same handsets,
+including one calling at 03:00 UK time.
+
+**The caller is the discriminator.** Two dev handsets (`+33617769867`,
+`+447502211207`) account for 204 of 214 calls.
+
+| split | all calls | of which armed |
+|---|---|---|
+| test (dev handsets) | 189 | 18 |
+| real (everything else) | 10 | 1 |
+
+Run it yourself:
+
+```bash
+python scripts/replay_screening.py --audience real
+```
+
+### The finding that matters for Phase 3
+
+**There is no real-traffic screening corpus.** Of 38 calls touching a screen,
+37 are from a dev handset. `--audience real` leaves 10 calls, 1 armed screen —
+an `inflammatory` that cleared. Zero cauda equina, zero DVT, zero trauma.
+
+So the six spurious arms below are all from our own test calls, and the
+after-table cannot demonstrate a real-traffic improvement, because there is no
+real-traffic baseline to improve on. That does not invalidate S-3 — `"please
+book that in"` arming cauda equina is a defect whoever said it — but it does
+mean **Phase 3 cannot be validated by replay alone.** The harness now prints
+the split on every run and warns when every armed call is a test call, so this
+cannot be misread as measured evidence later.
+
+`--sha-on-branch <ref>` is kept for the occasions branch membership is the real
+question; it reports the calls it drops for having no sha rather than silently
+shrinking the corpus by a third.
 
 ## Counts
 
@@ -83,4 +119,27 @@ the logged call — that half works.
 3. No utterance that armed before fails to arm unless it is on the spurious
    list.
 4. `stranded` materially down (that is `e595df5`, not Phase 3 — measure it
-   separately so the two are not credited to each other).
+   separately so the two are not credited to each other). **Caveat:** replay
+   cannot actually show this. The stored transcripts predate the re-ask, so
+   replaying them can show how many screens would now *get* a re-ask, never
+   whether the caller then answered it. That needs a live call.
+
+All four are measured on the TEST corpus, because that is the only one with
+armed screens. State that plainly in the after-table rather than quoting the
+numbers bare.
+
+## What would make this a real gate
+
+The harness is sound; the corpus is not. To put Phase 3 on real evidence:
+
+- Get real calls through the live line. Ten real calls, one armed screen, is
+  not a base to narrow triggers against — and a narrowed trigger fails
+  *silently*, in the `clear`-when-it-should-flag direction.
+- Until then, treat Phase 3's after-table as a **change-detector**, not a
+  validation: it proves the six known-spurious utterances stopped arming and
+  the two genuine ones did not, which is worth having and is not the same as
+  proving the new triggers are right.
+- Layer 2 remains the backstop, and the arm-path data supports leaning on it:
+  `orphan` (model-asked, Layer 1 never armed) already outnumbers `trigger` on
+  every screen except cauda_equina. Narrowing Layer 1 removes less coverage
+  than the trigger-list sizes suggest.
