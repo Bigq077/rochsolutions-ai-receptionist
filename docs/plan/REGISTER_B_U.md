@@ -133,13 +133,20 @@ Alcester/Redditch location ladder that owns its opening turn.
 
 ## `B-72` · a **successful transfer is indistinguishable from a hang-up** in the obs store — **FIXED on `latency-eval`**
 
-> ✅ `latency-eval` **`5181f78`**. Regression:
+> ✅ `latency-eval` **`5181f78`** · `jv_v2` **`8953fa5`** ·
+> `theorem-onboarding` **`6647acf`** · `vitaledge-onboarding` **`e6ef845`**.
+> Regression:
 > `tests/regression/test_transfer_is_distinguishable_from_a_hangup.py`
 > (10 tests — **6 red before the fix, 4 green both ways** pinning the four
 > announced-but-not-placed cases that must stay False).
-> Full suite: failing set identical before and after (101, unchanged).
-> **`U`-debt: not yet exercised on a call. Not yet ported** to the three
-> live branches.
+> Full suite, failing set identical before and after on every branch:
+> `latency-eval` 101, `jv_v2` 101, `theorem-onboarding` 105,
+> `vitaledge-onboarding` 101 — each +10 passing, the new tests.
+> **`U`-debt: not yet exercised on a call.**
+>
+> Ported and deployed 2026-08-21 at the owner's instruction. Revert targets:
+> `jv_v2` `a5fd0f6`, `theorem-onboarding` `e67a631`,
+> `vitaledge-onboarding` `6a902d3`.
 >
 > Found 2026-08-21 while doing the Theorem week-1 review, by reading the
 > corpus rather than by dialling. Affects all four branches.
