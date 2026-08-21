@@ -131,10 +131,18 @@ Alcester/Redditch location ladder that owns its opening turn.
 
 ---
 
-## `B-72` · a **successful transfer is indistinguishable from a hang-up** in the obs store — **OPEN, P2**
+## `B-72` · a **successful transfer is indistinguishable from a hang-up** in the obs store — **FIXED on `latency-eval`**
 
-> ❌ Not fixed. Found 2026-08-21 while doing the Theorem week-1 review, by
-> reading the corpus rather than by dialling. Affects all four branches.
+> ✅ `latency-eval` **`5181f78`**. Regression:
+> `tests/regression/test_transfer_is_distinguishable_from_a_hangup.py`
+> (10 tests — **6 red before the fix, 4 green both ways** pinning the four
+> announced-but-not-placed cases that must stay False).
+> Full suite: failing set identical before and after (101, unchanged).
+> **`U`-debt: not yet exercised on a call. Not yet ported** to the three
+> live branches.
+>
+> Found 2026-08-21 while doing the Theorem week-1 review, by reading the
+> corpus rather than by dialling. Affects all four branches.
 
 `transfer_attempted` is **`False` on all 40 `theorem_v3` calls**, including three
 where the stored transcript contains Susie saying *"Transferring you to Mark now
@@ -160,11 +168,40 @@ and an abandoning caller produce identical rows — `outcome='resolved'`,
 `reason='caller_hung_up'`, `graceful_exit=False`. **No quality conclusion drawn
 from the outcome distribution is safe until this is fixed.**
 
-**Fix (not yet written).** Persist `transfer_requested_by_caller` into the
-record, and set `transfer_attempted` where the transfer is *initiated* rather
-than only where it fails. Keep the failure signal separate —
-`app/obs/alerts.py:128` pairs `transfer_attempted` with `transfer_sms_failed`
-and that pairing is currently correct by accident.
+> ⚠️ **It was worse than first recorded.** `/twilio/transfer-status`, the sole
+> writer, belongs to the **legacy HTTP flow** — media streams wire their
+> `<Dial>` to `/twilio/transfer-miss`, which never touched the field. Every
+> live clinic runs media streams, so on the live path the flag had **no
+> writer at all**, on success *or* failure. That is why it read False 40/40
+> rather than merely being unreliable.
+
+**Fix.** `session["transfer_attempted"] = True` in
+`app/routes/realtime.py::_handle_transfer`, immediately after the Twilio
+redirect returns — the one point at which a leg is actually placed. All four
+earlier exits (`TRANSFER_DISABLED`, no dial target, call not in-progress, REST
+call raised) still leave it False, because in each of those the caller was
+never put through. `app/call_logger.py` gains a `transfer` block recording
+*why* it happened and the promised-but-impossible case; it rides in `raw=`, so
+there is **no schema change** and no risk to capture on an unmigrated store.
+
+The write needs no `save_session`: `CallLogger` holds a live reference to the
+same session dict (`self._session_ref`), and the transfer mutates it before
+teardown builds the record.
+
+**No new alert traffic — and a second dead instrument found while checking.**
+`app/obs/alerts.py:128` fires `escalation_not_delivered` on
+`transfer_attempted and transfer_sms_failed`. Making the first True far more
+often would normally risk alert spam. It does not, because
+**`transfer_sms_failed` has no writer anywhere in the codebase** — only
+readers (`alerts.py:111`, `:128`, `:286`). That alert has therefore never
+been able to fire, and still cannot. Same family as this defect, out of
+scope for this commit, not yet registered on its own.
+
+**Residual, deliberate.** `transfer.failed_status` stays None on live clinics.
+`/twilio/transfer-miss` fires *after* the media-streams socket has closed and
+the record is built, so writing the session there would be instrumentation
+that silently does nothing — the exact class of bug this entry is about. A
+missed transfer is still evidenced by the clinic SMS and the log line.
 
 > ⚠️ **Do not detect this by matching `"Transferring you to"` in the transcript.**
 > Matching a single literal of model speech has broken three times in this repo,
