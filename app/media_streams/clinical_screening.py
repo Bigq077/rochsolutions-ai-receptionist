@@ -42,6 +42,7 @@ SCREENS_COMPLETED_KEY = "screens_completed"  # list of screen ids already run
 SCREEN_TRUNCATED_KEY = "screen_truncation_downgrades"  # screen ids re-asked once
 SCREEN_ARM_PATHS_KEY = "screen_arm_paths"    # screen id -> how it armed (below)
 SCREEN_REASKS_KEY = "screen_reasks"          # screen ids re-asked once, deterministically
+SCREEN_HEDGE_PROBES_KEY = "screen_hedge_probes"  # screen ids probed once after a hedge
 
 # How a screen came to be pending. Recorded per screen so the durable call
 # record can answer "did Layer 1 arm this, or did Layer 2 cover for it?" —
@@ -638,8 +639,36 @@ _NEGATIVE_PATTERNS = tuple(
 # "i" alone is far too generic to treat as agreement.
 _AFFIRMATIVE_LEAD: frozenset = frozenset({
     "yes", "yeah", "yep", "yup", "aye", "correct",
-    "definitely", "absolutely", "certainly", "sometimes",
+    "definitely", "absolutely", "certainly",
 })
+
+# A HEDGE is neither a yes nor a no, and it is the commonest honest answer to a
+# frightening clinical question. All of these used to return `unclear`, which
+# leaves the screen pending and hands the decision to the model — the same
+# asymmetry the affirmative branch was added to fix, one step further along.
+#
+# They are not treated as positives. Escalating "a bit" straight to A&E sends
+# people to hospital over a sore back and teaches a clinic to ignore the alert.
+# They earn ONE narrowing question naming the specific symptom
+# (screen_probe_question); if the answer to THAT is not a clean no, it escalates.
+#
+# "sometimes" moved here from _AFFIRMATIVE_LEAD, where it returned red_flag
+# outright. That is a deliberate DE-escalation: "sometimes" answering "do you
+# get dizziness when you move your neck" is a hedge, not a confirmation.
+_HEDGE_LEAD: frozenset = frozenset({
+    "maybe", "perhaps", "possibly", "sometimes", "occasionally",
+    "slightly", "dunno", "unsure",
+})
+_HEDGE_PHRASES = tuple(
+    _norm(p)
+    for p in (
+        "i think so", "think so", "i guess", "i suppose", "sort of",
+        "kind of", "kinda", "a bit", "a little", "little bit",
+        "on and off", "now and then", "every now and then", "here and there",
+        "not sure", "im not sure", "not really sure", "hard to say",
+        "could be", "might be", "now and again", "once or twice",
+    )
+)
 _AFFIRMATIVE_LEAD_PAIRS: frozenset = frozenset({
     "i do", "i have", "i am", "i did", "i does", "i has",
 })
@@ -765,6 +794,12 @@ def classify_screen_answer(text: str, screen: Dict[str, Any]) -> str:
     if (lead in _AFFIRMATIVE_LEAD
             or " ".join(lead_words[:2]) in _AFFIRMATIVE_LEAD_PAIRS):
         return "red_flag"
+
+    # A hedge: not a yes, not a no, and the commonest honest answer there is.
+    # Runs after both the affirmative and every negative branch, so it can only
+    # ever capture what would otherwise have been `unclear`. See _HEDGE_LEAD.
+    if lead in _HEDGE_LEAD or any(h in t for h in _HEDGE_PHRASES):
+        return "hedged"
 
     return "unclear"
 
@@ -909,6 +944,64 @@ def _resolve_screen_answer(
                 screen_id, text[:80],
             )
             verdict = "unclear"
+
+    # ── HEDGE PROBE ───────────────────────────────────────────────────────────
+    # "a bit", "sort of", "I think so", "on and off". Not a yes, not a no, and
+    # the commonest honest answer to a frightening question. Owner decision
+    # 2026-08-21: one narrowing question naming the specific symptom, and if the
+    # answer to THAT is not a clean no, escalate.
+    #
+    # Escalating a hedge outright would send people to A&E over a sore back and
+    # teach the clinic to ignore the alert. Leaving it as `unclear` was the old
+    # behaviour and hands a safety decision to the model.
+    #
+    # This block MUST stay above `if verdict == "red_flag"`. Promoting a verdict
+    # to "red_flag" only means anything while the escalation handler is still
+    # ahead of it; sitting below that branch, the promotion assigned a local that
+    # nothing subsequently read and the call fell through to the `unclear`
+    # return — screen not completed, booking never frozen, no escalation spoken.
+    # That is the silent-safety-failure this module exists to prevent.
+    #
+    # Capped at once per screen, same shape as the truncation guard above. After
+    # the probe, ANY verdict that is not `clear` escalates — including `unclear`,
+    # because a caller who has now been asked twice and still cannot be graded is
+    # not one to book in unscreened.
+    _probed = list(session.get(SCREEN_HEDGE_PROBES_KEY) or [])
+    if verdict == "hedged":
+        probe = (screen.get("screen_probe_question") or "").strip()
+        if screen_id in _probed:
+            logger.warning(
+                "[clinical_screening] screen %s hedged again after the probe — "
+                "treating as positive: %r", screen_id, text[:80],
+            )
+            verdict = "red_flag"
+        elif probe:
+            _probed.append(screen_id)
+            session[SCREEN_HEDGE_PROBES_KEY] = _probed
+            logger.info(
+                "[clinical_screening] screen %s HEDGED — asking one narrowing "
+                "question rather than guessing: %r", screen_id, text[:80],
+            )
+            return {"action": "ask_screen", "speak": probe}
+        else:
+            # No narrowing question configured for this screen. Fall back to the
+            # pre-hedge behaviour rather than escalating on a single "a bit":
+            # `unclear` leaves the screen pending, which keeps booking blocked
+            # and re-drives the question, so this is not a silent pass.
+            logger.info(
+                "[clinical_screening] screen %s hedged but has no "
+                "screen_probe_question configured — leaving pending: %r",
+                screen_id, text[:80],
+            )
+            verdict = "unclear"
+    elif verdict == "unclear" and screen_id in _probed:
+        # Ungradable answer to the narrowing question. Same reasoning: the
+        # caller has been asked twice.
+        logger.warning(
+            "[clinical_screening] screen %s ungradable after the probe — "
+            "treating as positive: %r", screen_id, text[:80],
+        )
+        verdict = "red_flag"
 
     if verdict == "red_flag":
         session[PENDING_SCREEN_KEY] = None
