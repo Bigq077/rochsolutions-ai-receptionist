@@ -121,6 +121,56 @@ def work_for_tool(tool_name: str, *, provisional: bool = False) -> WorkKind:
     return kind
 
 
+#: The locked confirm CTAs, and the write each one commits to. Matched against
+#: the PREVIOUS assistant turn — see confirm_write_kind.
+_CONFIRM_CTA: Dict[str, WorkKind] = {
+    "book that in for you": WorkKind.WRITE_BOOK,
+    "book that in": WorkKind.WRITE_BOOK,
+    "move it for you": WorkKind.WRITE_MOVE,
+    "move that": WorkKind.WRITE_MOVE,
+    "put that request through": WorkKind.PENDING_REQUEST,
+}
+
+
+def confirm_write_kind(
+    last_assistant: str,
+    caller_confirmed: bool,
+    *,
+    provisional: bool = False,
+) -> WorkKind:
+    """The write in flight on the turn right after the caller says yes. PURE.
+
+    This is the one moment the engine knows the work BEFORE the LLM stream opens:
+    the previous assistant turn was the locked confirm CTA and the caller agreed,
+    so a write is about to run. Everywhere else at that point in the turn, the
+    work is genuinely unknown.
+
+    Why it is not enough that the CTA was asked (FM-25, JV live call 22 Jul): a
+    "no" or an ambiguous reply used to hear "Just locking that in now…" and
+    believe they had been booked against their wishes. ``caller_confirmed`` is
+    the consent check, and it mirrors the FM-01 book gate — verify consent, not
+    just that the question was put.
+
+    Cancel is deliberately absent. Its go-ahead is the ambiguous
+    reschedule-or-cancel retention question, so "yes" there does not identify a
+    write; the cancel branch is designed to run with no readback.
+
+    Returns NONE when no write is identifiable, which decide_hold turns into
+    silence rather than a guess.
+    """
+    if not caller_confirmed:
+        return WorkKind.NONE
+    low = (last_assistant or "").lower()
+    if not low:
+        return WorkKind.NONE
+    for cta, kind in _CONFIRM_CTA.items():
+        if cta in low:
+            if kind is WorkKind.WRITE_BOOK and provisional:
+                return WorkKind.PENDING_REQUEST
+            return kind
+    return WorkKind.NONE
+
+
 # ── The heads ────────────────────────────────────────────────────────────────
 # Every one is an introductory clause a data payload can complete, and none
 # asserts an outcome. Enforced at import time below, not by review.
@@ -168,6 +218,31 @@ HEADS: Dict[WorkKind, List[str]] = {
         f"Right then {EM_DASH}",
     ],
 }
+
+
+def clinic_facts(session) -> "tuple[bool, str]":
+    """IMPURE, and the only impure thing here: ``(provisional, practitioner)``.
+
+    Isolated so ``decide_hold`` can stay a pure function of plain values while
+    the two clinic facts it needs are read in one place rather than at each call
+    site. ``provisional`` reads the same ``booking_system`` switch as
+    ``turn_handler._clinic_is_provisional``, deliberately — a second switch for
+    one fact is a second switch to forget.
+
+    Never raises, and fails to ``(False, "")``. A hold phrase must not be able to
+    break a call: False keeps today's confirmed-booking wording, and an empty
+    practitioner makes ``render_head`` choose a head that needs no name.
+    """
+    try:
+        from app.clinic_config import get_clinic
+
+        clinic = get_clinic(session.get("clinic_id")) or {}
+        return (
+            clinic.get("booking_system") == "google_calendar_provisional",
+            str(clinic.get("practitioner") or ""),
+        )
+    except Exception:  # pragma: no cover - defensive; live call path
+        return (False, "")
 
 
 @dataclass(frozen=True)

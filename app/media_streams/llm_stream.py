@@ -3487,10 +3487,6 @@ class LLMStream:
         # the marked ack-filler chunk before it reaches ElevenLabs.
         session["_ack_filler_active"]    = False
         session["_ack_filler_cancelled"] = False
-        # A hold phrase belongs to the turn that spoke it. Left set, a stale True
-        # would strip a legitimate opener off an unrelated later reply.
-        session["_hold_head_spoken"] = False
-        session["_hold_head_text"]   = ""
         # O-18: set by Gate 5g when it deletes a booking CTA because the NAME is
         # missing — which also deletes the model's acknowledgement of the name
         # the caller just gave. Reset per turn, or a stale True would let a later
@@ -3520,18 +3516,46 @@ class LLMStream:
                     # instead of the generic "Give me a moment…", which confuses
                     # a caller who just confirmed and can re-open the readback.
                     from app.filler_phrases import (
-                        confirm_write_filler,
                         is_write_filler as _is_write_filler,
                         note_filler_played as _note_filler,
                         should_play_filler as _should_filler,
                     )
-                    # FM-25: only speak a write-ack ("Just locking that in now…")
-                    # when the caller actually confirmed — a "no"/ambiguous reply
-                    # must fall back to a neutral filler, never a booking claim.
-                    _ack_filler_text = (
-                        confirm_write_filler(session, _book_reply_is_affirmative(messages))
-                        or random.choice(FILLER_PHRASES)
+                    from app.hold_speech import (
+                        WorkKind as _WorkKind,
+                        clinic_facts as _clinic_facts,
+                        confirm_write_kind as _confirm_write_kind,
+                        decide_hold as _decide_hold,
+                        render_head as _render_head,
                     )
+                    # This fires before the LLM has emitted anything, so with one
+                    # exception NOTHING here knows whether a tool is coming. The
+                    # old code guessed "Let me just check that…" anyway and was
+                    # wrong on 135 of the 322 stored hold phrases — the caller who
+                    # asked "are you a robot?" heard "Just getting that for you…"
+                    # before "No — I'm Susie".
+                    #
+                    # The exception is a caller who has just said yes to a locked
+                    # confirm CTA: a write IS about to run, and that is knowable
+                    # from conversation state. FM-25 — consent is required, not
+                    # merely that the CTA was asked.
+                    _provisional, _prac = _clinic_facts(session)
+                    _kind = _confirm_write_kind(
+                        _last_assistant_text(session),
+                        _book_reply_is_affirmative(messages),
+                        provisional=_provisional,
+                    )
+                    if _kind is _WorkKind.NONE:
+                        # Work unknown. Say something that names none of it.
+                        _kind = _WorkKind.UNKNOWN_SLOW
+                    _decision = _decide_hold(
+                        kind=_kind,
+                        head_already_spoken=bool(
+                            session.get("_hold_head_spoken")
+                        ),
+                        practitioner=_prac,
+                        heads_used=len(session.get("used_fillers") or []),
+                    )
+                    _ack_filler_text = _decision.head
                     # Producer B of three (CA8cf0aaea). On the phone-confirm
                     # path connection.py has already spoken ~1.8s earlier, and
                     # the tool filler follows ~1.6s later — the caller heard
@@ -3539,6 +3563,16 @@ class LLMStream:
                     # plays through the first suppression: the calendar
                     # round-trip after "yes, go ahead" must never be silent.
                     _ack_is_write = _is_write_filler(_ack_filler_text)
+                    if not _decision.speak:
+                        # The arbiter declined. Silence is a real answer here:
+                        # a head already played this turn, or there is nothing
+                        # truthful to say. Returning also cancels the B-19
+                        # re-arm below, which must never be the FIRST thing the
+                        # caller hears.
+                        logger.info(
+                            "[ms_llm] no hold phrase: %s", _decision.reason,
+                        )
+                        return
                     if not _should_filler(session, is_write=_ack_is_write):
                         logger.info(
                             "[ms_llm] ack filler suppressed by cooldown — a "
@@ -3552,7 +3586,17 @@ class LLMStream:
                         )
                         await tts_text_queue.put(ACK_FILLER_MARKER + _ack_filler_text)
                         session["_ack_filler_active"] = True
-                        _note_filler(session, is_write=_ack_is_write)
+                        # Pass the wording: join_after_head needs it to make the
+                        # model's reply continue this clause rather than restart
+                        # after it.
+                        _note_filler(
+                            session,
+                            is_write=_ack_is_write,
+                            text=_ack_filler_text,
+                        )
+                        session.setdefault("used_fillers", []).append(
+                            _ack_filler_text
+                        )
                     self._last_filler_at = time.monotonic()
 
                     # ── B-19: re-arm ONCE ────────────────────────────────
@@ -3564,10 +3608,18 @@ class LLMStream:
                     # got_first_chunk and cancels this task, so this sleep is
                     # torn down on any normal recovery.
                     await asyncio.sleep(LLM_FILLER_SECOND_DELAY_MS / 1000.0)
-                    _second_text = _second_filler_text(
-                        session, _ack_filler_text, got_first_chunk
+                    # Not stacking — stacking is two heads back to back. This is
+                    # a second reassurance after five further seconds of nothing,
+                    # where silence is the worse fault (measured: a 14s stall
+                    # left ~12s of dead air). Same arbiter, rotated so it is
+                    # never a verbatim repeat, and still naming no work.
+                    if got_first_chunk:
+                        return
+                    _second_text = _render_head(
+                        _WorkKind.UNKNOWN_SLOW,
+                        index=len(session.get("used_fillers") or []),
                     )
-                    if _second_text is None:
+                    if not _second_text or _second_text == _ack_filler_text:
                         return
                     logger.info(
                         "[ms_llm] second filler phrase (no chunk %.1fs after "
@@ -4712,7 +4764,35 @@ class LLMStream:
                         from .latency_timing import LATENCY_TIMING as _LAT_ON
                         _t_tool0 = time.monotonic() if _LAT_ON else None
                         # Filler phrases: play concurrently for slow API tools
-                        _filler_list = _FILLER_TOOLS.get(tool_name)
+                        # The wording comes from the WORK, not the tool name:
+                        # book_appointment on a provisional clinic is a request,
+                        # not a booking, and three stored Vital Edge calls said
+                        # "Just locking that in now…" one sentence before "sent
+                        # it to Jonathan… subject to his confirmation".
+                        #
+                        # This is also the earliest TRUTHFUL moment to speak —
+                        # the tool is about to run, so unlike the 1800ms ack
+                        # filler nothing here is guessing.
+                        from app.hold_speech import (
+                            clinic_facts as _hs_facts,
+                            decide_hold as _hs_decide,
+                            work_for_tool as _hs_work,
+                        )
+                        _hs_prov, _hs_prac = _hs_facts(session)
+                        _hs_decision = _hs_decide(
+                            kind=_hs_work(tool_name, provisional=_hs_prov),
+                            head_already_spoken=bool(
+                                session.get("_hold_head_spoken")
+                            ),
+                            practitioner=_hs_prac,
+                            heads_used=len(session.get("used_fillers") or []),
+                        )
+                        # A single-item list: with_filler still owns the
+                        # concurrency, the 4s escalation and the shielding —
+                        # all of it tested — but no longer owns the choice.
+                        _filler_list = (
+                            [_hs_decision.head] if _hs_decision.speak else None
+                        )
                         if _filler_list and tts_text_queue is not None:
                             async def _tts_fn(text: str, _q=tts_text_queue) -> None:
                                 await _q.put(text)
@@ -5270,6 +5350,21 @@ def join_after_head(chunk: str, head: str) -> str:
             body = body[0].lower() + body[1:]
 
     return body
+
+
+def _last_assistant_text(session: dict) -> str:
+    """The most recent thing Susie said, or "".
+
+    A module-level helper rather than an inline loop inside ``_delayed_filler``
+    on purpose: test_b19_filler_rearm pins that function to be loop-free, so a
+    reader (and the guard) can see at a glance that the re-arm is a single
+    second phrase and not a cadence. Keeping an unrelated ``for`` out of that
+    body keeps the guard meaningful.
+    """
+    for _m in reversed(session.get("conversation_history") or []):
+        if _m.get("role") == "assistant":
+            return _m.get("content") or ""
+    return ""
 
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")

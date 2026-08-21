@@ -8065,6 +8065,15 @@ class WebSocketCallHandler:
                     # latency_timing files the emitted turn under, and the key
                     # CallLogger drains at teardown into the obs row. Without
                     # it the [LAT] line is logged and then lost with the log.
+                    # One head per caller turn, and THIS is where a caller turn
+                    # begins. The latch used to be reset inside run_turn, which
+                    # is too late: the phone-confirm producer speaks before
+                    # run_turn is reached, so run_turn cleared its latch and the
+                    # ack filler spoke on top of it — the three-hold-phrases-in-
+                    # 3.4-seconds stack. Reset here and the ordering cannot
+                    # recur, whichever producer speaks first.
+                    self.session["_hold_head_spoken"] = False
+                    self.session["_hold_head_text"]   = ""
                     self._turn_timing = _lat_new_turn(
                         t0=_enqueue_ts, call_sid=self.call_sid
                     )
@@ -9321,13 +9330,38 @@ class WebSocketCallHandler:
                                 # turn's own ack filler follows ~1.8s later and
                                 # the tool filler ~1.6s after that. Record it so
                                 # those two can see it (CA8cf0aaea).
+                                # This path KNOWS the work: the number is
+                                # confirmed, so a patient lookup is next. It used
+                                # to throw that away on a generic phrase, and it
+                                # consulted no cooldown or latch at all — it was
+                                # the head of the three-in-3.4-seconds stack.
                                 from app.filler_phrases import (
                                     note_filler_played as _note_filler,
                                 )
-                                _filler = _random.choice(FILLER_PHRASES)
-                                await self.tts_text_queue.put(_filler)
-                                _note_filler(self.session)
-                                self.session["last_bot_prompt"] = _filler
+                                from app.hold_speech import (
+                                    WorkKind as _WorkKind,
+                                    clinic_facts as _hs_facts,
+                                    decide_hold as _hs_decide,
+                                )
+                                _hs_prov, _hs_prac = _hs_facts(self.session)
+                                _hs_d = _hs_decide(
+                                    kind=_WorkKind.PATIENT_LOOKUP,
+                                    head_already_spoken=bool(
+                                        self.session.get("_hold_head_spoken")
+                                    ),
+                                    practitioner=_hs_prac,
+                                    heads_used=len(
+                                        self.session.get("used_fillers") or []
+                                    ),
+                                )
+                                _filler = _hs_d.head
+                                if _hs_d.speak:
+                                    await self.tts_text_queue.put(_filler)
+                                    _note_filler(self.session, text=_filler)
+                                    self.session.setdefault(
+                                        "used_fillers", []
+                                    ).append(_filler)
+                                    self.session["last_bot_prompt"] = _filler
                                 await save_session(
                                     self.call_sid, self.session
                                 )
@@ -12712,10 +12746,37 @@ class WebSocketCallHandler:
                                 # produce a 1-2 s gap between the LLM's ack
                                 # phrase and the first booking question.
                                 _faq_q_gen = self._silence_handler._q_gen
-                                if _faq_q_gen >= 5:
+                                # Routed through the arbiter like every other
+                                # producer: this one registered in NEITHER
+                                # cooldown clock, so it could stack on top of
+                                # anything. It is a mode-switch bridge and knows
+                                # of no work in flight, so it names none.
+                                from app.hold_speech import (
+                                    WorkKind as _WorkKind,
+                                    decide_hold as _hs_decide,
+                                )
+                                from app.filler_phrases import (
+                                    note_filler_played as _note_filler,
+                                )
+                                _hs_bridge = _hs_decide(
+                                    kind=_WorkKind.UNKNOWN_SLOW,
+                                    head_already_spoken=bool(
+                                        self.session.get("_hold_head_spoken")
+                                    ),
+                                    heads_used=len(
+                                        self.session.get("used_fillers") or []
+                                    ),
+                                )
+                                if _faq_q_gen >= 5 and _hs_bridge.speak:
                                     await self.tts_text_queue.put(
-                                        "Let me get that sorted for you."
+                                        _hs_bridge.head
                                     )
+                                    _note_filler(
+                                        self.session, text=_hs_bridge.head,
+                                    )
+                                    self.session.setdefault(
+                                        "used_fillers", []
+                                    ).append(_hs_bridge.head)
                                     _v3_post_turn_speech = True
                                     logger.info(
                                         "[ms_conn v3] booking ack filler"

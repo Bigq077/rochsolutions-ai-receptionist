@@ -335,7 +335,9 @@ async def with_filler(
         if not done:
             secondary = pick_filler(THINKING_FILLERS_SECONDARY, used)
             logger.info("[filler] API slow (>4s) — secondary filler: %r", secondary)
-            note_filler_played(session, is_write=is_write_filler(secondary))
+            note_filler_played(
+                session, is_write=is_write_filler(secondary), text=secondary,
+            )
             await tts_fn(secondary)
         return await api_task
 
@@ -364,7 +366,9 @@ async def with_filler(
             filler_text[:60],
         )
 
-    note_filler_played(session, is_write=is_write_filler(filler_text))
+    note_filler_played(
+        session, is_write=is_write_filler(filler_text), text=filler_text,
+    )
     # Queue primary filler immediately (non-blocking — returns once enqueued)
     filler_task = asyncio.create_task(tts_fn(filler_text))
 
@@ -379,7 +383,9 @@ async def with_filler(
         # so whatever speaks next sees it.
         secondary = pick_filler(THINKING_FILLERS_SECONDARY, used)
         logger.info("[filler] API slow (>4s) — secondary filler: %r", secondary)
-        note_filler_played(session, is_write=is_write_filler(secondary))
+        note_filler_played(
+            session, is_write=is_write_filler(secondary), text=secondary,
+        )
         await tts_fn(secondary)
 
     # Ensure primary filler task is done before we return.

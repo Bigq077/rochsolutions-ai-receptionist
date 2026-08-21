@@ -373,7 +373,17 @@ class FillerGuard:
             try:
                 from app.filler_phrases import note_filler_played
 
-                note_filler_played(_session, is_write=False)
+                # The wording matters as well as the fact: the clip SAYS "let
+                # me just check that for you", so the model must not open its
+                # reply with the same phrase 1-2s later. join_after_head reads
+                # this to strip the duplicate. The text ends closed, like the
+                # clip's own falling contour, so the reply is not decapitalised
+                # to continue a sentence the audio already finished.
+                note_filler_played(
+                    _session,
+                    is_write=False,
+                    text="Let me just check that for you…",
+                )
             except Exception:  # pragma: no cover - never break the clip on this
                 logger.warning("[ms_filler] could not register in filler cooldown")
             logger.info(
