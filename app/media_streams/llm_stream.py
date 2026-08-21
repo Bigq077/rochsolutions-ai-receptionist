@@ -4913,6 +4913,14 @@ class LLMStream:
                 else:
                     executor = TOOL_EXECUTORS.get(tool_name)
                     if executor:
+                        # How long the provider actually took. Nothing else
+                        # measures this: a tool round-trip is absorbed silently
+                        # into llm_ttft_ms, so "is 1800ms the right moment to
+                        # speak?" has never been answerable from data. Gated on
+                        # LATENCY_TIMING like every other timing capture, so the
+                        # default path is one falsy check.
+                        from .latency_timing import LATENCY_TIMING as _LAT_ON
+                        _t_tool0 = time.monotonic() if _LAT_ON else None
                         # Filler phrases: play concurrently for slow API tools
                         _filler_list = _FILLER_TOOLS.get(tool_name)
                         if _filler_list and tts_text_queue is not None:
@@ -4933,6 +4941,12 @@ class LLMStream:
                             )
                         else:
                             result = await executor(args, session)
+
+                        if _t_tool0 is not None:
+                            session.setdefault("lat_tools", []).append({
+                                "tool": tool_name,
+                                "ms":   int((time.monotonic() - _t_tool0) * 1000),
+                            })
 
                         # Mark slots as presented the moment check_availability
                         # returns slots so the LLM knows not to re-present them.
