@@ -21,6 +21,7 @@ Render sets RENDER_EXTERNAL_URL on every service automatically, so it is the
 source that cannot be forgotten.  BASE_URL stays as the override.
 """
 
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -121,4 +122,29 @@ def test_the_action_url_has_a_handler():
     paths = {getattr(r, "path", None) for r in twilio_routes.router.routes}
     assert "/twilio/transfer-miss" in paths, (
         "the <Dial> action URL names a route that is not mounted: " + str(sorted(p for p in paths if p))
+    )
+
+
+async def test_a_dead_safety_net_says_so(monkeypatch, caplog):
+    """
+    The silence is the bug, not just the missing attribute.
+
+    With no base URL the <Dial> is still placed — the caller is dialled — so
+    from the outside a transfer looks entirely normal, and every log line in
+    the call reads healthy.  Nothing marks the difference between a service
+    whose net is armed and one whose net is gone, which is why this went
+    unnoticed on Theorem across three no-answer legs and real dropped
+    callers.  Emit a warning naming the call, so the next occurrence is one
+    grep away instead of an archaeology exercise over Twilio call events.
+    """
+    with caplog.at_level(logging.WARNING, logger="app.routes.realtime"):
+        twiml = await _emit_twiml(monkeypatch, render_url=None, base_url=None)
+
+    assert "action=" not in twiml
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("transfer safety net DOWN" in m for m in warnings), (
+        "a transfer with no callback URL was placed without a word: " + str(warnings)
+    )
+    assert any("CA_test" in m for m in warnings), (
+        "the warning must name the call it applies to: " + str(warnings)
     )
