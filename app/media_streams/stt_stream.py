@@ -243,6 +243,14 @@ _KEYTERM_STOPWORDS: frozenset = frozenset({
     # "rotator", which is the exact starvation this section was written to stop.
     "control", "controlling", "controls", "trouble", "way", "ways", "giving",
     "weakness", "wetting",
+    # 2026-08-21, second instance: the trauma screen's question was inverted
+    # ("are you able to use it" made YES the reassuring answer), and fixing the
+    # polarity added answer keywords for the phrasings that used to slip through
+    # as `clear` — "can't stand on it", "too painful to". Their tokens are
+    # ordinary English; the informative words ("swollen", "shape", "weight") are
+    # already handled. Unlisted they cost jv_v1 "achilles", "hamstring" and
+    # "rotator" — measured, not assumed.
+    "painful", "stand", "too",
 })
 
 
