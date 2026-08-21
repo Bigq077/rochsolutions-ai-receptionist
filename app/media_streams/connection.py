@@ -112,6 +112,7 @@ from .latency_timing import (
     capture_phase as _lat_capture_phase,
     is_correction_lead as _lat_is_correction_lead,
     emit_cutoff as _lat_emit_cutoff,
+    close_outcome as _lat_close_outcome,
 )
 # Observability transcript. Pure list manipulation on the session dict — no DB,
 # no config read, no import cost; the capture/judge flags gate what is DONE with
@@ -8046,7 +8047,19 @@ class WebSocketCallHandler:
                         # deterministic branch) — the caller didn't abandon
                         # anything. Call-3 P3: logging these as abandoned polluted
                         # the abandoned-rate line Jules reads in lat_parse.
-                        self._turn_timing.outcome = "superseded"
+                        #
+                        # "no_content" splits the dead-end filler out of that
+                        # bucket. Reaching here always means content_t4 is None
+                        # (emit() at content_t4 would have set _emitted), so t4 is
+                        # the discriminator: t4 stamped means the caller DID hear
+                        # something this turn — a filler — and no content ever
+                        # followed it. That is a hold phrase that promised work and
+                        # delivered nothing, and it is the metric the hold-speech
+                        # work is judged on. Without this split those turns are
+                        # indistinguishable from a harmless split utterance.
+                        self._turn_timing.outcome = _lat_close_outcome(
+                            self._turn_timing.t4
+                        )
                         self._turn_timing.emit()
                     # call_sid is what makes the turn durable: it is the key
                     # latency_timing files the emitted turn under, and the key

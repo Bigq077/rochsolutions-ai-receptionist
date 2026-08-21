@@ -231,7 +231,7 @@ class TurnTiming:
     content_t3: Optional[float] = None   # first NON-filler audio enqueued
     content_t4: Optional[float] = None   # first NON-filler audio sent
     path: str = "llm"                    # llm | fast_path | filler | fallback | scripted (deterministic clinical layer — no LLM call)
-    outcome: str = "completed"           # completed | barged_in | abandoned | superseded (replaced by a newer dispatch — not caller behaviour) | error
+    outcome: str = "completed"           # completed | barged_in | abandoned | superseded (replaced by a newer dispatch — not caller behaviour) | no_content (audio played, but only a filler — content never arrived) | error
     model: str = ""                      # claude model id (set by the llm path)
     eot_confident: Optional[bool] = None  # WS-C: confidence-driven vs silence fallback
     capture_phase: str = "conversation"  # conversation | phone | name
@@ -404,6 +404,29 @@ def _percentile(values: List[int], p: float) -> Optional[float]:
 TTFA_BAR_MS = 1500
 
 
+def close_outcome(t4: Optional[float]) -> str:
+    """Outcome for a turn being closed because a NEWER dispatch replaced it.
+
+    Pure so it can be tested without a socket — the discipline
+    ``expect_slot_presentation`` follows, and for the same reason: this decides
+    a metric, and a metric nobody can unit test is a metric nobody can trust.
+
+    Reaching this point always means ``content_t4`` is None: ``emit()`` fires at
+    content_t4 and sets ``_emitted``, so a turn that delivered content is never
+    closed here. ``t4`` is therefore the whole discriminator:
+
+      * t4 stamped  -> the caller HEARD something this turn, and it can only
+                       have been a filler, because content never arrived.
+                       "no_content" — a hold phrase that promised work and
+                       delivered nothing.
+      * t4 unstamped -> nothing was ever spoken; a split utterance or
+                       deterministic branch replaced the record. "superseded",
+                       which is not caller behaviour and must not pollute the
+                       abandoned-rate line.
+    """
+    return "no_content" if t4 is not None else "superseded"
+
+
 def summarise(turns: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Per-call roll-up, so "which calls were slow?" is one SQL read.
 
@@ -422,6 +445,12 @@ def summarise(turns: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "turns_logged":        len(turns),
         "turns_measured":      len(ttfa),
+        # Turns where the caller heard a filler and no content ever followed.
+        # Counted here rather than derived offline so "which calls dead-ended?"
+        # stays the same one SQL read as "which calls were slow?".
+        "no_content_turns":    sum(
+            1 for t in turns if t.get("outcome") == "no_content"
+        ),
         "ttfa_p50_ms":         _percentile(ttfa, 50),
         "ttfa_p95_ms":         _percentile(ttfa, 95),
         "content_ttfa_p50_ms": _percentile(content, 50),

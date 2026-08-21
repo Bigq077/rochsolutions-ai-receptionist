@@ -195,6 +195,49 @@ def test_every_build_record_call_sees_the_same_latency(timing_on):
     assert first["summary"]["turns_measured"] == 3
 
 
+def test_tool_round_trips_are_stored_beside_the_turns(timing_on):
+    """How long the provider actually took, on the same row as the timings.
+
+    Nothing measured this before: a tool round-trip is absorbed silently into
+    llm_ttft_ms, so "was 1800ms the right moment to start speaking?" could not be
+    answered from data — which is how a hold phrase came to fire on 175 turns
+    that never ran a tool at all. The durations live on the session because a
+    tool belongs to a turn but is not one of the turn's audio stages.
+    """
+    session = {"lat_tools": [
+        {"tool": "check_availability", "ms": 1840},
+        {"tool": "book_appointment",   "ms": 620},
+    ]}
+    _finish(timing_on.new_turn(t0=0.0, call_sid="CAtools"), ttfa_ms=900)
+
+    logger = CallLogger("CAtools", session)
+    logger.complete(success=True, reason="booked")
+    block = logger.build_record()["latency"]
+
+    assert [t["tool"] for t in block["tools"]] == [
+        "check_availability", "book_appointment",
+    ]
+    assert block["tools"][0]["ms"] == 1840
+    # Caching is load-bearing here too: build_record runs three times a teardown.
+    assert logger.build_record()["latency"] == block
+
+
+def test_a_call_that_ran_a_tool_but_measured_no_turn_still_records(timing_on):
+    """Tools alone are enough to keep the row.
+
+    A turn that dead-ends produces no measured turn, and that is exactly the
+    call worth keeping: it ran a tool, spoke a filler, and delivered nothing.
+    Requiring turns before storing would drop the evidence.
+    """
+    session = {"lat_tools": [{"tool": "check_availability", "ms": 2100}]}
+    logger = CallLogger("CAtoolsonly", session)
+    logger.complete(success=False, reason="caller_hung_up")
+    block = logger.build_record()["latency"]
+    assert block is not None
+    assert block["tools"][0]["ms"] == 2100
+    assert block["turns"] == []
+
+
 def test_a_call_with_no_measured_turns_records_null(timing_on):
     """Nothing measured is NULL, not an empty structure — same as `screening`."""
     logger = CallLogger("CAquiet", {})
