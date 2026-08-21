@@ -133,6 +133,13 @@ UNCHANGED_CLINIC_PROMPTS = {
     # it". Verified by diffing the rendered prompt: exactly that one ASK line
     # differs, and demo/theorem/theorem_v3 are byte-identical, which is the
     # containment claim this table exists for.
+    # Re-pinned 2026-08-21, 11fc9c7fcab478d9 -> a3348f65d2f5c68c (jv_v1) and
+    # 10bd9f5d9cb71e45 -> b2fb93a133d11f0b (vital_edge). Hold-speech work: the
+    # "One filler phrase per tool call maximum" block became a positive rule
+    # never to open a reply with a holding phrase, because the system already
+    # speaks one and the model was saying a second (95 fragments across 73 of
+    # the stored calls). Only the template_v1 clinics move; theorem_v3 and demo
+    # stay byte-identical, which is the containment claim.
     # Re-pinned 2026-08-21, 243a1be416ea9fc9 -> 11fc9c7fcab478d9. Phase 4 tone
     # pass: FOUR ASK lines moved and nothing else. The lead-ins used to
     # apologise for the question ("Sorry to ask", "Just to be safe before we
@@ -147,7 +154,7 @@ UNCHANGED_CLINIC_PROMPTS = {
     # everyone says no to these"). classify_screen_answer grades a negative
     # lead as `clear`, so priming manufactures false clears — see
     # tests/regression/test_a_screen_question_is_framed_as_routine.py.
-    "jv_v1": "11fc9c7fcab478d9",
+    "jv_v1": "a3348f65d2f5c68c",
     "theorem": "8565be9a48a7a9aa",
     "theorem_v3": "761036c8d0da91ed",
 }
