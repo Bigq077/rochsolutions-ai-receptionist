@@ -639,6 +639,19 @@ _AFFIRMATIVE_LEAD_PAIRS: frozenset = frozenset({
 })
 
 
+# Known mouth-noise / stutter artefacts (subset of connection.py's
+# _V3_NOISE_FRAGMENTS — kept local so this module stays dependency-free).
+_NOISE_WORDS = frozenset({
+    "ing", "ic", "er", "um", "uh", "hmm", "hm", "mm", "ah", "eh",
+    "mhm", "mmm", "uhh", "umm", "huh", "s",
+    # "erm"/"ehm" are the ordinary British spellings and were missing. They
+    # reach here as the lead token of a hesitant answer ("erm yes"), which the
+    # affirmative branch reads — so an absent filler is a missed escalation,
+    # not a cosmetic gap.
+    "erm", "ehm",
+})
+
+
 def _red_flag_hits(text: str, screen: Dict[str, Any]) -> int:
     """Number of DISTINCT red-flag keywords present in the text.
 
@@ -674,6 +687,23 @@ def classify_screen_answer(text: str, screen: Dict[str, Any]) -> str:
         if _kw_in(k, t) and not _occurrence_negated(t, k):
             return "red_flag"
     words = t.split()
+
+    # Drop leading mouth-noise before reading the lead. The affirmative branch
+    # below tests the FIRST word, so a single disfluency defeated it entirely:
+    # "yeah i do" classified red_flag while "er yeah i do" fell through to
+    # `unclear`. Live on JV 2026-08-21 (CA4feeeec6f9077d4912eb7d2a7f1d6846,
+    # 11:19:46) — ten minutes after the affirmative branch was deployed, on a
+    # cauda equina screen. Spoken answers to a safety question start with a
+    # disfluency constantly; requiring a clean first token makes the branch fire
+    # only for callers who happen not to hesitate.
+    #
+    # Stripped for the LEAD tests only, and only after every negative branch has
+    # run against the untouched text. Widening the negative branches the same way
+    # would add false-CLEAR surface, which is the dangerous direction.
+    lead_words = list(words)
+    while lead_words and lead_words[0] in _NOISE_WORDS:
+        lead_words.pop(0)
+
     first_word = words[0] if words else ""
     if first_word in _NEGATIVE_WORDS:
         return "clear"
@@ -694,8 +724,9 @@ def classify_screen_answer(text: str, screen: Dict[str, Any]) -> str:
     # `answer unclear`. No escalation ever happened. `unclear` leaves the screen
     # pending and hands the decision to the LLM — which defeats the entire point
     # of a deterministic safety layer, and on that call the LLM was down.
-    if (first_word in _AFFIRMATIVE_LEAD
-            or " ".join(words[:2]) in _AFFIRMATIVE_LEAD_PAIRS):
+    lead = lead_words[0] if lead_words else ""
+    if (lead in _AFFIRMATIVE_LEAD
+            or " ".join(lead_words[:2]) in _AFFIRMATIVE_LEAD_PAIRS):
         return "red_flag"
 
     return "unclear"
@@ -887,13 +918,6 @@ def _resolve_screen_answer(
 _MEANINGFUL_SHORT = frozenset({
     "yes", "no", "yeah", "nope", "yep", "yup", "nah",
     "ok", "okay", "sure", "fine", "none",
-})
-
-# Known mouth-noise / stutter artefacts (subset of connection.py's
-# _V3_NOISE_FRAGMENTS — kept local so this module stays dependency-free).
-_NOISE_WORDS = frozenset({
-    "ing", "ic", "er", "um", "uh", "hmm", "hm", "mm", "ah", "eh",
-    "mhm", "mmm", "uhh", "umm", "huh", "s",
 })
 
 _VOWELS = frozenset("aeiou")
