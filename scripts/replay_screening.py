@@ -78,6 +78,49 @@ except ImportError:  # pragma: no cover - dotenv ships with the app
 from app.media_streams import clinical_screening as cs  # noqa: E402
 
 
+# ── Corpus provenance ────────────────────────────────────────────
+# The plan called for splitting the corpus by build_sha branch membership, so a
+# round of test calls is not counted as real traffic. Measured 2026-08-21 on
+# jv_v1, that axis does not answer the question:
+#
+#   * 77 of 214 calls (36%) carry no build_sha at all;
+#   * 50 of the 58 shas present ARE on a JV live branch — because the demo line
+#     runs the same builds. "This sha is on jv_v2" says nothing about who rang.
+#
+# Nor does the number dialled: both Susie lines are rung by the same handsets.
+#
+# The discriminator that works is the CALLER. Two handsets account for 204 of
+# the 214 calls and ring both numbers, one of them repeatedly at 03:00 UK time.
+# Of 38 calls that touch a screen, 37 are from those two handsets.
+#
+# Keep this list current. A number added here is removed from every "real
+# traffic" figure the harness prints, so an over-broad entry hides real calls —
+# which is the failure this block exists to prevent, pointed the other way.
+_TEST_CALLERS = {
+    "+33617769867",   # dev handset, 97 calls, many overnight
+    "+447502211207",  # dev handset, 107 calls
+}
+
+# Which Susie number was rung. Recorded for provenance only — NOT a test/real
+# split, for the reason above. See the demo-line memory: +447366263180 is the
+# demo line and its Sheets/EVAL_STAFF warnings are known-accepted;
+# +447367002651 is the live line, where they are not.
+_SUSIE_LINES = {
+    "+447366263180": "demo",
+    "+447367002651": "live",
+}
+
+
+def audience_of(call: Dict[str, Any], test_callers: Optional[set] = None) -> str:
+    """'test' if this call came from a known dev handset, else 'real'.
+
+    'real' means only "not from a handset we know is ours" — it is the
+    residual, not a positive identification of a patient.
+    """
+    callers = _TEST_CALLERS if test_callers is None else test_callers
+    return "test" if str(call.get("caller_number") or "") in callers else "real"
+
+
 def _load_clinic(clinic_json: Optional[str], clinic_id: str) -> Dict[str, Any]:
     """Clinic config to screen against.
 
@@ -185,6 +228,10 @@ def replay_call(call: Dict[str, Any], clinic: Dict[str, Any]) -> Dict[str, Any]:
         "call_sid": call.get("call_sid"),
         "clinic_id": call.get("clinic_id"),
         "build_sha": call.get("build_sha"),
+        "caller_number": call.get("caller_number"),
+        "dialled_number": call.get("dialled_number"),
+        "line": _SUSIE_LINES.get(str(call.get("dialled_number") or ""), "?"),
+        "audience": audience_of(call),
         "start_utc": str(call.get("start_utc") or ""),
         "outcome": call.get("outcome") or call.get("reason"),
         "stored_screening": call.get("screening"),
@@ -223,6 +270,23 @@ def _print_report(results: List[Dict[str, Any]], summary: Dict[str, Any]) -> Non
     print(f"calls replayed          : {summary['calls']}")
     print(f"calls touching a screen : {summary['calls_with_any_screening']}"
           f"  ({_pct(summary['calls_with_any_screening'], summary['calls'])})")
+
+    # Provenance, printed on every run and not behind a flag. A screening
+    # figure read as real traffic when it is a round of our own test calls is
+    # the specific mistake this harness exists to stop, and it is invisible
+    # unless the split is in front of you.
+    armed = [r for r in results if r["events"]]
+    for label, rows in (("all calls", results), ("of which armed", armed)):
+        tally = Counter(r.get("audience", "?") for r in rows)
+        lines = Counter(r.get("line", "?") for r in rows)
+        print(f"{label:<24}: test {tally.get('test', 0)} / real "
+              f"{tally.get('real', 0)}   "
+              f"[demo {lines.get('demo', 0)} / live {lines.get('live', 0)}"
+              + (f" / other {lines.get('?', 0)}" if lines.get("?") else "") + "]")
+    real_armed = sum(1 for r in armed if r.get("audience") == "real")
+    if armed and not real_armed:
+        print("  ⚠ every armed call is from a dev handset — there is no real "
+              "traffic in this corpus to tune triggers against")
     print("=" * 78)
     if not summary["per_screen"]:
         print("no screening events in this corpus")
@@ -263,6 +327,45 @@ def _print_report(results: List[Dict[str, Any]], summary: Dict[str, Any]) -> Non
                 print(f"      {e['utterance'][:150]!r}")
 
 
+def _filter_sha_on_branch(calls: List[Dict[str, Any]], ref: str) -> List[Dict[str, Any]]:
+    """Keep calls whose build_sha is an ancestor of `ref`.
+
+    Note what this DROPS: a call with no build_sha cannot be placed on any
+    branch, and 36% of the jv_v1 corpus has none. It is reported rather than
+    silently discarded, because a corpus that quietly shrinks by a third is how
+    a replay comes to measure something other than what was asked.
+
+    Cherry-picks also defeat it — the same change carries a different sha on
+    each branch — so a False here means "not built from this ref", never "this
+    fix is missing from that branch".
+    """
+    import subprocess
+    cache: Dict[str, bool] = {}
+
+    def on_branch(sha: str) -> bool:
+        if sha not in cache:
+            cache[sha] = subprocess.call(
+                ["git", "merge-base", "--is-ancestor", sha, ref],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                cwd=_ROOT,
+            ) == 0
+        return cache[sha]
+
+    kept, no_sha = [], 0
+    for c in calls:
+        sha = (c.get("build_sha") or "").strip()
+        if not sha:
+            no_sha += 1
+            continue
+        if on_branch(sha):
+            kept.append(c)
+    if no_sha:
+        print(f"[--sha-on-branch] dropped {no_sha} call(s) carrying no "
+              f"build_sha — they cannot be placed on any branch",
+              file=sys.stderr)
+    return kept
+
+
 def _parse_date(value: str) -> datetime:
     return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
 
@@ -285,6 +388,17 @@ def main(argv: Optional[List[str]] = None) -> int:
                          "separate a round of test calls from real traffic")
     ap.add_argument("--exclude-caller", action="append", default=[],
                     help="drop calls from this caller number (repeatable)")
+    ap.add_argument("--audience", choices=("all", "test", "real"), default="all",
+                    help="'test' = calls from a known dev handset, 'real' = "
+                         "everything else. See _TEST_CALLERS; 'real' is a "
+                         "residual, not a positive identification of a patient")
+    ap.add_argument("--test-caller", action="append", default=[],
+                    help="extra number to treat as a dev handset (repeatable)")
+    ap.add_argument("--sha-on-branch",
+                    help="keep only calls whose build_sha is contained in this "
+                         "git ref (e.g. origin/jv_v2). The literal build_sha "
+                         "split — note 36%% of calls carry no sha, so this "
+                         "silently drops them; prefer --audience")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
@@ -315,6 +429,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.exclude_caller:
         dropped = set(args.exclude_caller)
         calls = [c for c in calls if (c.get("caller_number") or "") not in dropped]
+    test_callers = _TEST_CALLERS | set(args.test_caller)
+    if args.audience != "all":
+        calls = [c for c in calls
+                 if audience_of(c, test_callers) == args.audience]
+    if args.sha_on_branch:
+        calls = _filter_sha_on_branch(calls, args.sha_on_branch)
     calls = [c for c in calls if _turns(c)]
 
     results = [replay_call(c, clinic) for c in calls]
