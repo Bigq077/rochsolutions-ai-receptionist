@@ -45,12 +45,35 @@ def build_booking_request_message(
     service: str = "Deep Tissue Massage",
     notes: str = "",
     action: str = "REQUEST",
+    calendar_written: bool = True,
 ) -> str:
-    """Owner-facing text for a provisional booking request / change."""
+    """
+    Owner-facing text for a provisional booking request / change.
+
+    `calendar_written=False` is the case this message exists to make visible.
+    On a provisional clinic the owner IS the confirmation step, so this text is
+    the only thing that reaches them in time to ring the caller back. Until
+    2026-08-21 it was byte-identical whether the calendar write had landed or
+    thrown — and the write is wrapped in a try/except that logs and continues,
+    so a failure (or an expired Google token, which skips the write entirely)
+    produced a text reading exactly like a healthy booking. The owner would
+    have gone looking for an appointment that was not there.
+    """
     when_str = when.strftime("%a %d %b at %H:%M")
     name = (clinic.get("sms_name") or clinic.get("display_name") or "Clinic")
-    lines = [
-        f"\U0001F4C5 {name} — booking {action.lower()} (please confirm with the client)",
+    if not calendar_written:
+        # Lead with the failure. It is the one line that changes what the owner
+        # has to DO, so it goes first rather than into a footnote they may not
+        # read to the end of.
+        lines = [
+            f"\u26A0\uFE0F {name} — booking {action.lower()}, NOT IN YOUR CALENDAR",
+            "The calendar write FAILED — please add this one manually.",
+        ]
+    else:
+        lines = [
+            f"\U0001F4C5 {name} — booking {action.lower()} (please confirm with the client)",
+        ]
+    lines += [
         f"Name: {patient_name or '—'}",
         f"Phone: {phone or '—'}",
         f"Service: {service} ({duration_minutes} min)",

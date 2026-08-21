@@ -5691,12 +5691,20 @@ async def _book_appointment_provisional(
     session["confirmation_sms_sent"] = True  # never send the caller a "confirmed" text
 
     # Notify the owner immediately (SMS now; WhatsApp later). Non-fatal.
+    #
+    # `calendar_written` is load-bearing: this text is the ONLY thing that
+    # reaches a provisional clinic's owner while the caller could still be rung
+    # back, and the calendar write above logs-and-continues on failure (and is
+    # skipped outright when the Google token has expired). Without this flag the
+    # owner is told a booking was requested in exactly the same words whether or
+    # not anything reached the diary.
     try:
         await notify_owner(
             clinic,
             build_booking_request_message(
                 clinic=clinic, patient_name=patient_name, phone=phone,
                 when=start_dt, duration_minutes=duration, service=svc_name, notes=owner_notes,
+                calendar_written=calendar_written,
             ),
         )
     except Exception as e:
