@@ -43,7 +43,14 @@ CANCEL = th.WRITE_FAMILY_CANCEL
 
 
 def _session(**over):
-    """A session with no booking flow — the shape a reschedule call actually has."""
+    """A session with no booking flow.
+
+    NOT the shape a reschedule call has — this docstring said it was until
+    B-75, and that assumption is why the arming defect shipped. The booking-ack
+    path in connection.py sets `booking_flow_active` for intent=reschedule too,
+    so a real reschedule session has it set. See
+    test_b75_reschedule_success_disarms_the_booking_arm.py.
+    """
     s = {"_clinical_depth_cache": "", "v3_cta_count": 0}
     s.update(over)
     return s

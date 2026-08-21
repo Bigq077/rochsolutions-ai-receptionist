@@ -940,6 +940,25 @@ CANCEL_SUCCEEDED_ID_KEY = "_cancel_succeeded_appointment_id"
 # which on a live call is an unhandled exception in the middle of a booking.
 WRITE_REFUSED_KEY = "_write_refused"
 
+# Session key: which write families have SUCCEEDED on this call.
+#
+# Moved here from llm_stream for B-75 so Gate 5f can read it; the import runs
+# llm_stream -> turn_handler, same reason CANCEL_SUCCEEDED_ID_KEY lives here.
+#
+# CALL-scoped, deliberately — the opposite lifetime to WRITE_REFUSED_KEY, which
+# is turn-scoped and cleared at the top of every turn. A completed write is a
+# fact about the call. Per family rather than per appointment id: the cancel
+# executor's success payload is {"success", "cancelled", "was_at"} with no id
+# (receptionist_tools.py `_exec_cancel_appointment`), so an id-keyed latch would
+# need the executor changed too. The cost of the coarser key is confined to the
+# refusal path — a second, genuine cancellation still runs and still succeeds;
+# only a second *refused* one is described as a duplicate rather than a failure,
+# and _WRITE_ALREADY_DONE_RULE is worded so that is still true.
+#
+# A dict of family -> True, NEVER a set: same Redis json.dumps constraint as
+# WRITE_REFUSED_KEY above.
+WRITE_SUCCEEDED_KEY = "_write_families_succeeded"
+
 _FALSE_CONFIRM_CLAIM_RE = re.compile(
     r"""\b(
         (youre|you\s+are|thats|that\s+is|its|it\s+is)\s+(all\s+|now\s+)?(booked|confirmed)(\s+in)?
@@ -1244,16 +1263,38 @@ def _armed_write_families(session: Dict[str, Any]) -> list:
     refused = session.get(WRITE_REFUSED_KEY)
     if not isinstance(refused, dict):
         refused = {}
+    succeeded = session.get(WRITE_SUCCEEDED_KEY)
+    if not isinstance(succeeded, dict):
+        succeeded = {}
     armed = [
         f for f in (WRITE_FAMILY_RESCHEDULE, WRITE_FAMILY_CANCEL, WRITE_FAMILY_BOOKING)
         if refused.get(f)
     ]
     # R1 — OR, not replace. The original arm is the only one that catches a
     # phantom the model produced having called no tool at all.
+    #
+    # B-75 — a SUCCESSFUL reschedule stands this arm down, exactly as a
+    # successful booking does. `booking_flow_active` is set on the booking-ack
+    # path for intent=reschedule too (connection.py, "booking ack …
+    # intent=reschedule"), and a reschedule latches its own family, never
+    # `booking_write_confirmed` — so without this the arm stayed live for the
+    # whole of every reschedule call. On JV CA9262659c (21 Aug) the caller asked
+    # "have you rescheduled it then", Susie answered "you're booked in for
+    # Friday the 28th" — TRUE, the write landed 22s earlier — and this gate
+    # replaced it with the booking CTA. That re-steer then became last_bot_prompt
+    # and disarmed the move gate, so the retry was blocked too: the file header's
+    # risk R5, reached from a success rather than a phantom.
+    #
+    # Reschedule only, NOT any success. After a cancel no appointment exists, so
+    # "you're booked in" is still a phantom and the arm must stay up. Residual,
+    # accepted: a reschedule followed by a claim of a SECOND booking made with no
+    # tool call at all is no longer caught here — a second booking that is
+    # actually attempted and refused still arms via the refusal path above.
     if (
         WRITE_FAMILY_BOOKING not in armed
         and session.get("booking_flow_active")
         and not session.get("booking_write_confirmed")
+        and not succeeded.get(WRITE_FAMILY_RESCHEDULE)
     ):
         armed.append(WRITE_FAMILY_BOOKING)
     return armed
