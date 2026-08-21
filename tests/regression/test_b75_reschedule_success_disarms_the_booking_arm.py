@@ -174,6 +174,54 @@ def test_a_refusal_after_the_success_does_not_rearm_booking():
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# 2b — "reschedule one, then book a new one": the objection to this fix
+# ══════════════════════════════════════════════════════════════════════════
+# The 18 Aug write-up of this defect rejected exactly this fix on the grounds
+# that it "breaks the real case of rescheduling one appointment then booking a
+# new one". These three tests are why it does not: the only sub-case that loses
+# cover is a booking the model never even attempted.
+
+
+def test_a_new_booking_that_succeeds_after_a_reschedule_is_true_and_passes():
+    s = _rescheduling_session()
+    _succeed(s, "reschedule_appointment", attempted_slot_iso=NEW_SLOT_ISO)
+    _succeed(s, "book_appointment")
+    assert s.get("booking_write_confirmed") is True
+    assert th._armed_write_families(s) == []
+
+
+def test_a_new_booking_that_is_REFUSED_after_a_reschedule_is_still_caught():
+    """The objection, answered.
+
+    Cover for this case never came from R1 — it comes from the refusal path,
+    which is untouched. Arming there is independent of booking_flow_active.
+    """
+    s = _rescheduling_session()
+    _succeed(s, "reschedule_appointment", attempted_slot_iso=NEW_SLOT_ISO)
+    ls._note_write_result(
+        s, "book_appointment", {"status": "booking_confirmation_required"},
+    )
+    assert th._armed_write_families(s) == [BOOKING]
+    assert th.sanitise_response(TRUE_CONFIRMATION, s) == th._FALSE_CONFIRM_RESTEER
+
+
+def test_the_accepted_residual_is_pinned():
+    """A second booking CLAIMED with no tool call at all is no longer caught.
+
+    Pinned, not hidden. R1 was the only thing that ever caught a zero-tool
+    phantom, and after a landed reschedule it is stood down. Weighed against
+    the certain, every-call damage of the armed state (a true confirmation
+    destroyed and the move gate disarmed, twice live), this is the better
+    trade. If it is ever closed it needs a real "the caller has asked for a
+    NEW appointment since the move" signal — booking_flow_active is not one,
+    it is set at the booking ack for intent=reschedule too.
+    """
+    s = _rescheduling_session()
+    _succeed(s, "reschedule_appointment", attempted_slot_iso=NEW_SLOT_ISO)
+    assert th._armed_write_families(s) == []
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # 3 — lifetime. The write was three turns before the misfire.
 # ══════════════════════════════════════════════════════════════════════════
 def test_the_success_latch_is_not_cleared_per_turn():
