@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
@@ -86,6 +87,21 @@ def _rescheduling(iso: str = "2026-08-24T16:30:00+01:00", dur: int = 60, **over)
     })
 
 
+def _maybe_patch_all_day():
+    """Silence the all-day-event lookup, on the branches that have one.
+
+    `_all_day_blocks_for_window` belongs to the all-day-events busy fix, which
+    theorem-onboarding does not carry. `patch.object` on a missing attribute
+    raises AttributeError, which would fail every test in this file there for a
+    reason that has nothing to do with B-77. Patch only what exists, rather than
+    inventing a stub attribute on the module under test.
+    """
+    if hasattr(rt, "_all_day_blocks_for_window"):
+        return patch.object(rt, "_all_day_blocks_for_window",
+                            new=lambda *a, **k: asyncio.sleep(0, result=[]))
+    return nullcontext()
+
+
 async def _check(session, args=None, busy=None):
     """Drive the REAL executor. Google is mocked; nothing else is."""
     def _fb(tokens, s, e, cal):
@@ -93,8 +109,7 @@ async def _check(session, args=None, busy=None):
     with patch.object(rt, "_get_tokens",
                       new=lambda *a, **k: asyncio.sleep(0, result={"t": 1})), \
          patch.object(cg, "freebusy", new=_fb), \
-         patch.object(rt, "_all_day_blocks_for_window",
-                      new=lambda *a, **k: asyncio.sleep(0, result=[])), \
+         _maybe_patch_all_day(), \
          patch.object(rt, "_save_gcal_tokens",
                       new=lambda *a, **k: asyncio.sleep(0, result=None)):
         return await rt._exec_check_availability(args or dict(ARGS), session)
@@ -287,7 +302,9 @@ def test_acuity_and_provisional_return_before_the_grid():
     src = inspect.getsource(rt._exec_check_availability)
     i_acuity = src.index("_filter_same_day_slots(_acuity_result, session)")
     i_prov = src.index("_check_availability_published(")
-    i_dur = src.index("duration_min = _resolve_duration_minutes(")
+    # Anchor on the B-77 block itself rather than a neighbouring line:
+    # how `duration_min` is first computed differs between branches.
+    i_dur = src.index("_resched_dur = session.get(LOOKUP_DURATION_KEY)")
     i_grid = src.index("generate_candidate_slots(")
     assert i_acuity < i_dur < i_grid, "the Acuity branch no longer returns early"
     assert i_prov < i_dur < i_grid, "the provisional branch no longer returns early"
