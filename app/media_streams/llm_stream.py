@@ -3487,6 +3487,10 @@ class LLMStream:
         # the marked ack-filler chunk before it reaches ElevenLabs.
         session["_ack_filler_active"]    = False
         session["_ack_filler_cancelled"] = False
+        # A hold phrase belongs to the turn that spoke it. Left set, a stale True
+        # would strip a legitimate opener off an unrelated later reply.
+        session["_hold_head_spoken"] = False
+        session["_hold_head_text"]   = ""
         # O-18: set by Gate 5g when it deletes a booking CTA because the NAME is
         # missing — which also deletes the model's acknowledgement of the name
         # the caller just gave. Reset per turn, or a stale True would let a later
@@ -3689,8 +3693,19 @@ class LLMStream:
                             if chunk:
                                 if not _first_tts_emitted:
                                     _first_tts_emitted = True
-                                    if interim_played:
-                                        chunk = _strip_interim_opener(chunk)
+                                    # A hold phrase the caller already heard is
+                                    # the same opener the model is about to say
+                                    # again ~1-2s later. interim_played covers
+                                    # the fast-path; _hold_head_spoken covers
+                                    # every deterministic producer, which is
+                                    # where all 95 stored duplicates came from.
+                                    _head = session.get("_hold_head_text", "")
+                                    if interim_played or session.get(
+                                        "_hold_head_spoken"
+                                    ):
+                                        chunk = join_after_head(
+                                            chunk, _head or "…"
+                                        )
                                         if chunk:
                                             logger.debug(
                                                 "[ms_llm] interim stripped; first chunk: %r",
@@ -3720,9 +3735,14 @@ class LLMStream:
             # ── Flush remaining buffer ─────────────────────────────────────
             final_chunk = chunker.flush()
             if final_chunk:
-                if not _first_tts_emitted and interim_played:
-                    # Entire response was a single short flush — strip interim opener
-                    final_chunk = _strip_interim_opener(final_chunk)
+                if not _first_tts_emitted and (
+                    interim_played or session.get("_hold_head_spoken")
+                ):
+                    # Entire response was a single short flush — same join.
+                    final_chunk = join_after_head(
+                        final_chunk,
+                        session.get("_hold_head_text", "") or "…",
+                    )
                     _first_tts_emitted = True
                 # GATE 5: sanitise flush chunk before TTS
                 final_chunk = sanitise_response(final_chunk, session)
@@ -5143,6 +5163,19 @@ _INTERIM_DUPE_RE = re.compile(
     r"|Just\s+a\s+moment(?:\.{1,3})?\s*"
     r"|Just\s+bear\s+with\s+me(?:\.{1,3})?\s*"
     r"|Bear\s+with\s+me(?:\.{1,3})?\s*"
+    # Openers the stored calls actually produced. Every one of these was spoken
+    # on top of a hold phrase the system had already played, ~1-2s earlier.
+    r"|(?:Right,?\s+)?Let(?:'|’)?s\s+see(?:\.{1,3})?[,—-]?\s*"
+    r"|Let\s+me\s+see(?:\.{1,3})?[,—-]?\s*"
+    r"|Let\s+me\s+(?:just\s+)?(?:have\s+a\s+)?look(?:\s+that\s+up)?"
+    r"(?:\s+for\s+you)?[\.,]?\s*"
+    r"|Let\s+me\s+pull\s+that\s+up(?:\s+for\s+you)?[\.,]?\s*"
+    r"|Let\s+me\s+find\s+(?:that|you)(?:\s+for\s+you)?[\.,]?\s*"
+    r"|Right\s+with\s+you(?:\.{1,3})?\s*"
+    r"|Just\s+getting\s+that(?:\s+for\s+you)?(?:\.{1,3})?\s*"
+    r"|Give\s+me\s+(?:a|one)\s+(?:moment|second)(?:\.{1,3})?\s*"
+    r"|Let\s+me\s+get\s+that\s+(?:booked\s+in|sorted|moved|changed|cancelled)"
+    r"(?:\s+for\s+you)?(?:\s+now)?[\.,]?\s*"
     r")",
     re.IGNORECASE,
 )
@@ -5163,17 +5196,80 @@ def _strip_interim_opener(text: str) -> str:
             stripped = stripped[0].upper() + stripped[1:]
         return stripped
 
-    # Fallback: strip first sentence if it contains "check" in first 15 words
-    dot = text.find(".")
-    if dot > 0:
-        first_sentence = text[: dot + 1]
+    # Fallback: strip the first sentence if it contains "check" in its first 15
+    # words (catches paraphrases). The boundary is not only "." — the model
+    # frequently ends the clause with a dash ("Let me just check what we have for
+    # you - which clinic...?"), and splitting on "." alone let those through.
+    m = re.search(r"[\.!?]|\s—\s", text)
+    if m and m.start() > 0:
+        first_sentence = text[: m.end()]
         words = first_sentence.split()[:15]
         if any("check" in w.lower() for w in words):
-            remainder = text[dot + 1 :].lstrip()
+            remainder = text[m.end():].lstrip()
             if remainder:
                 return remainder[0].upper() + remainder[1:]
 
     return text
+
+
+# Words that keep their capital even mid-sentence, so a joined payload does not
+# become "let me see - friday the fourteenth". Proper nouns the payload can open
+# with; anything else is ordinary sentence-initial capitalisation and is lowered.
+_KEEPS_CAPITAL = {
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "january", "february", "march", "april", "may", "june", "july", "august",
+    "september", "october", "november", "december",
+    "i", "i'm", "i've", "i'll", "i'd",
+}
+
+
+def join_after_head(chunk: str, head: str) -> str:
+    """Make ``chunk`` read as the continuation of the hold phrase ``head``.
+
+    Pure. The perceptual half of the hold-speech work: a head that ends in a
+    comma or a dash is an unfinished clause, and the reply is its completion —
+    "Let me see - Friday the fourteenth at ten's free" rather than "Right with
+    you..." <pause> "Friday 14th August at ten in the morning is available."
+
+    Three things happen, in order:
+
+    1. A duplicate opener is stripped. The head already said it.
+    2. The payload is decapitalised, but ONLY when the head left the sentence
+       open (``,`` or a dash). A head ending in ``.`` or the ellipsis is a closed
+       sentence and the payload must keep its capital. Proper nouns are exempt —
+       day and month names are how these replies usually start.
+    3. Exactly one space at the seam. Concatenating without a separator is what
+       produced "...what's available.The available slots for Tuesday" in 106
+       stored fragments; doing the join in one place makes that unrepresentable.
+
+    ``head`` is what the caller HEARD, not what is about to be synthesised, so an
+    empty head means no hold phrase played and the chunk is returned untouched.
+    """
+    if not chunk:
+        return chunk
+    if not head:
+        return chunk
+
+    body = _strip_interim_opener(chunk).lstrip()
+    if not body:
+        # The reply was NOTHING BUT the opener. Stripping it would leave the turn
+        # with no audio at all — a dead-end filler, which is the exact defect
+        # this whole change exists to remove. Saying the phrase twice is a much
+        # smaller fault than saying nothing, so the original stands.
+        return chunk
+
+    # One space at a sentence boundary. The model welds its opener to the payload
+    # ("...what's available.The available slots for Tuesday"): 106 stored
+    # fragments, and ElevenLabs reads the run-on without a breath. Repaired here
+    # so the seam is guaranteed in one place rather than trusted to the model.
+    body = re.sub(r"([\.!?])([A-Z])", r" ", body)
+
+    if head.rstrip()[-1:] in (",", "—", "-"):
+        first = body.split(" ", 1)[0].strip(".,!?").lower()
+        if first not in _KEEPS_CAPITAL:
+            body = body[0].lower() + body[1:]
+
+    return body
 
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")

@@ -70,10 +70,25 @@ def should_play_filler(session: dict, *, is_write: bool = False) -> bool:
     return False
 
 
-def note_filler_played(session: dict, *, is_write: bool = False) -> None:
-    """Record that a filler reached the TTS queue. Call at EVERY producer."""
+def note_filler_played(
+    session: dict, *, is_write: bool = False, text: str = "",
+) -> None:
+    """Record that a filler reached the TTS queue. Call at EVERY producer.
+
+    ``_hold_head_spoken`` arms the duplicate-opener stripper in llm_stream: the
+    caller has just been told to hold on, so the model's own "Let me check what
+    we have for you" is the SECOND time in two seconds. That happened 95 times
+    across 73 of the 323 stored calls, and it is audible every time.
+
+    ``_hold_head_text`` carries the wording so the reply can be joined onto it
+    rather than restarted as a fresh sentence. Optional: a producer that does not
+    pass it still arms the stripping, it just cannot condition the join.
+    """
     session["_last_filler_ts"] = time.monotonic()
     session["_last_filler_was_write"] = bool(is_write)
+    session["_hold_head_spoken"] = True
+    if text:
+        session["_hold_head_text"] = text
 
 
 _WRITE_FILLER_MARKERS = (
