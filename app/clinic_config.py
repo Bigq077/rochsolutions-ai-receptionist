@@ -222,6 +222,46 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         },
         "transfer_phone": "+447870166861",   # E.164 — Twilio dials this for live transfers
 
+        # ── Emergency bypass target (2026-08-21) ─────────────────────────────
+        # DISABLED by default. This block is not a routing change — it is the
+        # target the OFF/ON text toggle needs in order to do anything.
+        #
+        # app/clinic_call_mode.py lets Mark text OFF to the clinic line and have
+        # his own phone ring FIRST (press 1 to take it), falling through to
+        # Susie after ring_timeout, reverting at the next London midnight. That
+        # is the seatbelt PRODUCTION_READINESS_PLAN.md Phase 5 marks "never
+        # cut": the one mitigation operable from a phone, at speed, without a
+        # deploy. But the toggle only flips `enabled`, and the router drops the
+        # entire human-first branch when dial_phone is empty:
+        #
+        #     if _human_first and _dial_phone:   # media_streams/router.py
+        #
+        # With no block at all, Mark could text OFF, be told his routing had
+        # changed, and Susie would keep answering every call. The toggle was
+        # built on 2026-08-19 and this clinic went live without a target for it.
+        #
+        # It belongs HERE and not in app/clinics/theorem/clinic.json: on this
+        # branch Theorem is a hardcoded CLINICS entry, and theorem_v2/_v3 are
+        # deepcopies of it made further down this file — clinic.json does not
+        # reach Mark's live line (+447380841468 -> theorem_v3).
+        #
+        # No `greeting` key: it is dead everywhere (no consumer reads it), and
+        # inventing one here risks colliding with the Alcester/Redditch
+        # location ladder that owns Theorem's opening turn.
+        "call_overflow": {
+            "enabled": False,
+            "dial_phone": "+447870166861",
+            "ring_timeout": 20,
+            "whisper_text_with_caller": (
+                "Business call, from {caller}. Press 1 to take it, "
+                "or hang up and Susie will handle it."
+            ),
+            "whisper_text": (
+                "Business call from your Susie line. Press 1 to take it, "
+                "or hang up and Susie will handle it."
+            ),
+        },
+
         # Oversight relay: every inbound text to the clinic line is copied here
         # verbatim, whichever inbound path handles it (name confirmation, home-
         # visit address, general message). Read by app/routes/twilio.py. This is
