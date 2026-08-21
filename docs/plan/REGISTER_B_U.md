@@ -131,6 +131,48 @@ Alcester/Redditch location ladder that owns its opening turn.
 
 ---
 
+## `B-72` · a **successful transfer is indistinguishable from a hang-up** in the obs store — **OPEN, P2**
+
+> ❌ Not fixed. Found 2026-08-21 while doing the Theorem week-1 review, by
+> reading the corpus rather than by dialling. Affects all four branches.
+
+`transfer_attempted` is **`False` on all 40 `theorem_v3` calls**, including three
+where the stored transcript contains Susie saying *"Transferring you to Mark now
+— one moment."*
+
+The only writer is `app/routes/twilio.py:1047`, and it sits on the **failed**
+branch of the dial-status callback: `completed`/`canceled` returns at line ~1039
+*before* the flag is set. So the field actually means "a transfer was attempted
+**and nobody answered**", which is not what its name says and not how
+`app/obs/judge.py:118` or `app/obs/show.py:73` read it.
+
+Worse, the caller-initiated path never touches it at all. The Theorem press-1
+transfer at `app/media_streams/connection.py:6541` sets
+`transfer_requested_by_caller` and calls `_on_transfer_request()` — and
+`transfer_requested_by_caller` is **never persisted into the record** (confirmed:
+absent from the `raw` blob on every stored call).
+
+**Why it matters.** Press-1 is the *dominant* caller path on Theorem — 3 of the 5
+live calls since go-live. The store reports zero transfers, so the most important
+operational number on that line (how many patients reach Mark vs Susie) reads as
+0%. It also means the `abandoned` bucket is contaminated: a transferred caller
+and an abandoning caller produce identical rows — `outcome='resolved'`,
+`reason='caller_hung_up'`, `graceful_exit=False`. **No quality conclusion drawn
+from the outcome distribution is safe until this is fixed.**
+
+**Fix (not yet written).** Persist `transfer_requested_by_caller` into the
+record, and set `transfer_attempted` where the transfer is *initiated* rather
+than only where it fails. Keep the failure signal separate —
+`app/obs/alerts.py:128` pairs `transfer_attempted` with `transfer_sms_failed`
+and that pairing is currently correct by accident.
+
+> ⚠️ **Do not detect this by matching `"Transferring you to"` in the transcript.**
+> Matching a single literal of model speech has broken three times in this repo,
+> and Gate 5 can rewrite or delete that exact line. The transcript is how this
+> defect was *found*; it must not be how it is *fixed*.
+
+---
+
 ## `B-62` · a caller was told **quarter past six**; the diary says **half past five** — **FIXED `2c3b7ad` on `latency-eval`. `U`-debt: not yet exercised on a call, not yet ported.**
 
 > ✅ `latency-eval` **`2c3b7ad`**. Regression:
