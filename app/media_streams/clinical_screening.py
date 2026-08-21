@@ -41,6 +41,7 @@ SCREEN_RED_FLAG_KEY = "screen_red_flag"      # screen id that answered positive
 SCREENS_COMPLETED_KEY = "screens_completed"  # list of screen ids already run
 SCREEN_TRUNCATED_KEY = "screen_truncation_downgrades"  # screen ids re-asked once
 SCREEN_ARM_PATHS_KEY = "screen_arm_paths"    # screen id -> how it armed (below)
+SCREEN_REASKS_KEY = "screen_reasks"          # screen ids re-asked once, deterministically
 
 # How a screen came to be pending. Recorded per screen so the durable call
 # record can answer "did Layer 1 arm this, or did Layer 2 cover for it?" —
@@ -77,6 +78,11 @@ def _arm(session: Dict[str, Any], screen_id: str, path: str) -> None:
 # would collide with it. Overridable per screen via clinic.json
 # screen["screen_lead_in"] (set "" to omit entirely).
 _DEFAULT_SCREEN_LEAD_IN = "I'm sorry to hear that."
+
+# Spoken when a pending screen has to be asked a SECOND time because the first
+# answer could not be graded. Deliberately different from the first lead-in: a
+# caller who hears the identical sentence twice concludes they were not heard.
+_DEFAULT_SCREEN_REASK_LEAD = "Sorry — I do need to check one thing before we go on."
 
 
 def _norm(text: str) -> str:
@@ -1038,9 +1044,60 @@ def update_screening_state(
                 return _resolve_screen_answer(
                     session, clinic, pending_id, screen, text
                 )
-            # Question not asked yet — keep the flag; the SCREEN REQUIRED
-            # steer forces it on the next model turn. Still allow a new,
-            # different trigger to upgrade below? No — one screen at a time.
+
+            # ── STRANDED SCREEN ──────────────────────────────────────────────
+            # The answer window has shut. A pending screen is graded only while
+            # the last thing Susie said still looks like the screen question, so
+            # ONE ungradable answer strands it: the model replies, last_bot_prompt
+            # becomes that reply, and from then on no caller turn can ever resolve
+            # the screen. It stays pending for the rest of the call.
+            #
+            # This used to fall straight through on the assumption that "the
+            # SCREEN REQUIRED steer forces it on the next model turn". It does
+            # not force WHEN. Measured over the stored JV corpus with
+            # scripts/replay_screening.py, a stranded screen is what produces the
+            # question surfacing at an arbitrary later moment — call
+            # CAb0ff51e012, where the caller had just chosen an appointment slot:
+            #
+            #   caller: "that that first one works great"
+            #   Susie : "Right, before we go any further — can I ask, do you have
+            #            any numbness around the saddle area between your legs..."
+            #
+            # That is alarming, it reads as random, and it is the model covering
+            # for a flag this layer left set. Ask it again HERE instead: once,
+            # deterministically, in the screen's own words, at the first turn
+            # after the window shut.
+            #
+            # Capped at once per screen. Beyond that the flag stays set and
+            # booking stays blocked (booking_blocked_reason), which is the safe
+            # direction — a caller who cannot be graded twice is not a caller to
+            # keep interrogating, but nor is it one to book in unscreened.
+            if screen:
+                _reasked = list(session.get(SCREEN_REASKS_KEY) or [])
+                # Prefer the bare question. Every screen_question carries its own
+                # preamble, which collides with the re-ask lead and produces
+                # "...before we go on. Before we look at the next step, can I
+                # ask —". Falls back to the full question when unconfigured.
+                q = (screen.get("screen_reask_question")
+                     or screen.get("screen_question") or "").strip()
+                if q and pending_id not in _reasked:
+                    _reasked.append(pending_id)
+                    session[SCREEN_REASKS_KEY] = _reasked
+                    lead = screen.get("screen_reask_lead")
+                    if lead is None:
+                        lead = _DEFAULT_SCREEN_REASK_LEAD
+                    lead = (lead or "").strip()
+                    logger.info(
+                        "[clinical_screening] screen %s STRANDED — answer window "
+                        "shut with the screen unresolved; re-asking once "
+                        "deterministically", pending_id,
+                    )
+                    return {
+                        "action": "ask_screen",
+                        "speak": (f"{lead} {q}".strip()) if lead else q,
+                    }
+            # One screen at a time: a new, different trigger does not upgrade
+            # while one is still outstanding.
             return {"action": "none", "speak": None}
 
         # No pending screen — does this utterance trigger one?
