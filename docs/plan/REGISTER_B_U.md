@@ -41,6 +41,96 @@ implying more confidence than exists.
 
 ---
 
+## `B-70` · a provisional booking that **never reached the diary** was texted to the owner as if it had — **FIXED `79a2ea0`, ported to `vitaledge-onboarding`**
+
+> ✅ `latency-eval` **`79a2ea0`** · `vitaledge-onboarding` **`b38789f`**.
+> Regression: `tests/regression/test_provisional_owner_text_marks_a_failed_write.py`.
+> **`U`-debt: never exercised on a call.** N/A on `theorem-onboarding` and
+> `jv_v2` — neither uses the provisional executor.
+
+**Found by auditing go-live readiness, not by dialling.** Vital Edge has no
+`owner_alerts` block, which is what sent me looking. That turned out to be the
+*wrong* finding and the right thread: VE does not need `owner_alerts`, because
+`_exec_book_appointment_provisional` already texts Jonathan on every booking
+through the **other** `notify_owner` — `app/notifications/owner_notify.py`,
+gated on `owner_notification_sms`, which VE does set. Adding an `owner_alerts`
+block would have double-texted him on every booking.
+
+> ⚠️ **There are two `notify_owner` functions and they gate on different config.**
+> `owner_notify.notify_owner(clinic, message)` reads `owner_notification_sms`.
+> `owner_alert.notify_owner(session, event=...)` reads the `owner_alerts` block
+> and fails closed without it. A clinic can be fully covered by one and have
+> nothing from the other. Check which module a path imports before concluding
+> anybody was told anything.
+
+**The actual defect.** The calendar write is wrapped in a try/except that logs
+and continues, and the entire `if tokens:` block is skipped when the Google
+token has expired — so `calendar_written` is False on two real paths, neither
+of which raises. `build_booking_request_message` had no notion of that flag.
+Jonathan's text was **byte-identical** whether the appointment reached his
+diary or not, on a clinic where he *is* the confirmation step. He would have
+gone looking for something that was never written.
+
+The other record — the Sheets row that spells out `calendar write FAILED` — is
+behind `SHEETS_ENABLED`, which defaults **false** on every live branch. On a
+service without that env var there was no signal at all.
+
+**Fix.** `calendar_written` is threaded into the builder; a failed write leads
+with `⚠️ … NOT IN YOUR CALENDAR` and *"please add this one manually"*, keeping
+the name/phone/time/duration, because a failure notice you cannot act on is no
+better than the text it replaces. The healthy wording and the default are
+unchanged.
+
+---
+
+## `B-71` · the emergency bypass had **nothing to ring** on two of three live clinics — **FIXED `5cba8b9` (VE) / `e67a631` (Theorem)**
+
+> ✅ `latency-eval` **`5cba8b9`** · `vitaledge-onboarding` **`6a902d3`** ·
+> `theorem-onboarding` **`e67a631`**. Regressions:
+> `tests/regression/test_every_live_clinic_has_a_bypass_target.py` and
+> `tests/regression/test_theorem_has_a_bypass_target.py`.
+> **`U`-debt: the toggle has never been exercised end-to-end on a live line.**
+> `jv_v2` already had its block — no change needed.
+
+`app/clinic_call_mode.py` (the "text OFF and your own phone rings first"
+toggle) is built, correct and shipped. But it only flips
+`call_overflow.enabled`, and the router drops the whole human-first branch when
+`dial_phone` is empty:
+
+```
+if _human_first and _dial_phone:      # app/media_streams/router.py
+```
+
+**Only `jv_v1` had a `call_overflow` block.** Theorem went live ~14 Aug with
+none, and Vital Edge was about to. Either practitioner could have texted OFF,
+been told their routing had changed — the toggle writes to Redis and confirms
+happily, since `set_mode` only refuses when Redis is *unavailable* — and had
+Susie keep answering every call. Both can already *send* the text:
+`twilio.py` accepts `transfer_phone` as a trusted sender. The only missing
+piece was somewhere to ring.
+
+This is Phase 5 item 3 of `PRODUCTION_READINESS_PLAN.md`, the single item that
+plan marks **"never cut"**.
+
+**Both blocks ship DISABLED.** Nothing about how a call routes today changes;
+this is the target put in place *before* the incident that needs it rather than
+during it.
+
+> ⚠️ **The two clinics take the block in different files.** Vital Edge's goes in
+> `app/clinics/vital_edge/clinic.json`. **Theorem's does not** — on
+> `theorem-onboarding` Theorem is a hardcoded `CLINICS` entry in
+> `clinic_config.py` and `app/clinics/theorem/clinic.json` never reaches Mark's
+> line. Worse, `theorem_v2`/`theorem_v3` are `deepcopy`s taken at import time
+> and the live number `+447380841468` is **`theorem_v3`** — a block added below
+> those copies passes a check against `theorem` and still leaves the live line
+> bare. The Theorem test pins both traps.
+
+**Not added:** the `greeting` key `jv_v1` carries. It has zero consumers — dead
+in every clinic — and inventing Theorem wording risks colliding with the
+Alcester/Redditch location ladder that owns its opening turn.
+
+---
+
 ## `B-62` · a caller was told **quarter past six**; the diary says **half past five** — **FIXED `2c3b7ad` on `latency-eval`. `U`-debt: not yet exercised on a call, not yet ported.**
 
 > ✅ `latency-eval` **`2c3b7ad`**. Regression:
