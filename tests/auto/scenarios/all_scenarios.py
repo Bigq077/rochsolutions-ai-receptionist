@@ -11,6 +11,7 @@ Each scenario dict:
                 and by rule-based checks in run_tests.py
 """
 
+from tests.auto.config import EXPECTED_CLINIC_NAME, FOREIGN_CLINIC_TERMS
 from tests.auto.scenarios.two_clinic_scenarios import TWO_CLINIC_SCENARIOS
 
 SCENARIOS = [
@@ -30,11 +31,9 @@ SCENARIOS = [
             "answered_within_seconds": 5,
             "greeting_contains": [
                 "susie",
-                "theorem health",
+                EXPECTED_CLINIC_NAME,
             ],
-            "greeting_not_contains": [
-                "alcester", "redditch", "say one", "say two",
-            ],
+            "greeting_not_contains": list(FOREIGN_CLINIC_TERMS),
         },
     },
 
@@ -44,11 +43,8 @@ SCENARIOS = [
         "name": "Greeting wording exact",
         "responses": [],
         "expected": {
-            "first_susie_turn_contains": "theorem health",
-            "first_susie_turn_not_contains": [
-                "alcester", "redditch",
-                "say one", "say two",
-            ],
+            "first_susie_turn_contains": EXPECTED_CLINIC_NAME,
+            "first_susie_turn_not_contains": list(FOREIGN_CLINIC_TERMS),
         },
     },
 

@@ -12,7 +12,29 @@ from pathlib import Path
 # +447426779875 → /ms/incoming (Media Streams WebSocket pipeline) — live Theorem number
 # +447367002651 → /twilio/voice (legacy pipeline)
 # +447366530580 → theorem_v2 test line (two-clinic guards active)
-SUSIE_NUMBER = "+447426779875"  # theorem (original single-clinic) — Phases 1–14 fallback
+# The dialled number is what selects the CLINIC: call_runner sends it as "to" in
+# the direct-WS start payload, and the service resolves its clinic from it. There
+# are no per-scenario `twilio_to` overrides left, so this one value decides which
+# clinic all 118 scenarios talk to.
+#
+# It used to be Theorem's live number. Against the demo service that resolved to
+# `vital_edge` — a LIVE clinic — which is exactly how a booking scenario could
+# reach a real practitioner's calendar. Default it to the demo line instead, and
+# make it env-overridable so a run can be pointed at another clinic deliberately
+# rather than by inheriting a stale constant.
+SUSIE_NUMBER = os.getenv("SUSIE_NUMBER", "+447366263180")  # demo line -> jv_v1
+
+# Clinic identity the greeting assertions check. Was hardcoded to "theorem
+# health" in two scenarios, which failed on every other clinic and looked like a
+# Susie bug rather than a pinned test.
+EXPECTED_CLINIC_NAME = os.getenv("EXPECTED_CLINIC_NAME", "joint venture")
+# Names that must NOT appear — another clinic's identity leaking into a greeting
+# is a real defect, so this stays an assertion, just not a Theorem-only one.
+FOREIGN_CLINIC_TERMS = [
+    t.strip() for t in os.getenv(
+        "FOREIGN_CLINIC_TERMS", "alcester,redditch,say one,say two",
+    ).split(",") if t.strip()
+]
 
 # Twilio credentials — read from environment
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
