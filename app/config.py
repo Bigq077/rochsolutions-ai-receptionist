@@ -32,6 +32,34 @@ TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
 # even if an attacker gains read access to the Redis keyspace.
 SESSION_SECRET = os.getenv("SESSION_SECRET", "")
 
+# --- Public origin of this service ---
+def public_base_url() -> str:
+    """Absolute https:// origin for this service, or "" if none can be resolved.
+
+    ONE resolver, because the callback URLs we ADVERTISE to Twilio and the URL
+    we RECONSTRUCT to check Twilio's signature must agree by construction. When
+    they disagree Twilio calls us and we refuse the call at the door.
+
+    That is not hypothetical. `/ms/incoming` resolved RENDER_EXTERNAL_URL first;
+    `/twilio/transfer-miss` resolved BASE_URL then x-forwarded-host. This
+    service advertises `low-latency-joint-venture.onrender.com` (its
+    RENDER_EXTERNAL_URL) but the forwarded host arrives as
+    `rochsolutions-ai-receptionist-1.onrender.com`. So on 22 Aug, call
+    CA3b018519, the missed-transfer callback finally fired — and was rejected
+    403 with "Twilio signature INVALID". The safety net went from never being
+    called to being called and refused.
+
+    Read at call time, not import time, so a monkeypatched env is honoured.
+    """
+    import os as _os
+    base = _os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+    if not base:
+        base = _os.getenv("BASE_URL", "").strip().rstrip("/")
+    if base and not base.startswith("http"):
+        base = f"https://{base}"
+    return base
+
+
 # --- Call transfer fallback ---
 # Dial target used when a clinic has no 'transfer_phone' configured.
 # Override via env var to avoid hardcoding a real UK number in source code.
