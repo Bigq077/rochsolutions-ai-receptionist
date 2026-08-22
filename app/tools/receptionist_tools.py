@@ -5338,6 +5338,15 @@ async def _check_availability_diary(
     duration_min = _resolve_duration_minutes(
         clinic, _raw_service, args, session, _slot_minutes
     )
+    # B-77, same question the generic grid asks: on a reschedule the
+    # appointment being moved sizes the grid, not the service the model
+    # named.  This reader builds its own candidates and so returns before
+    # _exec_check_availability's copy of this call ever runs — which is how
+    # a 90-minute session was grid-tested at 60 and written at 90, leaving
+    # its last half-hour never checked against the diary.
+    duration_min = _reschedule_duration_override(
+        session, duration_min, _raw_service
+    )
     # Same re-anchor as the gcal path: working_hours end was baked as
     # last_appointment + slot_minutes, so shift it to keep the LAST offered
     # start equal to last_appointment for any service length. New dict — never
