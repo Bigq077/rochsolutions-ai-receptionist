@@ -112,18 +112,32 @@ _PLAY_SECS_HEADROOM: float = 4.0
 # speed 1.0 and 47.9 s at the 0.8 phone speed; an assistant turn arriving as one
 # chunk (the longest in the corpus is 1277 chars) would be permitted 131.7 s.
 #
-# WHERE 28.0 COMES FROM.  Every assistant turn in the obs corpus (2858 turns,
+# WHERE 34.0 COMES FROM.  Every assistant turn in the obs corpus (2858 turns,
 # 340 calls) was replayed through the real ResponseChunker: 3088 chunks, median
-# 97 chars, p99 252, p99.9 314, max 351.  At the slowest healthy rate measured
-# on Theorem (18.6 c/s) plus the 2.60 s of filler that can ride the counter, the
-# worst real chunk takes 21.5 s at speed 1.0.  28.0 clears that by ~1.3x, and
-# scaling by 1/speed keeps that same margin at 0.8 (35.0 s vs 26.2 s) -- a flat
-# cap would collapse to ~1.07x on a phone read-back and start cutting off real
-# speech, which is the one outcome worse than the dead air this bounds.
+# 97 chars, p99 252, p99.9 314, max 351.  The slowest healthy rate measured on a
+# live call is 17.9 c/s (the 93-char greeting on CA59c015de, 22 Aug 20:21, in
+# 5.2 s), and up to 2.60 s of filler can ride the same counter.
 #
-# This is a tail-risk backstop, NOT a fix for caller-perceived dead air: it only
-# binds on chunks longer than ~240 chars (speed 1.0).  See item O's residual.
-_MAX_CHUNK_PLAY_SECS: float = 28.0
+# A FLAT CAP CUTS REAL SPEECH ABOVE A THRESHOLD, so the number is chosen by that
+# threshold and not by the corpus max.  A chunk is false-clamped once
+#     len > 17.9 * (_MAX_CHUNK_PLAY_SECS - 2.60 * speed)
+# which at 34.0 is 562 chars (speed 1.0) / 571 (0.8) / 576 (0.7) -- 1.6x the
+# longest chunk ever observed.  28.0 was the first choice and it put that
+# threshold at 455 chars, only 1.3x the corpus max: too close, because the
+# corpus replay covers only chunks built by ResponseChunker and the ~20 direct
+# `tts_text_queue.put(phrase)` sites bypass it entirely and were never measured.
+# Cutting a real chunk short fires the finish callback while Susie is still
+# speaking and re-prompts over her -- worse than the dead air this bounds -- so
+# the threshold gets the margin, not the cap.
+#
+# Scaled by 1/speed at the call site: a flat cap would leave only ~1.07x on a
+# phone read-back at 0.8, and scaling also keeps the false-clamp threshold
+# essentially speed-invariant (562/571/576) rather than sliding with the rate.
+#
+# This is a tail-risk backstop, NOT a fix for caller-perceived dead air.  It
+# binds only above ~300 chars (speed 1.0); the 1277-char turn-as-one-chunk in
+# the corpus goes from 131.7 s to 34 s.  See item O's residual.
+_MAX_CHUNK_PLAY_SECS: float = 34.0
 
 
 def _clamp_play_secs(play_secs: float, text: str) -> float:
