@@ -101,6 +101,29 @@ _MIN_SPEECH_CHARS_PER_SEC: float = 10.0
 # plus the 0.1s gap = 2.60s.  test_o_impossible_play_duration measures the
 # shipped clips and fails if a longer one is ever added to the pool.
 _PLAY_SECS_HEADROOM: float = 4.0
+# Absolute ceiling on a single chunk's play duration, at `speed` 1.0, applied
+# on top of the proportional bound above and scaled by 1/speed at the call site.
+#
+# WHY A SECOND BOUND.  The proportional bound's slack grows linearly with the
+# text: at 10 c/s against ~18.6 c/s of real speech it concedes ~0.046 s per
+# character, so a long chunk buys a long stranding.  It is loosest exactly where
+# it should be tightest -- the slot presentation is both the longest chunk and
+# the turn the whole call turns on.  A 351-char chunk is permitted 39.1 s at
+# speed 1.0 and 47.9 s at the 0.8 phone speed; an assistant turn arriving as one
+# chunk (the longest in the corpus is 1277 chars) would be permitted 131.7 s.
+#
+# WHERE 28.0 COMES FROM.  Every assistant turn in the obs corpus (2858 turns,
+# 340 calls) was replayed through the real ResponseChunker: 3088 chunks, median
+# 97 chars, p99 252, p99.9 314, max 351.  At the slowest healthy rate measured
+# on Theorem (18.6 c/s) plus the 2.60 s of filler that can ride the counter, the
+# worst real chunk takes 21.5 s at speed 1.0.  28.0 clears that by ~1.3x, and
+# scaling by 1/speed keeps that same margin at 0.8 (35.0 s vs 26.2 s) -- a flat
+# cap would collapse to ~1.07x on a phone read-back and start cutting off real
+# speech, which is the one outcome worse than the dead air this bounds.
+#
+# This is a tail-risk backstop, NOT a fix for caller-perceived dead air: it only
+# binds on chunks longer than ~240 chars (speed 1.0).  See item O's residual.
+_MAX_CHUNK_PLAY_SECS: float = 28.0
 
 
 def _clamp_play_secs(play_secs: float, text: str) -> float:
@@ -152,7 +175,14 @@ def _clamp_play_secs(play_secs: float, text: str) -> float:
         spoken = text
         speed = min(ELEVENLABS_SPEED, ELEVENLABS_PHONE_SPEED)
 
-    max_plausible = len(spoken) / (_MIN_SPEECH_CHARS_PER_SEC * speed) + _PLAY_SECS_HEADROOM
+    # Two bounds, whichever is tighter.  The proportional one catches a corrupt
+    # count on a chunk of ordinary length; the absolute one stops a long chunk
+    # from buying a proportionally long stranding.  Both are speed-scaled, so
+    # neither tightens when the voice is deliberately slowed.
+    max_plausible = min(
+        len(spoken) / (_MIN_SPEECH_CHARS_PER_SEC * speed) + _PLAY_SECS_HEADROOM,
+        _MAX_CHUNK_PLAY_SECS / speed,
+    )
     if play_secs <= max_plausible:
         return play_secs
     logger.error(
