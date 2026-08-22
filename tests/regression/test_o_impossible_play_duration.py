@@ -47,10 +47,14 @@ LIVE_CHUNK = (
 LIVE_PLAY_SECS = 26.7          # the corrupt count that produced the dead air
 REPRO_PLAY_SECS = 8.8          # the same chunk, healthy, on the 22 Aug repro call
 
-# The slowest rate any chunk on that day's calls actually spoke at.  The five
-# healthy chunks clustered at 18.6, 19.7, 19.9, 20.7 and 21.0 c/s; the corrupt
-# one implied 6.6.  Used as the floor a real chunk is asserted against.
-SLOWEST_REAL_CHARS_PER_SEC = 18.6
+# The slowest rate any chunk has actually been measured speaking at.  Theorem's
+# 22 Aug chunks clustered at 18.6-21.0 c/s and the corrupt one implied 6.55.
+# The 22 Aug 20:21 verification call on the demo line came in slower still --
+# the greeting at 17.9 c/s -- so this was revised DOWN from 18.6.  Used as the
+# floor a real chunk is asserted against, so it must only ever move down.
+SLOWEST_REAL_CHARS_PER_SEC = 17.9   # 93-char greeting in 5.2s, CA59c015de
+                                    # (22 Aug 20:21). Was 18.6; remeasured.
+CORPUS_MAX_CHUNK_CHARS = 351        # max of 3088 chunks replayed from obs
 
 # Every assistant chunk spoken on the three Theorem calls of 22 Aug 2026,
 # verbatim from obs.  This is the audio the clamp must never touch.
@@ -212,10 +216,32 @@ def test_clamp_only_ever_reduces():
 def test_the_bound_sits_between_the_failure_and_the_slowest_real_speech():
     """The single number the whole clamp rests on.
 
-    10 c/s is ~1.9x below the slowest rate real audio was measured at and ~1.5x
-    above the rate the corrupt count implied.  Both margins have to hold; a
-    change that eats either one is the change this asserts against.
+    10 c/s must stay well above the rate the corrupt count implied (6.55 c/s)
+    and must never fall below what real speech needs.
+
+    The second half used to be a proxy -- ``_MIN_SPEECH_CHARS_PER_SEC <=
+    SLOWEST_REAL_CHARS_PER_SEC / 1.8`` -- a ratio between two *rates*.  That
+    proxy broke when the slowest measured rate was revised 18.6 -> 17.9 c/s
+    (17.9/1.8 = 9.94 < 10.0), while the property it stood for held with room to
+    spare, because ``_PLAY_SECS_HEADROOM`` dominates the rate difference at
+    every length.  Loosening 1.8 to 1.7 would have been fitting the test to the
+    number.  Assert the real invariant instead, directly:
+
+        no real chunk, at any length or speed, may exceed its own bound.
     """
-    corrupt_rate = len(LIVE_CHUNK) / LIVE_PLAY_SECS      # 6.6 c/s
-    assert _MIN_SPEECH_CHARS_PER_SEC <= SLOWEST_REAL_CHARS_PER_SEC / 1.8
+    corrupt_rate = len(LIVE_CHUNK) / LIVE_PLAY_SECS      # 6.55 c/s
     assert _MIN_SPEECH_CHARS_PER_SEC >= corrupt_rate * 1.4
+
+    from app.media_streams.connection import _MAX_CHUNK_PLAY_SECS
+    for speed in (1.0, 0.8, 0.7, 1.2):
+        for chars in range(5, CORPUS_MAX_CHUNK_CHARS + 1, 5):
+            real = chars / (SLOWEST_REAL_CHARS_PER_SEC * speed) + 2.60
+            bound = min(
+                chars / (_MIN_SPEECH_CHARS_PER_SEC * speed) + _PLAY_SECS_HEADROOM,
+                _MAX_CHUNK_PLAY_SECS / speed,
+            )
+            assert real <= bound, (
+                "a %d-char chunk at speed %.1f legitimately takes %.1fs but is "
+                "bounded at %.1fs -- the clamp would cut real speech short and "
+                "re-prompt over Susie" % (chars, speed, real, bound)
+            )

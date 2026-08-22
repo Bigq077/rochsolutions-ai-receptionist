@@ -50,7 +50,10 @@ from app.media_streams.connection import (
 # --- measured, not assumed -------------------------------------------------
 CORPUS_MAX_CHUNK_CHARS = 351     # max of 3088 chunks replayed from 2858 turns
 CORPUS_P999_CHUNK_CHARS = 314
-SLOWEST_REAL_CHARS_PER_SEC = 18.6   # slowest healthy chunk, Theorem 22 Aug
+SLOWEST_REAL_CHARS_PER_SEC = 17.9   # 93-char greeting in 5.2s, CA59c015de
+                                    # (22 Aug 20:21). Was 18.6; remeasured on
+                                    # the verification call and revised DOWN,
+                                    # which is why the cap moved 28.0 -> 34.0.
 FILLER_HEADROOM_SECS = 2.60         # both clips + the 0.1 s breath gap
 
 
