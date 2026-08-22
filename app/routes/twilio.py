@@ -45,8 +45,16 @@ async def _verify_twilio_signature(request: Request) -> None:
 
     # Build the canonical URL Twilio used when signing this request.
     # On Render the app is behind an HTTPS load balancer; the raw request
-    # arrives as HTTP internally, so we must trust the forwarded headers.
-    base = os.getenv("BASE_URL", "").rstrip("/")
+    # arrives as HTTP internally, so the forwarded headers are the last
+    # resort rather than the first choice.
+    #
+    # This MUST resolve the same origin app.routes.realtime advertises in the
+    # <Dial> action URL, or Twilio signs one host and we check another. Until
+    # 22 Aug this read BASE_URL then x-forwarded-host while the callback was
+    # advertised at RENDER_EXTERNAL_URL, and call CA3b018519's missed-transfer
+    # callback was refused 403 — the net fired and we shut the door on it.
+    from app.config import public_base_url
+    base = public_base_url()
     if base:
         path = request.url.path
         query = request.url.query
