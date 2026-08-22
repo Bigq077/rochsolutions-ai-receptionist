@@ -4733,6 +4733,66 @@ def _reschedule_busy_block(session: Dict[str, Any]):
     return (_start, _start + timedelta(minutes=_dur))
 
 
+
+def _reschedule_duration_override(
+    session: Dict[str, Any], duration_min: int, raw_service: str
+) -> int:
+    """The duration an availability grid must use, given a reschedule in flight.
+
+    Returns `duration_min` unchanged unless the caller is moving an existing
+    appointment, in which case the appointment's own length wins.
+
+    JV CAac066043 (21 Aug). A 60-minute Sports Massage was being moved. The
+    model called check_availability with service="msk_initial_assessment", so
+    the grid was built at 40 minutes and offered 17:15;
+    _exec_reschedule_appointment then wrote the appointment's TRUE 60 minutes
+    and the diary got 17:15-18:15. Two things were wrong at once:
+
+      * generate_candidate_slots emits (start, start+duration) and
+        filter_free_slots overlap-tests THAT. Only [17:15,17:55) was ever
+        checked against the calendar - the last 20 minutes of the event that
+        actually got written was never collision-tested.
+      * the stride is (duration + break), so at 40+5 the grid steps 45 min.
+        At the true 60+5 it steps 65, and 17:15 is not an offered start at all.
+
+    The model's `service` argument cannot be trusted to name the service the
+    caller already has - it is a free choice from the catalogue, and the
+    appointment itself is the authority. So on a reschedule the appointment
+    wins. Fixing the OFFER is sufficient: _resolve_slot_iso refuses any ISO
+    that matches no offered slot once availability has run this call, so the
+    write can only land on a slot that function produced.
+
+    Gated on _lookup_purpose == "reschedule", which _exec_lookup_patient sets
+    and _note_write_result clears on ANY successful write - so a caller who
+    books something NEW after their move is sized by the service again.
+
+    A FUNCTION, not an inline block, because there is more than one grid.
+    _exec_check_availability owns the generic Google path, but a clinic can
+    return earlier into a reader of its own - vital_edge's
+    _check_availability_diary subtracts the practitioner's diary from a working
+    envelope and builds its own candidates. The override lived inline in the
+    generic path and was therefore downstream of that return, so vital_edge
+    grid-tested 60 minutes and wrote 90: 45 overrunning offers in a single
+    day whenever a diary entry starts 5-25 minutes past the hour. Every grid
+    must ask this question, so every grid calls this.
+    """
+    resched_dur = session.get(LOOKUP_DURATION_KEY)
+    if (
+        session.get(LOOKUP_PURPOSE_KEY) == "reschedule"
+        and isinstance(resched_dur, int)
+        and 0 < resched_dur <= 8 * 60
+        and resched_dur != duration_min
+    ):
+        logger.info(
+            "[ms_tools] check_availability: RESCHEDULE - sizing the grid by the "
+            "appointment being moved (%d min), not by service=%r (%d min). "
+            "B-77: the slots offered must be able to hold what will be written.",
+            resched_dur, raw_service, duration_min,
+        )
+        return resched_dur
+    return duration_min
+
+
 async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     # ── PROMPT L hard gate: reject any service name other than the valid set ──
     # This fires BEFORE any Acuity or Google Calendar request so invalid
@@ -4900,45 +4960,11 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     duration_min = _resolve_duration_minutes(
         clinic, _raw_service, args, session, _slot_minutes
     )
-    # ── B-77: a RESCHEDULE is sized by the appointment being moved ──────────
-    #
-    # JV CAac066043 (21 Aug). A 60-minute Sports Massage was being moved. The
-    # model called check_availability with service="msk_initial_assessment", so
-    # the grid was built at 40 minutes and offered 17:15;
-    # _exec_reschedule_appointment then wrote the appointment's TRUE 60 minutes
-    # and the diary got 17:15-18:15. Two things were wrong at once:
-    #
-    #   * generate_candidate_slots emits (start, start+duration) and
-    #     filter_free_slots overlap-tests THAT. Only [17:15,17:55) was ever
-    #     checked against the calendar - the last 20 minutes of the event that
-    #     actually got written was never collision-tested.
-    #   * the stride is (duration + break), so at 40+5 the grid steps 45 min.
-    #     At the true 60+5 it steps 65, and 17:15 is not an offered start at all.
-    #
-    # The model's `service` argument cannot be trusted to name the service the
-    # caller already has - it is a free choice from the catalogue, and the
-    # appointment itself is the authority. So on a reschedule the appointment
-    # wins. Fixing the OFFER is sufficient: _resolve_slot_iso refuses any ISO
-    # that matches no offered slot once availability has run this call, so the
-    # write can only land on a slot this function produced.
-    #
-    # Gated on _lookup_purpose == "reschedule", which _exec_lookup_patient sets
-    # and _note_write_result clears on ANY successful write - so a caller who
-    # books something NEW after their move is sized by the service again.
-    _resched_dur = session.get(LOOKUP_DURATION_KEY)
-    if (
-        session.get(LOOKUP_PURPOSE_KEY) == "reschedule"
-        and isinstance(_resched_dur, int)
-        and 0 < _resched_dur <= 8 * 60
-        and _resched_dur != duration_min
-    ):
-        logger.info(
-            "[ms_tools] check_availability: RESCHEDULE - sizing the grid by the "
-            "appointment being moved (%d min), not by service=%r (%d min). "
-            "B-77: the slots offered must be able to hold what will be written.",
-            _resched_dur, _raw_service, duration_min,
-        )
-        duration_min = _resched_dur
+    # B-77: a RESCHEDULE is sized by the appointment being moved, not by
+    # the service the model named. See _reschedule_duration_override().
+    duration_min = _reschedule_duration_override(
+        session, duration_min, _raw_service
+    )
     # Re-anchor each day's closing bound to the service length. working_hours end
     # was baked as last_appointment + slot_minutes (config default 40). Shift it by
     # (duration_min - slot_minutes) so the LAST offered start equals last_appointment
