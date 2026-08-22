@@ -127,7 +127,17 @@ UNCHANGED_CLINIC_PROMPTS = {
     # vital_edge is THIS branch's live clinic, so its prompt moving is the
     # point of the port, not a side effect. demo, theorem and theorem_v3 all
     # held - the FlowEngine clinics render neither block.
-    "jv_v1": "63eb3b1a2899513b",
+    # Re-pinned 2026-08-22. The identity block gained two rules after a routing
+    # request was answered badly in both directions: theorem CA82ec06 opened
+    # "No -" at a caller asking to be put through; jv CA9ca88398 said "I'm the
+    # receptionist here" with the AI word missing. Both template clinics render
+    # the shared block, so jv_v1 and vital_edge move together.
+    #
+    # CONTAINMENT, which is what this table is for: demo, theorem and theorem_v3
+    # are byte-identical across the change. Hashes are recomputed per branch —
+    # the prompts either side of the addition differ between branches, so these
+    # values are NOT the ones on latency-eval. The ADDITION is identical.
+    "jv_v1": "9ccb76e27abf833b",
     "theorem": "8565be9a48a7a9aa",
     "theorem_v3": "761036c8d0da91ed",
 }
