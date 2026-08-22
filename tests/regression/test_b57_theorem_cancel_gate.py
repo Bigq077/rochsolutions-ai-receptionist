@@ -323,7 +323,17 @@ UNMOVED_PROMPTS = {
     # everyone says no to these"). classify_screen_answer grades a negative
     # lead as `clear`, so priming manufactures false clears — see
     # tests/regression/test_a_screen_question_is_framed_as_routine.py.
-    "jv_v1": "11fc9c7fcab478d9",
+    # Re-pinned 2026-08-22. The identity block gained two rules after a routing
+    # request was answered badly in both directions: theorem CA82ec06 opened
+    # "No -" at a caller asking to be put through; jv CA9ca88398 said "I'm the
+    # receptionist here" with the AI word missing. Both template clinics render
+    # the shared block, so jv_v1 and vital_edge move together.
+    #
+    # CONTAINMENT, which is what this table is for: demo, theorem and theorem_v3
+    # are byte-identical across the change. Hashes are recomputed per branch —
+    # the prompts either side of the addition differ between branches, so these
+    # values are NOT the ones on latency-eval. The ADDITION is identical.
+    "jv_v1": "c014354f45eb2c25",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -353,7 +363,7 @@ UNMOVED_PROMPTS = {
     # susie_system_prompt.py. demo and theorem are byte-identical either
     # side — that containment is what proves the port stayed in the
     # callback path. Recomputed with THIS file's own _sha.
-    "vital_edge": "10bd9f5d9cb71e45",
+    "vital_edge": "a3197525e9e03f95",
 }
 
 
