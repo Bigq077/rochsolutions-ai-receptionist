@@ -472,12 +472,8 @@ def _public_base_url() -> str:
     manual dashboard variable, absent from render.yaml, and is NOT set
     everywhere.
     """
-    base = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
-    if not base:
-        base = os.getenv("BASE_URL", "").strip().rstrip("/")
-    if base and not base.startswith("http"):
-        base = f"https://{base}"
-    return base
+    from app.config import public_base_url
+    return public_base_url()
 
 
 async def _handle_transfer(call_sid: str, session: Dict[str, Any]) -> None:
