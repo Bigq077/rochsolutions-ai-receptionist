@@ -456,8 +456,27 @@ def resolve_transfer_target(session: Dict[str, Any]) -> Optional[str]:
     except Exception:
         clinic = {}
 
-    target = (clinic.get("transfer_phone") or _cfg.TRANSFER_FALLBACK_NUMBER or "").strip()
-    return target or None
+    clinic_target = (clinic.get("transfer_phone") or "").strip()
+    if clinic_target:
+        return clinic_target
+
+    # No clinic number: the catch-all answers. TRANSFER_FALLBACK_NUMBER is a
+    # HARDCODED default in app/config.py, not something set per service, so this
+    # quietly sends a patient to whoever that is — including for a clinic whose
+    # config merely forgot the key, and for any Twilio number missing from
+    # TWILIO_TO_CLINIC (an unmapped number falls back to the "demo" clinic,
+    # which carries no transfer_phone at all). Say so: a misrouted transfer
+    # otherwise looks exactly like a correct one.
+    fallback = (_cfg.TRANSFER_FALLBACK_NUMBER or "").strip()
+    if fallback:
+        logger.warning(
+            "[realtime] transfer target is the FALLBACK, not the clinic's own "
+            "number — clinic_id=%r has no transfer_phone, so this caller is "
+            "being sent to ***%s. Check TWILIO_TO_CLINIC and the clinic config.",
+            session.get("clinic_id"), fallback[-4:],
+        )
+        return fallback
+    return None
 
 
 def _public_base_url() -> str:
