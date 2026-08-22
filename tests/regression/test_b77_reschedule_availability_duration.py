@@ -295,16 +295,52 @@ def test_the_lookup_stores_the_duration_and_never_a_stale_one():
 # ══════════════════════════════════════════════════════════════════════════
 # 5 — the other two clinics reach none of this
 # ══════════════════════════════════════════════════════════════════════════
-def test_acuity_and_provisional_return_before_the_grid():
-    """Theorem goes to Acuity (which validates server-side) and Vital Edge to the
-    published-slot reader. Both return before generate_candidate_slots, so this
-    change cannot reach them."""
+def test_the_acuity_branch_still_returns_before_the_grid():
+    """Theorem goes to Acuity, which validates availability server-side against
+    the appointment type's real length. It returns before generate_candidate_slots,
+    so none of this reaches it."""
     src = inspect.getsource(rt._exec_check_availability)
     i_acuity = src.index("_filter_same_day_slots(_acuity_result, session)")
-    i_prov = src.index("_check_availability_published(")
-    # Anchor on the B-77 block itself rather than a neighbouring line:
-    # how `duration_min` is first computed differs between branches.
-    i_dur = src.index("_resched_dur = session.get(LOOKUP_DURATION_KEY)")
     i_grid = src.index("generate_candidate_slots(")
-    assert i_acuity < i_dur < i_grid, "the Acuity branch no longer returns early"
-    assert i_prov < i_dur < i_grid, "the provisional branch no longer returns early"
+    assert i_acuity < i_grid, "the Acuity branch no longer returns early"
+
+
+def test_every_grid_asks_the_override_not_just_the_generic_one():
+    """THE invariant, and the one this test file previously got wrong.
+
+    It used to assert that Vital Edge "returns before generate_candidate_slots,
+    so this change cannot reach them". That was true of the PUBLISHED reader and
+    false of the DIARY reader that replaced it: _check_availability_diary
+    subtracts the practitioner's diary from a working envelope and builds its own
+    candidates. The override was inline in _exec_check_availability, downstream
+    of the early return, so vital_edge grid-tested 60 minutes and wrote 90 — 45
+    overrunning offers in one day whenever a diary entry starts 5-25 minutes past
+    the hour.
+
+    A clinic-by-clinic claim about who reaches the grid is exactly the thing that
+    silently went stale. Assert the structural property instead: anything that
+    builds a candidate grid must size it by the appointment on a reschedule. A
+    new reader for the next clinic then fails here rather than in someone's diary.
+    """
+    import inspect as _i
+
+    offenders = []
+    for name, fn in vars(rt).items():
+        if not callable(fn) or not hasattr(fn, "__code__"):
+            continue
+        if getattr(fn, "__module__", None) != rt.__name__:
+            continue
+        try:
+            src = _i.getsource(fn)
+        except (OSError, TypeError):
+            continue
+        if "generate_candidate_slots(" not in src:
+            continue
+        if "_reschedule_duration_override(" not in src:
+            offenders.append(name)
+
+    assert not offenders, (
+        "these build an availability grid without sizing it by the appointment "
+        "being moved — a reschedule there can be offered a slot too short for "
+        "what will be written: " + ", ".join(sorted(offenders))
+    )
