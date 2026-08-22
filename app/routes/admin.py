@@ -71,6 +71,14 @@ async def get_test_session(call_sid: str):
                 "_last_ordinal_detected":    session.get("_last_ordinal_detected"),
                 "_last_assistant_response":  session.get("_last_assistant_response"),
                 "selected_location":    session.get("selected_location"),
+                # Advances with every audio frame sent to Twilio, so when it
+                # STOPS advancing Susie has finished speaking. The call-test
+                # harness polls it to know when the caller may reply: without it
+                # the harness slept a flat 25s per turn, Susie answered in 3-6s,
+                # and her own silence watchdog fired at 10s - so every scenario
+                # turn earned a "Sorry, I didn't quite catch that" re-ask no
+                # caller had prompted. Debug endpoint only; unused in production.
+                "last_audio_sent_at":   session.get("last_audio_sent_at"),
             }
 
         # Try legacy session
@@ -108,6 +116,14 @@ async def get_test_session(call_sid: str):
                 "_last_ordinal_detected":    session.get("_last_ordinal_detected"),
                 "_last_assistant_response":  session.get("_last_assistant_response"),
                 "selected_location":    session.get("selected_location"),
+                # Advances with every audio frame sent to Twilio, so when it
+                # STOPS advancing Susie has finished speaking. The call-test
+                # harness polls it to know when the caller may reply: without it
+                # the harness slept a flat 25s per turn, Susie answered in 3-6s,
+                # and her own silence watchdog fired at 10s - so every scenario
+                # turn earned a "Sorry, I didn't quite catch that" re-ask no
+                # caller had prompted. Debug endpoint only; unused in production.
+                "last_audio_sent_at":   session.get("last_audio_sent_at"),
             }
 
         return {"ok": False, "error": f"No session found for {call_sid}"}

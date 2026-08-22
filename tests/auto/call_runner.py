@@ -394,11 +394,25 @@ class CallRunner:
                             # injection lands at ~75 s (after W2, before W3 at ~79 s).
                             consecutive_silence += 1
                             wait = 45 if consecutive_silence == 1 else 15
-                        logger.info(
-                            "[%s] Waiting %ds for Susie's response to turn %d",
-                            self.scenario["id"], wait, i,
-                        )
-                        await asyncio.sleep(wait)
+                        if was_injected and text.strip():
+                            # Adaptive: reply as soon as Susie stops speaking.
+                            waited = await self._wait_until_susie_finishes(
+                                fake_call_sid, ceiling=wait,
+                            )
+                            logger.info(
+                                "[%s] Susie finished in %.1fs (ceiling %ds) — "
+                                "replying to turn %d",
+                                self.scenario["id"], waited, wait, i,
+                            )
+                        else:
+                            # Deliberate silence, or garbage that never reached
+                            # Susie: these waits are TUNED to let a specific
+                            # watchdog window fire, so they stay flat.
+                            logger.info(
+                                "[%s] Waiting %ds (watchdog window) for turn %d",
+                                self.scenario["id"], wait, i,
+                            )
+                            await asyncio.sleep(wait)
 
                         # ── PER-TURN TRACE ──────────────────────────────────────────────────
                         _snap_before   = (self._last_inject_diag or {}).get("session", {})
@@ -776,6 +790,75 @@ class CallRunner:
                 )
                 break  # non-connection errors — don't retry
         return True  # injected normally (or errored — caller proceeds with normal wait)
+
+    async def _wait_until_susie_finishes(
+        self, call_sid: str, *, ceiling: int,
+    ) -> float:
+        """Block until Susie has answered AND stopped speaking. Returns seconds waited.
+
+        Replaces a flat 25s sleep after every injected turn. Susie answers in
+        3-6s and her own silence watchdog fires at 10s, so the flat sleep earned
+        a "Sorry, I didn't quite catch that" re-ask on EVERY turn of EVERY
+        scenario — polluting the transcript, desynchronising the scripted
+        responses against the questions they were written for, and running the
+        script out before the booking completed. The suite was measuring Susie
+        being interrupted by her own watchdog, not Susie.
+
+        Two conditions, in order:
+
+          1. ``conversation_history`` grows — Susie's turn was generated.
+          2. ``last_audio_sent_at`` stops advancing for SETTLE seconds — she has
+             stopped SPEAKING. Generation finishing is not enough: TTS plays on
+             for several seconds afterwards, and injecting then is a barge-in,
+             which is a different test from the one the scenario is asking.
+
+        ``ceiling`` is the old flat wait, kept as the upper bound so a turn that
+        never produces audio degrades to exactly today's behaviour rather than
+        hanging.
+        """
+        SETTLE = 1.2
+        POLL = 0.5
+        started = time.monotonic()
+        deadline = started + ceiling
+
+        snap0 = await self._fetch_session_snapshot(call_sid)
+        hist0 = len(snap0.get("conversation_history") or [])
+
+        replied = False
+        last_audio = snap0.get("last_audio_sent_at")
+        # A server that predates the last_audio_sent_at field returns None
+        # forever. Treating "never changes" as "finished speaking" there would
+        # inject 1.2s after generation and barge in on every single turn — worse
+        # than the flat sleep this replaces. So the signal has to be SEEN at
+        # least once before it is trusted; otherwise fall through to the ceiling
+        # and behave exactly as before.
+        saw_audio_signal = last_audio is not None
+        quiet_since = None
+
+        while time.monotonic() < deadline:
+            await asyncio.sleep(POLL)
+            snap = await self._fetch_session_snapshot(call_sid)
+            if not snap:
+                continue
+
+            if not replied:
+                if len(snap.get("conversation_history") or []) > hist0:
+                    replied = True
+
+            audio = snap.get("last_audio_sent_at")
+            if audio is not None:
+                saw_audio_signal = True
+            if audio != last_audio:
+                last_audio, quiet_since = audio, None
+                continue
+            if not saw_audio_signal:
+                continue          # no signal on this server — ride the ceiling
+            if quiet_since is None:
+                quiet_since = time.monotonic()
+            elif replied and (time.monotonic() - quiet_since) >= SETTLE:
+                break
+
+        return time.monotonic() - started
 
     async def _fetch_session_snapshot(self, call_sid: str) -> dict:
         """Fetch current session fields from admin endpoint for per-turn tracing.
