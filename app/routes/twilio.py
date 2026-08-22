@@ -1137,7 +1137,15 @@ async def transfer_miss(request: Request):
             if _caller_name:
                 _lines.append(f"Name: {_caller_name}")
             await send_sms(to=_transfer_phone, message="\n".join(_lines))
-            logger.info("transfer-miss: clinic notified at %s", _transfer_phone)
+            # "requested", not "notified": send_sms may divert this (see
+            # redirect_staff_sms) and the diversion is invisible from here. The
+            # [sms] line for this call names the number actually dialled — that
+            # is the delivery record; this one is only the intent.
+            logger.info(
+                "transfer-miss: clinic notify requested for %s "
+                "(the [sms] line for this call names the destination used)",
+                _transfer_phone,
+            )
     except Exception as e:
         logger.warning("transfer-miss SMS failed (non-fatal): %r", e)
 
