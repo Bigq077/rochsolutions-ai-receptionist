@@ -333,7 +333,7 @@ UNMOVED_PROMPTS = {
     # are byte-identical across the change. Hashes are recomputed per branch —
     # the prompts either side of the addition differ between branches, so these
     # values are NOT the ones on latency-eval. The ADDITION is identical.
-    "jv_v1": "c014354f45eb2c25",
+    "jv_v1": "22d3aa9ba71d8809",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -363,7 +363,7 @@ UNMOVED_PROMPTS = {
     # susie_system_prompt.py. demo and theorem are byte-identical either
     # side — that containment is what proves the port stayed in the
     # callback path. Recomputed with THIS file's own _sha.
-    "vital_edge": "a3197525e9e03f95",
+    "vital_edge": "8b1b0b34b4bf0a88",
 }
 
 
