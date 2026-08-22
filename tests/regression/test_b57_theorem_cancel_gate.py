@@ -321,7 +321,19 @@ UNMOVED_PROMPTS = {
     # NB the b55 table is NOT re-pinned here: its four rows were already
     # red before this port and each move needs attributing to a commit
     # first. Fixing them silently would shrink the failing set.
-    "theorem_v3": "1d5ae042b4a29854",
+    # Moved 2026-08-22, deliberately: 1d5ae042b4a29854 -> a93953888fa2eda6.
+    # theorem_v3 gained ASKED FOR RECEPTION / A PERSON and NAMING YOUR OWN
+    # ROLE in its identity block. CA82ec06 (21 Aug, Mark's line) answered
+    # "can i speak to somebody in the reception please" with the AI DISCLOSURE
+    # sentence verbatim, opening "No -", which reads as a refusal of the
+    # transfer just requested. Theorem needs its own copy because theorem_v3
+    # is a hardcoded prompt, not the shared template.
+    #
+    # CONTAINMENT, which is what this table is for: demo, theorem, jv_v1 and
+    # vital_edge are all byte-identical across the change — the template
+    # clinics already carry their own copy of both rules and must not gain a
+    # second one from here.
+    "theorem_v3": "a93953888fa2eda6",
     # Re-pinned 2026-08-17: ported the ring-back fixes (34becd6, 3938720),
     # which touch clinic_template_prompt.py and susie_system_prompt.py.
     # demo and theorem hold either side — the containment proof.

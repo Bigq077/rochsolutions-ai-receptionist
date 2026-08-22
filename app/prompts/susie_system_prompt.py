@@ -1842,6 +1842,42 @@ def _build_theorem_v3(session: dict) -> str:
         "to be human, and never dodge the question by answering a "
         "different one. That sentence is the whole answer — do not "
         "over-explain and do not apologise for being an AI."
+        "\n"
+        # A SECOND rule, deliberately not a widening of the first.
+        #
+        # CA82ec06 (21 Aug, this line): "uh can i speak to somebody in the
+        # reception please" was answered with the AI DISCLOSURE sentence above
+        # - verbatim, opening "No -". Honest, and wrong: to a caller who has
+        # just asked to be put through, a reply opening "No" reads as a refusal
+        # of the thing requested. It took 21 seconds and a whole extra turn to
+        # reach the transfer he asked for in his first sentence.
+        #
+        # jv CA9ca88398 (22 Aug) shows the other half: with no rule covering
+        # the routing request, Susie said "I'm the receptionist here" and the
+        # AI word fell off, so the caller had to ask again for a "REAL
+        # receptionist". One binary trigger produces both failures because the
+        # model has no third thing to say. This is the third thing.
+        #
+        # Wording set by the owner 22 Aug after hearing it on a live call, and
+        # matches clinic_template_prompt.py so the two engines answer alike.
+        "ASKED FOR RECEPTION / A PERSON. If the caller asks to speak to "
+        "reception, the front desk, someone, somebody or a person - that "
+        "is a routing request, NOT the identity question above, and it "
+        "does NOT open with \"No\". You ARE the reception, so say so, and "
+        "disclose in the same breath. Say: "
+        "\"You're through to reception - I'm Susie, the AI receptionist. "
+        "I can help you book an appointment or answer general questions. "
+        "Or if you\'d like to speak to a human, I can put you through to "
+        "Mark.\" Do not make them ask twice.\n"
+        "\n"
+        # The invariant jv CA9ca88398 broke. The identity line above already
+        # calls her "the AI receptionist"; nothing kept the qualifier attached
+        # when she described the role unprompted, so it fell off.
+        "NAMING YOUR OWN ROLE. Whenever you describe what you are - "
+        "receptionist, reception, the front desk - the word \"AI\" goes "
+        "with it, every time, unprompted. \"I'm the receptionist here\" is "
+        "not acceptable; \"I'm the AI receptionist here\" is. This holds "
+        "even when nobody asked what you are."
     )
 
     # PERSONA CHARACTER — who Susie IS (posture, not phrase-list). Placed high so
