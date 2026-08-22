@@ -61,6 +61,7 @@ from app.media_streams.connection import (
     SilenceHandler,
     WebSocketCallHandler,
     _clamp_play_secs,
+    _MAX_CHUNK_PLAY_SECS,
 )
 
 # The real chunk from CA268397d4, recovered from obs -- 175 characters, three
@@ -378,17 +379,21 @@ def test_the_clamped_ceiling_is_recorded_not_assumed():
     assert ceiling - (len(LIVE_CHUNK) / 19.5) > 5.0
 
 
-def test_the_bound_is_proportional_so_long_chunks_get_the_loosest_ceiling():
-    """Recorded because it is backwards, and non-obvious.
+def test_long_chunks_no_longer_buy_a_proportional_stranding():
+    """This test used to record the *absence* of a cap; the cap now exists.
 
-    max_plausible scales with len(text), so the slot presentation -- the longest
-    chunk and the turn the whole call turns on -- is granted the largest
-    permissible dead air.  There is no absolute cap anywhere in the path.
+    The earlier version asserted ``long_ > 30.0`` and carried the note "if an
+    absolute cap has been added, this test should be replaced by one that pins
+    the cap".  It has been, so this is that replacement -- kept here (rather
+    than only in ``test_o_absolute_play_cap.py``) so the recovery story reads
+    end to end.
+
+    Still proportional below the cap, bounded above it.
     """
     short = _clamp_play_secs(999.0, "Okay.")
     long_ = _clamp_play_secs(999.0, "x" * 298)     # a real slot-buffer chunk
-    assert long_ > short
-    assert long_ > 30.0, (
-        "if an absolute cap has been added, this test should be replaced by "
-        "one that pins the cap"
+    assert long_ > short, "the bound must still grow with the text"
+    assert long_ <= _MAX_CHUNK_PLAY_SECS + 0.01, (
+        "the absolute cap is not binding on a 298-char chunk -- a long chunk "
+        "again buys a proportionally long stranding"
     )
