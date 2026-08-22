@@ -191,6 +191,11 @@ class SMSService:
 
         # Eval-only: divert staff-directed SMS away from the real practitioner.
         # After normalisation so the comparison is E.164 on both sides.
+        #
+        # Keep what was ASKED FOR. From here on `to` is the destination that
+        # will actually be dialled, and the two can differ — which is precisely
+        # what no call site can see, because the redirect happens in here.
+        _requested = to
         to = redirect_staff_sms(to)
 
         # Truncate message if too long
@@ -206,8 +211,26 @@ class SMSService:
                 to=to,
             )
             
+            # Name the destination in the MESSAGE, not only in `extra`: the
+            # deployed log format renders the message and drops extra, so
+            # "SMS sent successfully" was unfalsifiable in production.
+            #
+            # Call CA6711a434 (22 Aug) logged "transfer-miss: clinic notified
+            # at +447586605462" for a text EVAL_STAFF_SMS_TO had diverted to a
+            # different number. A delivery claim nobody can check is worse than
+            # no claim at all: it survives an audit.
+            _redirect_note = (
+                ""
+                if to == _requested
+                else (
+                    " (REDIRECTED from ***%s — EVAL_STAFF_SMS_TO is set, so the "
+                    "intended recipient got NOTHING)" % ((_requested or "")[-4:],)
+                )
+            )
             logger.info(
-                "SMS sent successfully",
+                "SMS sent successfully → ***%s%s",
+                (to or "")[-4:],
+                _redirect_note,
                 extra={
                     "to": to,
                     "message_sid": sms.sid,
