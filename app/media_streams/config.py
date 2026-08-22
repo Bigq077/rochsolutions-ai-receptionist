@@ -444,7 +444,25 @@ STT_SILENCE_TIMEOUT_MS = 1000
 # i.e. the "some turns take too long" spikes. Kept well above normal TTFT so it
 # stays rare and never feels robotic. Phrases must be context-neutral (they are).
 # Was 6000 (so slow turns sat in dead air up to 6s before any audio).
-LLM_FIRST_CHUNK_TIMEOUT_MS = 1800
+# Measured on 73 turns of live traffic, 21-22 Aug 2026: llm_ttft p50 = 1734ms,
+# p90 = 3116ms. At 1800ms this fired on 42% of ALL turns — i.e. just past the
+# median, so it was interrupting normal conversation, and by then the caller had
+# already sat through ~1125ms of endpointer silence plus the wait itself. A hold
+# phrase that arrives after the dead air does not cover it, it just adds words.
+#
+# The measured knee is 3500ms (8% of turns). The BAR is 3.0s - CLAUDE.md section
+# 6, "no dead air over 3s without a filler or acknowledgement" - and a regression
+# test pins it. The bar wins: 3000ms fires on 12% of turns instead of 42%, which
+# is most of the win, and raising the bar is the owner's call, not a side effect
+# of a latency change.
+#
+# Worth stating plainly, because it will come up again: the bar and "do not talk
+# over a normal turn" are in genuine tension right now. A caller has already
+# waited ~1125ms in the endpointer before this timer even starts, so 3000ms here
+# is ~4.1s of real silence - the bar is already being missed on the caller's
+# clock, and moving this number cannot fix that. Only cutting the endpointer
+# wait and the 1656ms first-token time can.
+LLM_FIRST_CHUNK_TIMEOUT_MS = 3000
 
 # How long to wait for a TTS chunk to complete before moving to the next
 TTS_CHUNK_TIMEOUT_MS = 3000

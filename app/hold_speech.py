@@ -211,11 +211,27 @@ HEADS: Dict[WorkKind, List[str]] = {
         f"Putting that request in {EM_DASH}",
         f"Passing that to {{practitioner}} {EM_DASH}",
     ],
+    # Only ever heard on a GENUINE stall — 3500ms, the measured knee, which is
+    # 8% of turns. It used to be 1800ms and these used to be bare discourse
+    # markers ("Right —", "So —", "Okay —"), which failed on live calls in three
+    # separate ways and could not have been fixed by rewording:
+    #
+    #   * "what are your opening hours" -> "So —" -> the answer. An empty
+    #     marker in front of an instant reply is worse than the silence it
+    #     replaced.
+    #   * "I'd like to book" -> "Right —" -> "Right — what's the appointment
+    #     for?" The model opens with the same marker, so the caller hears
+    #     "Right. Right, what's..." — a duplicate no filler-stripper catches,
+    #     because a discourse marker is not a filler phrase.
+    #   * One was the last thing said on the call before a transfer: a head
+    #     with nothing behind it.
+    #
+    # At 3500ms the caller has been waiting long enough that the honest thing is
+    # to say so. These acknowledge the WAIT, which is real, rather than gesturing
+    # at work that may not exist.
     WorkKind.UNKNOWN_SLOW: [
-        f"Right {EM_DASH}",
-        f"So {EM_DASH}",
-        f"Okay {EM_DASH}",
-        f"Right then {EM_DASH}",
+        f"Sorry, still with you {EM_DASH}",
+        f"Still with you {EM_DASH}",
     ],
 }
 

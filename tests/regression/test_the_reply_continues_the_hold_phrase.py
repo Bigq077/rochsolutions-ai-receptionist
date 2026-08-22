@@ -112,6 +112,53 @@ class TestTheSeamCannotWeldTwoSentences:
         assert not re.search(r"[a-z][.!?][A-Z]", out)
 
 
+class TestStrippingNeverLeavesADanglingClause:
+    """Six callers heard "While I check what's available." on 21-22 Aug.
+
+    The opener is not always a sentence: in "Bear with me while I look that up."
+    it is the HEAD of a subordinate clause. Removing just the phrase leaves
+    "While I look that up.", which Susie then says out loud as though it were a
+    sentence. Gate 5b deletes the whole sentence for this exact reason; the
+    stripper ran first and left the wreckage.
+
+    This regressed the moment the stripper was armed — the logic had been in the
+    tree for months, reachable by nothing.
+    """
+
+    @pytest.mark.parametrize("said", [
+        "Bear with me while I look that up.",
+        "Just a moment while I check what's available.",
+        "One moment while I find that for you.",
+        "Just bear with me while I get that up.",
+    ])
+    def test_a_pure_hold_sentence_leaves_nothing_behind(self, said):
+        from app.media_streams.llm_stream import _strip_interim_opener
+        out = _strip_interim_opener(said)
+        assert out == "", f"dangling clause: {out!r}"
+
+    def test_the_payload_after_the_clause_survives(self):
+        from app.media_streams.llm_stream import _strip_interim_opener
+        out = _strip_interim_opener(
+            "Just a moment while I check what's available. "
+            "The slots are Number 1, five in the evening."
+        )
+        assert out == "The slots are Number 1, five in the evening."
+
+    def test_a_legitimate_while_is_untouched(self):
+        # No opener was stripped, so the orphan rule must never run. "While I
+        # have you" is ordinary speech, not wreckage.
+        from app.media_streams.llm_stream import _strip_interim_opener
+        said = "While I have you, could I take your postcode?"
+        assert _strip_interim_opener(said) == said
+
+    def test_the_reply_is_never_emptied_on_the_way_to_the_caller(self):
+        # join_after_head keeps the original when stripping would leave nothing,
+        # so the turn still has audio; Gate 5b removes the hold sentence
+        # afterwards. Silence is the one outcome that must not happen here.
+        said = "Bear with me while I look that up."
+        assert join_after_head(said, f"Let me see {DASH}") == said
+
+
 class TestItIsInertWithoutAHead:
     def test_no_head_means_no_change(self):
         # Nothing was spoken, so nothing is a duplicate. A reply that genuinely

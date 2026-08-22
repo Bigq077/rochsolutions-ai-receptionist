@@ -5394,6 +5394,11 @@ _INTERIM_DUPE_RE = re.compile(
 )
 
 
+# Subordinating conjunctions. A phrase stripped from in front of one of these
+# leaves a clause that cannot stand as a sentence.
+_ORPHAN_LEAD = re.compile(r"^(?:while|whilst|as\s+I|so\s+I|until)\b", re.I)
+
+
 def _strip_interim_opener(text: str) -> str:
     """
     Remove a known interim phrase from the start of an LLM first chunk to
@@ -5403,6 +5408,14 @@ def _strip_interim_opener(text: str) -> str:
     15 words (catches paraphrases like "Let me just check what we have…").
     """
     stripped = _INTERIM_DUPE_RE.sub("", text).lstrip()
+    if stripped != text and _ORPHAN_LEAD.match(stripped):
+        # The opener was the HEAD of a subordinate clause, not a sentence of its
+        # own: "Bear with me while I look that up." Removing the phrase leaves
+        # "While I look that up." — a dangling clause Susie then says out loud.
+        # Six of those reached callers on 21-22 Aug. Gate 5b deletes the whole
+        # sentence for exactly this reason; this ran first and left the wreckage.
+        _end = re.search(r"[.!?]\s*", stripped)
+        stripped = stripped[_end.end():].lstrip() if _end else ""
     if stripped != text:
         # Capitalise after stripping if needed
         if stripped:
