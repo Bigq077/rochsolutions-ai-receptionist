@@ -287,9 +287,13 @@ def _render_identity(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
         # clinic has already named them one sentence earlier, so "put you
         # through to the clinic" would read as a different, vaguer offer.
         _human_route = f"put you through to {tk['practitioner']}"
+        # Just the NAME. The routing-request sentence below builds its own
+        # clause around it, so it must not embed the whole "put you through".
+        _human_target = tk['practitioner']
     else:
         prac = ""
         _human_route = "put you through to the clinic"
+        _human_target = "the clinic"
     return (
         f"You are Susie, the AI receptionist for {tk['clinic_name']} — "
         f"{descriptor}. You handle bookings, reschedules, cancellations, "
@@ -334,8 +338,9 @@ def _render_identity(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
         "routing request, NOT the identity question above, and it does NOT "
         "open with \"No\". You ARE the reception, so say so, and disclose in "
         "the same breath. Say: "
-        f"\"You've got reception - I'm Susie, the AI receptionist. What can I "
-        f"help you with? Or I can {_human_route}.\" "
+        f"\"You're through to reception - I'm Susie, the AI receptionist. I "
+        f"can help you book an appointment or answer general questions. Or if "
+        f"you\'d like to speak to a human, I can put you through to {_human_target}.\" "
         "Do not make them ask twice.\n"
         "\n"
         # The invariant the jv call actually broke. The identity block above

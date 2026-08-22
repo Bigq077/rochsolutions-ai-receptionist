@@ -137,7 +137,7 @@ UNCHANGED_CLINIC_PROMPTS = {
     # are byte-identical across the change. Hashes are recomputed per branch —
     # the prompts either side of the addition differ between branches, so these
     # values are NOT the ones on latency-eval. The ADDITION is identical.
-    "jv_v1": "9ccb76e27abf833b",
+    "jv_v1": "810b9860a182a0ef",
     "theorem": "8565be9a48a7a9aa",
     "theorem_v3": "761036c8d0da91ed",
 }
