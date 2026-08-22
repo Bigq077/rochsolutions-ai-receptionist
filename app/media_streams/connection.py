@@ -1175,8 +1175,26 @@ def _reason_already_known(session: dict) -> bool:
     if isinstance(collected, dict) and (collected.get("reason") or "").strip():
         return True
     soft = session.get("soft_context")
-    if isinstance(soft, dict) and (soft.get("reason") or "").strip():
-        return True
+    if isinstance(soft, dict):
+        # The key is condition_notes, NOT reason. The seeded soft_context schema
+        # (media_streams/session.py) has eight keys and "reason" is not one of
+        # them, and the Haiku extractor writes condition_notes — "brief
+        # description of the caller's complaint or condition", which is exactly
+        # the booking reason. So the old soft.get("reason") test could never
+        # return True: nothing in the codebase writes that key.
+        #
+        # What it cost: a caller who opens with "Shoulder pain" and then says
+        # yes to the booking offer was still asked "What's the appointment for?"
+        # — a question they had already answered as their FIRST words. On a real
+        # call that is one wasted turn. In the scripted call-test suite it is
+        # fatal: the unexpected question consumes the next scripted response, so
+        # every answer after it lands on the wrong question and the script runs
+        # out before the booking completes. That is the mechanism behind the
+        # booking_confirmed failures, not a stale assertion.
+        if (soft.get("condition_notes") or "").strip():
+            return True
+        if (soft.get("reason") or "").strip():   # belt and braces if ever added
+            return True
     return False
 
 
