@@ -66,6 +66,8 @@ from .config import (
     FILLER_PHRASES,
     WS_C_SEMANTIC_ENDPOINT,
     ws_c_profile_for_phase,
+    ELEVENLABS_SPEED,
+    ELEVENLABS_PHONE_SPEED,
 )
 from .filler_guard import FillerGuard, expect_slot_presentation
 from .reask_variants import classify_question, normalize_phrase, variant_for
@@ -80,14 +82,25 @@ PRE_SLOT_MARKER: str = "\x01PRE_SLOT\x01"
 # doesn't start abruptly.  0x7F = mid-scale µ-law ≈ silence; 800 samples = 100ms.
 _SILENCE_100MS: bytes = bytes([0x7F] * 800)
 
-# Slowest rate any TTS voice actually speaks, characters per second.  Real
-# measured chunks run 13-22 c/s; 6 is chosen far below the floor so the clamp
-# below can only ever trip on a corrupt byte count, never on real audio.
-_MIN_SPEECH_CHARS_PER_SEC: float = 6.0
+# Slowest rate any TTS voice actually speaks, characters per second, measured
+# at `speed` 1.0.  Every healthy chunk on CA268397d4 clustered tightly -- 18.6,
+# 19.7, 20.0, 20.7 and 21.0 c/s -- against 6.5 c/s for the corrupt one.  10.0
+# sits ~1.9x under the slowest real chunk and ~1.5x above the failure, so the
+# clamp trips on a corrupt byte count and on nothing else.
+#
+# This was 6.0, chosen against a 49-character chunk read off a log line that
+# truncates text at 60 characters.  The `text` behind a sentinel is the WHOLE
+# chunk -- every sub-chunk of it -- and the real one was 173 characters, so the
+# old bound was 33.8s and the 26.7s failure sailed under it.  The fix was inert
+# against the exact call it was written for.  Measure the chunk, not the log.
+_MIN_SPEECH_CHARS_PER_SEC: float = 10.0
 # Headroom for audio that legitimately rides on the same counter without
-# placing a sentinel of its own: the FillerGuard hold clip and the 100ms
-# breath gap, both injected via _send_ulaw.
-_PLAY_SECS_HEADROOM: float = 5.0
+# placing a sentinel of its own: the FillerGuard hold clips and the 100ms
+# breath gap, all injected via _send_ulaw.  Worst case is both clips of one
+# turn back to back -- filler_checking.ulaw 1.39s + filler_moment.ulaw 1.11s --
+# plus the 0.1s gap = 2.60s.  test_o_impossible_play_duration measures the
+# shipped clips and fails if a longer one is ever added to the pool.
+_PLAY_SECS_HEADROOM: float = 4.0
 
 
 def _clamp_play_secs(play_secs: float, text: str) -> float:
@@ -103,23 +116,50 @@ def _clamp_play_secs(play_secs: float, text: str) -> float:
     chunk's finish callback is scheduled so far into the future that it is
     still pending when the turn ends, so no terminal ``tts_finished`` fires and
     **no watchdog is armed at all**.  Measured on CA268397d4 (22 Aug, Theorem):
-    a 49-character phrase -- roughly three seconds of speech -- was scheduled
+    a 173-character chunk -- roughly nine seconds of speech -- was scheduled
     26.7s out, and the call sat in 19 seconds of unguarded silence, recovered
     only because the caller happened to speak unprompted.  Same shape as
     CA1747c2d9 on 6 Aug; see the note in ``__init__``.
+
+    The bound is measured against the text as it will actually be SPOKEN, not
+    as the model wrote it, using the same two calls tts_stream makes when it
+    synthesises the chunk.  Both matter and both widen the bound:
+
+      * ``_apply_tts_substitutions_elevenlabs`` expands a phone number or a
+        price into words -- "07502211207" (11 chars) becomes "oh seven five oh
+        two, two one one, two oh seven" (47).  Bounding on the written form
+        would false-clamp the one utterance where the caller is checking
+        eleven digits against the number in their hand.
+      * the speaking rate is ``speed``-scaled, so a phone readback at 0.8 or a
+        whole call tuned to the 0.7 floor cannot silently tighten the bound.
 
     Clamps DOWN and never up.  A short timer re-arms the watchdog early and
     costs at worst one re-prompt; a long one strands the call in silence with
     nothing left to recover it.
     """
-    max_plausible = len(text) / _MIN_SPEECH_CHARS_PER_SEC + _PLAY_SECS_HEADROOM
+    try:
+        from .tts_stream import (
+            _apply_tts_substitutions_elevenlabs as _tts_subs,
+            _is_spoken_phone_number as _tts_is_phone,
+        )
+        spoken = _tts_subs(text)
+        speed = ELEVENLABS_PHONE_SPEED if _tts_is_phone(spoken) else ELEVENLABS_SPEED
+    except Exception:
+        # Never let this bound-check break the send loop.  Fall back to the
+        # written text at the SLOWER of the two rates: both choices widen the
+        # bound, so a fault here can only make the clamp more reluctant, never
+        # more likely to cut real audio short.
+        spoken = text
+        speed = min(ELEVENLABS_SPEED, ELEVENLABS_PHONE_SPEED)
+
+    max_plausible = len(spoken) / (_MIN_SPEECH_CHARS_PER_SEC * speed) + _PLAY_SECS_HEADROOM
     if play_secs <= max_plausible:
         return play_secs
     logger.error(
-        "[ms_silence] IMPOSSIBLE play duration %.1fs for %d chars -- byte counter "
-        "corrupt (orphaned ~%d bytes); clamping to %.1fs so the watchdog still "
-        "arms. text=%r",
-        play_secs, len(text),
+        "[ms_silence] IMPOSSIBLE play duration %.1fs for %d chars spoken (%d "
+        "written) at speed %.2f -- byte counter corrupt (orphaned ~%d bytes); "
+        "clamping to %.1fs so the watchdog still arms. text=%r",
+        play_secs, len(spoken), len(text), speed,
         int((play_secs - max_plausible) * 8000),
         max_plausible, text[:60],
     )
@@ -14281,16 +14321,24 @@ class WebSocketCallHandler:
                         # that it is still pending when the turn ends, so no
                         # terminal tts_finished ever fires and NO WATCHDOG IS
                         # ARMED AT ALL.  Measured on CA268397d4 (22 Aug,
-                        # Theorem): a 49-character phrase -- about three
+                        # Theorem): a 173-character chunk -- about nine
                         # seconds of speech -- scheduled 26.7s out, and the
                         # call sat in 19s of unguarded silence, rescued only
                         # because the caller spoke unprompted.  Same shape as
                         # CA1747c2d9 on 6 Aug (see __init__).
                         #
-                        # Speech does not run slower than ~6 characters per
-                        # second, and the +5s absorbs a filler clip and the
-                        # breath gap legitimately riding on this counter.
-                        # Anything past that is a corrupt count, not audio.
+                        # NB `text` here is the WHOLE chunk -- one sentinel is
+                        # placed per chunk_text, once every sub-chunk of it has
+                        # been synthesised -- so play_secs covers the entire
+                        # reply, not its first sentence.  The 60-char
+                        # truncation in the log line below is a log artefact;
+                        # bounding on it once made this clamp inert.
+                        #
+                        # Speech does not run slower than ~10 characters per
+                        # second at speed 1.0, and the +4s absorbs the filler
+                        # clips and the breath gap legitimately riding on this
+                        # counter.  Anything past that is a corrupt count, not
+                        # audio.
                         # Clamp DOWN, never up: a short timer re-arms the
                         # watchdog early and costs at worst a re-prompt, while
                         # a long one strands the call in silence with no
