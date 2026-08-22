@@ -327,7 +327,18 @@ UNMOVED_PROMPTS = {
     # everyone says no to these"). classify_screen_answer grades a negative
     # lead as `clear`, so priming manufactures false clears — see
     # tests/regression/test_a_screen_question_is_framed_as_routine.py.
-    "jv_v1": "a3348f65d2f5c68c",
+    # Re-pinned 2026-08-22: jv_v1 a3348f65d2f5c68c -> 271fe1f70c369bb9,
+    # vital_edge b2fb93a133d11f0b -> 26e9742b3252cf35. The identity block
+    # gained two rules after a routing request was answered badly in both
+    # directions: theorem CA82ec06 opened "No -" at a caller asking to be
+    # put through, jv CA9ca88398 said "I'm the receptionist here" with the
+    # AI word missing. Both template clinics render the shared block, so
+    # both move together and neither can move alone.
+    #
+    # CONTAINMENT, which is what this table is for: demo, theorem and
+    # theorem_v3 are byte-identical across the change. Theorem runs a
+    # hardcoded prompt of its own, so nothing here reaches Mark's line.
+    "jv_v1": "271fe1f70c369bb9",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -344,7 +355,7 @@ UNMOVED_PROMPTS = {
     # the cancel wording, and the other three pins here are unchanged — which
     # is the containment assertion that matters.
     "theorem_v3": "761036c8d0da91ed",
-    "vital_edge": "b2fb93a133d11f0b",
+    "vital_edge": "26e9742b3252cf35",
 }
 
 

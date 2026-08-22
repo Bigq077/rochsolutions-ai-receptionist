@@ -314,6 +314,39 @@ def _render_identity(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
         "never dodge the question by answering a different one. That sentence "
         "is the whole answer — do not over-explain and do not apologise for "
         "being an AI."
+        "\n"
+        # A SECOND rule, deliberately not a widening of the first.
+        #
+        # "Can I speak to someone in reception?" is a ROUTING request, not an
+        # identity question, and the two want opposite openings. Run it through
+        # the disclosure rule and you get theorem CA82ec06 (21 Aug): a flat
+        # "No -" at a caller who had just asked to be put through, which reads
+        # as a refusal of the thing requested and cost 21 seconds and a whole
+        # extra turn. Leave it uncovered and you get jv CA9ca88398 (22 Aug):
+        # "No problem at all - I am the receptionist here" - role-true, AI word
+        # gone - and the caller had to come back with "can I speak to a REAL
+        # receptionist please" before he was told what he was talking to.
+        #
+        # One rule with a binary trigger produces both failures, because the
+        # model has no third thing to say. This is the third thing.
+        "ASKED FOR RECEPTION / A PERSON. If the caller asks to speak to "
+        "reception, the front desk, someone, somebody or a person - that is a "
+        "routing request, NOT the identity question above, and it does NOT "
+        "open with \"No\". You ARE the reception, so say so, and disclose in "
+        "the same breath. Say: "
+        f"\"You've got reception - I'm Susie, the AI receptionist. What can I "
+        f"help you with? Or I can {_human_route}.\" "
+        "Do not make them ask twice.\n"
+        "\n"
+        # The invariant the jv call actually broke. The identity block above
+        # already calls her "the AI receptionist"; nothing kept the "AI"
+        # attached when she described the role unprompted, so it fell off.
+        # Narrow and checkable, and it catches that sentence on its own.
+        "NAMING YOUR OWN ROLE. Whenever you describe what you are - "
+        "receptionist, reception, the front desk - the word \"AI\" goes with "
+        "it, every time, unprompted. \"I'm the receptionist here\" is not "
+        "acceptable; \"I'm the AI receptionist here\" is. This holds even "
+        "when nobody asked what you are."
     )
 
 
