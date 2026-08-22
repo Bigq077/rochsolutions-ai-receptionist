@@ -165,7 +165,7 @@ UNCHANGED_CLINIC_PROMPTS = {
     # CONTAINMENT, which is what this table is for: demo, theorem and
     # theorem_v3 are byte-identical across the change. Theorem runs a
     # hardcoded prompt of its own, so nothing here reaches Mark's line.
-    "jv_v1": "271fe1f70c369bb9",
+    "jv_v1": "c66d6e9aff4c8787",
     "theorem": "8565be9a48a7a9aa",
     "theorem_v3": "761036c8d0da91ed",
 }

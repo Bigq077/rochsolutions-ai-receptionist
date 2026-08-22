@@ -338,7 +338,7 @@ UNMOVED_PROMPTS = {
     # CONTAINMENT, which is what this table is for: demo, theorem and
     # theorem_v3 are byte-identical across the change. Theorem runs a
     # hardcoded prompt of its own, so nothing here reaches Mark's line.
-    "jv_v1": "271fe1f70c369bb9",
+    "jv_v1": "c66d6e9aff4c8787",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -355,7 +355,7 @@ UNMOVED_PROMPTS = {
     # the cancel wording, and the other three pins here are unchanged — which
     # is the containment assertion that matters.
     "theorem_v3": "761036c8d0da91ed",
-    "vital_edge": "26e9742b3252cf35",
+    "vital_edge": "76ac625e89e83e4a",
 }
 
 
