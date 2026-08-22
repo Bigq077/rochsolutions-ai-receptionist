@@ -238,10 +238,35 @@ async def build_actionable_summary_row(summary: Dict[str, Any]) -> List[Any]:
     # Fires only when the real-time persist hook missed the name (edge cases).
     if not patient_name:
         _history = raw_session.get("conversation_history", []) or []
+        # The capital is the discriminator, not the stoplist below.
+        #
+        # This scrapes a name out of SUSIE'S OWN SPEECH, so every word she
+        # can say after "thanks" / "so that's" is a candidate. With [A-Za-z]
+        # it read the adverb: call CA8ebb258b (22 Aug) recorded the patient
+        # as 'Now', taken from her own "put you through to the clinic team
+        # right now —". A sweep of her routine phrasing found FIVE false
+        # names in seven lines: 'Now' and 'Then' from "Right ...", 'For'
+        # from "Thanks for calling", 'Very' from "Thanks very much", 'Fine'
+        # from "So it's fine to ...". With SMS_ENABLED — the default on all
+        # three clinic branches — that greets a patient "Hi Now,": the
+        # "Hi PENDING" defect arriving from a new direction.
+        #
+        # [A-Z] separates them structurally, because generated prose writes
+        # a name capitalised and an adverb lower-case. Extending _FP instead
+        # would have fixed 'Now' and left 'For' and 'Very' live — a wordlist
+        # can only name the false positives someone has already seen.
+        #
+        # The "Right X" arm is gone rather than tightened. "Right" is a
+        # filler this system emits constantly ('Right —' opened three turns
+        # of that same call), it is not a name-confirmation shape the way
+        # "Thanks X" and "So that's X" are, and it produced two of the five.
+        #
+        # Precision over recall deliberately: a missed name logs a warning
+        # and leaves the record honest, while a wrong one is written to the
+        # call record AND texted to the patient.
         _NAME_RE = _re.compile(
-            r'[Tt]hanks\s+([A-Za-z][a-z]{1,25})[\s—–,.\-]'
-            r'|[Ss]o (?:that|it)\'?s\s+([A-Za-z][a-z]{1,25})[\s—–,]'
-            r'|[Rr]ight\s+([A-Za-z][a-z]{1,25})[\s—–,]'
+            r'[Tt]hanks\s+([A-Z][a-z]{1,25})[\s—–,.\-]'
+            r'|[Ss]o (?:that|it)\'?s\s+([A-Z][a-z]{1,25})[\s—–,]'
         )
         _FP = frozenset({
             "sorry", "right", "great", "perfect", "ok", "okay", "sure",
