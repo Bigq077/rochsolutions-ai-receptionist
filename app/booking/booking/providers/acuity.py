@@ -157,8 +157,17 @@ class AcuityAdapter:
         # error, do not retry.  Use ProviderUnavailable so the service layer
         # surfaces a clean error message without leaking API details.
         if 400 <= status < 500:
+            # `error_message` goes in the MESSAGE, not only in `extra`.
+            # app/main.py configures logging with '...%(message)s' and nothing
+            # else, so every `extra=` field is silently dropped in Render.  A
+            # 400 used to surface as a bare "Acuity client error: /appointments
+            # /<id>/cancel" with no reason attached anywhere, which made a live
+            # cancellation failure impossible to diagnose from the logs alone
+            # (2026-08-23 — the reason had to be recovered by querying the
+            # Acuity API by hand).  Keep the `extra` for structured sinks.
             logger.warning(
-                f"Acuity client error: {operation}",
+                "Acuity client error: %s — HTTP %s: %s",
+                operation, status, error_message,
                 # NOTE: "message" is a reserved LogRecord attribute — use "error_msg"
                 extra={
                     "clinic_id": self.clinic_id,
@@ -643,12 +652,32 @@ class AcuityAdapter:
         return data if isinstance(data, list) else []
 
     async def cancel_booking(self, provider_booking_id: str) -> bool:
-        """Cancel appointment in Acuity."""
+        """Cancel appointment in Acuity.
+
+        `admin=true` is REQUIRED and must not be removed.
+
+        Every Acuity appointment carries a `canClientCancel` flag, which the
+        account flips to False once the booking falls inside the clinic's
+        minimum-cancellation-notice window.  Without `admin`, Acuity enforces
+        that flag and answers this endpoint with a flat 400 — so Susie could
+        never cancel a short-notice appointment, which is the single most
+        common thing a caller rings to do.  Proven live on 2026-08-23: two
+        separate calls both 400'd cancelling a next-morning appointment
+        (`canClientCancel: False`) on an account where a fortnight-out booking
+        read True.
+
+        `admin` is the correct semantic here, not a bypass of clinic policy.
+        The flag distinguishes a client self-serving on the public booking page
+        from the clinic's own reception acting on their behalf — and Susie
+        authenticates with the clinic's own API credentials.  She is reception.
+        The notice window still governs what patients can do unaided.
+        """
         try:
             await self._request_with_retry(
                 "PUT",
                 f"/appointments/{provider_booking_id}/cancel",
                 allow_retry=False,  # Don't retry cancellations
+                params={"admin": "true"},
             )
             
             logger.info(
