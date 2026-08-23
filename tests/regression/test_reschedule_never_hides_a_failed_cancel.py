@@ -143,6 +143,14 @@ async def test_failed_cancel_escalates_to_a_human(monkeypatch, stub_provider):
     await rt._reschedule_appointment_acuity(_args(), session)
 
     assert stub_provider["owner"], "nobody at the clinic was told about the duplicate"
+    # EXACTLY one. The half-done branch returns before STEP 4's own
+    # `event="reschedule"` alert, so the two call sites are mutually
+    # exclusive. Two buzzes for one reschedule is the failure mode the
+    # Theorem owner-alert suite was written to prevent — Mark reads these,
+    # and an alert he has to reconcile against another is worse than one.
+    assert len(stub_provider["owner"]) == 1, (
+        f"one duplicate is one piece of news: {stub_provider['owner']!r}"
+    )
     note = stub_provider["owner"][-1].get("note", "")
     assert "1748067711" in note, (
         f"the orphaned appointment id must be in the alert so it can be found: {note!r}"
@@ -167,3 +175,11 @@ async def test_successful_reschedule_still_reports_success(monkeypatch, stub_pro
     assert session.get("calendar_status") == "rescheduled"
     assert session.get("confirmation_sms_sent") is True
     assert stub_provider["sms"], "the patient should be texted on a completed move"
+    # NOT a count assertion. Theorem carries a STEP 4 owner heads-up that
+    # this branch does not, so the number of alerts on a completed move is
+    # legitimately branch-dependent (1 on Theorem, 0 here). What must hold
+    # everywhere is that the half-done escalation did not fire: a completed
+    # move must never tell the clinic to go and delete something by hand.
+    assert not any(
+        "ACTION NEEDED" in (a.get("note") or "") for a in stub_provider["owner"]
+    ), f"a successful move raised a duplicate alert: {stub_provider['owner']!r}"
