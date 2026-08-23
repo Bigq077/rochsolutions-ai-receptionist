@@ -177,5 +177,44 @@ def test_every_acuity_cancel_path_alerts():
 
 
 def test_the_acuity_reschedule_alerts_once():
+    """One reschedule, one buzz — however many call sites there are.
+
+    This used to assert a flat `count(...) == 1`. The half-done reschedule fix
+    (2026-08-23) added a SECOND alert, for the case where the new slot is booked
+    but the original will not cancel: the caller is in the diary twice and
+    somebody has to go and remove one by hand.
+
+    That did not break the invariant, only the proxy. The two sites are mutually
+    exclusive — the half-done branch returns before STEP 4 is ever reached — so
+    exactly one alert still goes out on any given reschedule. Bumping the
+    expected count to 2 would have restored green while quietly dropping the
+    guard, because 2 is also what a genuine double-buzz looks like. So pin the
+    structure that makes them exclusive instead: the alert inside the half-done
+    branch, and a return between it and STEP 4's.
+
+    The runtime half of this is in
+    tests/regression/test_reschedule_never_hides_a_failed_cancel.py, which
+    asserts exactly one owner alert on the half-done path. Source inspection
+    here because calling these functions books real appointments.
+    """
     src = inspect.getsource(rt._reschedule_appointment_acuity)
-    assert src.count('event="reschedule"') == 1
+    assert src.count('event="reschedule"') == 2
+
+    before_success, marker, after_success = src.partition(
+        'session["calendar_status"] = "rescheduled"'
+    )
+    assert marker, "the success path marker moved — re-anchor this test"
+
+    half_done = before_success.partition('if not cancel_result.get("success"):')[2]
+    assert half_done, "the failed-cancel branch moved — re-anchor this test"
+
+    assert half_done.count('event="reschedule"') == 1, (
+        "the failed-cancel branch must escalate the duplicate to a human"
+    )
+    assert "return {" in half_done, (
+        "the half-done branch must RETURN before STEP 4, or one reschedule "
+        "sends Mark two alerts and reports success it did not achieve"
+    )
+    assert after_success.count('event="reschedule"') == 1, (
+        "the completed-move heads-up must stay on the success path"
+    )
