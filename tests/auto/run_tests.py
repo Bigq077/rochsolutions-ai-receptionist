@@ -380,14 +380,57 @@ def _print_failure_summary(result: dict, scenario: dict) -> None:
     print(f"      error:             {last['error_if_any']}")
 
 
+def _scenario_budget(scenario: dict) -> int:
+    """Seconds a single scenario may take before it is abandoned.
+
+    Derived from the scenario rather than a flat number, because the turn waits
+    are not uniform: a deliberate-silence turn waits 45s on purpose (to let a
+    watchdog window fire) while a normal turn now returns as soon as Susie stops
+    speaking. Sized generously — this is a runaway guard, not a performance
+    assertion, and a budget that trips on a merely slow scenario would delete
+    real results.
+    """
+    turns = len(scenario.get("responses") or [])
+    # 60s of setup/teardown + 50s per turn, floor 180s, ceiling 900s.
+    return max(180, min(900, 60 + turns * 50))
+
+
 async def run_single_call(
     scenario: dict,
     evaluator: Evaluator,
     shared_server: SharedServer,
 ) -> dict:
-    """Run one Twilio call for a scenario and return the evaluated result."""
+    """Run one call for a scenario and return the evaluated result.
+
+    Hard-bounded. On 2026-08-23 scenario 9.4 connected, never produced another
+    log line, and sat there for FOUR HOURS AND TWENTY MINUTES — a whole
+    overnight run lost to one stuck call, with phases 9-14 never reached. There
+    was no timeout anywhere: `max_call_seconds` in call_runner only sizes the
+    TwiML <Pause> for real-call mode, and nothing bounds the direct-WS path.
+
+    An unattended suite MUST be able to finish. A scenario that hangs is a
+    scenario that failed, and it is more useful recorded as `timed_out` than
+    left blocking every scenario behind it.
+    """
     runner = CallRunner(scenario, shared_server)
-    result = await runner.run()
+    budget = _scenario_budget(scenario)
+    try:
+        result = await asyncio.wait_for(runner.run(), timeout=budget)
+    except asyncio.TimeoutError:
+        logger.error(
+            "[%s] TIMED OUT after %ds — abandoning this scenario so the run "
+            "can continue", scenario["id"], budget,
+        )
+        result = {
+            "scenario_id":   scenario["id"],
+            "scenario_name": scenario.get("name", ""),
+            "end_reason":    "timed_out",
+            "duration_seconds": budget,
+            "susie_said":    [],
+            "test_said":     [],
+            "turns":         0,
+            "error_if_any":  f"scenario exceeded its {budget}s budget",
+        }
     evaluation = await evaluator.evaluate(result, scenario)
     result["evaluation"] = evaluation
     result["phase"] = scenario["phase"]
