@@ -352,7 +352,25 @@ async def send_reschedule_confirmation(
         location: Location name
     
     Returns:
-        True if sent successfully
+        True only if a text actually went out — NOT if one was merely attempted.
+
+        `send_sms` returns the Twilio SID, or None for a SUPPRESSED send
+        (SMS_ENABLED off) as well as a failed one. This used to discard that
+        return and hand back a flat True, which made the contract above a lie
+        and defeated every caller that trusted it. `_reschedule_appointment_acuity`
+        latches `session["confirmation_sms_sent"]` on this value to tell the
+        end-of-call follow-up router the caller has already been texted; with an
+        unconditional True the router stood down over a text that was never sent,
+        so the caller got no confirmation AND no follow-up.
+
+        Proven on Theorem call CAc9b44a5e, 2026-08-23, on the sibling cancel
+        path: "[sms] SMS_ENABLED is off — outbound SMS suppressed (not sent)",
+        then "Cancellation confirmation sent to 07564202418" one millisecond
+        later, then "confirmation already sent during call, skipping". Read
+        top-down, the patient was texted. They were not.
+
+        This is the same repair already applied to the booking-confirmation path
+        after JV call CA38e5603142 — see the comment there.
     """
     try:
         location_short = get_location_short_name(location)
@@ -366,11 +384,17 @@ async def send_reschedule_confirmation(
             clinic_phone=clinic_phone,
         )
         
-        await send_sms(to=patient_phone, message=message)
+        _sid = await send_sms(to=patient_phone, message=message)
         
-        logger.info(f"Reschedule confirmation sent to {patient_phone}")
+        # Log what happened, not what was attempted — and mask the number, as
+        # every other send in this module does.
+        logger.info(
+            "Reschedule confirmation %s ***%s",
+            "sent to" if _sid else "NOT sent (suppressed or failed) to",
+            patient_phone[-4:] if patient_phone else "????",
+        )
         
-        return True
+        return bool(_sid)
     
     except Exception as e:
         logger.error(f"Failed to send reschedule confirmation: {e}", exc_info=True)

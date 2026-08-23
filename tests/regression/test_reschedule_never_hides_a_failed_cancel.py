@@ -183,3 +183,92 @@ async def test_successful_reschedule_still_reports_success(monkeypatch, stub_pro
     assert not any(
         "ACTION NEEDED" in (a.get("note") or "") for a in stub_provider["owner"]
     ), f"a successful move raised a duplicate alert: {stub_provider['owner']!r}"
+
+
+# ── The latch must record the SEND, not the attempt ──────────────────────────
+# These do NOT stub send_reschedule_confirmation. The bug lived inside it: it
+# discarded send_sms's return and handed back a flat True, so the conditional
+# latch above could never actually be false and "records what happened, not what
+# was attempted" was not achieved.
+#
+# NOTE: patch booking_sms.send_sms, NOT sms.send_sms. booking_sms does
+# `from app.notifications.sms import send_sms` at module level and holds its own
+# binding — patching the source module leaves this one live and TEXTS A REAL
+# PHONE.
+
+@pytest.mark.asyncio
+async def test_suppressed_text_does_not_latch_the_flag(monkeypatch):
+    """SMS_ENABLED off is the live state on Theorem. A suppressed text must not
+    tell the end-of-call router the caller has already been contacted."""
+    import app.notifications.booking_sms as booking_sms
+
+    async def suppressed(**kwargs):
+        return None          # what send_sms returns when SMS_ENABLED is off
+
+    monkeypatch.setattr(booking_sms, "send_sms", suppressed)
+
+    async def fake_book(args, session):
+        return {"success": True, "booked_slot": "Tuesday 08 September at 11:00",
+                "location": "Alcester", "acuity_booking_id": "1758978440"}
+
+    async def fake_cancel(args, session):
+        return {"success": True, "was_at": "2026-08-24T10:00:00+01:00"}
+
+    monkeypatch.setattr(rt, "_book_appointment_acuity", fake_book)
+    monkeypatch.setattr(rt, "_cancel_appointment_acuity", fake_cancel)
+    monkeypatch.setattr(rt, "_resolve_slot_iso", lambda iso, session: __import__(
+        "datetime").datetime.fromisoformat("2026-09-08T11:00:00+01:00"))
+
+    import app.notifications.owner_alert as owner_alert
+
+    async def fake_notify(session, **kwargs):
+        return True
+
+    monkeypatch.setattr(owner_alert, "notify_owner", fake_notify)
+
+    session = _session()
+    result = await rt._reschedule_appointment_acuity(_args(), session)
+
+    # The move itself genuinely happened — a suppressed text must not fail it.
+    assert result.get("success") is True
+    assert session.get("confirmation_sms_sent") is not True, (
+        "a suppressed text latched the flag — the follow-up router will now "
+        "stand down over a message the caller never received"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_real_send_does_latch_the_flag(monkeypatch):
+    """The mirror image: guard against a fix that simply never latches."""
+    import app.notifications.booking_sms as booking_sms
+
+    async def delivered(**kwargs):
+        return "SM_fake_sid"
+
+    monkeypatch.setattr(booking_sms, "send_sms", delivered)
+
+    async def fake_book(args, session):
+        return {"success": True, "booked_slot": "Tuesday 08 September at 11:00",
+                "location": "Alcester", "acuity_booking_id": "1758978440"}
+
+    async def fake_cancel(args, session):
+        return {"success": True, "was_at": "2026-08-24T10:00:00+01:00"}
+
+    monkeypatch.setattr(rt, "_book_appointment_acuity", fake_book)
+    monkeypatch.setattr(rt, "_cancel_appointment_acuity", fake_cancel)
+    monkeypatch.setattr(rt, "_resolve_slot_iso", lambda iso, session: __import__(
+        "datetime").datetime.fromisoformat("2026-09-08T11:00:00+01:00"))
+
+    import app.notifications.owner_alert as owner_alert
+
+    async def fake_notify(session, **kwargs):
+        return True
+
+    monkeypatch.setattr(owner_alert, "notify_owner", fake_notify)
+
+    session = _session()
+    await rt._reschedule_appointment_acuity(_args(), session)
+
+    assert session.get("confirmation_sms_sent") is True, (
+        "a delivered text must latch the flag, or the caller is texted twice"
+    )
