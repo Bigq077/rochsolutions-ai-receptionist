@@ -4175,38 +4175,124 @@ async def _reschedule_appointment_acuity(args: Dict[str, Any], session: Dict[str
         {**args, "_suppress_sms": True, "appointment_id": _orig_appt_id}, session
     )
     if not cancel_result.get("success"):
-        # New booking succeeded but cancel failed — log for clinic to manually clean up
-        logger.warning(
-            "_reschedule_appointment_acuity: new booking succeeded (id=%s) but old cancel failed: %s "
-            "— clinic must manually remove duplicate appointment",
-            book_result.get("acuity_booking_id"), cancel_result.get("error"),
+        # HALF-DONE — AND IT MUST NEVER READ AS DONE.
+        #
+        # The new slot is booked; the original is still live in the diary. This
+        # used to log one warning and fall straight through to `success: True`,
+        # so the model said "that is you rescheduled", the caller stopped
+        # expecting the original, and nobody at the clinic was told. On
+        # 2026-08-23 that put a real patient in the diary twice and cost him the
+        # appointment he believed he had moved.
+        #
+        # `success: False` is what arms the false-confirmation guard in
+        # llm_stream (_WRITE_NO_CLAIM_RULE), which is the whole point here: the
+        # model must not narrate a completed reschedule. The explicit
+        # caller_message_rule below survives that layer via its setdefault and
+        # says the harder, truer thing — the new time IS held, the old one is
+        # NOT cancelled.
+        #
+        # B-58 says a write-guard rule must not assert world state. This branch
+        # is not asserting a guess: the cancel reached the provider and was
+        # refused, so both halves are known facts.
+        _orphan_when = session.get("reschedule_appt_datetime", "") or "the original time"
+        logger.error(
+            "_reschedule_appointment_acuity: DUPLICATE — new booking id=%s created "
+            "but original id=%s did NOT cancel (%s). The caller is in the diary "
+            "twice and the clinic must remove the original by hand.",
+            book_result.get("acuity_booking_id"), _orig_appt_id,
+            cancel_result.get("error"),
         )
+
+        # Latch the orphan. The rule below tells the model not to retry, but the
+        # state must refuse a third booking regardless of what the model does.
+        session["reschedule_orphan_appt_id"] = _orig_appt_id
+        session["calendar_status"] = "reschedule_partial_duplicate"
+
+        # Escalate to a human on the EXISTING "reschedule" event rather than a
+        # new event name: notify_owner no-ops for any event a clinic has not
+        # configured, so a freshly invented one would be silently off on every
+        # clinic. It never raises, but the guard costs nothing.
+        try:
+            from app.notifications.owner_alert import notify_owner
+            await notify_owner(
+                session,
+                event="reschedule",
+                patient_name=_resched_name,
+                when_label=book_result.get("booked_slot") or "",
+                service=session.get("reschedule_appt_type", "") or "",
+                location=_normalize_location(
+                    args.get("location") or session.get("selected_location", "")
+                ),
+                note=(
+                    f"ACTION NEEDED - duplicate booking. The new appointment is "
+                    f"confirmed, but the ORIGINAL (Acuity id {_orig_appt_id}, "
+                    f"{_orphan_when}) could not be cancelled and is still in the "
+                    f"diary. Please remove it by hand."
+                ),
+            )
+        except Exception as _oa_err:   # pragma: no cover — alert is best-effort
+            logger.warning(
+                "_reschedule_appointment_acuity: orphan owner alert failed: %r",
+                _oa_err,
+            )
+
+        return {
+            "success":            False,
+            "partial":            True,
+            "new_slot_booked":    book_result.get("booked_slot"),
+            "acuity_booking_id":  book_result.get("acuity_booking_id"),
+            "original_cancelled": False,
+            "caller_message_rule": (
+                "HALF-DONE. Say BOTH of these and nothing more optimistic: the new "
+                "time IS booked and is being held for them, AND the original "
+                "appointment could not be cancelled automatically, so the clinic "
+                "will remove it and there is nothing further they need to do. Do "
+                "NOT claim the move is complete. Do NOT call reschedule_appointment "
+                "or cancel_appointment again on this call — a retry would book them "
+                "a third time. The clinic has already been alerted."
+            ),
+        }
 
     session["calendar_status"] = "rescheduled"
 
     # STEP 3: Single reschedule confirmation SMS
+    _sms_sent = False
     try:
         from app.notifications.booking_sms import send_reschedule_confirmation
         location     = _normalize_location(args.get("location") or session.get("selected_location", ""))
-        old_time_str = (
-            cancel_result.get("was_at")
-            if cancel_result.get("success")
-            else session.get("reschedule_appt_datetime", "")
-        )
+        # The cancel succeeded to reach this line, so `was_at` is the reliable
+        # source; the session value stays as a fallback for older sessions.
+        old_time_str = cancel_result.get("was_at") or session.get("reschedule_appt_datetime", "")
         new_time = _resolve_slot_iso(args["new_slot_iso"], session)
         if old_time_str:
             old_time = datetime.fromisoformat(old_time_str.replace("Z", "+00:00"))
-            await send_reschedule_confirmation(
+            _sms_sent = bool(await send_reschedule_confirmation(
                 patient_phone=args.get("phone", ""),
                 patient_name=_safe_first_name(session, _resched_name),
                 old_time=old_time,
                 new_time=new_time,
                 location=location.title(),
+            ))
+        else:
+            # Previously this `if` fell through in silence. On 2026-08-23 that is
+            # exactly what happened, and the caller got no text at all with no log
+            # line either way.
+            logger.warning(
+                "_reschedule_appointment_acuity: no original appointment time on "
+                "record — reschedule confirmation SMS SKIPPED for %s",
+                args.get("phone", ""),
             )
     except Exception as e:
         logger.warning("_reschedule_appointment_acuity SMS failed (non-fatal): %r", e)
 
-    session["confirmation_sms_sent"] = True
+    # Latch ONLY when a text actually went out. This flag tells the end-of-call
+    # follow-up router that the caller has already been texted. Setting it
+    # unconditionally is how a caller ended up with no confirmation AND no
+    # follow-up: the router logged "already sent during call" and stood down
+    # over a text that was never sent. The latch records what happened, not
+    # what was attempted.
+    if _sms_sent:
+        session["confirmation_sms_sent"] = True
 
     # STEP 4: single owner heads-up. The Google-Calendar path has had this since
     # JV; Theorem short-circuits to the Acuity executors above it, so a Theorem
