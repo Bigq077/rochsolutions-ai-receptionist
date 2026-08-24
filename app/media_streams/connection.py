@@ -12811,9 +12811,40 @@ class WebSocketCallHandler:
                                 and not _clinical_block
                                 and (
                                     (
-                                        # Normal sentinel arm: only when flow
-                                        # hasn't started and location not asked
-                                        not self.booking_flow_active
+                                        # Normal sentinel arm: only when the ack
+                                        # has not already run and location not
+                                        # asked.
+                                        #
+                                        # Gated on v3_booking_ack_fired, NOT on
+                                        # booking_flow_active. That flag has two
+                                        # writers and only one of them means "the
+                                        # booking flow started": the other fires
+                                        # speculatively on a treatment mention
+                                        # plus a loose booking-intent match
+                                        # (~line 11545). A caller asking a PRICE
+                                        # question — "how much is a general
+                                        # massage or appointment cost" — contains
+                                        # "appointment", so that setter flipped
+                                        # the flag, and this arm was then shut for
+                                        # the rest of the call. When the caller
+                                        # actually asked to book seconds later
+                                        # ("can i book an appointment then mate",
+                                        # CA2087528410 2026-08-24 00:03:57) the
+                                        # ack could not fire, no next question was
+                                        # queued, and the prompt's bare "Right —"
+                                        # stub was left standing on its own —
+                                        # seven seconds of dead air.
+                                        #
+                                        # The CTA-affirm arm below already
+                                        # documents this same premature-flag
+                                        # problem and bypasses the flow-state
+                                        # gates to dodge it; this arm was left
+                                        # exposed. The gate's real intent is "do
+                                        # not run the ack twice", so read the flag
+                                        # that means exactly that.
+                                        not self.session.get(
+                                            "v3_booking_ack_fired", False
+                                        )
                                         and not self.session.get(
                                             "v3_location_asked", False
                                         )
@@ -12848,6 +12879,13 @@ class WebSocketCallHandler:
                                 # ── end Spec Y (normal ack path) ──────────────
                                 self.booking_flow_active = True
                                 self.session["booking_flow_active"] = True
+                                # Records that the ack path ITSELF ran, which is
+                                # what the sentinel arm's gate actually wants to
+                                # know. booking_flow_active cannot answer that:
+                                # it has two writers and the other one is
+                                # speculative (treatment mention + loose booking
+                                # intent, ~line 11545). See the gate comment.
+                                self.session["v3_booking_ack_fired"] = True
                                 logger.info("[ms_conn] booking_flow_active = True")
                                 self.session["v3_booking_intent"] = True
                                 # Single-site template clinics have no clinic-
