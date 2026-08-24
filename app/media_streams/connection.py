@@ -9126,9 +9126,64 @@ class WebSocketCallHandler:
                         from app.media_streams import clinical_screening as _cs
                         _cs_clinic = _cs_get_clinic(clinic_id)
                         if _cs.screening_enabled(_cs_clinic):
+                            # B-87: remember a booking request made in the SAME
+                            # utterance that arms a screen. The screening block
+                            # below `continue`s, which skips the booking-intent
+                            # detection ~4000 lines downstream, so the request
+                            # was silently dropped — and once the screen cleared
+                            # the model, having no booking state, offered to
+                            # book something the caller had already asked for.
+                            # CA6e30f29f: "i'd like to book an appointment i've
+                            # hurt my ankle" -> screen -> "no i can walk on it
+                            # fine" -> "Would you like to book an assessment?",
+                            # costing the caller a whole extra exchange (14s).
+                            _cs_pending_before = self.session.get(
+                                _cs.PENDING_SCREEN_KEY
+                            )
+                            if (
+                                not _cs_pending_before
+                                and _transcript_has_booking_intent(utterance)
+                            ):
+                                self.session["v3_booking_intent_pre_screen"] = True
                             _cs_result = _cs.update_screening_state(
                                 self.session, _cs_clinic, utterance
                             )
+                            # ── Screen just CLEARED, and booking was already
+                            # asked for. Answer the question the caller actually
+                            # has — when — instead of re-offering.
+                            #
+                            # Deterministic for the same reason ask_screen and
+                            # escalate are: the model has the history and still
+                            # re-offers, and Gate 5c cannot rescue it (stripping
+                            # "Would you like to book...?" leaves "That's
+                            # reassuring." with no question, so the dead-end
+                            # guard correctly KEEPS the offer). Bounded to a
+                            # clean clear — a red flag escalates above, and an
+                            # ungradable answer leaves the screen pending.
+                            if (
+                                _cs_result["action"] == "none"
+                                and _cs_pending_before
+                                and not self.session.get(_cs.PENDING_SCREEN_KEY)
+                                and not self.session.get(_cs.SCREEN_RED_FLAG_KEY)
+                                and self.session.pop(
+                                    "v3_booking_intent_pre_screen", None
+                                )
+                            ):
+                                _cs_result = {
+                                    "action": "ask_screen",
+                                    "speak": (
+                                        "That's reassuring. "
+                                        f"{_TIMING_QUESTION_AFTER_BOOKING_ACK}"
+                                    ),
+                                }
+                                self.booking_flow_active = True
+                                self.session["booking_flow_active"] = True
+                                self.session["v3_booking_intent"] = True
+                                logger.info(
+                                    "[ms_conn] screen cleared and booking was "
+                                    "already requested — continuing to the "
+                                    "timing question, not re-offering (B-87)"
+                                )
                             if _cs_result["action"] in ("emergency", "escalate", "ask_screen"):
                                 _cs_line = _cs_result["speak"] or ""
                                 if _cs_result["action"] == "emergency":
