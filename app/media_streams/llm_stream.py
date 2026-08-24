@@ -2897,6 +2897,80 @@ class LLMStream:
         # ── 3. Assemble complete text for slot map + re-split ────────────────
         _joined = " ".join(clean_chunks)
 
+        # ── 3a. Cap the spoken option count, and record what was read out ───
+        # CA6b90c3a2 (24 Aug, jv_v1): the first offer was correctly capped at
+        # two, then the caller said "go ahead", the model re-called
+        # check_availability, hit the already_retrieved guard — which hands it
+        # the FULL available_days and says "present the existing slots" — and
+        # read out all five of Tuesday's times in one breath.
+        #
+        # Two things were wrong and the noisy one is the lesser. The count is
+        # enforced here because no prompt rule has ever won that argument. The
+        # worse defect is that nothing recorded what the model had just said:
+        # the cumulative spoken record (B-78b) only ever learned from the
+        # deterministic follow-up path, so a model-composed readout left it
+        # stale. The caller then asked for "the others" and was offered 18:30
+        # and 19:15 — which they had heard forty seconds earlier — and then
+        # 20:00, which they had heard too.
+        from app.tools.slot_followup import (
+            MAX_SPOKEN_OPTIONS,
+            cap_spoken_options,
+            day_key_of,
+            extract_slot_options,
+            record_spoken_slots,
+            resolve_spoken_options,
+            unspoken_remain_on_day,
+        )
+
+        _cap = int(session.get("_slot_spoken_cap") or MAX_SPOKEN_OPTIONS)
+        _joined, _n_read, _n_kept = cap_spoken_options(_joined, _cap)
+        _was_capped = _n_read != _n_kept
+        if _was_capped:
+            logger.warning(
+                "[ms_gate5] slot buf: TRIMMED readout %d option(s) -> %d "
+                "(cap=%d) — after=%r",
+                _n_read, _n_kept, _cap, _joined[:160],
+            )
+
+        # Resolve the options actually about to be spoken back to real slots.
+        # All-or-nothing: a partial resolution would write a last_offered_slots
+        # that disagrees with the speech, and that is worse than not writing.
+        _spoken_opts = None
+        _spoken_labels = list(extract_slot_options(_joined).values())
+        if _spoken_labels:
+            _r = resolve_spoken_options(
+                session.get("available_days"),
+                _spoken_labels,
+                prefer_day=session.get("_slot_presented_day"),
+            )
+            if _r and len({day_key_of(_s) for _s in _r}) == 1:
+                _spoken_opts = _r
+            elif _r:
+                logger.info(
+                    "[ms_gate5] slot buf: spoken options span %d days — not "
+                    "recorded as one day's offer",
+                    len({day_key_of(_s) for _s in _r}),
+                )
+            else:
+                logger.info(
+                    "[ms_gate5] slot buf: could not resolve spoken option(s) "
+                    "%r against available_days — offer record left unchanged",
+                    _spoken_labels[:4],
+                )
+        if _spoken_opts:
+            # Cumulative FIRST: last_offered_slots is about to be overwritten
+            # and is the only other record that these were ever spoken.
+            record_spoken_slots(session, _spoken_opts)
+            session["last_offered_slots"] = [
+                {"start": _s["start"], "end": _s.get("end") or ""}
+                for _s in _spoken_opts
+            ]
+            session["slot_labels"] = [_s.get("spoken") for _s in _spoken_opts]
+            logger.info(
+                "[ms_gate5] slot buf: %d spoken option(s) recorded as offered — %s",
+                len(_spoken_opts), [_s.get("start") for _s in _spoken_opts],
+            )
+
         # ── 3b. Reconcile the "a few others that day" claim with the data ────
         # The formatter is a language model being shown a template; on
         # 24 Aug 2026 it copied the more_times=true example verbatim onto a day
@@ -2909,9 +2983,30 @@ class LLMStream:
 
         _more_times = bool(session.get("_slot_more_times"))
         _n_offered = int(session.get("_slot_n_offered") or 2)
+        _allow_append = session.get("_slot_presentation_mode") == "single_day"
+        if _spoken_opts:
+            # Exact, and strictly better than the tool flag: the cumulative
+            # record knows what EARLIER turns already read out, which no single
+            # tool result does. A follow-up batch that finishes a day reads
+            # False here even though its own payload cannot tell.
+            _more_times = unspoken_remain_on_day(session, day_key_of(_spoken_opts[0]))
+            _n_offered = len(_spoken_opts)
+            # Every option resolved to ONE day, so "that day" has a referent.
+            # A stronger guarantee than presentation_mode, and it is what lets
+            # the tail reach the already_retrieved path, which carries no
+            # presentation_mode at all. The multi_day case a74f60c8 guards
+            # against cannot get here: two days named means the day-key set has
+            # two members, _spoken_opts stays None, and the presentation_mode
+            # gate still decides.
+            _allow_append = True
+        elif _was_capped:
+            # We removed options ourselves, so more on that day exist by
+            # construction — even though we could not name them.
+            _more_times = True
+            _n_offered = _n_kept
         _reconciled, _action = reconcile_extra_slots_claim(
             _joined, _more_times, _n_offered,
-            allow_append=session.get("_slot_presentation_mode") == "single_day",
+            allow_append=_allow_append,
         )
         if _action == "stripped":
             # Loud on purpose: this is the model asserting availability that
@@ -2931,58 +3026,45 @@ class LLMStream:
         # ── 4. Slot map extraction (Bug 7 fix) ───────────────────────────────
         # Runs on the complete assembled response so every option's date string
         # is present and untruncated (last_bot_prompt is capped at 200 chars).
-        _SLOT_ANCHOR_FULL_RE = _re.compile(
-            r"Number\s+([1-9])\b|(?<!\d)([1-9])\s*[—–\-]\s*",
-            _re.IGNORECASE,
-        )
-        _full_anchors = [
-            (m.start(), m.end(), m.group(1) or m.group(2))
-            for m in _SLOT_ANCHOR_FULL_RE.finditer(_joined)
-        ]
+        # Extracted by slot_followup so the cap in 3a, this map and the TTS
+        # re-split below all count options with the SAME pattern — a cap that
+        # counted differently would trim to a boundary the keypad does not
+        # share. Re-run on the RECONCILED text rather than reusing 3a's result:
+        # reconcile can strip or append a sentence, and the map must describe
+        # what is actually spoken.
+        _slot_map: dict = extract_slot_options(_joined)
         _slot_map_count = 0
-        if len(_full_anchors) >= 2:
-            _slot_map: dict = {}
-            for _i, (_fa_start, _fa_end, _fa_digit) in enumerate(_full_anchors):
-                _next = (
-                    _full_anchors[_i + 1][0]
-                    if _i + 1 < len(_full_anchors)
-                    else len(_joined)
-                )
-                _lbl = _joined[_fa_end:_next].lstrip(", ")
-                _lbl = _re.split(r"[—–\.]", _lbl)[0].strip().rstrip(".,;- ")
-                if _lbl:
-                    _slot_map[_fa_digit] = _lbl
-            if len(_slot_map) >= 2:
-                session["v3_dtmf_slot_map"] = _slot_map
-                session["v3_awaiting_slot_selection"] = True
-                # Stamp the turn that armed this window. run_turn's write-CTA
-                # cleanup runs LATER IN THIS SAME TURN and would otherwise wipe
-                # a window whose options the caller has only just heard — see
-                # _clear_slot_window_after_write_cta. turn_count is incremented
-                # at the very end of run_turn, so a stamp equal to the current
-                # turn_count means "armed by the reply being spoken right now".
-                session["v3_slot_map_armed_turn"] = session.get("turn_count", 0)
-                _slot_map_count = len(_slot_map)
-                # Fresh slots have now been presented for the CURRENT modality,
-                # so the "stale after modality switch" mark no longer applies —
-                # clear it so normal open-availability suppression resumes.
-                session.pop("slots_stale_modality_switch", None)
-                # Save the first offered day's ISO date for FAQ-detour recovery.
-                # If the caller asks a FAQ mid-selection (clearing the slot map),
-                # this lets CALL STATE redirect check_availability to only that day.
-                _av_days = session.get("available_days") or []
-                if _av_days:
-                    session["v3_last_offered_day_iso"] = _av_days[0]["date"]
-                    logger.info(
-                        "[ms_gate5] v3_last_offered_day_iso=%r saved",
-                        _av_days[0]["date"],
-                    )
+        if len(_slot_map) >= 2:
+            session["v3_dtmf_slot_map"] = _slot_map
+            session["v3_awaiting_slot_selection"] = True
+            # Stamp the turn that armed this window. run_turn's write-CTA
+            # cleanup runs LATER IN THIS SAME TURN and would otherwise wipe
+            # a window whose options the caller has only just heard — see
+            # _clear_slot_window_after_write_cta. turn_count is incremented
+            # at the very end of run_turn, so a stamp equal to the current
+            # turn_count means "armed by the reply being spoken right now".
+            session["v3_slot_map_armed_turn"] = session.get("turn_count", 0)
+            _slot_map_count = len(_slot_map)
+            # Fresh slots have now been presented for the CURRENT modality,
+            # so the "stale after modality switch" mark no longer applies —
+            # clear it so normal open-availability suppression resumes.
+            session.pop("slots_stale_modality_switch", None)
+            # Save the first offered day's ISO date for FAQ-detour recovery.
+            # If the caller asks a FAQ mid-selection (clearing the slot map),
+            # this lets CALL STATE redirect check_availability to only that day.
+            _av_days = session.get("available_days") or []
+            if _av_days:
+                session["v3_last_offered_day_iso"] = _av_days[0]["date"]
                 logger.info(
-                    "[ms_gate5] slot map extracted on complete response "
-                    "(%d option(s)) — DTMF standby: %r",
-                    _slot_map_count,
-                    _slot_map,
+                    "[ms_gate5] v3_last_offered_day_iso=%r saved",
+                    _av_days[0]["date"],
                 )
+            logger.info(
+                "[ms_gate5] slot map extracted on complete response "
+                "(%d option(s)) — DTMF standby: %r",
+                _slot_map_count,
+                _slot_map,
+            )
 
         # If no new numbered options were found this turn (single-slot response,
         # date-specific re-check, etc.) clear any stale slot map so connection.py
@@ -4345,7 +4427,7 @@ class LLMStream:
                     # from session["available_days"].
                     from app.tools.slot_followup import (
                         remaining_slots_after_offer,
-                        next_slot_batch,
+                        all_remaining_on_next_day,
                         utterance_requests_more_slots,
                         utterance_accepts_offered_slot,
                         resolve_requested_time,
@@ -4353,6 +4435,7 @@ class LLMStream:
                         apply_resolved_time_to_session,
                         build_followup_tool_result,
                         remaining_unspoken,
+                        remaining_unspoken_on_current_day,
                     )
                     _days = session.get("available_days") or []
                     _offered = session.get("last_offered_slots") or []
@@ -4375,7 +4458,13 @@ class LLMStream:
                             "call_sid=%s", _hit.get("start"), call_sid,
                         )
                     elif _remaining and utterance_requests_more_slots(_user):
-                        _batch, _more = next_slot_batch(_remaining, n=2)
+                        # Day-scoped: _remaining spans the whole sweep, so
+                        # an unscoped batch answers "anything else that day?"
+                        # with whichever day sorts first. _remaining itself
+                        # stays whole for the named-time hit above.
+                        _batch, _more = all_remaining_on_next_day(
+                            remaining_unspoken_on_current_day(session)
+                        )
                         apply_next_batch_to_session(session, _batch, _more)
                         result = build_followup_tool_result(_days, _batch, _more)
                         logger.info(
@@ -4426,7 +4515,9 @@ class LLMStream:
                                     "check_availability has already returned slot data. "
                                     "Use the data in available_days that was already returned. "
                                     "Do NOT call check_availability again — present the existing "
-                                    "slots to the caller."
+                                    "slots to the caller. Read out AT MOST 3 times, soonest "
+                                    "first. If the day holds more than that, say you have a few "
+                                    "others that day instead of listing them."
                                 ),
                                 "available_days": session.get("available_days", {}),
                             }
@@ -4980,6 +5071,36 @@ class LLMStream:
                 session["_slot_presentation_mode"] = (
                     result.get("presentation_mode")
                     if isinstance(result, dict) else None
+                )
+                # WHICH day this readout is about. Needed because a clinic on a
+                # fixed evening rota has the same spoken labels on every day of
+                # the week, so resolving a label against the whole sweep is
+                # ambiguous on almost every real readout. first_day names it
+                # exactly; the blocked/cached results carry no first_day, but
+                # they only fire when an offer is already on the table, and
+                # that offer's day IS the day under discussion.
+                _presented_day = (_fd or {}).get("date") if isinstance(_fd, dict) else None
+                if not _presented_day:
+                    _prev = (session.get("last_offered_slots") or [{}])[0]
+                    _presented_day = str(_prev.get("start") or "")[:10] or None
+                session["_slot_presented_day"] = _presented_day
+                # How many options this readout may SPEAK. Normally the owner
+                # cap. On a next_unspoken_batch the caller has explicitly asked
+                # for the rest of the day, so the batch itself is the ceiling:
+                # trimming there would withhold the very times they asked for,
+                # which is the defect that batch exists to fix.
+                from app.tools.slot_followup import (
+                    MAX_SPOKEN_OPTIONS as _MAX_SPOKEN_OPTIONS,
+                )
+                _n_fd = (
+                    len((_fd or {}).get("slot_times") or [])
+                    if isinstance(_fd, dict) else 0
+                )
+                session["_slot_spoken_cap"] = (
+                    max(_n_fd, _MAX_SPOKEN_OPTIONS)
+                    if (isinstance(result, dict)
+                        and result.get("status") == "next_unspoken_batch")
+                    else _MAX_SPOKEN_OPTIONS
                 )
                 # Mark that a check ran this turn so the loop-level C8-5 silence
                 # guarantee can choose the no-availability fallback over the
