@@ -81,11 +81,53 @@ def test_the_speculative_setter_does_not_set_the_marker():
     )
 
 
-def test_booking_flow_active_still_has_exactly_two_writers():
-    """Premise guard: a third writer would need this analysis redone."""
+def test_booking_flow_active_writers_are_accounted_for():
+    """Premise guard: a NEW writer needs this analysis redone.
+
+    Was 2 (speculative treatment-mention, genuine ack). B-87 added a THIRD and
+    the analysis was redone rather than the count simply bumped:
+
+      * it fires only when a clinical screen has just CLEANLY cleared and the
+        caller had ALREADY asked to book in the utterance that armed the screen
+        — never while a screen is pending, never on a red flag, which is the
+        same rule the speculative writer's own clinical guard states;
+      * it does NOT set `v3_booking_ack_fired`, so the sentinel arm this file
+        exists to protect is untouched and a genuine ack can still fire later;
+      * the three gates that read `not self.booking_flow_active`
+        (treatment-mention, ask-which-clinic, CTA counting) are all downstream
+        of the screening block's `continue`, so none of them is skipped on the
+        turn it is set; on later turns the flag would have been True anyway
+        once the caller answered the offer that B-87 removes.
+
+    If you are adding a FOURTH, do the same work: say which of the three
+    meanings your write has, and why the sentinel arm still holds.
+    """
     writers = re.findall(r"^\s*self\.booking_flow_active = True\s*$", SRC, re.M)
-    assert len(writers) == 2, (
-        f"expected 2 writers of booking_flow_active (one speculative, one the "
-        f"genuine ack), found {len(writers)}. A new writer may reintroduce the "
-        f"conflation — re-check the sentinel arm's gate."
+    assert len(writers) == 3, (
+        f"expected 3 writers of booking_flow_active (speculative "
+        f"treatment-mention, genuine ack, B-87 post-screen continuation), "
+        f"found {len(writers)}. A new writer may reintroduce the conflation — "
+        f"re-check the sentinel arm's gate and this docstring."
+    )
+
+
+def test_the_b87_writer_does_not_claim_the_ack_ran():
+    """B-87 sets booking_flow_active but must NOT set v3_booking_ack_fired.
+
+    The ack path did not run — the caller never answered a booking offer,
+    because B-87 exists to stop that offer being made. Claiming otherwise
+    would shut the sentinel arm for a real ack later in the call.
+    """
+    # There is exactly ONE place that may claim the ack ran: the genuine ack
+    # path. Counting the writer is robust where slicing the source is not —
+    # a third writer of booking_flow_active must not have brought a second
+    # writer of the ack marker with it.
+    ack_writers = re.findall(
+        r"^\s*self\.session\[\"v3_booking_ack_fired\"\] = True\s*$", SRC, re.M
+    )
+    assert len(ack_writers) == 1, (
+        f"v3_booking_ack_fired must have exactly ONE writer (the genuine ack); "
+        f"found {len(ack_writers)}. A path that sets it without the caller "
+        f"having answered a booking offer shuts the sentinel arm for a real "
+        f"ack later in the call."
     )
