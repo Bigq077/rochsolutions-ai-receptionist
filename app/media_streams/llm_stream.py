@@ -2821,6 +2821,36 @@ class LLMStream:
         # ── 3. Assemble complete text for slot map + re-split ────────────────
         _joined = " ".join(clean_chunks)
 
+        # ── 3b. Reconcile the "a few others that day" claim with the data ────
+        # The formatter is a language model being shown a template; on
+        # 24 Aug 2026 it copied the more_times=true example verbatim onto a day
+        # that had exactly the two slots it had just listed, and told the caller
+        # there were more. That sentence is a claim about the provider's
+        # calendar, so it is decided here from the tool result, not by the
+        # model. Runs BEFORE slot-map extraction and the Number re-split so both
+        # operate on the text the caller will actually hear.
+        from app.tools.slot_followup import reconcile_extra_slots_claim
+
+        _more_times = bool(session.get("_slot_more_times"))
+        _n_offered = int(session.get("_slot_n_offered") or 2)
+        _reconciled, _action = reconcile_extra_slots_claim(
+            _joined, _more_times, _n_offered,
+        )
+        if _action == "stripped":
+            # Loud on purpose: this is the model asserting availability that
+            # does not exist, and it belongs in the call record.
+            logger.warning(
+                "[ms_gate5] slot buf: REMOVED unfounded extra-availability "
+                "claim (more_times=False) — before=%r after=%r",
+                _joined[:160], _reconciled[:160],
+            )
+        elif _action == "appended":
+            logger.info(
+                "[ms_gate5] slot buf: appended more-times tail "
+                "(more_times=True, n_offered=%d)", _n_offered,
+            )
+        _joined = _reconciled
+
         # ── 4. Slot map extraction (Bug 7 fix) ───────────────────────────────
         # Runs on the complete assembled response so every option's date string
         # is present and untruncated (last_bot_prompt is capped at 200 chars).
@@ -4740,6 +4770,24 @@ class LLMStream:
                 session["_check_av_had_slots"] = _note_availability_seen(
                     session, result
                 )
+                # Ground truth for the "a few others that day" tail, captured
+                # from the tool result the formatter is about to be shown.
+                # THREE producers set more_times — _check_availability_acuity
+                # (single_day >3 times), _cap_presented_slots (spoken list
+                # trimmed) and slot_followup.build_followup_tool_result — and
+                # all three land here, so this is the one place that sees every
+                # presentation. _flush_slot_buf reconciles the spoken text
+                # against it. See reconcile_extra_slots_claim.
+                _fd = result.get("first_day") if isinstance(result, dict) else None
+                if isinstance(_fd, dict):
+                    session["_slot_more_times"] = bool(_fd.get("more_times"))
+                    session["_slot_n_offered"] = len(_fd.get("slot_times") or [])
+                elif isinstance(result, dict):
+                    session["_slot_more_times"] = bool(result.get("more_times"))
+                    session["_slot_n_offered"] = 2
+                else:
+                    session["_slot_more_times"] = False
+                    session["_slot_n_offered"] = 2
                 # Mark that a check ran this turn so the loop-level C8-5 silence
                 # guarantee can choose the no-availability fallback over the
                 # generic re-ask when the turn ends with no audible speech.

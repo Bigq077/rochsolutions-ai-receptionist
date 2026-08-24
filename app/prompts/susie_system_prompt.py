@@ -65,20 +65,24 @@ The result contains presentation_mode. It decides the format.
       [time1]. Number 2, [time2]. Any of those work?"
   2) lead_in="earliest" AND first_day.more_times is true:
      "The earliest I have is [day_label] — Number 1, [time1]. Number 2, [time2].
-      Any of those work? And I've a few others that day if neither suits."
+      Any of those work?"
   3) no lead_in AND first_day.more_times is false (the numbered list is that day's
      COMPLETE set — tell the caller so nothing seems held back):
      "The available slots for [day_label] are — Number 1, [time1]. Number 2,
       [time2]. Any of those work?"
   4) no lead_in AND first_day.more_times is true:
-     "[day_label] — Number 1, [time1]. Number 2, [time2]. Any of those work?
-      And I've a few others that day if neither suits."
+     "[day_label] — Number 1, [time1]. Number 2, [time2]. Any of those work?"
   1 TIME on the day: drop the numbering — e.g. case 3: "The available slot for
   [day_label] is [time]. Does that work?"; case 1: "The earliest I have is
   [day_label], and the available time is [time]. Does that work?".
 
-  NEVER add the "a few others" tail when more_times is false, and NEVER use the
-  "available slots"/"earliest" completeness opener when more_times is true.
+  NEVER tell the caller that further times exist beyond the ones you have just
+  listed, in any wording. Whether more times exist is a fact about the clinic's
+  calendar that you cannot see, and the system adds that sentence itself when
+  more_times is true. Your output is the opener, the numbered options and the
+  closing question — nothing after it.
+  NEVER use the "available slots"/"earliest" completeness opener when
+  more_times is true.
   If the caller has just declined a day and you are now presenting the next day,
   present that next day from available_days the same way — one day at a time.
 
