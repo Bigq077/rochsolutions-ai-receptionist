@@ -2456,6 +2456,43 @@ def _parse_v3_slot_options(text: str) -> dict:
 # theorem_v3 slot map context helper
 # ---------------------------------------------------------------------------
 
+def _should_clear_slot_cache(session: dict) -> bool:
+    """B-78 — may this turn wipe `last_offered_slots`?
+
+    The turn-level slot cache clear exists so a NEW request hits the provider
+    fresh. It must stand down while the caller is still choosing from times
+    already read out, because `last_offered_slots` is the input to BOTH
+    unspoken-slot follow-up paths:
+
+      * `slot_followup.try_unspoken_followup_speech` (llm_stream, pre-LLM), and
+      * the in-tool follow-up branch in `_execute_tools`.
+
+    Both open with `if not offered: return None`. Wipe it and "have you got
+    anything else that day?" has no code path left — it falls to the model,
+    which anchors on the two times it just said.
+
+    **Guard on the MAP, never on `v3_awaiting_slot_selection`.** The flag is
+    derived (see `_derive_slot_window`) and the "caller is responding" branch
+    pops it mid-turn while deliberately KEEPING the map so a keypad press still
+    resolves. A clear guarded on the flag therefore fires on the very turn the
+    caller speaks instead of pressing — which is exactly the turn the follow-up
+    is for. `_derive_slot_window`'s docstring already records this trap taking
+    out the write-CTA clear; this is the same trap, one consumer later.
+
+    CA7cd9bed5 (24 Aug, jv_v1): Tuesday 1 Sept held five slots
+    (17:00/17:45/18:30/19:15/20:00). Two were offered. The caller asked twice
+    for more and was told "Those are the two available slots on that day" while
+    three sat unoffered in `available_days`.
+    """
+    if session.get("last_offered_slots") is None:
+        return False
+    # The map is the owner of the window; the flag is checked too, but only as
+    # a belt-and-braces reading of the same fact — never on its own.
+    if session.get("v3_dtmf_slot_map") or session.get("v3_awaiting_slot_selection"):
+        return False
+    return True
+
+
 def _derive_slot_window(session: dict) -> bool:
     """U-07-a — the ONE place `v3_awaiting_slot_selection` is decided.
 
@@ -9970,12 +10007,7 @@ class WebSocketCallHandler:
                                 # v3_awaiting_slot_selection is live. Wiping the
                                 # offer on the accept turn forced a full Acuity
                                 # re-fetch and the same slots were read back.
-                                if (
-                                    self.session.get("last_offered_slots") is not None
-                                    and not self.session.get(
-                                        "v3_awaiting_slot_selection"
-                                    )
-                                ):
+                                if _should_clear_slot_cache(self.session):
                                     _prev_hint = self.session.get("last_date_hint")
                                     _prev_slots = self.session.get("last_offered_slots") or []
                                     logger.info(
@@ -10019,10 +10051,7 @@ class WebSocketCallHandler:
                                             " date hint=%r preserved",
                                             _prev_hint,
                                         )
-                                elif (
-                                    self.session.get("last_offered_slots") is not None
-                                    and self.session.get("v3_awaiting_slot_selection")
-                                ):
+                                elif self.session.get("last_offered_slots") is not None:
                                     logger.info(
                                         "[ms_llm] slot cache kept — awaiting "
                                         "slot selection [FAQ path]"
@@ -11866,12 +11895,7 @@ class WebSocketCallHandler:
                             # Job 3c.1 / CAce1457d1: keep the offer while
                             # v3_awaiting_slot_selection is live — clearing on
                             # the accept turn forced a duplicate Acuity lookup.
-                            if (
-                                self.session.get("last_offered_slots") is not None
-                                and not self.session.get(
-                                    "v3_awaiting_slot_selection"
-                                )
-                            ):
+                            if _should_clear_slot_cache(self.session):
                                 _prev_hint = self.session.get("last_date_hint")
                                 _prev_slots = self.session.get("last_offered_slots") or []
                                 logger.info(
@@ -11915,10 +11939,7 @@ class WebSocketCallHandler:
                                         " date hint=%r preserved",
                                         _prev_hint,
                                     )
-                            elif (
-                                self.session.get("last_offered_slots") is not None
-                                and self.session.get("v3_awaiting_slot_selection")
-                            ):
+                            elif self.session.get("last_offered_slots") is not None:
                                 logger.info(
                                     "[ms_llm] slot cache kept — awaiting "
                                     "slot selection"
