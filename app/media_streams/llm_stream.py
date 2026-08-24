@@ -4247,10 +4247,14 @@ class LLMStream:
                         apply_next_batch_to_session,
                         apply_resolved_time_to_session,
                         build_followup_tool_result,
+                        remaining_unspoken,
                     )
                     _days = session.get("available_days") or []
                     _offered = session.get("last_offered_slots") or []
-                    _remaining = remaining_slots_after_offer(_days, _offered)
+                    # Cumulative across the day (B-78b): subtracting only the
+                    # CURRENT offer makes the previous batch unoffered again and
+                    # the caller ping-pongs between two pairs for ever.
+                    _remaining = remaining_unspoken(session)
                     _user = _last_user_text(messages or [])
                     _hit = resolve_requested_time(_user, _remaining) if _remaining else None
                     if _hit is not None:
