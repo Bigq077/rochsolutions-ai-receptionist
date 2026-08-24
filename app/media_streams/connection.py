@@ -6677,15 +6677,38 @@ class WebSocketCallHandler:
             _slot_stage_active = self.slot_map_stage in (
                 SlotMapStage.DAY_SELECTION, SlotMapStage.TIME_SELECTION
             )
+            # B-85: the NUMBERED READOUT is the invitation, not the word
+            # "keypad".
+            #
+            # This used to also require `"keypad" in last_bot_prompt`, which
+            # made it unsatisfiable. Susie only ever says "keypad" when asking
+            # for a phone NUMBER — and during phone collection slot_map_stage
+            # is NONE, so `_slot_stage_active` is False. The two halves could
+            # never be true at once, so `v3_slot_dtmf_active` had exactly one
+            # writer that never ran: every other reference in the codebase pops
+            # it. Slot selection by keypad was dead on every clinic.
+            #
+            # What the caller experienced: Susie reads "Number 1, … Number 2, …
+            # Number 3, …", the map is armed and logged as "DTMF standby", they
+            # press 1 — and it falls past this branch to the generic discard
+            # exit, counted as `dtmf_digit_discarded` and answered with silence.
+            # CA3db609f7 (24 Aug, jv_v1) lost exactly one caller input that way.
+            #
+            # It also means B-80's superseded-map guard below sat behind a gate
+            # that never opened.
+            #
+            # `_slot_stage_active` is the real guard and is sufficient: it is
+            # DAY_SELECTION/TIME_SELECTION only, and the whole block already
+            # runs only when `v3_phone_dtmf_active` is false, so a phone digit
+            # cannot be swallowed as a slot choice.
             if (
                 _slot_map
                 and _slot_stage_active
                 and not self.session.get("v3_slot_dtmf_active")
-                and "keypad" in self.session.get("last_bot_prompt", "").lower()
             ):
                 logger.info(
-                    "[ms_conn] theorem_v3: slot DTMF fallback armed "
-                    "(stage=%s, last_bot_prompt contains 'keypad', map=%r)",
+                    "[ms_conn] slot DTMF armed — numbered options on the table "
+                    "(stage=%s, map=%r)",
                     self.slot_map_stage.name,
                     _slot_map,
                 )
