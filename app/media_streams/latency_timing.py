@@ -236,6 +236,19 @@ class TurnTiming:
     eot_confident: Optional[bool] = None  # WS-C: confidence-driven vs silence fallback
     capture_phase: str = "conversation"  # conversation | phone | name
     endpoint_wait_ms: int = -1           # WS-C: t_end_of_turn - t_last_partial (pre-t0 dead-time)
+    # Anthropic prompt-cache accounting for the SAME API call that llm_ttft_ms
+    # measures — the turn's FIRST iteration, first-write-wins. A turn can make
+    # several calls (tool loops); only the first one is in front of the caller,
+    # and attributing a later call's cache read to llm_ttft would misprice the
+    # very thing these fields exist to settle.
+    #
+    # None means NOT OBSERVED and reports as -1. Zero is a real, meaningful
+    # reading — a cold cache — and must survive as 0. That distinction is the
+    # whole point of the field: it is the difference between "we did not look"
+    # and "the cache was cold".
+    cache_read_tokens:  Optional[int] = None   # served from cache (hit)
+    cache_write_tokens: Optional[int] = None   # written to cache (miss)
+    prompt_input_tokens: Optional[int] = None  # uncached input on this call
     _content_marked: bool = False        # content-boundary marker already enqueued
     _emitted: bool = False
 
@@ -274,7 +287,8 @@ class TurnTiming:
             "audio_wire_ms=%(audio_wire_ms)d "
             "flags=%(flags)s model=%(model)s stt_model=%(stt_model)s "
             "eot_confident=%(eot_confident)s capture_phase=%(capture_phase)s "
-            "endpoint_wait_ms=%(endpoint_wait_ms)d",
+            "endpoint_wait_ms=%(endpoint_wait_ms)d "
+            "cache_read=%(cache_read_tokens)d cache_write=%(cache_write_tokens)d in_tok=%(prompt_input_tokens)d",
             record,
         )
         _buffer(self.call_sid, record)
@@ -316,6 +330,10 @@ class TurnTiming:
             "eot_confident":     self.eot_confident,
             "capture_phase":     self.capture_phase,
             "endpoint_wait_ms":  self.endpoint_wait_ms,               # WS-C
+            # -1 = not observed; 0 = observed cold. See the field comments.
+            "cache_read_tokens":   -1 if self.cache_read_tokens is None else self.cache_read_tokens,
+            "cache_write_tokens":  -1 if self.cache_write_tokens is None else self.cache_write_tokens,
+            "prompt_input_tokens": -1 if self.prompt_input_tokens is None else self.prompt_input_tokens,
         }
 
 
