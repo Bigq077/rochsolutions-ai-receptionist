@@ -4372,11 +4372,21 @@ _VALID_SERVICES: frozenset[str] = frozenset({"physiotherapy assessment"})
 
 _MAX_PRESENTED_DAYS = 2
 
+# A single day's SPOKEN times. Owner decision 24 Aug 2026: three is the most a
+# caller can hold in their head at once. _check_availability_acuity has always
+# used [:3] on its own single-day path, so this aligns the two availability
+# executors, and matches slot_followup.MAX_SPOKEN_OPTIONS, which enforces the
+# same number on the assembled speech whichever executor produced it.
+#
+# multi_day stays at ONE time per day: two days named in a breath is already
+# two things to hold, and three times each would be six.
+_MAX_PRESENTED_TIMES_SINGLE_DAY = 3
+
 
 def _cap_presented_slots(
     result: Dict[str, Any], max_days: int = _MAX_PRESENTED_DAYS
 ) -> Dict[str, Any]:
-    """Trim the SPOKEN availability list to ~2 options. Never trim bookable data.
+    """Trim the SPOKEN availability list. Never trim bookable data.
 
     Speak via first_day (single_day) or presented_days (multi_day), with
     more_times=True when truncated. available_days stays the FULL bookable set
@@ -4388,7 +4398,7 @@ def _cap_presented_slots(
         return result
 
     kept = days[:max_days]
-    per_day = 1 if len(kept) > 1 else 2
+    per_day = 1 if len(kept) > 1 else _MAX_PRESENTED_TIMES_SINGLE_DAY
 
     presented: List[Dict[str, Any]] = []
     truncated = False
