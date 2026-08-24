@@ -84,7 +84,9 @@ def test_tail_is_appended_when_further_times_really_exist():
     out, action = reconcile_extra_slots_claim(reply, more_times=True, n_offered=2)
 
     assert action == "appended"
-    assert out.endswith(MORE_TIMES_TAIL_MANY)
+    assert MORE_TIMES_TAIL_MANY in out
+    # ...and BEFORE the closing question, so the caller's "yes" is unambiguous.
+    assert out.rstrip().endswith("Any of those work?")
 
 
 def test_single_time_gets_the_singular_tail():
@@ -96,7 +98,8 @@ def test_single_time_gets_the_singular_tail():
     )
 
     assert action == "appended"
-    assert out.endswith(MORE_TIMES_TAIL_ONE)
+    assert MORE_TIMES_TAIL_ONE in out
+    assert out.rstrip().endswith("Does that work?")
     # ...and a completeness opener suppresses the append rather than
     # contradicting itself in one breath.
     _, action2 = reconcile_extra_slots_claim(reply, more_times=True, n_offered=1)
@@ -255,7 +258,8 @@ def test_tail_agrees_with_the_number_of_options(n_offered, expected):
     out, action = reconcile_extra_slots_claim(reply, more_times=True, n_offered=n_offered)
 
     assert action == "appended"
-    assert out.endswith(expected), out
+    assert expected in out, out
+    assert out.rstrip().endswith("Any of those work?"), out
 
 
 def test_multi_day_never_gets_the_that_day_tail():

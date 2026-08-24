@@ -154,6 +154,30 @@ def remaining_unspoken(session: Dict[str, Any]) -> List[Dict[str, Any]]:
     ]
 
 
+def remaining_unspoken_on_current_day(
+    session: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """remaining_unspoken(), scoped to the day of the offer on the table.
+
+    "Anything else THAT DAY?" means the day the caller is discussing, and the
+    only record of which day that is, is the offer they were just given.
+    `remaining_unspoken` flattens the whole sweep — a clinic on a fixed evening
+    rota has four more days of it — so an unscoped batch takes remaining[0]'s
+    day, which is whichever day sorts first, not the one under discussion.
+
+    Found 24 Aug 2026 while testing B-79: a caller offered Wednesday times and
+    asking "anything else that day?" was answered with TUESDAY, announced under
+    Tuesday's own label. That is CA5c4fb14f's failure mode — a real patient
+    sent to the clinic on the wrong day — reached through a different door.
+    """
+    remaining = remaining_unspoken(session)
+    offered = session.get("last_offered_slots") or []
+    day = str((offered[0] or {}).get("start") or "")[:10] if offered else ""
+    if not day:
+        return remaining
+    return [slot for slot in remaining if _day_key(slot) == day]
+
+
 def next_slot_batch(
     remaining: List[Dict[str, Any]], n: int = 2
 ) -> Tuple[List[Dict[str, Any]], bool]:
@@ -187,6 +211,40 @@ def next_slot_batch(
     batch = list(same_day[:n])
     more = len(same_day) > n
     return batch, more
+
+
+def all_remaining_on_next_day(
+    remaining: List[Dict[str, Any]]
+) -> Tuple[List[Dict[str, Any]], bool]:
+    """EVERY unspoken slot on remaining[0]'s day.
+
+    Owner rule, 24 Aug 2026: the first offer is capped (three times, so the
+    caller is not read a wall of numbers), but a caller who has been told "I've
+    a few others that day" and asks for them gets ALL of them — not another
+    pair, and never a slot silently withheld. On CA6b90c3a2 the two-at-a-time
+    batching meant three separate asks to walk one Tuesday.
+
+    Delegates to next_slot_batch so the single-day confinement invariant has
+    exactly one implementation. Slots on LATER days are still excluded —
+    announcing them under this day's label is CA5c4fb14f.
+
+    Ceiling of nine, and it is not a style choice: SLOT_OPTION_ANCHOR_RE and the
+    DTMF map are single-digit, so a tenth option is spoken as "Number 10", which
+    anchors as "Number 1" and points the keypad at the wrong time. A day that
+    holds more than nine unspoken times therefore gets nine and `more=True`, so
+    the caller is told the rest exist rather than being read a number they
+    cannot press. `more` is False in every realistic case — the whole day is on
+    the table.
+    """
+    batch, _ = next_slot_batch(remaining, n=len(remaining) or 1)
+    if len(batch) > MAX_KEYPAD_OPTIONS:
+        logger.info(
+            "[slot_followup] %d unspoken times on that day — offering %d, "
+            "the most the keypad can address",
+            len(batch), MAX_KEYPAD_OPTIONS,
+        )
+        return batch[:MAX_KEYPAD_OPTIONS], True
+    return batch, False
 
 
 def utterance_requests_different_day(text: str) -> bool:
@@ -415,6 +473,176 @@ _COMPLETENESS_RE = re.compile(
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
 
+# ---------------------------------------------------------------------------
+# What was actually READ OUT — the one place that knows.
+#
+# The option count is a claim about how much the caller has to hold in their
+# head, and until now nothing owned it. The tool capped its own payload, but
+# the `already_retrieved` re-entry (llm_stream) hands the model the FULL
+# available_days and says "present the existing slots" — so on CA6b90c3a2 a
+# five-slot Tuesday was read out in one breath, five numbered options deep,
+# after the first offer had been correctly capped at two.
+#
+# Capping in the prompt would be a fourth attempt to win an argument with a
+# language model about a number. It is enforced here instead, on the assembled
+# text, immediately before the DTMF map and the Number re-split are derived
+# from it — so the keypad, the speech and the record cannot disagree.
+# ---------------------------------------------------------------------------
+
+MAX_SPOKEN_OPTIONS = 3
+
+# The most options a single readout can carry, set by the KEYPAD, not by taste:
+# SLOT_OPTION_ANCHOR_RE matches one digit, so "Number 10" anchors as "Number 1".
+MAX_KEYPAD_OPTIONS = 9
+
+# The closing question a capped readout is given when the trim removed the
+# model's own. A slot readout that ends on a statement is dead air the caller
+# has to break. Checked against turn_handler._BANNED_SENTENCE_RE.
+CAPPED_READOUT_QUESTION = "Any of those work?"
+
+# Numbered-option anchors. Defined HERE and imported by llm_stream so the trim,
+# the DTMF map and the TTS re-split are derived from one pattern — a cap that
+# counted options differently from the map would trim to a boundary the keypad
+# does not share.
+SLOT_OPTION_ANCHOR_RE = re.compile(
+    r"Number\s+([1-9])\b|(?<!\d)([1-9])\s*[\u2014\u2013\-]\s*",
+    re.IGNORECASE,
+)
+
+_OPTION_LABEL_STOP_RE = re.compile(r"[\u2014\u2013.]")
+
+
+def _option_anchors(text: str) -> List[Tuple[int, int, str]]:
+    return [
+        (m.start(), m.end(), m.group(1) or m.group(2))
+        for m in SLOT_OPTION_ANCHOR_RE.finditer(text or "")
+    ]
+
+
+def extract_slot_options(text: str) -> Dict[str, str]:
+    """{digit: spoken label} for every numbered option in `text`, in order."""
+    text = text or ""
+    anchors = _option_anchors(text)
+    out: Dict[str, str] = {}
+    for i, (_start, end, digit) in enumerate(anchors):
+        nxt = anchors[i + 1][0] if i + 1 < len(anchors) else len(text)
+        label = text[end:nxt].lstrip(", ")
+        label = _OPTION_LABEL_STOP_RE.split(label)[0].strip().rstrip(".,;- ")
+        if label:
+            out[digit] = label
+    return out
+
+
+def cap_spoken_options(
+    text: str, cap: int = MAX_SPOKEN_OPTIONS
+) -> Tuple[str, int, int]:
+    """Trim a numbered readout to its first `cap` options.
+
+    Returns `(text, n_before, n_after)`. `n_before != n_after` means the model
+    read out more than it was allowed to and the excess was removed — which
+    also means further times on that day now exist by construction, so the
+    caller must set more_times True off this result.
+
+    Whatever followed the LAST option's own sentence is re-attached: that is
+    where the closing question lives ("... eight in the evening. Any of those
+    work?"). Cutting at the anchor alone would take the question with it.
+    """
+    s = (text or "").strip()
+    if not s or cap < 1:
+        return text, 0, 0
+    anchors = _option_anchors(s)
+    n = len(anchors)
+    if n <= cap:
+        return text, n, n
+
+    head = s[: anchors[cap][0]].rstrip()
+    if not head:
+        # Nothing at all before option cap+1 — not a shape we can safely
+        # rewrite, so leave it and let the count mismatch be logged.
+        return text, n, n
+    if head[-1] not in ".!?":
+        head += "."
+
+    trailing = s[anchors[-1][1]:].strip()
+    parts = _SENTENCE_SPLIT_RE.split(trailing, maxsplit=1)
+    remainder = parts[1].strip() if len(parts) > 1 else ""
+    return f"{head} {remainder or CAPPED_READOUT_QUESTION}".strip(), n, cap
+
+
+def _norm_label(label: str) -> str:
+    return " ".join(str(label or "").lower().split()).strip(" .,;:!?-")
+
+
+def _resolve_within(
+    slots: List[Dict[str, Any]], labels: List[str]
+) -> Optional[List[Dict[str, Any]]]:
+    if not slots or not labels:
+        return None
+    by_label: Dict[str, List[Dict[str, Any]]] = {}
+    for slot in slots:
+        by_label.setdefault(_norm_label(slot.get("spoken") or ""), []).append(slot)
+    out: List[Dict[str, Any]] = []
+    for label in labels:
+        hits = by_label.get(_norm_label(label)) or []
+        if len(hits) != 1:
+            return None
+        out.append(hits[0])
+    return out
+
+
+def resolve_spoken_options(
+    available_days: Any, labels: Any, prefer_day: Optional[str] = None
+) -> Optional[List[Dict[str, Any]]]:
+    """Map spoken labels back to bookable slots. All-or-nothing, deny by default.
+
+    Returns None unless EVERY label resolves to exactly one slot. A label that
+    appears on more than one day counts as unresolvable rather than guessed:
+    picking the wrong day would write a wrong `last_offered_slots`, and a wrong
+    offer on the table is how a caller is booked into a day they never heard.
+
+    `prefer_day` is what makes this usable rather than theoretical. A clinic
+    running the same rota every evening has "five in the evening" on Tuesday
+    AND Wednesday, and `available_days` holds the whole sweep — so a plain
+    global lookup would be ambiguous on almost every real readout and quietly
+    resolve nothing. The day being presented is known at the call site (the
+    tool result's first_day, or the day of the offer already on the table), so
+    the search is scoped to it first and only falls back to the whole set.
+    """
+    flat = flatten_bookable_slots(available_days)
+    labels = list(labels or [])
+    if not flat or not labels:
+        return None
+    if prefer_day:
+        scoped = _resolve_within(
+            [s for s in flat if _day_key(s) == prefer_day], labels
+        )
+        if scoped is not None:
+            return scoped
+    return _resolve_within(flat, labels)
+
+
+def unspoken_remain_on_day(session: Dict[str, Any], day: str) -> bool:
+    """True if `day` still holds a bookable slot the caller has never heard.
+
+    Ground truth for the "a few others that day" tail, read from the CUMULATIVE
+    spoken record rather than from one turn's tool flag. All three producers of
+    more_times are subsumed: a follow-up batch that finishes a day reads False
+    here even though its own payload knows only about its own slots.
+    """
+    spoken = _spoken_key_set(session)
+    for slot in flatten_bookable_slots(session.get("available_days") or []):
+        if _day_key(slot) != day:
+            continue
+        if str(slot.get("start") or "")[:19] not in spoken:
+            return True
+    return False
+
+
+def day_key_of(slot: Dict[str, Any]) -> str:
+    """Public alias — the calendar day a slot belongs to."""
+    return _day_key(slot)
+
+
 def _is_extra_slots_claim(sentence: str) -> bool:
     """True when `sentence` asserts further times beyond those listed."""
     s = sentence.strip()
@@ -477,28 +705,62 @@ def reconcile_extra_slots_claim(
         return text, "unchanged"
     if _COMPLETENESS_RE.search(text):
         return text, "unchanged"
-    return f"{text.rstrip()} {more_times_tail(n_offered)}", "appended"
+
+    tail = more_times_tail(n_offered)
+    # BEFORE the closing question, not after it. "Any of those work? And I've a
+    # few others that day" makes the caller's "yes" ambiguous between "yes, one
+    # of those works" and "yes, tell me the others" — and it ends the readout on
+    # a statement, which arms the watchdog BACKSTOP and reads as dead air.
+    # Offering the extra times first and then asking is the order a receptionist
+    # would use, and it is the order the caller can answer.
+    if sentences and sentences[-1].rstrip().endswith("?"):
+        head = " ".join(sentences[:-1]).strip()
+        if head:
+            return f"{head} {tail} {sentences[-1].strip()}", "appended"
+    return f"{text.rstrip()} {tail}", "appended"
+
+
+def _spoken_series(labels: List[str]) -> str:
+    """"a", "a, or b", "a, b, or c" — a spoken list, not a written one.
+
+    No Oxford comma before a two-item "or": "five, or half five" is how a
+    receptionist says it, and it is what the two-slot form has always emitted.
+    """
+    labels = [l for l in labels if l]
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        return labels[0]
+    return f"{', '.join(labels[:-1])}, or {labels[-1]}"
+
+
+def _closing_question(n: int) -> str:
+    if n <= 1:
+        return "Does that work?"
+    if n == 2:
+        return "Either of those work?"
+    return "Any of those work?"
 
 
 def format_next_batch_speech(batch: List[Dict[str, Any]], more: bool) -> str:
+    """Speak a follow-up batch of ANY size on one day.
+
+    Sizes 1 and 2 are byte-identical to the two-slot form this replaced. Sizes
+    3+ exist because the owner rule (24 Aug 2026) is that the FIRST offer is
+    capped at three and an explicit "tell me the others" is answered with every
+    remaining time on that day — see all_remaining_on_next_day.
+    """
     if not batch:
         return (
             "I don't have any further times on that day — would you like me "
             "to look at a different day?"
         )
     day = batch[0].get("day_label") or "that day"
-    if len(batch) == 1:
-        spoken = batch[0]["spoken"]
-        tail = f" {MORE_TIMES_TAIL_ONE}" if more else ""
-        return (
-            f"On {day} I also have {spoken}.{tail} "
-            f"Does that work?"
-        )
-    a, b = batch[0]["spoken"], batch[1]["spoken"]
-    tail = f" {MORE_TIMES_TAIL_MANY}" if more else ""
+    series = _spoken_series([s.get("spoken") or "" for s in batch])
+    tail = f" {more_times_tail(len(batch))}" if more else ""
     return (
-        f"On {day} I also have {a}, or {b}.{tail} "
-        f"Either of those work?"
+        f"On {day} I also have {series}.{tail} "
+        f"{_closing_question(len(batch))}"
     )
 
 
@@ -642,9 +904,18 @@ def try_unspoken_followup_speech(
         return apply_resolved_time_to_session(session, hit)
 
     if utterance_requests_more_slots(user_text):
-        batch, more = next_slot_batch(remaining, n=2)
+        # Scoped to the day under discussion. `remaining` above stays whole-
+        # sweep on purpose: resolve_requested_time names the slot's OWN day, so
+        # a caller-named time on another day cannot mislead, and refusing it
+        # would tell them a real time does not exist.
+        batch, more = all_remaining_on_next_day(
+            remaining_unspoken_on_current_day(session)
+        )
         if not batch:
-            return None
+            # This DAY is exhausted even though other days remain. Say so
+            # rather than falling to the model — the same reasoning as the
+            # empty-remaining branch above, and the same sentence.
+            return format_next_batch_speech([], False)
         return apply_next_batch_to_session(session, batch, more)
 
     return None
