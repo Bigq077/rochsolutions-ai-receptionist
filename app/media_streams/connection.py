@@ -2500,6 +2500,8 @@ def _derive_slot_window(session: dict) -> bool:
     session.pop("v3_slot_dtmf_active",  None)
     session.pop("v3_awaiting_slot_selection", None)
     session.pop("v3_dtmf_slot_context", None)
+    # B-80: no map means nothing to be stale about.
+    session.pop("v3_slot_map_superseded", None)
     return False
 
 
@@ -6720,7 +6722,19 @@ class WebSocketCallHandler:
                     self.session.pop("v3_slot_dtmf_active", None)
                     # Fall through — do NOT return; phone handler may need digit.
                 else:
-                    _label = _slot_map.get(digit)
+                    # B-80: the map is built in _flush_slot_buf from a NUMBERED
+                    # readout. The deterministic follow-up paths in
+                    # slot_followup speak their times directly and UNNUMBERED,
+                    # never reaching that function, so the map survives while
+                    # the offer has moved on. Resolving against it books a time
+                    # the caller heard EARLIER and is no longer being offered -
+                    # a silent wrong-slot booking, which is worse than the
+                    # keypress doing nothing. Mark, not clear: the map owns the
+                    # slot window (see _supersede_slot_map).
+                    _superseded = bool(
+                        self.session.get("v3_slot_map_superseded")
+                    )
+                    _label = None if _superseded else _slot_map.get(digit)
                     # Disarm regardless — one press = one selection
                     self.session.pop("v3_slot_dtmf_active",        None)
                     self.session.pop("v3_dtmf_slot_map",           None)
@@ -6734,8 +6748,11 @@ class WebSocketCallHandler:
                         await self.transcript_queue.put((time.monotonic(), _label))
                     else:
                         logger.info(
-                            "[ms_conn] theorem_v3: slot DTMF digit=%r — no mapping, ignored",
+                            "[ms_conn] theorem_v3: slot DTMF digit=%r — %s,"
+                            " ignored",
                             digit,
+                            "map superseded by a follow-up (B-80)"
+                            if _superseded else "no mapping",
                         )
                         # Second door into the defect fixed on the discard exit
                         # below.  "ignored" means nothing is spoken and nothing
@@ -6747,7 +6764,15 @@ class WebSocketCallHandler:
                         # Its own reason code, so the two doors stay countable
                         # apart in the [ms_lost] CALL SUMMARY row — this one was
                         # not counted at all.
-                        self._note_utterance_lost("dtmf_slot_no_mapping", digit)
+                        # B-80 adds a THIRD code: a press against a map that a
+                        # follow-up has superseded is a different fault from a
+                        # digit that was never in range, and only the first is
+                        # a near-miss wrong booking.
+                        self._note_utterance_lost(
+                            "dtmf_slot_map_superseded" if _superseded
+                            else "dtmf_slot_no_mapping",
+                            digit,
+                        )
                         if (
                             _wdg_prev_armed_at is not None
                             and _wdg_prev_q_gen is not None
