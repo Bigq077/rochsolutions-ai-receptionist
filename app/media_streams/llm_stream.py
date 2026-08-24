@@ -3021,6 +3021,10 @@ class LLMStream:
             # at the very end of run_turn, so a stamp equal to the current
             # turn_count means "armed by the reply being spoken right now".
             session["v3_slot_map_armed_turn"] = session.get("turn_count", 0)
+            # B-80: this map describes the readout being spoken right now,
+            # so any staleness mark left by an earlier deterministic
+            # follow-up no longer applies.
+            session.pop("v3_slot_map_superseded", None)
             _slot_map_count = len(_slot_map)
             # Fresh slots have now been presented for the CURRENT modality,
             # so the "stale after modality switch" mark no longer applies —
