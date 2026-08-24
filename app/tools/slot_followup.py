@@ -773,6 +773,32 @@ def format_time_available_speech(slot: Dict[str, Any]) -> str:
     )
 
 
+def _supersede_slot_map(session: Dict[str, Any]) -> None:
+    """B-80 — the keypad map no longer describes what the caller just heard.
+
+    `v3_dtmf_slot_map` is built in `_flush_slot_buf` from a NUMBERED readout.
+    The deterministic follow-up paths below speak their times directly and
+    UNNUMBERED, never reaching that function, so the map from the previous
+    readout survives intact while the offer has moved on. On CA6b90c3a2
+    (24 Aug, 12:24:39) the map still listed all five times while the follow-up
+    had just offered 20:00 alone: a keypress would have booked a time the
+    caller heard earlier and was no longer being offered.
+
+    Marking rather than clearing, deliberately. `v3_dtmf_slot_map` is the
+    OWNER of the slot window -- `_derive_slot_window` re-derives
+    `v3_awaiting_slot_selection` from it every turn, and
+    `_should_clear_slot_cache` reads its presence to decide whether the next
+    turn may wipe `last_offered_slots`. Popping the map here would therefore
+    hand the next turn permission to wipe the very input these follow-up
+    paths open with (`if not offered: return None`) -- re-breaking B-78, the
+    defect this whole module exists to fix. The window must stay open for
+    VOICE; only the digit-to-label resolution is invalidated.
+
+    Cleared again wherever a fresh map is armed, and when the window closes.
+    """
+    session["v3_slot_map_superseded"] = True
+
+
 def apply_next_batch_to_session(
     session: Dict[str, Any],
     batch: List[Dict[str, Any]],
@@ -786,6 +812,8 @@ def apply_next_batch_to_session(
         {"start": s["start"], "end": s.get("end") or ""} for s in batch
     ]
     session["slot_labels"] = [s.get("spoken") or s.get("time") for s in batch]
+    # B-80: these times are spoken UNNUMBERED, so 1..N no longer refer to them.
+    _supersede_slot_map(session)
     return format_next_batch_speech(batch, more)
 
 
@@ -804,6 +832,8 @@ def apply_resolved_time_to_session(
         session[F_SELECTED_SLOT] = offered
     except Exception:
         pass
+    # B-80: the offer is now this single time; the numbered map is stale.
+    _supersede_slot_map(session)
     return format_time_available_speech(slot)
 
 
