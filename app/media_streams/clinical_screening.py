@@ -633,6 +633,30 @@ def _occurrence_negated(text_norm: str, keyword: str) -> bool:
 # classified `clear`. Found 2026-08-21 while fixing the missing affirmative
 # path. Whole-word matching also stops "im not sure" clearing a screen on the
 # "no" inside "not", which is the right outcome: unsure is not a no.
+# "I don't know" is not "no". It reached `clear` by two separate routes, both
+# live on committed HEAD before 2026-08-24:
+#   "i dont know maybe" -> _NEGATIVE_PATTERNS contains "i dont", which substring-
+#                          matches "i dont know"
+#   "no idea mate"      -> _NEGATIVE_WORDS contains "no", and "no idea" leads
+#                          with it
+# Both cleared a clinical red-flag screen for a caller who had just said they
+# could not answer it. That is the same defect the comment below records — "no"
+# matching inside "know" — reappearing one word later, and it contradicts this
+# module's own doctrine that unsure is not a no.
+#
+# Checked BEFORE the negative branches, because ordering is the whole bug: the
+# hedge vocabulary already carries "not sure" and it never got a turn. An unsure
+# answer becomes `hedged`, which the HEDGE PROBE below handles properly — one
+# narrowing question naming the symptom, escalate if the answer to THAT is not a
+# clean no. Asking once more is the correct treatment for "I don't know"; a
+# false CLEAR is not.
+_UNSURE_PHRASES: tuple = (
+    "dont know", "do not know", "dunno", "no idea", "not a clue", "havent a clue",
+    "cant remember", "cannot remember", "cant say", "couldnt say", "cant tell",
+    "not certain", "hard to tell", "im unsure", "who knows",
+)
+
+
 _NEGATIVE_WORDS: frozenset = frozenset({
     "no", "nope", "nah", "none", "neither",
 })
@@ -803,6 +827,12 @@ def classify_screen_answer(text: str, screen: Dict[str, Any]) -> str:
     lead_words = list(words)
     while lead_words and lead_words[0] in _NOISE_WORDS:
         lead_words.pop(0)
+
+    # Unsure outranks every clear-branch. See _UNSURE_PHRASES: without this the
+    # loose "i dont" pattern and the bare "no" in "no idea" both cleared a
+    # red-flag screen for a caller who had just said they could not answer it.
+    if any(u in t for u in _UNSURE_PHRASES):
+        return "hedged"
 
     first_word = words[0] if words else ""
     if first_word in _NEGATIVE_WORDS:
