@@ -2582,9 +2582,21 @@ _V3_NAME_CONFIRM_PATTERNS_ANCHORED = [
     # is only ever an opener, so requiring the boundary costs nothing.
     re.compile(r'(?:^|[.!?]\s+)[Rr]ight\s+([A-Za-z][a-z]{1,25})[\s—–,\-]'),
     # Pattern 1e: "Of course Sarah," (mid-sentence acknowledgement)
-    re.compile(r'[Oo]f course\s+([A-Za-z][a-z]{1,25})[\s—–,\-]'),
+    # B-83: capitalised for the same reason as 1b above. Unfixed, this read
+    # "Of course darling, one moment." as name = 'Darling'. "lovely" is in the
+    # stoplist and "darling" is not - which is the whole problem with a
+    # wordlist: it can only ever name false positives someone has already been
+    # bitten by. Weekdays and months are already blocked, so the residual
+    # family was lowercase endearments and adjectives.
+    re.compile(r'[Oo]f course\s+([A-Z][a-z]{1,25})[\s—–,\-]'),
     # Pattern 1f: "Just to confirm — that's Sarah," (alternate readback opening)
-    re.compile(r"[Jj]ust to confirm[^,—]*[,—]\s*(?:that'?s\s+)?([A-Za-z][a-z]{1,25})[\s—–,\-]"),
+    # B-83: capitalised. Unfixed, "Just to confirm, that's booked for Tuesday."
+    # persisted name = 'Booked' - and 'Booked' is one of the SIX false names the
+    # 22 Aug sweep (e59f86b) already found and fixed in the RECORD path,
+    # app/tools/actionable_summary.py. That sweep capitalised both of its arms
+    # and never crossed to this module, so the LIVE path - the one that arms
+    # phone DTMF and can deafen the call - kept the defect.
+    re.compile(r"[Jj]ust to confirm[^,—]*[,—]\s*(?:that'?s\s+)?([A-Z][a-z]{1,25})[\s—–,\-]"),
 ]
 
 _V3_NAME_CONFIRM_PATTERNS_BARE = [
