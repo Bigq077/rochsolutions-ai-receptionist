@@ -356,7 +356,7 @@ def _is_extra_slots_claim(sentence: str) -> bool:
 
 
 def reconcile_extra_slots_claim(
-    text: str, more_times: bool, n_offered: int = 2
+    text: str, more_times: bool, n_offered: int = 2, allow_append: bool = True
 ) -> Tuple[str, str]:
     """Align a slot presentation's "more times that day" claim with the truth.
 
@@ -376,6 +376,12 @@ def reconcile_extra_slots_claim(
         is served the real next batch by next_slot_batch(). Appending next to a
         completeness opener would make Susie contradict herself in one breath,
         which is worse than staying quiet.
+
+    `allow_append` is False for a multi_day presentation. The tail says "that
+    day", and a multi_day reply has just named TWO different days — there is no
+    "that day" for it to refer to. The sentence only ever belonged to the
+    single_day cases. Stripping stays unconditional: a false claim is wrong in
+    either presentation mode.
     """
     if not (text or "").strip():
         return text, "unchanged"
@@ -393,6 +399,8 @@ def reconcile_extra_slots_claim(
             return text, "unchanged"
         return " ".join(kept).strip(), "stripped"
 
+    if not allow_append:
+        return text, "unchanged"
     if any(_is_extra_slots_claim(s) for s in sentences):
         return text, "unchanged"
     if _COMPLETENESS_RE.search(text):
