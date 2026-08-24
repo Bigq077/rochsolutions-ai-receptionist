@@ -3066,85 +3066,119 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
             except Exception as _pn_err:
                 logger.warning("[PENDING_NAME] create failed (non-fatal): %r", _pn_err)
 
-        # Confirmation SMS — non-fatal.
-        # Suppressed when called as part of a reschedule (caller gets a reschedule
-        # confirmation instead, sent by _reschedule_appointment_acuity).
-        if not args.get("_suppress_sms"):
-            # Owner heads-up FIRST — before the patient confirmation.
-            # No-op unless the clinic enables owner_alerts.
-            from app.notifications.owner_alert import notify_owner
-            await notify_owner(
-                session,
-                event="booking",
-                patient_name=patient_name,
-                when_label=booking.start_time.strftime("%A %d %B at %H:%M"),
-                service=service,
-                location=location,
-                is_new_patient=is_new,
-            )
+        # ── Post-write side effects — OFF the caller's clock (B-84) ─────────
+        # The booking is committed. Everything below is a notification, and
+        # none of it changes what Susie says next, but the caller was made to
+        # wait for all of it: on CA98557584dc that was 3.3s of the 7.3s silence
+        # after "Just locking that in now…", against a 3s bar.
+        #
+        # Two Twilio round trips at ~0.65s each are the bulk of it. They are
+        # detached rather than awaited, and deliberately NOT registered with the
+        # connection's task list, which is cancelled at teardown — a caller who
+        # hangs up must not cancel their own confirmation text. See
+        # app/notifications/background.py.
+        #
+        # This also closes a correctness hole: notify_owner was awaited bare,
+        # with no try/except, INSIDE the outer `except Exception` that returns
+        # {"success": False}. So a Twilio hiccup on the OWNER alert turned a
+        # booking already committed in Acuity into a reported failure, and the
+        # caller was told their appointment had not been made. Detached, an
+        # owner-alert failure can no longer speak for the booking.
+        async def _post_booking_notifications() -> None:
+            # Confirmation SMS — non-fatal.
+            # Suppressed when called as part of a reschedule (caller gets a
+            # reschedule confirmation instead, sent by
+            # _reschedule_appointment_acuity).
+            if not args.get("_suppress_sms"):
+                # Owner heads-up FIRST — before the patient confirmation.
+                # No-op unless the clinic enables owner_alerts.
+                from app.notifications.owner_alert import notify_owner
+                try:
+                    await notify_owner(
+                        session,
+                        event="booking",
+                        patient_name=patient_name,
+                        when_label=booking.start_time.strftime("%A %d %B at %H:%M"),
+                        service=service,
+                        location=location,
+                        is_new_patient=is_new,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "_book_appointment_acuity owner alert failed "
+                        "(non-fatal, booking stands): %r", e,
+                    )
+                try:
+                    await send_booking_confirmation(
+                        patient_phone=phone,
+                        patient_name=patient_name,
+                        appointment_time=booking.start_time,
+                        location=location.title(),
+                        service=service,
+                        is_new_patient=is_new,
+                        has_insurance=bool(insurer),
+                        insurer=insurer or None,
+                        clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
+                        clinic_phone=clinic.get("sms_phone") or clinic.get("phone"),
+                        session=session,
+                    )
+                except Exception as e:
+                    logger.warning("_book_appointment_acuity SMS failed (non-fatal): %r", e)
+
+            # Schedule day-before (24hr) + 2-hour reminders — non-fatal.
+            # Fires for reschedules too (new appointment time gets its own reminders).
             try:
-                await send_booking_confirmation(
+                from app.notifications.scheduler import schedule_appointment_reminders
+                from app.clinic_config import twilio_number_for_clinic
+                _clinic_id = clinic.get("clinic_id") or session.get("clinic_id") or ""
+                await schedule_appointment_reminders(
                     patient_phone=phone,
                     patient_name=patient_name,
                     appointment_time=booking.start_time,
                     location=location.title(),
-                    service=service,
                     is_new_patient=is_new,
                     has_insurance=bool(insurer),
                     insurer=insurer or None,
                     clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
                     clinic_phone=clinic.get("sms_phone") or clinic.get("phone"),
-                    session=session,
+                    appointment_noun=clinic.get("sms_appointment_noun"),
+                    clinic_id=_clinic_id,
+                    # Pin the sender to THIS clinic's line. `pending_reminders`
+                    # is a global Redis key, so on a shared Redis another
+                    # tenant's worker may drain this entry — unpinned it would
+                    # go out from that worker's ambient TWILIO_PHONE_NUMBER, and
+                    # the patient's reply would land on the wrong clinic's
+                    # inbound webhook and be lost. The session booking path was
+                    # pinned; this one was missed, and it is the ONLY path
+                    # Theorem uses.
+                    from_number=twilio_number_for_clinic(_clinic_id),
                 )
             except Exception as e:
-                logger.warning("_book_appointment_acuity SMS failed (non-fatal): %r", e)
+                logger.warning("_book_appointment_acuity reminder scheduling failed (non-fatal): %r", e)
 
-        # Schedule day-before (24hr) + 2-hour reminders — non-fatal.
-        # Fires for reschedules too (new appointment time gets its own reminders).
-        try:
-            from app.notifications.scheduler import schedule_appointment_reminders
-            from app.clinic_config import twilio_number_for_clinic
-            _clinic_id = clinic.get("clinic_id") or session.get("clinic_id") or ""
-            await schedule_appointment_reminders(
-                patient_phone=phone,
-                patient_name=patient_name,
-                appointment_time=booking.start_time,
-                location=location.title(),
-                is_new_patient=is_new,
-                has_insurance=bool(insurer),
-                insurer=insurer or None,
-                clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
-                clinic_phone=clinic.get("sms_phone") or clinic.get("phone"),
-                appointment_noun=clinic.get("sms_appointment_noun"),
-                clinic_id=_clinic_id,
-                # Pin the sender to THIS clinic's line. `pending_reminders` is a
-                # global Redis key, so on a shared Redis another tenant's worker
-                # may drain this entry — unpinned it would go out from that
-                # worker's ambient TWILIO_PHONE_NUMBER, and the patient's reply
-                # would land on the wrong clinic's inbound webhook and be lost.
-                # The session booking path was pinned; this one was missed, and
-                # it is the ONLY path Theorem uses.
-                from_number=twilio_number_for_clinic(_clinic_id),
-            )
-        except Exception as e:
-            logger.warning("_book_appointment_acuity reminder scheduling failed (non-fatal): %r", e)
+            # Sheets log — non-fatal
+            try:
+                from app.tools.handoff import send_to_sheet
+                await asyncio.to_thread(
+                    send_to_sheet,
+                    patient_name, phone, "BOOK",
+                    (
+                        f"Booked: {service} at {location.title()} "
+                        f"on {booking.start_time.strftime('%d %b %Y %H:%M')} "
+                        f"(Acuity #{booking.provider_booking_id})"
+                    ),
+                    session.get("call_sid", ""),
+                    "Phase3 AI Receptionist",
+                )
+            except Exception as e:
+                logger.warning("_book_appointment_acuity Sheets log failed (non-fatal): %r", e)
 
-        # Sheets log — non-fatal
-        try:
-            from app.tools.handoff import send_to_sheet
-            await asyncio.to_thread(
-                send_to_sheet,
-                patient_name, phone, "BOOK",
-                (
-                    f"Booked: {service} at {location.title()} "
-                    f"on {booking.start_time.strftime('%d %b %Y %H:%M')} "
-                    f"(Acuity #{booking.provider_booking_id})"
-                ),
-                session.get("call_sid", ""),
-                "Phase3 AI Receptionist",
-            )
-        except Exception as e:
-            logger.warning("_book_appointment_acuity Sheets log failed (non-fatal): %r", e)
+        from app.notifications.background import run_detached
+        run_detached(
+            _post_booking_notifications(),
+            label="booking notifications",
+            call_sid=session.get("call_sid", ""),
+        )
 
         return {
             "success": True,

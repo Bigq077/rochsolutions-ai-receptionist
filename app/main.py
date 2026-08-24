@@ -509,6 +509,17 @@ async def shutdown():
     logger.info("👋 Theorem Health AI Receptionist shutting down...")
     logger.info("=" * 60)
 
+    # Finish any post-booking notification still in flight (B-84). These run
+    # detached so the caller is not held on the line for two Twilio round
+    # trips; the trade is that a deploy landing in that ~1.3s window would drop
+    # a confirmation SMS the patient was promised out loud. Drain first, before
+    # Redis closes underneath the reminder scheduler.
+    try:
+        from app.notifications.background import drain as _drain_notifications
+        await _drain_notifications()
+    except Exception as e:
+        logger.warning("[bg] drain failed at shutdown (non-fatal): %r", e)
+
     # Close the Redis async connection pool so its sockets are released
     # before the process exits. Without this, the OS force-closes them
     # which can produce 'Bad file descriptor' errors in the uvicorn logs.
