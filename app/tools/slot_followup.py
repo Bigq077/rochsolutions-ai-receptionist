@@ -82,6 +82,78 @@ def remaining_slots_after_offer(
     return remaining
 
 
+# ───────────────────────────────────────────────────────────────────────────
+# B-78b — what the caller has been offered ACROSS the whole day, not just now.
+#
+# `last_offered_slots` is the CURRENT offer: apply_next_batch_to_session
+# REPLACES it. So subtracting it alone makes the previous batch unoffered
+# again, and repeated "anything else?" walks a two-state loop:
+#
+#     ask 1 → half six, quarter past seven
+#     ask 2 → five, quarter to six      ← already heard
+#     ask 3 → half six, quarter past seven ...
+#
+# On CA7cd9bed5's Tuesday (5 slots) that loop never reaches 20:00 — the last
+# slot of the day is unreachable no matter how many times the caller asks,
+# while Susie keeps promising "a few others that day".
+#
+# So the cumulative record is kept separately. `last_offered_slots` keeps its
+# meaning untouched — _resolve_slot_iso, the DTMF map and fast_path all read it
+# as "the offer on the table".
+# ───────────────────────────────────────────────────────────────────────────
+
+_SPOKEN_KEY = "slot_starts_spoken"
+_SPOKEN_FP_KEY = "slot_starts_spoken_fp"
+
+
+def _availability_fingerprint(available_days: Any) -> str:
+    """Identify the current availability set, so a NEW fetch resets the record.
+
+    Self-healing on purpose: no call site has to remember to reset. A fresh
+    check_availability produces a different fingerprint and the spoken record
+    drops, so re-asking about a day the caller already explored offers it in
+    full again rather than silently hiding times behind a stale record.
+    """
+    flat = flatten_bookable_slots(available_days)
+    if not flat:
+        return ""
+    return f"{len(flat)}|{flat[0].get('start')}|{flat[-1].get('start')}"
+
+
+def _spoken_key_set(session: Dict[str, Any]) -> set:
+    fp = _availability_fingerprint(session.get("available_days") or [])
+    if session.get(_SPOKEN_FP_KEY) != fp:
+        session[_SPOKEN_KEY] = []
+        session[_SPOKEN_FP_KEY] = fp
+    return {str(s)[:19] for s in (session.get(_SPOKEN_KEY) or [])}
+
+
+def record_spoken_slots(session: Dict[str, Any], slots: Any) -> None:
+    """Add `slots` to the day's cumulative spoken record."""
+    _spoken_key_set(session)  # resets first if availability changed
+    current = list(session.get(_SPOKEN_KEY) or [])
+    for s in (slots or []):
+        start = str((s or {}).get("start") or "")[:19]
+        if start and start not in current:
+            current.append(start)
+    session[_SPOKEN_KEY] = current
+
+
+def remaining_unspoken(session: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Bookable slots the caller has not been offered at ANY point this day.
+
+    Folds the current offer into the cumulative record as it goes, so the
+    caller walks forward through the day instead of ping-ponging.
+    """
+    record_spoken_slots(session, session.get("last_offered_slots") or [])
+    spoken = _spoken_key_set(session)
+    return [
+        slot
+        for slot in flatten_bookable_slots(session.get("available_days") or [])
+        if str(slot.get("start") or "")[:19] not in spoken
+    ]
+
+
 def next_slot_batch(
     remaining: List[Dict[str, Any]], n: int = 2
 ) -> Tuple[List[Dict[str, Any]], bool]:
@@ -445,6 +517,9 @@ def apply_next_batch_to_session(
     more: bool,
 ) -> str:
     """Advance last_offered to this batch and return the spoken offer."""
+    # Cumulative FIRST — last_offered_slots is about to be overwritten, and it
+    # is the only record that this batch was ever spoken (B-78b).
+    record_spoken_slots(session, batch)
     session["last_offered_slots"] = [
         {"start": s["start"], "end": s.get("end") or ""} for s in batch
     ]
@@ -549,8 +624,16 @@ def try_unspoken_followup_speech(
     if not offered or not days:
         return None
 
-    remaining = remaining_slots_after_offer(days, offered)
+    # Cumulative, not just the current offer — see B-78b above.
+    remaining = remaining_unspoken(session)
     if not remaining:
+        # The day is genuinely exhausted. Say so HERE rather than falling to
+        # the model: "have you got anything else?" with nothing left is the
+        # exact prompt that produced "Those are the two available slots on that
+        # day" while three sat unoffered. The honest answer is deterministic,
+        # so it should not be generated.
+        if utterance_requests_more_slots(user_text):
+            return format_next_batch_speech([], False)
         return None
 
     # Specific unspoken time first (V5).

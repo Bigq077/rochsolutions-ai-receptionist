@@ -96,15 +96,35 @@ async def test_anything_later_still_serves_unspoken_batch():
 
 
 def test_spec_i_keeps_cache_while_awaiting_slot_selection():
+    """The Spec I clear must stand down while the caller is still choosing.
+
+    B-78: this used to regex connection.py for the literal branch text. That
+    passed happily while the branch it described was wrong — it was guarded on
+    `v3_awaiting_slot_selection`, a derived flag that the "caller is
+    responding" branch pops mid-turn, so the clear fired on exactly the turn
+    the follow-up needed the cache. Asserting the SHAPE of a guard cannot see
+    that; asserting the RULE can. Both call sites now delegate to
+    `_should_clear_slot_cache`, so the rule is tested once, for real.
+    """
     import re
-    src = Path("app/media_streams/connection.py").read_text()
+    from app.media_streams.connection import _should_clear_slot_cache
+
+    src = Path("app/media_streams/connection.py").read_text(encoding="utf-8")
     # FAQ path + main dispatch path.
     assert src.count("slot cache kept — awaiting") == 2
-    # Spec I clear is gated off while selection is live (both sites).
-    gated = re.findall(
-        r"last_offered_slots.*?is not None\s*"
-        r"and not self\.session\.get\(\s*\"v3_awaiting_slot_selection\"\s*\)",
-        src,
-        flags=re.S,
-    )
-    assert len(gated) >= 2, gated
+    # Both sites go through the one rule rather than an inline copy.
+    assert src.count("_should_clear_slot_cache(self.session)") == 2
+
+    base = {"last_offered_slots": list(_OFFERED), "available_days": _DAYS}
+
+    # Window open on the flag → keep.
+    assert _should_clear_slot_cache(
+        {**base, "v3_awaiting_slot_selection": True}
+    ) is False
+    # Window open on the MAP with the flag already popped → keep. This is the
+    # case the old regex claimed to cover and did not.
+    assert _should_clear_slot_cache(
+        {**base, "v3_dtmf_slot_map": {"1": "five", "2": "quarter to six"}}
+    ) is False
+    # Window closed → the clear still works.
+    assert _should_clear_slot_cache(dict(base)) is True
