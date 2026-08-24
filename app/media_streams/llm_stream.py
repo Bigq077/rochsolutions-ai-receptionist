@@ -87,6 +87,35 @@ from .turn_handler import (
 
 logger = logging.getLogger(__name__)
 
+# Sentinel for usage-field probing: separates "the SDK did not report this
+# field" from "the field is present and zero". See the [LAT] prompt-cache
+# counters in _one_streaming_call.
+_MISSING_USAGE = object()
+
+
+def _usage_token(usage: Any, name: str) -> Optional[int]:
+    """One counter off an Anthropic ``usage`` object, or None if absent.
+
+    The distinction is the entire point, and it is not pedantry:
+
+      * attribute MISSING          -> None -> reported as -1, "not observed"
+      * attribute present but None -> 0    -> "observed, nothing cached"
+      * attribute present, integer -> that integer
+
+    Defaulting a missing attribute to 0 would make an SDK rename look exactly
+    like a permanently cold prompt cache -- which is the one conclusion these
+    counters exist to test (B2). Verified against anthropic 0.84.0, whose
+    Usage model carries cache_read_input_tokens, cache_creation_input_tokens
+    and input_tokens.
+    """
+    _v = getattr(usage, name, _MISSING_USAGE)
+    if _v is _MISSING_USAGE:
+        return None
+    try:
+        return int(_v or 0)
+    except (TypeError, ValueError):
+        return None
+
 # Sentinel prefix for pre-tool text chunks.  All text chunks in a streaming
 # call are prefixed with this marker so that if check_availability is detected
 # mid-stream (via content_block_start), the tts_loop can drop them before they
@@ -3797,6 +3826,37 @@ class LLMStream:
                 # Detect check_availability as early as possible (before the
                 # tool result arrives) so the tts_loop can drop pre-tool
                 # PRE_SLOT_MARKER chunks that haven't been consumed yet.
+                # ── Prompt-cache accounting ───────────────────────────────
+                # B2. The first-turn latency penalty (~0.7-1.0s measured) is
+                # the 5-minute prompt cache expiring between sparse calls,
+                # not the httpx pool. That was INFERRED from the shape of
+                # llm_ttft_ms; these counters make it a fact. `message_start`
+                # is the only event carrying input usage.
+                #
+                # first-write-wins, matching llm_ttft_ms: a tool loop makes
+                # several calls per turn and only the first is in front of
+                # the caller. Wrapped because usage shape is an API detail —
+                # a measurement must never be able to kill a live call.
+                if (
+                    self._timing is not None
+                    and getattr(event, "type", None) == "message_start"
+                    and self._timing.cache_read_tokens is None
+                ):
+                    try:
+                        _u = event.message.usage
+
+                        self._timing.cache_read_tokens = _usage_token(
+                            _u, "cache_read_input_tokens"
+                        )
+                        self._timing.cache_write_tokens = _usage_token(
+                            _u, "cache_creation_input_tokens"
+                        )
+                        self._timing.prompt_input_tokens = _usage_token(
+                            _u, "input_tokens"
+                        )
+                    except Exception:
+                        pass
+
                 if hasattr(event, "type") and event.type == "content_block_start":
                     _cb = getattr(event, "content_block", None)
                     if (
