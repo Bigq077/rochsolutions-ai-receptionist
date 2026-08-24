@@ -47,6 +47,41 @@ CLINIC = json.loads(
 OPENER = "um yeah hi there i'd like to book an appointment i've hurt my ankle"
 
 
+def _trauma_screen_can_arm() -> bool:
+    """Does THIS branch's jv_v1 config support the scenario under test?
+
+    Clinic-pinned tests measure the config of the branch they are run on, not
+    the one they were written against. jv_v1 screening exists only on the
+    canonical line and jv_v2; theorem-onboarding and vitaledge-onboarding carry
+    an older, inert copy of this file because **those clinics have no clinical
+    screening by design** — Vital Edge is massage-only, and Theorem's screening
+    is deliberately absent. Neither serves jv_v1 config.
+
+    So on those branches "i've hurt my ankle" arms nothing and every scenario
+    below is untestable. That is a fact about the branch, not a regression, and
+    it must read as a SKIP rather than four red tests that get normalised away.
+
+    The B-87 code change itself is ported there regardless: it lives in
+    connection.py behind `screening_enabled(clinic)`, so it is inert but keeps
+    the engine aligned and future ports conflict-free.
+    """
+    cs = CLINIC.get("clinical_screening") or {}
+    if not cs.get("enabled"):
+        return False
+    tf = [s for s in (cs.get("screens") or []) if s.get("id") == "trauma_fracture"]
+    return bool(tf and tf[0].get("trigger_all_groups"))
+
+
+pytestmark = pytest.mark.skipif(
+    not _trauma_screen_can_arm(),
+    reason=(
+        "this branch's jv_v1 config has no armable trauma_fracture screen "
+        "(screening is deliberately absent on theorem_v3 / vital_edge) — "
+        "the B-87 code is still ported, it is simply inert here"
+    ),
+)
+
+
 def _ask_then_answer(answer, opener=OPENER):
     """Replay arm -> ask -> answer exactly as connection.py drives it."""
     s = {}
