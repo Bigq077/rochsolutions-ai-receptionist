@@ -775,9 +775,17 @@ def classify_screen_answer(text: str, screen: Dict[str, Any]) -> str:
     t = _norm(text)
     if not t:
         return "unclear"
+    # A keyword the caller DENIES is not a red flag — but it is not nothing
+    # either. Remember it: an explicit denial of the very finding this screen
+    # asks about is the strongest `clear` signal available, and it is expressed
+    # in the caller's own words rather than one of five tokens. Consumed at the
+    # bottom, so every other branch still outranks it.
+    _denied_keyword = False
     for k in screen.get("red_flag_answer_keywords") or []:
-        if _kw_in(k, t) and not _occurrence_negated(t, k):
-            return "red_flag"
+        if _kw_in(k, t):
+            if not _occurrence_negated(t, k):
+                return "red_flag"
+            _denied_keyword = True
     words = t.split()
 
     # Drop leading mouth-noise before reading the lead. The affirmative branch
@@ -826,6 +834,38 @@ def classify_screen_answer(text: str, screen: Dict[str, Any]) -> str:
     # ever capture what would otherwise have been `unclear`. See _HEDGE_LEAD.
     if lead in _HEDGE_LEAD or any(h in t for h in _HEDGE_PHRASES):
         return "hedged"
+
+    # The caller named one of THIS screen's red-flag findings and negated it.
+    #
+    # CA2087528410, 2026-08-24 00:04:53, trauma_fracture: "not a very deformed
+    # case sis mate nothing serious". `deformed` is a red-flag keyword, the
+    # negation engine correctly ruled it denied — and then every clear-branch
+    # missed, because _NEGATIVE_WORDS is five tokens (nah/neither/no/none/nope)
+    # and _NEGATIVE_PATTERNS seventeen fixed phrases, none of which is a bare
+    # "not X" or "nothing serious". Verdict `unclear` leaves the screen PENDING,
+    # so 16s later the LLM said "That's reassuring — glad it's nothing too
+    # serious" and moved to booking, and 34s after the answer the STRANDED path
+    # re-asked the same clinical question. The caller answered once, clearly,
+    # and was asked again as though they had not.
+    #
+    # Deliberately NOT fixed by adding "not"/"nothing" to _NEGATIVE_WORDS: those
+    # are excluded on purpose so that "im not sure" cannot clear a screen —
+    # unsure is not a no, and widening the negative vocabulary is the direction
+    # that manufactures false CLEARs.
+    #
+    # This signal is narrower and self-limiting. It requires the caller to have
+    # named a finding the SCREEN ITSELF defines as concerning and to have
+    # negated it, judged by the same _NEGATORS/_NEGATION_WINDOW engine the
+    # red-flag branch above already trusts — with its scope breakers, so
+    # "not deformed but it wont take my weight" does not reach here at all
+    # (the second keyword is un-negated and returns red_flag at the top).
+    #
+    # Placed last on purpose. red_flag, every negative branch, the affirmative
+    # lead and the hedge all outrank it, so it can only ever turn what would
+    # have been `unclear` into `clear` — and the truncation guard downstream
+    # still demotes it back to `unclear` on a half-sentence.
+    if _denied_keyword:
+        return "clear"
 
     return "unclear"
 
