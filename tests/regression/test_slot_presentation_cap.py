@@ -1,7 +1,13 @@
 # tests/regression/test_slot_presentation_cap.py
 """
-Cap the SPOKEN availability list at ~2 options — without amputating availability
-from the tool result the model sees.
+Cap the SPOKEN availability list — without amputating availability from the
+tool result the model sees.
+
+The single-day cap moved 2 -> 3 on 24 Aug 2026 (owner decision, B-79), which
+aligns the generic/Google executor with _check_availability_acuity's long-
+standing [:3]. Everything below still asserts the SHAPE — spoken subset small,
+`available_days` complete — because that is the invariant. The number is a
+policy input, so it is named once, in _MAX_PRESENTED_TIMES_SINGLE_DAY.
 
 b9baf79 capped `available_days` in the check_availability return. Session kept
 the full set (so _resolve_slot_iso was fine), but the persona prompt tells the
@@ -23,7 +29,10 @@ import copy
 
 import pytest
 
-from app.tools.receptionist_tools import _cap_presented_slots
+from app.tools.receptionist_tools import (
+    _MAX_PRESENTED_TIMES_SINGLE_DAY,
+    _cap_presented_slots,
+)
 
 
 def _day(date: str, times: list[str]) -> dict:
@@ -49,10 +58,16 @@ def _nine_option_result() -> dict:
 
 
 def _v5_wednesday() -> dict:
-    """V5 shape: one Wed with three free times (19:00/20:30 already booked)."""
+    """V5 shape: one Wed with FOUR free times (19:00 already booked).
+
+    The live CAaf76d3 day held three, all of which the cap now speaks. The
+    fixture keeps a fourth so the invariant under test — an unspoken time
+    stays bookable in available_days — is still exercised rather than passing
+    vacuously.
+    """
     return {
         "available_days": [
-            _day("2026-08-05", ["17:30", "18:15", "19:45"]),
+            _day("2026-08-05", ["17:30", "18:15", "19:45", "20:30"]),
         ],
         "total_days": 1,
     }
@@ -73,18 +88,19 @@ def _bookable_times(result: dict) -> list[str]:
 
 
 def test_nine_options_speak_two_but_keep_all_nine_bookable():
+    """Three days in, two spoken (one time each) — the multi_day shape."""
     out = _cap_presented_slots(_nine_option_result())
     assert len(_spoken_times(out)) == 2
     assert len(_bookable_times(out)) == 9
 
 
-def test_v5_unspoken_quarter_to_eight_stays_in_available_days():
-    """THE live regression: capped speech must not erase 19:45 from the data."""
+def test_v5_unspoken_half_eight_stays_in_available_days():
+    """THE live regression: capped speech must not erase a time from the data."""
     out = _cap_presented_slots(_v5_wednesday())
     assert out["presentation_mode"] == "single_day"
-    assert _spoken_times(out) == ["17:30", "18:15"]
-    assert "19:45" in _bookable_times(out)
-    assert "19:45" not in _spoken_times(out)
+    assert _spoken_times(out) == ["17:30", "18:15", "19:45"]
+    assert "20:30" in _bookable_times(out)
+    assert "20:30" not in _spoken_times(out)
     assert out["first_day"].get("more_times") is True
 
 
@@ -95,11 +111,39 @@ def test_more_times_false_when_nothing_was_trimmed():
     assert out["first_day"].get("more_times") is not True
 
 
-def test_a_single_day_still_offers_two_times():
-    src = {"available_days": [_day("2026-08-03", ["16:30", "18:00", "19:00"])], "total_days": 1}
+def test_a_single_day_offers_three_times():
+    """Owner rule, 24 Aug 2026: three is the most a caller can hold at once."""
+    src = {
+        "available_days": [_day("2026-08-03", ["16:30", "18:00", "19:00", "20:00"])],
+        "total_days": 1,
+    }
     out = _cap_presented_slots(src)
-    assert len(_spoken_times(out)) == 2
+    assert len(_spoken_times(out)) == _MAX_PRESENTED_TIMES_SINGLE_DAY == 3
     assert out["presentation_mode"] == "single_day"
+
+
+def test_a_day_with_exactly_three_times_speaks_all_three_and_claims_no_more():
+    src = {
+        "available_days": [_day("2026-08-03", ["16:30", "18:00", "19:00"])],
+        "total_days": 1,
+    }
+    out = _cap_presented_slots(src)
+    assert _spoken_times(out) == ["16:30", "18:00", "19:00"]
+    assert out["first_day"].get("more_times") is not True
+
+
+def test_multi_day_still_speaks_ONE_time_per_day():
+    """Two days named is already two things to hold; three times each is six."""
+    src = {
+        "available_days": [
+            _day("2026-08-03", ["16:30", "18:00", "19:00"]),
+            _day("2026-08-04", ["17:00", "18:30", "20:00"]),
+        ],
+        "total_days": 2,
+    }
+    out = _cap_presented_slots(src)
+    assert out["presentation_mode"] == "multi_day"
+    assert [d["slot_times"] for d in out["presented_days"]] == [["16:30"], ["17:00"]]
 
 
 def test_a_day_with_one_slot_is_left_alone():
@@ -173,8 +217,8 @@ def test_day_firsts_used_by_numbered_selection_are_preserved():
         assert day["slot_times"][0] == day_firsts[i]
 
 
-def test_sync_last_offered_matches_spoken_two_so_remaining_starts_after():
-    """With the cap, last_offered must be the spoken two — not all six.
+def test_sync_last_offered_matches_the_spoken_subset_so_remaining_starts_after():
+    """last_offered must be what was SPOKEN — not all six.
 
     Otherwise unspoken follow-up sees remaining=[] after a six-option readout
     (CA16e8c6) and cannot serve a true unspoken V5.
@@ -186,7 +230,7 @@ def test_sync_last_offered_matches_spoken_two_so_remaining_starts_after():
     out = _cap_presented_slots({"available_days": days, "total_days": 1})
     session: dict = {"available_days": days}
     _sync_last_offered_to_spoken(session, out)
-    assert len(session["last_offered_slots"]) == 2
+    assert len(session["last_offered_slots"]) == _MAX_PRESENTED_TIMES_SINGLE_DAY
     assert session["last_offered_slots"][0]["start"].startswith("2026-08-06T16:30")
     rem = remaining_slots_after_offer(days, session["last_offered_slots"])
-    assert [s["time"] for s in rem] == ["18:00", "18:45", "19:30", "20:15"]
+    assert [s["time"] for s in rem] == ["18:45", "19:30", "20:15"]
