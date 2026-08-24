@@ -2588,7 +2588,33 @@ _V3_NAME_CONFIRM_PATTERNS_ANCHORED = [
     # Pattern 1a: "Thanks Sarah —" / "Thanks Sarah,"
     re.compile(r'[Tt]hanks\s+([A-Za-z][a-z]{1,25})[\s—–‒,.\-]'),
     # Pattern 1b: "So that's Sarah," / "So that's Sarah —"  (readback)
-    re.compile(r"[Ss]o (?:that'?s|it'?s)\s+([A-Za-z][a-z]{1,25})[\s—–,\-]"),
+    # B-81, CA03ea1ce6 (24 Aug 2026, jv_v1). Susie said "…the balance and
+    # control don't always come back fully, so it's good you're getting it
+    # looked at." and the patient's name became 'Good'. Phone DTMF armed behind
+    # it, the caller's keypress went into the phone buffer instead of selecting
+    # their slot, and every word they said afterwards was suppressed. They said
+    # "hi i'm lucy", then "hello", then "hello you still there", and hung up
+    # after ~50s of silence. The owner got a drop-off ping for lead='Good'.
+    #
+    # Second occurrence of B-33's exact shape ('Rehab', 3 Aug) through a third
+    # pattern. "So it's <X>" is ordinary English, so this is a readback opener
+    # only by coincidence — it has no acknowledgement verb, which is the stated
+    # criterion for sitting in the ANCHORED list at all (ANCHORED bypasses the
+    # phase gate).
+    #
+    # The fix is the CAPITAL, not another wordlist entry: the stopword lists
+    # already hold the function words ("so", "then", "again", "much"), and it
+    # was the ADJECTIVES that got through — good, worth, best, fine, important.
+    # Enumerating adjectives is unbounded; requiring the captured word to look
+    # like a name is one rule. It is the same discriminator BARE pattern 2
+    # already uses, and Gate 5's re-capitalisation cannot manufacture it here
+    # because the word it re-capitalises is the one AFTER a stripped opener,
+    # which is "So" itself, never the captured word.
+    #
+    # Anchoring to a sentence boundary was the other option and was rejected:
+    # unlike pattern 1c, "Right, so that's Sarah —" is a natural readback and
+    # anchoring would lose it.
+    re.compile(r"[Ss]o (?:that'?s|it'?s)\s+([A-Z][a-z]{1,25})[\s—–,\-]"),
     # Pattern 1c: "Right Sarah —" / "Right Sarah,"
     # B-33: anchored to a sentence boundary. Unanchored, "right" matched as an
     # ordinary adjective mid-sentence and captured whatever followed it:
