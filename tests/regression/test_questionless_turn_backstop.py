@@ -242,3 +242,75 @@ async def test_location_ladder_arm_is_unchanged():
     await _fire(h, "We've got two locations, so I want to check the right one.")
     assert sh.restart_calls == 1
     assert sh.last_question == conn._LOC_RUNG1_OPEN
+
+
+# ---------------------------------------------------------------------------
+# T-4 — bare acknowledgement mid-booking with nothing behind it.
+#
+# CA2087528410, 2026-08-24 00:03:57. Caller opened booking himself, straight
+# after a pricing answer: "that's all good can i book an appointment then mate".
+# The prompt mandates the bare stub "Right —" on booking start because "the
+# system injects the next question" — but the injector is gated on
+# `_cta_affirm = _bot_had_cta and _utt_is_affirm`, which requires SUSIE'S
+# PREVIOUS TURN to have carried a booking CTA. A caller-initiated booking has no
+# prior CTA by construction, so the gate could not match, nothing was injected,
+# and the call sat in silence for SEVEN seconds until the caller said "hello".
+#
+# T-3 correctly declines to help here: "Right —" is 2 words, and its open
+# invitation would walk the caller out of the booking (the 02:30 incident).
+# The recovery has to be the booking flow's OWN next question.
+# ---------------------------------------------------------------------------
+async def test_bare_ack_mid_booking_arms_the_flows_next_question():
+    sh = StubSH(last_question="")          # nothing outstanding — backstop can't fire
+    h = _handler(sh, session={"clinic_id": "jv_v1"})
+    h.booking_flow_active = True
+
+    await _fire(h, "Right —")
+
+    assert sh.restart_calls == 1, "T-4 must re-arm the timer, not leave dead air"
+    assert sh.last_question, "a question must be armed"
+    assert sh._prompt_contains_question(sh.last_question), (
+        "what T-4 arms must classify as a question, or _restart_timer's "
+        "Spec Z Gate 2 will discard it"
+    )
+    assert "anything else" not in sh.last_question.lower(), (
+        "must NOT be the T-3 open invitation — that walks the caller out of "
+        "the booking mid-flow (the 02:30 incident)"
+    )
+
+
+async def test_bare_ack_outside_booking_still_stays_silent():
+    """T-4 is scoped to an active booking. Outside one, nothing changes."""
+    sh = StubSH(last_question="")
+    h = _handler(sh, session={"clinic_id": "jv_v1"})
+    h.booking_flow_active = False
+
+    await _fire(h, "Right —")
+
+    assert sh.restart_calls == 0
+    assert sh.last_question == ""
+
+
+async def test_t4_does_not_pre_empt_the_backstop():
+    """An outstanding question still wins — T-4 is the last resort, not the first."""
+    sh = StubSH(last_question="What's the appointment for?")
+    h = _handler(sh, session={"clinic_id": "jv_v1"})
+    h.booking_flow_active = True
+
+    await _fire(h, "Right —")
+
+    assert sh.last_question == "What's the appointment for?", (
+        "the BACKSTOP replays the REAL outstanding question; T-4 must not "
+        "overwrite it"
+    )
+
+
+async def test_t4_does_not_pre_empt_t3_for_a_substantive_answer():
+    """A 4+ word answer keeps the T-3 nudge even while booking is active."""
+    sh = StubSH(last_question="")
+    h = _handler(sh, session={"clinic_id": "jv_v1"})
+    h.booking_flow_active = True
+
+    await _fire(h, "A sports massage is forty pounds for thirty minutes.")
+
+    assert "anything else" in sh.last_question.lower()

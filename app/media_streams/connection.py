@@ -15348,6 +15348,57 @@ class WebSocketCallHandler:
                                 " caller in silence",
                                 _last_sent_w[:60], _nudge_w,
                             )
+                        elif getattr(self, "booking_flow_active", False):
+                            # ── T-4: bare ack mid-booking with nothing behind it ──
+                            # The comment above is right that "Right —" must not
+                            # get the open invitation — but its premise is that
+                            # "the next question is injected by code". On
+                            # CA2087528410, 2026-08-24 00:03:57, it was not, and
+                            # the caller sat in silence for SEVEN seconds before
+                            # rescuing the call with "hello".
+                            #
+                            # Why the injector missed: it is gated on
+                            # `_cta_affirm = _bot_had_cta and _utt_is_affirm`,
+                            # which requires SUSIE'S PREVIOUS TURN to have carried
+                            # a booking CTA. This caller opened booking himself
+                            # ("that's all good can i book an appointment then
+                            # mate") straight after a pricing answer, so there was
+                            # no prior CTA and the gate could not match — not a
+                            # vocabulary gap, a structural one. Widening the phrase
+                            # list cannot reach a caller-initiated booking.
+                            #
+                            # So recover the way the BACKSTOP comment prescribes:
+                            # fail OPEN into the booking flow's own next question,
+                            # never the open invitation that walks the caller out
+                            # of the booking (the 02:30 incident). Same helper the
+                            # injector itself uses, so the question asked here is
+                            # the one that should have been asked in the first
+                            # place — reason before timing where the clinic opts
+                            # in, timing otherwise.
+                            #
+                            # Bounded by the same machinery as T-3: once per
+                            # q_gen, the attempt cap applies, and the enclosing
+                            # guard already requires _watchdog_has_retired False.
+                            _bq_w = _next_question_after_booking_ack(self.session)
+                            if _bq_w and _sh_w._prompt_contains_question(_bq_w):
+                                _sh_w.last_question = _bq_w
+                                _sh_w._last_question_set_at = time.time()
+                                _sess_w = getattr(self, "session", None)
+                                if isinstance(_sess_w, dict):
+                                    _sess_w["last_question"] = _bq_w
+                                _sh_w._restart_timer()
+                                logger.info(
+                                    "[ms_watchdog] T-4 booking recovery armed —"
+                                    " bare ack (%r) mid-booking with no question"
+                                    " behind it; armed the flow's next question:"
+                                    " %r", _last_sent_w[:40], _bq_w[:60],
+                                )
+                            else:
+                                logger.info(
+                                    "[ms_watchdog] T-4 skipped — no usable next"
+                                    " booking question for bare ack %r",
+                                    _last_sent_w[:40],
+                                )
                         else:
                             logger.info(
                                 "[ms_watchdog] Spec W: turn asked nothing and no"
