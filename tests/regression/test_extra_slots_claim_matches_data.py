@@ -256,3 +256,67 @@ def test_tail_agrees_with_the_number_of_options(n_offered, expected):
 
     assert action == "appended"
     assert out.endswith(expected), out
+
+
+def test_multi_day_never_gets_the_that_day_tail():
+    """"that day" has no referent when two different days were just named.
+
+    jv_v1 presents multi_day (2 days x 1 time) and sets a top-level
+    more_times, so without this the append fires on every open availability
+    request on that clinic and says "that day" after naming two.
+    """
+    multi = (
+        "Here's what we've got coming up — Number 1, Monday the 24th — six in "
+        "the evening. Number 2, Tuesday the 25th — seven in the evening. "
+        "Either of those suit you?"
+    )
+    out, action = reconcile_extra_slots_claim(
+        multi, more_times=True, allow_append=False,
+    )
+
+    assert action == "unchanged"
+    assert "that day" not in out.lower()
+    assert out == multi
+
+
+def test_multi_day_still_strips_a_false_claim():
+    """The append is gated by presentation mode; the strip never is."""
+    multi = (
+        "Number 1, Monday the 24th — six in the evening. Number 2, Tuesday "
+        "the 25th — seven in the evening. Either of those suit you? "
+        "And I've a few others that day if neither suits."
+    )
+    out, action = reconcile_extra_slots_claim(
+        multi, more_times=False, allow_append=False,
+    )
+
+    assert action == "stripped"
+    assert "few others" not in out.lower()
+
+
+async def test_flush_does_not_append_on_multi_day():
+    session = {
+        "_slot_more_times": True,
+        "_slot_n_offered": 2,
+        "_slot_presentation_mode": "multi_day",
+    }
+    chunks = [
+        "Here's what we've got coming up — Number 1, Monday the 24th — six in the evening.",
+        "Number 2, Tuesday the 25th — seven in the evening. Either of those suit you?",
+    ]
+    spoken = " ".join(await _run_flush(chunks, session))
+
+    assert "few others" not in spoken.lower()
+
+
+async def test_flush_appends_on_single_day():
+    session = {
+        "_slot_more_times": True,
+        "_slot_n_offered": 2,
+        "_slot_presentation_mode": "single_day",
+    }
+    spoken = " ".join(await _run_flush(LIVE_CHUNKS[:1] + [
+        "Number 2, four in the afternoon. Any of those work?"
+    ], session))
+
+    assert "few others" in spoken.lower()

@@ -2911,6 +2911,7 @@ class LLMStream:
         _n_offered = int(session.get("_slot_n_offered") or 2)
         _reconciled, _action = reconcile_extra_slots_claim(
             _joined, _more_times, _n_offered,
+            allow_append=session.get("_slot_presentation_mode") == "single_day",
         )
         if _action == "stripped":
             # Loud on purpose: this is the model asserting availability that
@@ -4845,6 +4846,9 @@ class LLMStream:
                 # all three land here, so this is the one place that sees every
                 # presentation. _flush_slot_buf reconciles the spoken text
                 # against it. See reconcile_extra_slots_claim.
+                # presentation_mode gates the APPEND only: the tail says "that
+                # day", which a multi_day reply (two different days named) has
+                # no referent for. Stripping is unconditional.
                 _fd = result.get("first_day") if isinstance(result, dict) else None
                 if isinstance(_fd, dict):
                     session["_slot_more_times"] = bool(_fd.get("more_times"))
@@ -4855,6 +4859,10 @@ class LLMStream:
                 else:
                     session["_slot_more_times"] = False
                     session["_slot_n_offered"] = 2
+                session["_slot_presentation_mode"] = (
+                    result.get("presentation_mode")
+                    if isinstance(result, dict) else None
+                )
                 # Mark that a check ran this turn so the loop-level C8-5 silence
                 # guarantee can choose the no-availability fallback over the
                 # generic re-ask when the turn ends with no audible speech.
