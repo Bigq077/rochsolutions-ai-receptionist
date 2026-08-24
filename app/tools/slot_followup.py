@@ -283,6 +283,123 @@ def resolve_requested_time(
     return None
 
 
+# ───────────────────────────────────────────────────────────────────────────
+# The "there are more times that day" claim — one home for the literal.
+#
+# This sentence asserts WORLD STATE: that bookable times exist beyond the ones
+# just read out. Only `more_times`, computed from the provider's own slot data,
+# knows whether that is true. It was previously produced by the Haiku slot
+# formatter copying a prompt example, and on 24 Aug 2026 (CA98557584dc) it told
+# a caller "And I've a few others that day if neither suits" about a Tuesday
+# that had exactly the two slots she had just been offered.
+#
+# So the tail is now appended by CODE from `more_times`, and stripped when the
+# model emits it anyway. See reconcile_extra_slots_claim below.
+# ───────────────────────────────────────────────────────────────────────────
+
+MORE_TIMES_TAIL_ONE = "And I've a few others that day if that doesn't suit."
+MORE_TIMES_TAIL_MANY = "And I've a few others that day if neither suits."
+MORE_TIMES_TAIL_SEVERAL = "And I've a few others that day if none of those suit."
+
+
+def more_times_tail(n_offered: int) -> str:
+    """The canonical tail for `n_offered` times just read out.
+
+    "neither" means two. _check_availability_acuity caps a single day's spoken
+    times at THREE before setting more_times, so the two-option wording would
+    have been read out over a three-option list — the grammar-does-not-match-
+    the-data snag already logged against this sentence. Now that code emits it,
+    code agrees with the count.
+    """
+    if n_offered <= 1:
+        return MORE_TIMES_TAIL_ONE
+    if n_offered == 2:
+        return MORE_TIMES_TAIL_MANY
+    return MORE_TIMES_TAIL_SEVERAL
+
+
+# A sentence claiming further availability beyond what was just listed.
+# Deliberately a FAMILY, not one literal: the failure being guarded against is
+# a language model paraphrasing, and a guard that matches only the exact
+# example sentence would be defeated by "I've got a couple more that day".
+# Both halves must be present in the SAME sentence — an "extra quantity" word
+# and a "further times" noun — which is what keeps it off the legitimate
+# openers ("The available slots for Tuesday are —", "Any of those work?").
+_EXTRA_QUANTITY_RE = re.compile(
+    r"\b(?:a\s+few|a\s+couple|some|several|plenty|more|other|others)\b",
+    re.IGNORECASE,
+)
+_FURTHER_TIMES_RE = re.compile(
+    r"\b(?:others?|more|further|times|slots|openings|availability)\b",
+    re.IGNORECASE,
+)
+# A claim that the listed times are the COMPLETE set. Used only to SUPPRESS an
+# optional append (never to rewrite), so a false positive costs nothing.
+_COMPLETENESS_RE = re.compile(
+    r"\bthe\s+available\s+(?:slot|slots|time|times)\b[^.!?]{0,40}?\b(?:is|are)\b",
+    re.IGNORECASE,
+)
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _is_extra_slots_claim(sentence: str) -> bool:
+    """True when `sentence` asserts further times beyond those listed."""
+    s = sentence.strip()
+    if not s:
+        return False
+    # A numbered option is never a claim, whatever words it contains — it is
+    # parsed for keypad selection and must survive untouched.
+    if re.search(r"\bNumber\s+[1-9]\b", s, re.IGNORECASE):
+        return False
+    return bool(_EXTRA_QUANTITY_RE.search(s) and _FURTHER_TIMES_RE.search(s))
+
+
+def reconcile_extra_slots_claim(
+    text: str, more_times: bool, n_offered: int = 2
+) -> Tuple[str, str]:
+    """Align a slot presentation's "more times that day" claim with the truth.
+
+    Returns `(text, action)` where action is one of "stripped", "appended" or
+    "unchanged", for logging.
+
+    The two directions are deliberately NOT symmetric:
+
+      more_times False → any such claim is REMOVED. Over-promising availability
+        is the harm: the caller is told times exist that do not, and the
+        follow-up path will contradict it one turn later with "I don't have any
+        further times on that day".
+
+      more_times True  → the tail is appended only when the reply does not
+        already make the claim AND does not assert completeness. Under-informing
+        is safe and recoverable — a caller who asks "anything else that day?"
+        is served the real next batch by next_slot_batch(). Appending next to a
+        completeness opener would make Susie contradict herself in one breath,
+        which is worse than staying quiet.
+    """
+    if not (text or "").strip():
+        return text, "unchanged"
+
+    sentences = _SENTENCE_SPLIT_RE.split(text.strip())
+
+    if not more_times:
+        kept = [s for s in sentences if not _is_extra_slots_claim(s)]
+        if len(kept) == len(sentences):
+            return text, "unchanged"
+        if not kept:
+            # Never blank a reply. A presentation that is ENTIRELY an
+            # availability claim is not something we can safely rewrite, so
+            # leave it and let the caller hear it — the mismatch is logged.
+            return text, "unchanged"
+        return " ".join(kept).strip(), "stripped"
+
+    if any(_is_extra_slots_claim(s) for s in sentences):
+        return text, "unchanged"
+    if _COMPLETENESS_RE.search(text):
+        return text, "unchanged"
+    return f"{text.rstrip()} {more_times_tail(n_offered)}", "appended"
+
+
 def format_next_batch_speech(batch: List[Dict[str, Any]], more: bool) -> str:
     if not batch:
         return (
@@ -292,19 +409,13 @@ def format_next_batch_speech(batch: List[Dict[str, Any]], more: bool) -> str:
     day = batch[0].get("day_label") or "that day"
     if len(batch) == 1:
         spoken = batch[0]["spoken"]
-        tail = (
-            f" And I've a few others that day if that doesn't suit."
-            if more else ""
-        )
+        tail = f" {MORE_TIMES_TAIL_ONE}" if more else ""
         return (
             f"On {day} I also have {spoken}.{tail} "
             f"Does that work?"
         )
     a, b = batch[0]["spoken"], batch[1]["spoken"]
-    tail = (
-        " And I've a few others that day if neither suits."
-        if more else ""
-    )
+    tail = f" {MORE_TIMES_TAIL_MANY}" if more else ""
     return (
         f"On {day} I also have {a}, or {b}.{tail} "
         f"Either of those work?"
