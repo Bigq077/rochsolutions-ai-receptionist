@@ -1499,6 +1499,123 @@ def _clinic_asks_its_own_reason_question(session: Dict[str, Any]) -> bool:
         return False
 
 
+# ── The weekday Susie speaks must match the date she speaks ─────────────────
+_MONTHS_FOR_SPEECH = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11,
+    "december": 12,
+}
+_WEEKDAY_NAMES_FOR_SPEECH = (
+    "Monday", "Tuesday", "Wednesday", "Thursday",
+    "Friday", "Saturday", "Sunday",
+)
+# "Tuesday 26th August", "Tuesday the 26th of August", "Tuesday 26 August".
+_SPOKEN_DATE_RE = re.compile(
+    r"\b(" + "|".join(_WEEKDAY_NAMES_FOR_SPEECH) + r")\b"
+    r"(\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?"
+    r"(" + "|".join(_MONTHS_FOR_SPEECH) + r")\b)",
+    re.IGNORECASE,
+)
+
+
+def _known_dates_for_speech(session: Dict[str, Any]) -> Dict[tuple, Any]:
+    """(day, month) -> the one date the session knows with that day and month.
+
+    Built ONLY from dates the tool itself produced: the `date` field of each
+    entry in `available_days`, plus the requested day stashed by
+    `_exec_check_availability` (which is absent from `available_days` by
+    definition — it was empty, which is why the sentence exists at all).
+
+    A (day, month) that resolves to more than one distinct date is dropped
+    rather than guessed. That can only happen across a year boundary, and a
+    spoken date carries no year to break the tie with.
+    """
+    from datetime import date as _d
+
+    found: Dict[tuple, set] = {}
+
+    def _add(iso):
+        if not isinstance(iso, str):
+            return
+        try:
+            d = _d.fromisoformat(iso)
+        except Exception:
+            return
+        found.setdefault((d.day, d.month), set()).add(d)
+
+    try:
+        days = session.get("available_days")
+        if isinstance(days, list):
+            for entry in days:
+                if isinstance(entry, dict):
+                    _add(entry.get("date"))
+        _add(session.get("requested_day_iso"))
+    except Exception:
+        return {}
+
+    return {k: next(iter(v)) for k, v in found.items() if len(v) == 1}
+
+
+def _correct_weekday_against_known_dates(text, session: Dict[str, Any]):
+    """Make the spoken weekday agree with the spoken date.
+
+    Live on Marcus's line twice in two days:
+
+        caller: "um do you have any availability tomorrow tuesday"
+        Susie:  "Tuesday 26th August is fully booked, I'm afraid - ..."
+
+    26 August 2026 is a WEDNESDAY, and the very payload the model was reading
+    said so — `requested_day_label` is `_spoken_day_label("2026-08-26")` =
+    "Wednesday 26th August", the slot-formatter prompt says to use it verbatim,
+    and it ships a worked example of the exact template the model then filled
+    in with a weekday lifted from the caller's garbled "tomorrow tuesday".
+
+    Telling the model again is not a fix: it already had the right string, the
+    instruction, and the example. So this does not depend on the model at all.
+
+    THE WEEKDAY IS CORRECTED TO THE DATE, NEVER THE REVERSE. The date is what
+    gets booked — `_resolve_slot_iso` matches `available_days` on the date, and
+    a caller who picks "number 2" never speaks a date at all. The weekday is
+    decoration on top of it, so rewriting the date to match a hallucinated
+    weekday would move a real appointment.
+
+    Deny by default: only a day+month the session already knows is touched, no
+    year is ever inferred, and anything unknown or ambiguous is left exactly as
+    the model said it. Idempotent — it runs on both the gate chain and the
+    assembled slot text.
+    """
+    if not text or not isinstance(text, str):
+        return text
+    try:
+        known = _known_dates_for_speech(session)
+        if not known:
+            return text
+
+        def _sub(m):
+            said, tail, day_s, month_s = m.group(1), m.group(2), m.group(3), m.group(4)
+            month = _MONTHS_FOR_SPEECH.get(month_s.lower())
+            if month is None:
+                return m.group(0)
+            real = known.get((int(day_s), month))
+            if real is None:
+                return m.group(0)
+            right = _WEEKDAY_NAMES_FOR_SPEECH[real.weekday()]
+            if right.lower() == said.lower():
+                return m.group(0)
+            logger.warning(
+                "[ms_gate5] spoken weekday corrected: %r -> %r for %s "
+                "(the payload had it right; the model overrode it)",
+                said, right, real.isoformat(),
+            )
+            return right + tail
+
+        return _SPOKEN_DATE_RE.sub(_sub, text)
+    except Exception as _e:
+        # A live call must never die inside a cosmetic guard.
+        logger.error("weekday correction failed: %r - leaving text as spoken", _e)
+        return text
+
+
 def _scarcity_claim_is_supported(session: Dict[str, Any]) -> bool:
     """True when "that's the only one" is a statement of fact, not a sales line.
 
@@ -1581,8 +1698,12 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
         )
         return ""
 
+    # ── Gate 5a-d: the weekday must agree with the date ──────────────────────
+    # Before any stripping, because a strip can remove the sentence that would
+    # otherwise have carried the correction into the caller's ear.
+    result = _correct_weekday_against_known_dates(text, session)
+
     # ── Gate 5b: sentence-level stripping ────────────────────────────────────
-    result = text
 
     for desc, pattern in _BANNED_SENTENCE_RE:
         # The one conditional entry in this table. Kept IN the table rather than
