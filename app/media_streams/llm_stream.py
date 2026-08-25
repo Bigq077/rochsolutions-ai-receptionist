@@ -482,6 +482,19 @@ _NEW_TIME_OF_DAY_WORDS: frozenset = frozenset({
 })
 
 
+def under_age_blocks_booking(session: dict) -> bool:
+    """True when this caller stated an age below the clinic's minimum.
+
+    Thin by design — the judgement lives in `capture_under_age`, which is
+    clinic-gated and conservative. Extracted anyway, for the reason
+    `_booking_confirmation_asked` and `_post_collect_readback_due` were: a
+    condition written inline inside `_execute_tools` can only be tested by
+    reading the source, and a source test catches the branch being DELETED but
+    not the branch being disabled. Named, it can be asserted against directly.
+    """
+    return bool(session.get("_under_age_declared"))
+
+
 def _slot_date_disagrees_with_speech(args: Dict[str, Any], session: Dict[str, Any]) -> bool:
     """True when the slot about to be booked is on a different DAY from the one
     the caller was last told.
@@ -4458,6 +4471,73 @@ class LLMStream:
                                 ),
                                 "available_days": session.get("available_days", {}),
                             }
+                elif (
+                    tool_name == "book_appointment"
+                    and under_age_blocks_booking(session)
+                ):
+                    # ── Under-age backstop ────────────────────────────────────
+                    # CA7d7c109b (VE acceptance run, 4 Aug): the caller raised an
+                    # under-18, Susie declined — correctly — and then asked for a
+                    # day and time anyway. The decline was prompt text; nothing
+                    # deterministic stopped the booking machinery.
+                    #
+                    # The clinic's own policy machinery could not help. Its
+                    # `never_autobook` entry ("Anyone under 18") is read by no
+                    # Python, and `evaluate_policy_gate`, which has a real minor
+                    # check, is reachable only from flow.py — bypassed on every
+                    # live clinic. So this write was ungated entirely.
+                    #
+                    # First in the book_appointment chain deliberately: there is
+                    # no point validating a slot or a confirmation for an
+                    # appointment the clinic will not accept. Clinic-gated via
+                    # minimum_age_years, which jv_v1 does not set — its policy is
+                    # "No minimum age".
+                    _ua = session.get("_under_age_declared")
+                    # The minimum is READ, never written into the sentence as a
+                    # literal. It was "18" here and in _b7_call_state, which was
+                    # true of the only clinic that had the gate (Vital Edge) and
+                    # would have been a lie the moment a second clinic switched
+                    # it on with a different number — Susie would have refused
+                    # correctly and then quoted a policy the clinic does not
+                    # have. Same reason `minimum_age` (prose) and
+                    # `minimum_age_years` (engine) are separate keys: a
+                    # safeguarding sentence must not depend on copywriting.
+                    try:
+                        from app.clinic_config import get_clinic as _ua_clinic
+                        from app.tools.receptionist_tools import (
+                            minimum_age_years as _ua_min,
+                        )
+                        _min = _ua_min(_ua_clinic(session.get("clinic_id")) or {})
+                    except Exception:
+                        _min = None
+                    logger.error(
+                        "[ms_llm] book_appointment BLOCKED — caller stated age "
+                        "%s, below the clinic minimum (%s). Booking refused for "
+                        "the rest of this call.", _ua, _min,
+                    )
+                    # A gate that armed can only have armed because a minimum
+                    # was configured, so _min is None only if config changed
+                    # mid-call. Fall back to naming no number rather than
+                    # naming the wrong one.
+                    _floor = (
+                        f"appointments are for those aged {_min} and over"
+                        if _min is not None
+                        else "they are below the age this clinic can see"
+                    )
+                    result = {
+                        "status": "under_age_declined",
+                        "message": (
+                            f"book_appointment is REFUSED. The caller has said "
+                            f"they are {_ua}, which is below this clinic's "
+                            f"minimum age. Do NOT book, do NOT offer times, and "
+                            f"do NOT ask for a day, a name or a number — the "
+                            f"appointment cannot go ahead whatever they answer. "
+                            f"Say kindly that {_floor}, so this is not something "
+                            f"you can book, and do not offer an alternative "
+                            f"appointment. If they ask why, it is the clinic's "
+                            f"policy. You may still answer general questions."
+                        ),
+                    }
                 elif (
                     tool_name == "book_appointment"
                     and _slot_date_disagrees_with_speech(args, session)

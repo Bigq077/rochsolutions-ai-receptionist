@@ -3956,6 +3956,37 @@ def _build_theorem_v3(session: dict) -> str:
 
     # B7 CALL STATE
     state = []
+
+    # Under-age, first: if this is true nothing else in CALL STATE matters.
+    #
+    # Theorem does not render clinic_template_prompt._b7_call_state, so it does
+    # not inherit the template's version of this line — it needs its own copy,
+    # the same way it needs its own identity and cancel rules.
+    #
+    # The minimum is READ from config, never written here as a literal. The
+    # template's original said "18", which was true of the only clinic that had
+    # the gate (Vital Edge) and would be a lie here: Mark sees children from 7.
+    # A safeguarding sentence must not depend on a number someone typed twice.
+    #
+    # Never raises: if the lookup fails the line is simply absent and the
+    # deterministic refusal in llm_stream._execute_tools still blocks the write.
+    try:
+        from app.clinic_config import get_clinic as _ua_get_clinic
+        from app.tools.receptionist_tools import minimum_age_years as _ua_min
+        _ua_minimum = _ua_min(_ua_get_clinic(session.get("clinic_id")) or {})
+    except Exception:
+        _ua_minimum = None
+    _ua_declared = session.get("_under_age_declared") if _ua_minimum is not None else None
+    if _ua_declared:
+        state.append(
+            f"the caller has said they are {_ua_declared}, which is UNDER this "
+            f"clinic's minimum age of {_ua_minimum}. No appointment can be "
+            "booked for them on this call. Do not offer times, do not ask for a "
+            "day, a name or a number, and do not suggest booking later or "
+            "leaving details — there is nothing to book. Say kindly that "
+            f"appointments are for those aged {_ua_minimum} and over. You may "
+            "still answer general questions"
+        )
     cn = session.get("twilio_from_local") or ""
     if cn:
         # "no readback needed" was removed 2026-08-05. It is a POLICY claim
