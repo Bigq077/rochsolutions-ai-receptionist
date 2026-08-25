@@ -164,7 +164,31 @@ UNCHANGED_CLINIC_PROMPTS = {
     # are byte-identical across the change. Hashes are recomputed per branch —
     # the prompts either side of the addition differ between branches, so these
     # values are NOT the ones on latency-eval. The ADDITION is identical.
-    "jv_v1": "22d3aa9ba71d8809",
+    # Re-pinned 2026-08-25, Wave 1: 22d3aa9ba71d8809 -> 0625b55638d5c43e.
+    # The SMS switch got ONE owner (9b2691d2). Both prompt sites now read
+    # notifications.sms.sms_enabled() instead of re-reading the env var with
+    # their own default, and on this LIVE branch that default is "true".
+    #
+    # What left jv_v1's prompt was a sentence that was FALSE on this branch:
+    #     "NEVER tell the caller a confirmation text has been sent, or that one
+    #      is coming - no text will be sent on this service."
+    # The sender here has defaulted to "true" all along, so the text WAS being
+    # sent while the prompt forbade mentioning it. The old hash pinned that lie.
+    # Four lines change across three closings - booking success, RESCHEDULE
+    # CLOSING (its exact line and its rule) and CANCEL - each swapping the
+    # denial for the promise that matches what actually goes out. Diffed line
+    # by line before re-pinning; nothing else moved, and nothing came from the
+    # under-age port (jv_v1 has no minimum_age_years, so that block never
+    # renders here).
+    #
+    # CONTAINMENT, verified not assumed: demo, theorem and theorem_v3 are all
+    # byte-identical across this change. Only the two template_v1 clinics move -
+    # jv_v1 here, vital_edge deliberately unpinned.
+    #
+    # NOTE: this is NOT the value the same row takes on vitaledge-onboarding
+    # (8f4f8eb0c44033eb) even though the ADDITION is identical - the prompts
+    # either side of it differ per branch. Recompute; never copy a pin across.
+    "jv_v1": "0625b55638d5c43e",
     "theorem": "8565be9a48a7a9aa",
     "theorem_v3": "761036c8d0da91ed",
 }
