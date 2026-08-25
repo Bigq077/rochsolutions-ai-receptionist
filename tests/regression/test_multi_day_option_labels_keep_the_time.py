@@ -155,12 +155,48 @@ def test_a_day_only_readout_resolves_nothing():
     assert resolve_spoken_options([THURSDAY, SATURDAY], _candidates(text)) is None
 
 
-def test_an_ambiguous_time_is_still_refused():
-    """The same time on two days cannot be resolved from the spoken form.
-    Picking one is how a caller is booked into a day they never heard."""
+def test_an_ambiguous_time_IS_resolved_when_the_option_names_its_day():
+    """This asserted None, and that was the over-broad behaviour.
+
+    The same time on two days is only unresolvable if you throw the day away —
+    and the option carries it. Live on CA9bd4ecf0 the candidates held both
+    halves and resolution still returned nothing, because the time was looked
+    up across every day at once. `prefer_day` cannot cover this: it is ONE day
+    and a multi-day readout presents several.
+    """
     other = _day("2026-08-28", ["19:30"], "Friday 28th August")
     text = "Number 1, Thursday 27th August — half past seven in the evening."
+    got = resolve_spoken_options([THURSDAY, other], _candidates(text))
+    assert [s["start"] for s in got] == ["2026-08-27T19:30:00"], (
+        "the option named Thursday; Friday was never a candidate"
+    )
+
+
+def test_an_ambiguous_time_with_no_day_is_still_refused():
+    """Deny-by-default survives where it is actually load-bearing: with no day
+    in the option there is nothing to tell the two apart, and picking one is
+    how a caller is booked into a day they never heard."""
+    other = _day("2026-08-28", ["19:30"], "Friday 28th August")
+    text = "Number 1, half past seven in the evening."
     assert resolve_spoken_options([THURSDAY, other], _candidates(text)) is None
+
+
+def test_a_day_the_payload_does_not_know_falls_back_to_the_global_lookup():
+    """An unrecognised day must not silently scope to nothing — it falls back,
+    and the global ambiguity rule still applies."""
+    other = _day("2026-08-28", ["19:30"], "Friday 28th August")
+    text = "Number 1, Someday 40th Smarch — half past seven in the evening."
+    assert resolve_spoken_options([THURSDAY, other], _candidates(text)) is None
+
+
+def test_the_day_label_survives_the_filler_the_model_adds():
+    """Payload says "Monday 31st August"; the model says "Monday the 31st of
+    August". Both must key the same day or the scoping stops applying."""
+    monday = _day("2026-08-31", ["19:30"], "Monday 31st August")
+    other = _day("2026-09-01", ["19:30"], "Tuesday 1st September")
+    text = "Number 1, Monday the 31st of August — half past seven in the evening."
+    got = resolve_spoken_options([monday, other], _candidates(text))
+    assert [s["start"] for s in got] == ["2026-08-31T19:30:00"]
 
 
 def test_all_or_nothing_survives():
@@ -202,3 +238,32 @@ def test_the_dtmf_map_still_built_from_extract_slot_options():
     assert "extract_slot_options(_joined)" in src, (
         "the keypad map must keep its own extraction"
     )
+
+
+def test_a_multi_day_offer_is_recorded_as_heard_but_not_as_the_offer():
+    """The asymmetry is deliberate and both halves matter.
+
+    RECORDED: the caller heard those times, so the cumulative spoken record has
+    to learn them or "what else have you got?" re-offers them. That record is a
+    flat set of ISO starts and `unspoken_remain_on_day` filters by day itself,
+    so spanning days is fine for it.
+
+    NOT RECORDED: `last_offered_slots`, because `_resolve_slot_iso` indexes it
+    BY POSITION for an ordinal choice, and `slot_labels`, which is times-only
+    and therefore ambiguous to a caller across two days.
+    """
+    import inspect
+
+    from app.media_streams import llm_stream as ls
+
+    src = inspect.getsource(ls)
+    i = src.index("spoken options span")
+    window = src[i - 1400:i + 200]
+    assert "record_spoken_slots(session, _r)" in window, (
+        "a multi-day readout still teaches the spoken record nothing"
+    )
+    assert 'session["last_offered_slots"] = [' not in window, (
+        "the positional offer record was widened to multiple days without "
+        "auditing _resolve_slot_iso's index path"
+    )
+

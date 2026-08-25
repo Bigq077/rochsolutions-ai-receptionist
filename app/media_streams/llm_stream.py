@@ -2927,9 +2927,22 @@ class LLMStream:
             if _r and len({day_key_of(_s) for _s in _r}) == 1:
                 _spoken_opts = _r
             elif _r:
+                # A multi-day readout IS a real offer, and the caller really did
+                # hear those times — so the cumulative spoken record must learn
+                # from it. That record is a flat set of ISO starts and
+                # `unspoken_remain_on_day` filters it by day itself, so spanning
+                # days is not a problem for it. Not recording here is what made
+                # "what else have you got?" re-offer times heard 40s earlier.
+                #
+                # `last_offered_slots` and `slot_labels` are deliberately NOT
+                # written: `_resolve_slot_iso` indexes that record BY POSITION
+                # for an ordinal choice, and `slot_labels` is times-only, which
+                # across two days is ambiguous to a caller. Widening those is a
+                # separate change with its own consumers to audit.
+                record_spoken_slots(session, _r)
                 logger.info(
-                    "[ms_gate5] slot buf: spoken options span %d days — not "
-                    "recorded as one day's offer",
+                    "[ms_gate5] slot buf: spoken options span %d days — "
+                    "recorded as heard, offer record left unchanged",
                     len({day_key_of(_s) for _s in _r}),
                 )
             else:
