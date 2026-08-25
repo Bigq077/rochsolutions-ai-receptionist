@@ -158,6 +158,64 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         # Branding / contact — used in SMS messages
         "sms_name": "Theorem Health and Wellness",
         "phone":    "07870 166861",
+
+        # Number printed in the confirmation SMS. Deliberately NOT `phone`:
+        # 07380 841468 is the clinic's own inbound line (see PHONE_TO_CLINIC
+        # above) and the number the SMS is sent from, so "reply to this message"
+        # and "call us" reach the same place. `phone` above is the team's
+        # direct number and stays as what Susie quotes on a call.
+        "sms_phone": "07380 841468",
+
+        # Fees / policy line on the in-clinic booking confirmation SMS.
+        # Carried across from `main`, where it was hardcoded as FEES_NOTE with
+        # the note "Wording confirmed by Mark/Quentin". The port to this branch
+        # took latency-eval's sms_templates.py, which reads this line from
+        # clinic config instead — and nobody moved the wording into config, so
+        # Mark's clinic silently lost it. Every figure here matches what the
+        # prompt already tells callers: £85 assessment, £45 laser/shockwave
+        # surcharge, 24-hour cancellation.
+        "sms_fees_note": (
+            "Fees: £85, credit/debit cards taken.\n"
+            "Surcharges: +£45 for Laser or Shockwave Therapy.\n"
+            "Cancellations with less than 24hrs notice are charged.\n\n"
+        ),
+
+        # ── Owner alerts (2026-08-05, pre-go-live audit) ─────────────────────
+        # This block did not exist, so `owner_alerts_enabled()` returned False
+        # for every event and Mark was told nothing — not a booking, not a
+        # cancellation, not a reschedule, and not a FAILED WRITE.
+        #
+        # `manual_followup` is the one that made this a go-live blocker rather
+        # than a preference. It fires when the Acuity write fails: the patient
+        # has been told they are booked, nothing reached the calendar, and with
+        # no alert nobody finds out until they turn up. CLAUDE.md's definition
+        # of production-ready is explicit — "every booking that fails is
+        # escalated to a human within minutes". It was escalated to no one.
+        #
+        # Sheets is the other record of a call. The code default is off but the
+        # Theorem service sets SHEETS_ENABLED=true (see c585fff, "rows are
+        # appearing on every call"), so a failure is not invisible — it is
+        # merely LATE. A row Mark reads at the end of the day is no use while
+        # the caller who could not book is still on the line; this SMS is the
+        # only route that reaches him in time to ring them back.
+        #
+        # The number is not new: _resolve_owner_phone already fell back to
+        # transfer_phone. Stated explicitly so a future change to the transfer
+        # number cannot silently redirect the alerts with it.
+        #
+        # The three non-safety events are Mark's preference — some owners want
+        # a ping per booking, others find it noise. Drop them from `events` if
+        # he does; leave `manual_followup`.
+        "owner_alerts": {
+            "enabled": True,
+            "phone": "+447870166861",
+            "events": [
+                "manual_followup",
+                "booking",
+                "cancellation",
+                "reschedule",
+            ],
+        },
         "transfer_phone": "+447870166861",   # E.164 — Twilio dials this for live transfers
 
         # Oversight relay: every inbound text to the clinic line is copied here
