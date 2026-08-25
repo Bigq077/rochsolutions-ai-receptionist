@@ -1966,9 +1966,12 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         # send can never disagree. Note the home-visit branch still asks the
         # caller to text US their address — that direction works regardless of
         # our outbound switch, so it is unaffected.
-        _sms_on = os.getenv("SMS_ENABLED", "false").strip().lower() in (
-            "true", "1", "yes", "on"
-        )
+        # ONE definition of the switch, in notifications/sms.py — including
+        # its default. This used to re-read the env var with its own
+        # default, and a live branch that flipped the sender and not this
+        # line had Susie deny a text that was actually sent.
+        from app.notifications.sms import sms_enabled as _sms_enabled
+        _sms_on = _sms_enabled()
         _text_promise = " I've just sent you a confirmation text." if _sms_on else ""
         _hv_promise = (
             " I've just sent you a confirmation text —" if _sms_on else ""
@@ -2480,9 +2483,8 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
     # Computed independently of booking_success's _text_promise: that name is
     # only bound on the non-provisional branch above, so reusing it here would
     # NameError for any clinic on the provisional path.
-    _sms_on_rc = os.getenv("SMS_ENABLED", "false").strip().lower() in (
-        "true", "1", "yes", "on"
-    )
+    from app.notifications.sms import sms_enabled as _sms_enabled_rc
+    _sms_on_rc = _sms_enabled_rc()
     _rc_text = " Confirmation text on its way." if _sms_on_rc else ""
     _rc_no_text_rule = (
         "" if _sms_on_rc else
