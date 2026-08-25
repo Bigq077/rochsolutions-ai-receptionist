@@ -70,7 +70,9 @@ async def send_booking_confirmation(
         session: Full session dict — when provided, build_sms() is used
 
     Returns:
-        True if sent successfully, False otherwise
+        True only if a text actually went out — NOT if one was merely
+        attempted. `send_sms` returns the Twilio SID, or None for a
+        SUPPRESSED send (SMS_ENABLED off) as well as a failed one.
     """
     try:
         if session is not None:
@@ -121,7 +123,15 @@ async def send_booking_confirmation(
             }
         )
 
-        return True
+        # Half of this repair landed on 2026-08-18 and half did not: the LOG
+        # above was made honest, the RETURN below was left as a flat True. So
+        # the log said "NOT sent" and the caller was told the opposite in the
+        # same breath. `_reschedule_appointment_*` and the twilio route latch
+        # `session["confirmation_sms_sent"]` on this value, and
+        # smart_sms_router (:305) stands down on that latch — so a suppressed
+        # send (SMS_ENABLED off) or a failed one cost the caller BOTH the
+        # confirmation and the end-of-call follow-up that exists to cover it.
+        return bool(_sid)
 
     except Exception as e:
         logger.error(
@@ -305,7 +315,9 @@ async def send_cancellation_confirmation(
         is_late_cancellation: True if cancelled within 24 hours
     
     Returns:
-        True if sent successfully
+        True only if a text actually went out — NOT if one was merely
+        attempted. `send_sms` returns the Twilio SID, or None for a
+        SUPPRESSED send (SMS_ENABLED off) as well as a failed one.
     """
     try:
         if is_late_cancellation:
@@ -318,15 +330,27 @@ async def send_cancellation_confirmation(
                 clinic_name=clinic_name, clinic_phone=clinic_phone,
             )
         
-        await send_sms(to=patient_phone, message=message)
-        
+        _sid = await send_sms(to=patient_phone, message=message)
+
+        # Log what happened, not what was attempted — and mask the number, as
+        # every other send in this module does. Theorem call CAc9b44a5e,
+        # 2026-08-23, logged "[sms] SMS_ENABLED is off — outbound SMS
+        # suppressed (not sent)" and then "Cancellation confirmation sent to
+        # 07564202418" one millisecond later, in full, to a caller who was
+        # never texted.
         logger.info(
-            f"Cancellation confirmation sent to {patient_phone}",
+            "Cancellation confirmation %s ***%s",
+            "sent to" if _sid else "NOT sent (suppressed or failed) to",
+            patient_phone[-4:] if patient_phone else "????",
             extra={"is_late": is_late_cancellation}
         )
-        
-        return True
-    
+
+        # See send_booking_confirmation: callers latch
+        # session["confirmation_sms_sent"] on this return and the follow-up
+        # router stands down on the latch, so a flat True costs the caller both
+        # the confirmation and the follow-up.
+        return bool(_sid)
+
     except Exception as e:
         logger.error(f"Failed to send cancellation confirmation: {e}", exc_info=True)
         return False
