@@ -220,6 +220,49 @@ _AUDIO_CLIPS_DIR: Path = Path(__file__).resolve().parents[2] / "audio_clips"
 
 _BARGE_IN_THRESHOLD_S: float = BARGE_IN_THRESHOLD_MS / 1000.0
 
+# How many times one barge-in episode may be answered by putting Susie's own
+# interrupted sentence back. `interrupted_tts_text` is snapshotted at barge-in
+# start and never cleared, so a resume re-speaks the same audio — which can echo
+# again and re-trigger. Past the cap the turn falls through to the ack below, so
+# there is always an exit.
+_MAX_ECHO_RESUMES: int = 2
+
+
+def _partial_is_own_speech(partial: Any, spoken: Any) -> bool:
+    """True when the partial that started a barge-in is Susie's own audio.
+
+    CAfcb3130c (25 Aug 2026, jv_v1). The phone line echoed her own TTS back
+    through the mic, AssemblyAI transcribed one word of it —
+
+        Susie:    "So that's Tuesday the 1st of September at five in the evening"
+        barge-in: partial="that's"
+
+    — and the empty final that followed was answered "Yes, go on." The caller
+    said "i didn't say anything" and hung up on an already-agreed slot.
+
+    Compared against WHAT SHE WAS ACTUALLY SAYING, not a phrase list and not a
+    fixed literal of model speech: the question is "did this come off the line?",
+    and the sentence in flight is what answers it.
+
+    Contiguity is the point. A caller says "Tuesday evening" — both words appear
+    in the readback, neither run does — so scattered matches stay real speech,
+    and only an unbroken fragment of the live sentence counts as an echo.
+    """
+    try:
+        if not isinstance(partial, str) or not isinstance(spoken, str):
+            return False
+        _norm = lambda s: " ".join(  # noqa: E731
+            re.sub(r"[^a-z0-9\s']", " ", s.lower()).split()
+        )
+        p, s = _norm(partial), _norm(spoken)
+        if not p or not s:
+            return False
+        return f" {p} " in f" {s} "
+    except Exception:
+        # A live call must never die inside a guard about a cosmetic ack.
+        return False
+
+
 # Phrases spoken after a confirmed barge-in (selected at random).
 _BARGE_IN_ACKS: List[str] = [
     "Sorry — go ahead.",
@@ -15846,6 +15889,11 @@ class WebSocketCallHandler:
             self._barge_in_pending = True
             # Snapshot the text currently being spoken for potential TTS resume
             self.session["interrupted_tts_text"] = self._current_tts_text
+            # …and the partial that caused the teardown. When the final turns
+            # out to be empty, this is the ONLY evidence of whether a human
+            # spoke: an empty final alone cannot tell Susie's own audio coming
+            # back off the line from a caller whose words STT lost (B-67).
+            self.session["barge_in_trigger_partial"] = text
             # Advance the prompt generation so any in-flight _delayed_tts_finished
             # tasks for the interrupted TTS are treated as stale and ignored.
             self._tts_gen += 1
@@ -16158,6 +16206,34 @@ class WebSocketCallHandler:
                 # member of that family — and bumping that test's count to 5
                 # would blind it to a genuine fifth clinic ack later.
                 # _resolve_barge_in names its own `ack` for the same reason.
+                # …unless nobody spoke. `_bi_dur` is time in the barge-in
+                # STATE, not time the caller spoke, so with text='' it says
+                # nothing about whether a human was there. The partial that
+                # tore the turn down is the only evidence, and on CAfcb3130c it
+                # was Susie's own word ("that's") off a sentence she was still
+                # speaking. She answered her own echo "Yes, go on."; the caller
+                # said "i didn't say anything" and hung up on an agreed slot.
+                #
+                # NOT gated on the empty final alone: B-67's own call had an
+                # empty final too, and there the ack is correct because its
+                # partial was 'yeah yep' — a real caller whose words STT lost.
+                _echo_partial = self.session.get("barge_in_trigger_partial")
+                _interrupted_now = self.session.get("interrupted_tts_text") or ""
+                _echoes = int(self.session.get("echo_resume_count") or 0)
+                if (
+                    _partial_is_own_speech(_echo_partial, _interrupted_now)
+                    and _echoes < _MAX_ECHO_RESUMES
+                ):
+                    self.session["echo_resume_count"] = _echoes + 1
+                    await self.tts_text_queue.put(_interrupted_now)
+                    logger.warning(
+                        "[ms_conn] barge-in #%d was Susie's own audio "
+                        "(partial=%r is inside %r) and the final was empty — "
+                        "resuming instead of acking (%d/%d)",
+                        self.session.get("barge_in_count", 0), _echo_partial,
+                        _interrupted_now[:60], _echoes + 1, _MAX_ECHO_RESUMES,
+                    )
+                    return
                 _barge_ack = random.choice(_BARGE_IN_ACKS)
                 self._in_barge_in_recovery = True
                 self.session["barge_in_count"] = (
@@ -16190,6 +16266,10 @@ class WebSocketCallHandler:
         # fragment / echo handling below with the watchdog left running.
         if (text or "").strip() and not _is_garbage_fc(text):
             self._silence_handler._mark_prompt_speech_detected("final", text)
+            # A caller who actually said something ends the echo episode. The
+            # budget is per-episode, not per-call: without this reset a call
+            # that echoed twice early would have none left when it mattered.
+            self.session["echo_resume_count"] = 0
 
         # Fix: if a watchdog repair phrase was queued/in-flight, kill it before
         # on_transcript_received() resets currently_reasking — otherwise the stale
