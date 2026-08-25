@@ -533,6 +533,45 @@ def extract_slot_options(text: str) -> Dict[str, str]:
     return out
 
 
+def option_label_candidates(text: str) -> Dict[str, List[str]]:
+    """{digit: [label candidates]} for every numbered option, best-effort first.
+
+    `extract_slot_options` commits to the first segment before an em dash, which
+    is right for the DTMF map — the keypad injects that label as a synthetic
+    transcript, and "Thursday 27th August" is what a caller pressing 1 means.
+
+    It is wrong for RESOLUTION. In the multi-day readout the option is
+    "Thursday 27th August — half past seven in the evening", and the time is the
+    only part that can match a slot: `_resolve_within` compares against the
+    slot's `spoken` field by normalised equality, and that field holds a time.
+    Truncating at the dash threw the time away, so every multi-day readout
+    failed to resolve and the offer record was never written — on three
+    consecutive live calls, every time the search widened.
+
+    The single-day form put the day in the PREAMBLE and each option was already
+    a bare time, which is why this was invisible until a widened search made
+    Susie name a different day per option.
+
+    Candidates are segments of what was actually spoken for that option, so a
+    wrong match is not available to them: day segments match nothing (slot
+    labels are times), leaving the time segment as the only thing that can hit.
+    """
+    out: Dict[str, List[str]] = {}
+    text = text or ""
+    anchors = _option_anchors(text)
+    for i, (_start, end, digit) in enumerate(anchors):
+        nxt = anchors[i + 1][0] if i + 1 < len(anchors) else len(text)
+        whole = text[end:nxt].lstrip(", ").strip().rstrip(".,;- ")
+        seen: List[str] = []
+        for cand in [whole] + _OPTION_LABEL_STOP_RE.split(whole):
+            cand = cand.strip().rstrip(".,;- ").lstrip(", ")
+            if cand and cand not in seen:
+                seen.append(cand)
+        if seen:
+            out[digit] = seen
+    return out
+
+
 def cap_spoken_options(
     text: str, cap: int = MAX_SPOKEN_OPTIONS
 ) -> Tuple[str, int, int]:
@@ -583,10 +622,27 @@ def _resolve_within(
         by_label.setdefault(_norm_label(slot.get("spoken") or ""), []).append(slot)
     out: List[Dict[str, Any]] = []
     for label in labels:
-        hits = by_label.get(_norm_label(label)) or []
-        if len(hits) != 1:
+        # A label may be one string, or an ordered list of candidates for the
+        # same spoken option (see option_label_candidates). Candidates are
+        # segments of one option, so at most one of them can be a time — trying
+        # them in order cannot widen what is reachable, only recover the part
+        # the em-dash truncation used to discard.
+        cands = [label] if isinstance(label, str) else list(label or [])
+        hit = None
+        for cand in cands:
+            hits = by_label.get(_norm_label(cand)) or []
+            if len(hits) > 1:
+                # Ambiguous is REFUSED, never retried with another candidate:
+                # the same time on two days cannot be told apart from speech,
+                # and picking one is how a caller is booked into a day they
+                # never heard.
+                return None
+            if hits:
+                hit = hits[0]
+                break
+        if hit is None:
             return None
-        out.append(hits[0])
+        out.append(hit)
     return out
 
 
