@@ -1711,11 +1711,19 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
         # tests check proposed wording against _BANNED_SENTENCE_RE, and a pattern
         # hidden elsewhere would not be found by them.
         if desc == "that_is_the_only" and _scarcity_claim_is_supported(session):
-            logger.info(
-                "[ms_gate5] kept scarcity sentence (%s) — one slot on one day, "
-                "the claim is true and the caller is owed it",
-                desc,
-            )
+            # Log only when there was actually something to keep. This used to
+            # log on the way past, so it fired on every turn where the session
+            # state merely PERMITTED the claim — nine times in CAdf057714,
+            # including on "All booked — you're in for Friday the 28th", which
+            # contains no scarcity sentence at all. Behaviour was always right;
+            # the line just could not be used to verify it, which is the only
+            # job a line like this has.
+            if pattern.search(result):
+                logger.info(
+                    "[ms_gate5] kept scarcity sentence (%s) — one slot on one "
+                    "day, the claim is true and the caller is owed it",
+                    desc,
+                )
             continue
         cleaned = pattern.sub("", result)
         if cleaned != result:
