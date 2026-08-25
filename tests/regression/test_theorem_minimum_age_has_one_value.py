@@ -75,6 +75,37 @@ def test_the_live_prompt_says_the_same_number():
         )
 
 
+def test_no_stale_age_WORD_survives_anywhere_in_the_live_prompt():
+    """The catch-all, added after a SIXTH source got through.
+
+    The test above pins one PHRASE — "Children under seven not seen" — and
+    checks the old wording is not sitting beside it. On 2026-08-25 that was not
+    enough: the CLINIC block opened with
+
+        "Closed all UK bank holidays. Adults fifteen and over only."
+
+    Different sentence, same claim, and it was the one a caller heard. On
+    CA750c8d70d2ecab156fc87540749fc863 (Mark's live line, 14:51) a parent asked
+    about their son's ankle and Susie said "we do see patients from fifteen
+    years old". They rang off.
+
+    So this asserts on the WORD, not on any phrasing: no spelled age other than
+    the real minimum may appear in the rendered prompt at all. Phrasing is
+    where the previous five fixes kept leaking.
+    """
+    from app.prompts.susie_system_prompt import build_system_prompt
+    prompt = build_system_prompt({"clinic_id": "theorem_v3"}).lower()
+    for age, word in SPOKEN_FORMS.items():
+        if age == MINIMUM:
+            continue
+        assert word not in prompt, (
+            f"the live theorem_v3 prompt still says {word!r} somewhere. Every "
+            f"spelled age in this prompt is an age policy claim, and the "
+            f"minimum is {MINIMUM}. Find the sentence and change it — this is "
+            f"the sixth place it has hidden."
+        )
+
+
 def test_no_adults_only_claim_survives_anywhere():
     """The 'Adults only — no paediatric patients' line is read by no Python, but
     it is read by people, and it is what made the other three hard to trust."""

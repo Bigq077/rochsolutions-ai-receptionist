@@ -360,7 +360,18 @@ UNMOVED_PROMPTS = {
     # see tests/regression/test_theorem_minimum_age_has_one_value.py. The
     # rendered prompt diff is exactly that ONE line; verified before
     # re-pinning rather than accepted because the test went red.
-    "theorem_v3": "76f54d49d6b62012",
+    # Moved 2026-08-25, deliberately: 76f54d49d6b62012 -> e626b57ddfc6d84c.
+    # The CLINIC block opened "Adults fifteen and over only" — a SIXTH source of
+    # Mark's age policy, missed by the five-source sweep because it is worded as
+    # an adults-only claim rather than a "children under N" one. It was the
+    # sentence a caller actually heard: on CA750c8d70d2ecab156fc87540749fc863
+    # (Mark's live line, 14:51) a parent asked about their son's ankle and Susie
+    # said "we do see patients from fifteen years old". They rang off. Now
+    # "Patients seen from seven years old."
+    #
+    # CONTAINMENT: demo, jv_v1, theorem and vital_edge all HELD — the edit is
+    # inside _build_theorem_v3's CLINIC block, which only theorem_v3 renders.
+    "theorem_v3": "e626b57ddfc6d84c",
     "vital_edge": "76ac625e89e83e4a",
 }
 
