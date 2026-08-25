@@ -13,6 +13,53 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# The SMS kill switch — ONE definition, read by the sender AND by the prompt
+# ---------------------------------------------------------------------------
+# SMS_ENABLED gates two things that must never disagree: whether a text is
+# actually sent, and whether Susie TELLS the caller a text has been sent. Both
+# used to read os.getenv("SMS_ENABLED", ...) with their own copy of the default
+# — the sender here, the promise in prompts/clinic_template_prompt.py.
+#
+# That duplication is the bug. A live branch flips the default here to "true"
+# and the prompt keeps "false", so with the env var unset in Render the text IS
+# sent while Susie says it will not be. It was live in exactly that state on
+# theorem-onboarding, vitaledge-onboarding and jv_v2 on 2026-08-25 — this
+# branch included, until this commit.
+#
+# There is now one function and one default. To flip a branch, change
+# _DEFAULT below and nothing else; the promise follows the send by construction.
+#
+# ⚑ LIVE branch (jv_v2): ON. Deliberately the opposite of latency-eval, which
+# this branch was cut from and which defaults OFF because it is an isolated
+# timing-eval service that must never text a real caller.
+#
+# The flip back is not optional and it is not cosmetic. theorem-onboarding was
+# cut from latency-eval the same way and inherited the OFF default straight past
+# the comment telling it not to (3b2f195, 2026-08-04). Mark's line then sent
+# nothing — no booking confirmation, no staff transfer notice, no reminder — and
+# it read as healthy, because "[sms] SMS_ENABLED is off" is exactly what a
+# correct eval branch prints. The prompt closes on "Confirmation text on its
+# way", so every caller was promised a text that was never coming.
+#
+# ON means a forgotten Render env var fails in the safe direction for a LIVE
+# clinic, which is sending. Set SMS_ENABLED=false to silence this service
+# deliberately. Do NOT copy latency-eval's "false" here.
+_SMS_ENABLED_DEFAULT = "true"
+
+_TRUTHY = ("true", "1", "yes", "on")
+
+
+def sms_enabled() -> bool:
+    """True when outbound SMS is switched on for this service.
+
+    Read this rather than os.getenv: the default is part of the switch, and a
+    second reader that supplies its own default is how the send and the promise
+    came apart.
+    """
+    return os.getenv("SMS_ENABLED", _SMS_ENABLED_DEFAULT).strip().lower() in _TRUTHY
+
+
+# ---------------------------------------------------------------------------
 # Eval-only staff SMS redirect
 # ---------------------------------------------------------------------------
 # latency-eval maps its test line (+447366263180) to clinic_id "jv_v1", so an
@@ -148,28 +195,11 @@ class SMSService:
         Returns:
             Message SID if successful, None if failed
         """
-        # Global SMS kill switch (env-gated). Every surface — smart follow-up,
-        # owner alerts, booking SMS — funnels through this method, so this one
-        # gate covers them all.
-        #
-        # ⚑ LIVE branch (jv_v2): default is ON. Deliberately the opposite of
-        # latency-eval, which this branch was cut from and which defaults OFF
-        # because it is an isolated timing-eval service that must never text a
-        # real caller.
-        #
-        # The flip back is not optional and it is not cosmetic. theorem-onboarding
-        # was cut from latency-eval the same way and inherited the OFF default
-        # straight past the comment telling it not to (3b2f195). Mark's line then
-        # sent nothing — no booking confirmation, no staff transfer notice, no
-        # reminder — and it read as healthy, because "[sms] SMS_ENABLED is off"
-        # is exactly what a correct eval branch prints. The prompt closes on
-        # "Confirmation text on its way" unconditionally, so every caller was
-        # promised a text that was never coming.
-        #
-        # Defaulting ON means a forgotten Render env var fails in the safe
-        # direction for a LIVE clinic, which is sending. Set SMS_ENABLED=false to
-        # deliberately silence this service.
-        if os.getenv("SMS_ENABLED", "true").strip().lower() not in ("true", "1", "yes", "on"):
+        # Global SMS kill switch. Every surface — smart follow-up, owner alerts,
+        # booking SMS — funnels through this method, so this one gate covers
+        # them all. The switch itself lives in sms_enabled() at module scope;
+        # see the note there before changing the default.
+        if not sms_enabled():
             logger.info("[sms] SMS_ENABLED is off — outbound SMS suppressed (not sent)")
             return None
 
