@@ -1047,6 +1047,41 @@ def _render_policies(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
         out.append("No GP referral required — patients book directly.")
     if pol.get("minimum_age"):
         out.append(str(pol["minimum_age"]) + ".")
+    # ESTABLISH THE AGE — the ask that makes the under-age gate reachable.
+    #
+    # The deterministic gate (llm_stream.under_age_blocks_booking) only arms
+    # from an age the caller STATES. Nothing was prompting them to state one,
+    # so on a clinic with a minimum the gate sat dormant on exactly the calls
+    # it exists for. Observed on Theorem 2026-08-25: a parent described their
+    # son's injury and Susie went straight to booking, never establishing an
+    # age. Theorem got its own copy of this rule; the template clinics never
+    # had one, because they do not render _build_theorem_v3.
+    #
+    # GATED ON A CONFIGURED MINIMUM, so it renders for vital_edge (18) and
+    # NOT for jv_v1, whose stated policy is the opposite — "No minimum age —
+    # discounts available for under 18". Asking a jv_v1 caller their child's
+    # age would be friction in service of a rule that clinic does not have.
+    #
+    # The minimum is NOT spoken here. Susie is told to ask, not to quote a
+    # threshold: most patients are over it, and leading with the number reads
+    # as a refusal forming. If the stated age is under it, CALL STATE says so
+    # explicitly and the decline follows from there.
+    from app.tools.receptionist_tools import minimum_age_years as _min_age
+    if _min_age(clinic) is not None:
+        out.append(
+            "BOOKING FOR SOMEONE ELSE - ESTABLISH THE AGE. This clinic has a "
+            "minimum age, and it can only be enforced if you know how old the "
+            "patient is. If the patient is not the caller - they refer to them "
+            "as their son, daughter, child, kid, boy, girl, grandson or "
+            "granddaughter, or otherwise suggest the patient may be young - "
+            "and you do not already know the age, ask it before booking: "
+            "'How old is he?' or 'How old is she?'. Ask once, warmly, as an "
+            "ordinary part of taking the booking, not as a challenge. Do NOT "
+            "volunteer the minimum age unprompted - most patients are over it "
+            "and leading with it sounds like a refusal forming. If the age is "
+            "under the minimum you will be told so explicitly in CALL STATE, "
+            "and only then do you decline."
+        )
     if pol.get("returning_patient_definition"):
         out.append(f"Returning patient: {pol['returning_patient_definition']}")
     if pol.get("chaperone"):

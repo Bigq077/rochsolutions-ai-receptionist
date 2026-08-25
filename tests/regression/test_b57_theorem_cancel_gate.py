@@ -388,7 +388,16 @@ UNMOVED_PROMPTS = {
     # CONTAINMENT: demo, jv_v1, theorem and vital_edge all HELD — the edit is
     # inside _build_theorem_v3's POLICIES block, which only theorem_v3 renders.
     "theorem_v3": "d41b67bc0bd992f2",
-    "vital_edge": "76ac625e89e83e4a",
+    # Moved 2026-08-25, deliberately: 76ac625e89e83e4a -> e52579ab12c53eab.
+    # vital_edge gained the ESTABLISH THE AGE rule in _render_policies. Its
+    # minimum of 18 was unenforceable in practice because the gate only arms
+    # from an age the caller states and nothing asked for one.
+    #
+    # CONTAINMENT, and the reason this row moving ALONE is the proof: the rule
+    # is gated on minimum_age_years, so jv_v1 - the other template_v1 clinic,
+    # whose policy is "No minimum age" - renders nothing and HELD, as did demo,
+    # theorem and theorem_v3.
+    "vital_edge": "e52579ab12c53eab",
 }
 
 
