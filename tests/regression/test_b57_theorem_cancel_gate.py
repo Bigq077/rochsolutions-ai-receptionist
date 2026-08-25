@@ -383,7 +383,16 @@ UNMOVED_PROMPTS = {
     # CONTAINMENT, verified not assumed: demo, theorem and theorem_v3 all HELD.
     # Only the two template_v1 clinics move, which is what this table is for.
     # Hashes recomputed on THIS branch; they differ per branch, never copy.
-    "vital_edge": "b6ea074ed6fa797d",
+    # Moved 2026-08-25, deliberately: b6ea074ed6fa797d -> f5c33525220113b8.
+    # vital_edge gained the ESTABLISH THE AGE rule in _render_policies. Its
+    # minimum of 18 was unenforceable in practice: the gate only arms from an
+    # age the caller STATES, and nothing asked for one.
+    #
+    # CONTAINMENT, and why this row moving ALONE is the proof: the rule is
+    # gated on minimum_age_years, so jv_v1 - the other template_v1 clinic,
+    # whose policy is "No minimum age" - renders nothing and HELD, as did
+    # demo, theorem and theorem_v3. Recomputed on THIS branch.
+    "vital_edge": "f5c33525220113b8",
 }
 
 
