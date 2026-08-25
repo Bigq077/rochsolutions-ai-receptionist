@@ -612,14 +612,29 @@ def _norm_label(label: str) -> str:
     return " ".join(str(label or "").lower().split()).strip(" .,;:!?-")
 
 
+def _norm_day(value: Any) -> str:
+    """Normalise a day label for comparison, dropping the filler the model adds.
+
+    The payload says "Monday 31st August"; the model often speaks "Monday the
+    31st of August". Both must key the same day, or the scoping below silently
+    stops applying and the ambiguity it exists to resolve comes back.
+    """
+    text = _norm_label(value if isinstance(value, str) else "")
+    return " ".join(w for w in text.split() if w not in ("the", "of"))
+
+
 def _resolve_within(
     slots: List[Dict[str, Any]], labels: List[str]
 ) -> Optional[List[Dict[str, Any]]]:
     if not slots or not labels:
         return None
     by_label: Dict[str, List[Dict[str, Any]]] = {}
+    by_day: Dict[str, List[Dict[str, Any]]] = {}
     for slot in slots:
         by_label.setdefault(_norm_label(slot.get("spoken") or ""), []).append(slot)
+        _dl = _norm_day(slot.get("day_label") or "")
+        if _dl:
+            by_day.setdefault(_dl, []).append(slot)
     out: List[Dict[str, Any]] = []
     for label in labels:
         # A label may be one string, or an ordered list of candidates for the
@@ -628,9 +643,32 @@ def _resolve_within(
         # them in order cannot widen what is reachable, only recover the part
         # the em-dash truncation used to discard.
         cands = [label] if isinstance(label, str) else list(label or [])
+        # The option names its OWN day in the multi-day readout
+        # ("Number 1, Monday 31st August - quarter past eight in the evening").
+        # Scope this option's time lookup to that day.
+        #
+        # Without it the time is looked up across every day at once, and a
+        # clinic running the same rota two evenings running makes "quarter past
+        # eight in the evening" ambiguous — so the all-or-nothing rule denied
+        # data it could actually have told apart. Live on CA9bd4ecf0 (25 Aug):
+        # the candidates carried both halves and resolution still returned
+        # nothing.
+        #
+        # `prefer_day` at the caller cannot do this job: it is ONE day, and a
+        # multi-day readout presents several, so it can only ever rescue one.
+        _scoped = by_label
+        for _c in cands:
+            _pool = by_day.get(_norm_day(_c))
+            if _pool:
+                _scoped = {}
+                for _s in _pool:
+                    _scoped.setdefault(
+                        _norm_label(_s.get("spoken") or ""), []
+                    ).append(_s)
+                break
         hit = None
         for cand in cands:
-            hits = by_label.get(_norm_label(cand)) or []
+            hits = _scoped.get(_norm_label(cand)) or []
             if len(hits) > 1:
                 # Ambiguous is REFUSED, never retried with another candidate:
                 # the same time on two days cannot be told apart from speech,
