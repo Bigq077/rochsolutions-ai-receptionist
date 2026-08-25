@@ -2,6 +2,27 @@
 # Updated for Render deployment with SMS notification system
 
 # ============================================================================
+# PINNING POLICY — read before loosening anything below
+# ============================================================================
+# Every dependency here is pinned with `==`. Nothing uses `>=`.
+#
+# On 2026-08-21 `anthropic>=0.40.0` resolved to 1.0.0 on a routine rebuild.
+# 1.0.0 moved `temperature` out of `AsyncMessages.stream()`, so every turn
+# raised TypeError and every reply degraded to the safe fallback phrase. All
+# four clinic services went down mid-morning without one line of our code
+# changing, and a revert did not fix it — the range re-resolved on the next
+# build. Tests cannot catch this: CI installs the same floating range.
+#
+# The remaining seven ranges were pinned on 2026-08-25 to the versions the
+# Render build was ALREADY resolving (`pip freeze` on the running service), so
+# the pin froze the live set rather than moving it. Worth noting what the
+# ranges had quietly floated to: `openai>=1.50.0` was serving 3.3.1 — two major
+# versions — and `pytest-asyncio>=0.23.0` was on 1.4.0.
+#
+# To change a version: change it here deliberately, deploy, and make a real
+# call. Never widen a pin back to a range.
+
+# ============================================================================
 # Core Framework
 # ============================================================================
 fastapi==0.115.6
@@ -54,13 +75,13 @@ python-dateutil==2.9.0
 # ============================================================================
 # OpenAI (kept as dependency — no longer used in realtime pipeline)
 # ============================================================================
-openai>=1.50.0
+openai==3.3.1
 
 # ============================================================================
 # WebSockets (client-side connection to AssemblyAI STT WSS endpoint)
 # Already a transitive dep via uvicorn[standard] — pinned here for clarity
 # ============================================================================
-websockets>=13.0
+websockets==17.0.1
 
 # ============================================================================
 # Anthropic (Phase 3 tool-calling receptionist — Claude Sonnet 4.6)
@@ -79,24 +100,24 @@ anthropic==0.84.0
 # ============================================================================
 # Observability
 # ============================================================================
-sentry-sdk[fastapi]>=2.0.0
+sentry-sdk[fastapi]==2.68.1
 
 # ============================================================================
 # Audio codec (Python 3.13 removed audioop; drop-in replacement)
 # Required for PCM→µ-law transcoding (ElevenLabs pcm_16000 → Twilio ulaw)
 # ============================================================================
-audioop-lts>=0.2.1
+audioop-lts==0.2.2
 
 # ============================================================================
 # Fuzzy string matching (accent / dialect pattern matching in flow.py)
 # ============================================================================
-rapidfuzz>=3.0.0
+rapidfuzz==3.14.5
 
 # ============================================================================
 # Testing
 # ============================================================================
-pytest>=8.0.0
-pytest-asyncio>=0.23.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
 
 # ============================================================================
 # Additional Dependencies (if needed - uncomment to use)
