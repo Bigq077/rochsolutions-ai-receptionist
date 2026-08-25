@@ -353,27 +353,7 @@ UNMOVED_PROMPTS = {
     #
     # CONTAINMENT: demo, jv_v1, theorem and vital_edge all HELD — the edits are
     # inside the block only theorem_v3 renders. Recomputed on THIS branch.
-    # Moved 2026-08-25, deliberately. Ported from latency-eval f660483b.
-    # Susie had stopped asking a child's age: the old "Adults fifteen and over
-    # only" wording read as a hard restriction and the model checked ages off
-    # its own bat, so softening it to seven removed the check with it. There
-    # had never been a RULE. Two calls on THIS build (8819dc50) went straight
-    # to booking for a child whose age was never established, leaving the
-    # under-age gate - which only arms from an age the caller STATES - dormant
-    # on exactly the calls it exists for.
-    #
-    # The port also replaces the CALL STATE clause added here by a040afcd. That
-    # clause said "the caller has said they are N", which was fine while an age
-    # only ever arrived from the patient themselves. With the ask in place the
-    # common case is a PARENT stating a CHILD's age, and Susie would have told
-    # the parent THEY were too young. It now says "the patient has been said to
-    # be N", and carries the GP referral that canonical.py AGE_POLICY and
-    # clinic_config children_policy both give.
-    #
-    # CONTAINMENT verified on THIS branch, not assumed: only theorem_v3 moved.
-    # Hashes recomputed here; they differ per branch, never copy.
-    # 519e16e0bbef440f -> c8b94e274006ebdd.
-    "theorem_v3": "c8b94e274006ebdd",
+    "theorem_v3": "519e16e0bbef440f",
     # Re-pinned 2026-08-17: ported the ring-back fixes (34becd6, 3938720),
     # which touch clinic_template_prompt.py and susie_system_prompt.py.
     # demo and theorem hold either side — the containment proof.

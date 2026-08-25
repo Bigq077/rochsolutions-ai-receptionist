@@ -1053,16 +1053,9 @@ def capture_under_age(session: dict, utterance: str) -> "int | None":
     ("Anyone under 18") is read by no Python at all. Until this, nothing but the
     model's compliance stood between a 15-year-old and a booking.
 
-    Clinic-gated on `minimum_age_years`, which is absent for jv_v1 — whose
-    stated policy is the opposite, "No minimum age" — so there this function
-    returns before doing anything.
-
-    It is NOT absent for theorem, though this docstring said so until
-    2026-08-25. Correcting the sixth source of Mark's age policy set his
-    minimum to 7, which armed this gate on his line for the first time. The
-    claim was stale rather than wrong when written, which is exactly why it
-    was worth deleting: the next person to reason about Theorem safeguarding
-    would have read it and concluded there was nothing to reason about.
+    Clinic-gated: `minimum_age_years` is absent for jv_v1 — whose stated policy
+    is the opposite, "No minimum age" — and for theorem, so for them this
+    function returns before doing anything.
 
     Never cleared within a call. An age is a fact about the caller, not a
     preference; a later utterance that happens to contain a number must not

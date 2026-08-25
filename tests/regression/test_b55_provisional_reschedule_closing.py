@@ -157,35 +157,7 @@ UNCHANGED_CLINIC_PROMPTS = {
     # Re-pinned 2026-08-09: 62d6bbb (the reason gate — the tool schema and a
     # tool error string were still telling her to ask), plus every theorem_v3
     # move listed above that was never carried into this value.
-    # Moved 2026-08-25, deliberately. Ported from latency-eval f660483b.
-    # Susie had stopped asking a child's age: the old "Adults fifteen and over
-    # only" wording read as a hard restriction and the model checked ages off
-    # its own bat, so softening it to seven removed the check with it. There
-    # had never been a RULE. Two calls on THIS build (8819dc50) went straight
-    # to booking for a child whose age was never established, leaving the
-    # under-age gate - which only arms from an age the caller STATES - dormant
-    # on exactly the calls it exists for.
-    #
-    # The port also replaces the CALL STATE clause added here by a040afcd. That
-    # clause said "the caller has said they are N", which was fine while an age
-    # only ever arrived from the patient themselves. With the ask in place the
-    # common case is a PARENT stating a CHILD's age, and Susie would have told
-    # the parent THEY were too young. It now says "the patient has been said to
-    # be N", and carries the GP referral that canonical.py AGE_POLICY and
-    # clinic_config children_policy both give.
-    #
-    # CONTAINMENT verified on THIS branch, not assumed: only theorem_v3 moved.
-    # Hashes recomputed here; they differ per branch, never copy.
-    # 97427e2be0cf2936 -> 9af6c2f082263a7a.
-    #
-    # NOTE: 97427e2be0cf2936 was ALREADY stale before this port - at 8819dc50
-    # this row computed 352ba5764fe8cfb9, so it had been red for some earlier,
-    # unattributed prompt move. The new value is the post-port render. The
-    # three template_v1 rows in this table (demo, jv_v1, vital_edge) are red at
-    # HEAD too, with the same computed values before and after this port, so
-    # they are NOT touched here: re-pinning a move nobody can attribute is how
-    # a containment table stops meaning anything.
-    "theorem_v3": "9af6c2f082263a7a",
+    "theorem_v3": "97427e2be0cf2936",
 }
 
 OLD_CONFIRMED_WORDING = ("that's you rescheduled", "you're now in for")

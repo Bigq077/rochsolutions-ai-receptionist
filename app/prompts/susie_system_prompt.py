@@ -2832,30 +2832,6 @@ def _build_theorem_v3(session: dict) -> str:
         # disagreeing sources — see clinic_config.py patient_policies — and the
         # only one the caller ever heard.
         "Children under seven not seen.\n"
-        # The ASK. Added 2026-08-25 after two live calls
-        # (CAd48ea4e1315c26d17023287fbdb97773,
-        # CA6d41a6fea6ecf2a9a1a2326cbd98c76e) where a parent said "my son was
-        # playing football" and Susie went straight to booking without ever
-        # establishing his age.
-        #
-        # The deterministic gate in llm_stream only arms from an age the caller
-        # STATES. Nothing prompted them to state one, so the gate sat dormant on
-        # exactly the calls it exists for. This ask used to happen by accident:
-        # while the prompt wrongly said "Adults fifteen and over only" the model
-        # volunteered the check, and correcting the policy to 7 removed its
-        # motivation. It was never a rule, which is why it vanished silently.
-        #
-        # Scoped to a child reference rather than "anyone booking for someone
-        # else" - an adult booking for a partner or parent does not need it.
-        "BOOKING FOR A CHILD - ESTABLISH THE AGE. If the caller refers to the "
-        "patient as their son, daughter, child, kid, boy, girl, grandson or "
-        "granddaughter, and you do not already know the age, ask it before "
-        "booking - 'How old is he?' or 'How old is she?'. Ask once, warmly, "
-        "as an ordinary part of taking the booking, not as a challenge and "
-        "not with a policy attached. Do NOT volunteer the minimum age "
-        "unprompted: most children are over it, and leading with it sounds "
-        "like a refusal forming. If the age is under the minimum you will be "
-        "told so explicitly in CALL STATE, and only then do you decline.\n"
         "Returning patient under two years for the same condition = "
         "follow-up. Two years or more, or a different condition = "
         "new assessment.\n"
@@ -3987,51 +3963,35 @@ def _build_theorem_v3(session: dict) -> str:
     # B7 CALL STATE
     state = []
 
-    # Under-age, latched by the engine. FIRST in CALL STATE because it overrides
-    # every other clause in the block - there is no version of this call that
-    # ends in a booking.
+    # Under-age, first: if this is true nothing else in CALL STATE matters.
     #
-    # Theorem had the engine half of this and not the prompt half. The
-    # book_appointment refusal in llm_stream is clinic-agnostic and does fire
-    # here (minimum_age_years('theorem') is 7), but the CALL STATE clause that
-    # stops the pointless walk-up to it lived only in clinic_template_prompt,
-    # which Mark's line does not use. So an under-7 would have been taken
-    # through day, time, name and number and refused at the write.
+    # Theorem does not render clinic_template_prompt._b7_call_state, so it does
+    # not inherit the template's version of this line — it needs its own copy,
+    # the same way it needs its own identity and cancel rules.
     #
-    # That gap matters more now than it did yesterday: the child age question
-    # in the policies block is designed to elicit exactly these ages, so this
-    # path stops being theoretical.
+    # The minimum is READ from config, never written here as a literal. The
+    # template's original said "18", which was true of the only clinic that had
+    # the gate (Vital Edge) and would be a lie here: Mark sees children from 7.
+    # A safeguarding sentence must not depend on a number someone typed twice.
     #
-    # Resolved through the ENGINE helper rather than by reading a config shape
-    # here - same reason as the template: two readers of one policy that
-    # disagree about where it lives is how a safeguarding gate arms in the
-    # engine and stays silent in the prompt. If the clinic cannot be resolved
-    # the clause is omitted and the write gate still refuses.
+    # Never raises: if the lookup fails the line is simply absent and the
+    # deterministic refusal in llm_stream._execute_tools still blocks the write.
     try:
         from app.clinic_config import get_clinic as _ua_get_clinic
-        from app.tools.receptionist_tools import minimum_age_years as _ua_min_fn
-        _ua_min = _ua_min_fn(
-            _ua_get_clinic(session.get("clinic_id") or "theorem") or {}
-        )
+        from app.tools.receptionist_tools import minimum_age_years as _ua_min
+        _ua_minimum = _ua_min(_ua_get_clinic(session.get("clinic_id")) or {})
     except Exception:
-        _ua_min = None
-    _ua_declared = session.get("_under_age_declared") if _ua_min is not None else None
+        _ua_minimum = None
+    _ua_declared = session.get("_under_age_declared") if _ua_minimum is not None else None
     if _ua_declared:
-        # The decline wording follows canonical.py AGE_POLICY and clinic_config
-        # children_policy, which both send under-7s to the clinic AND to their
-        # GP. Naming only the floor would drop the referral the clinic asked to
-        # be given, and would be a second phrasing of a policy that already has
-        # too many.
         state.append(
-            f"the patient has been said to be {_ua_declared}, which is UNDER "
-            f"this clinic's minimum age of {_ua_min}. No appointment can be "
-            "booked on this call. Do not offer times, do not ask for a day, a "
-            "name or a number, and do not suggest booking later or leaving "
-            "details - there is nothing to book. Say kindly that the clinic "
-            f"sees patients aged {_ua_min} and over, that for anyone younger "
-            "they should contact the clinic directly, and that you would also "
-            "recommend speaking to their GP about a paediatric physiotherapy "
-            "referral. You may still answer general questions"
+            f"the caller has said they are {_ua_declared}, which is UNDER this "
+            f"clinic's minimum age of {_ua_minimum}. No appointment can be "
+            "booked for them on this call. Do not offer times, do not ask for a "
+            "day, a name or a number, and do not suggest booking later or "
+            "leaving details — there is nothing to book. Say kindly that "
+            f"appointments are for those aged {_ua_minimum} and over. You may "
+            "still answer general questions"
         )
     cn = session.get("twilio_from_local") or ""
     if cn:
