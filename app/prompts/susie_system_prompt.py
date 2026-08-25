@@ -2825,7 +2825,13 @@ def _build_theorem_v3(session: dict) -> str:
         "No GP referral needed.\n"
         "Home visits by arrangement. No remote or video "
         "consultations.\n"
-        "Children under fifteen not seen.\n"
+        # 2026-08-25: was "Children under fifteen not seen." Mark's clinic sees
+        # patients aged 7 and over (owner-confirmed 2026-07-10, recorded in
+        # app/clinics/theorem/canonical.py AGE_POLICY), so this line turned away
+        # 7-14 year olds on every call for six weeks. It was one of four
+        # disagreeing sources — see clinic_config.py patient_policies — and the
+        # only one the caller ever heard.
+        "Children under seven not seen.\n"
         "Returning patient under two years for the same condition = "
         "follow-up. Two years or more, or a different condition = "
         "new assessment.\n"
