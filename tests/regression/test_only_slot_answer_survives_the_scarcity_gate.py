@@ -173,3 +173,39 @@ def test_the_pattern_is_still_in_the_table():
     _BANNED_SENTENCE_RE. Lifting the pattern out of the table to make it
     conditional would hide it from all of them."""
     assert any(desc == "that_is_the_only" for desc, _ in _BANNED_SENTENCE_RE)
+
+
+
+# ---------------------------------------------------------------------------
+# The log line has to be usable as evidence
+# ---------------------------------------------------------------------------
+def test_the_keep_is_logged_only_when_something_was_kept(caplog):
+    """It fired nine times in CAdf057714, including on "All booked - you're in
+    for Friday the 28th" - a turn with no scarcity sentence in it.
+
+    The logger.info sat BEFORE pattern.sub, so it announced a keep whenever the
+    session state merely permitted one. Behaviour was never wrong, but the line
+    could not be used to verify the fix had fired, which is its only purpose.
+    """
+    import logging
+
+    from app.media_streams.turn_handler import sanitise_response
+
+    # One day, one slot — the claim is supported, so the gate is in keep mode.
+    session = {"available_days": [{"date": "2026-09-01", "slot_times": ["17:00"]}]}
+
+    with caplog.at_level(logging.INFO):
+        sanitise_response("All booked, you're in for Friday the 28th.", session)
+    assert not [r for r in caplog.records if "kept scarcity sentence" in r.message], (
+        "announced a keep on a turn with no scarcity sentence"
+    )
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        out = sanitise_response(
+            "That's the only slot on Tuesday 1st September.", session,
+        )
+    assert "only slot" in out, "the sentence itself must still survive"
+    assert [r for r in caplog.records if "kept scarcity sentence" in r.message], (
+        "kept the sentence but said nothing — the fix is unverifiable from a log"
+    )
