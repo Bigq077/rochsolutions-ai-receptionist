@@ -150,6 +150,25 @@ def _has_explicit_clock(pref: str) -> bool:
     return bool(_EXPLICIT_CLOCK_RE.search(pref or ""))
 
 
+_WEEKDAY_NAME_TO_INDEX: Dict[str, int] = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+
+
+def _named_weekdays(preference: str) -> List[int]:
+    """Weekday indexes named in a caller's date_hint ('Tuesday afternoon' → [1]).
+
+    ONE owner for "did the caller name a day?".  _filter_tuples_by_preference
+    silently DROPS a day filter that matches nothing, so anything that wants to
+    know a named day went unanswered has to ask the same question the same way
+    — otherwise the two disagree and the caller is told a day is unavailable on
+    the strength of a filter that was never applied.
+    """
+    pref = (preference or "").lower()
+    return [wd for name, wd in _WEEKDAY_NAME_TO_INDEX.items() if name in pref]
+
+
 def _filter_tuples_by_preference(slot_tuples: list, preference: str = "") -> list:
     """
     Filter (start_dt, end_dt) tuples to those matching the caller's stated
@@ -173,11 +192,7 @@ def _filter_tuples_by_preference(slot_tuples: list, preference: str = "") -> lis
     pref = preference.lower()
     filtered = future_only
 
-    day_map = {
-        "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
-        "friday": 4, "saturday": 5, "sunday": 6,
-    }
-    pref_days = [wd for name, wd in day_map.items() if name in pref]
+    pref_days = _named_weekdays(pref)
     if pref_days:
         day_filtered = [(s, e) for s, e in filtered if s.weekday() in pref_days]
         if day_filtered:
@@ -5210,6 +5225,92 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
 
         return {"error": "No available slots found. Try a different time preference or wider window.", "slots": []}
 
+    # ── The caller named a weekday the window did not reach ─────────────────
+    #
+    # day_window defaults to 7 days, which contains EXACTLY ONE of each weekday.
+    # When that one is full, _filter_tuples_by_preference finds nothing for the
+    # requested day and — by design — discards the day filter rather than
+    # returning an empty list, so other days are presented in its place. The
+    # model reads the absence of the requested day as clinic state:
+    #
+    #   caller: "have you got Tuesday?"        (24 Aug 2026, jv_v1)
+    #   Susie:  "Tuesday isn't available at the moment, I'm afraid —
+    #            Monday 24th August… Thursday 27th August…"
+    #   truth:  Tuesday 1 September had FOUR free slots, one day past the window.
+    #
+    # A gap in a payload can never mean "the clinic is closed that day"; here it
+    # meant "nobody looked". So look. Widen ONCE to _WIDEN_WINDOW_DAYS, which
+    # reaches the next occurrence of every weekday.
+    #
+    # Only when the model did not name its own day_window — an explicit window is
+    # a deliberate narrowing and the requested_day_empty path above owns it.
+    # Costs one extra Google round trip, and only in the case that is currently a
+    # false refusal.
+    _pref_weekdays = _named_weekdays(_pref)
+    _weekday_window = day_window_days
+    _weekday_found = True
+    if _pref_weekdays:
+        _weekday_found = any(s.weekday() in _pref_weekdays for s, _e in free_slots)
+    if (
+        _pref_weekdays
+        and not _weekday_found
+        and not args.get("day_window")
+        and day_window_days < _WIDEN_WINDOW_DAYS
+    ):
+        _wd_end = w_start + timedelta(days=_WIDEN_WINDOW_DAYS)
+        logger.info(
+            "[ms_tools] check_availability: %r not in the %dd window — widening to %dd "
+            "before saying the day is unavailable",
+            _pref, day_window_days, _WIDEN_WINDOW_DAYS,
+        )
+        _wd_candidates = generate_candidate_slots(
+            w_start, _wd_end,
+            duration_min=duration_min,
+            clinic_working_hours=working_hours,
+            increment_min=clinic.get("slot_increment_minutes"),
+            break_min=_break_min,
+        )
+        try:
+            # Same two-call concurrent shape as the primary read — the all-day
+            # scan matters MORE over a longer window, not less.
+            _wd_busy, _wd_all_day = await asyncio.gather(
+                asyncio.to_thread(freebusy, tokens, w_start, _wd_end, calendar_id),
+                _all_day_blocks_for_window(tokens, calendar_id, w_start, _wd_end),
+            )
+            await _save_gcal_tokens(tokens, _resolve_clinic_id(session))
+            _wd_blocks = parse_busy(_wd_busy or []) + _wd_all_day
+            # B-77 again: an appointment being MOVED is not a conflict with
+            # itself, and this window contains it just as the narrow one did.
+            if _moved:
+                _wd_blocks = [b for b in _wd_blocks if not _same_interval(b, _moved)]
+            _wd_free = filter_free_slots(
+                _wd_candidates, _wd_blocks, break_min=_break_min,
+            )
+        except Exception as _wd_err:
+            # Keep the narrow result rather than killing the turn — the caller
+            # still hears real alternatives, and _weekday_found stays False so
+            # the payload below still forbids asserting the day is unavailable.
+            logger.error(
+                "check_availability weekday widen freebusy error: %r — "
+                "keeping the %dd result", _wd_err, day_window_days,
+            )
+            _wd_free = []
+        if any(s.weekday() in _pref_weekdays for s, _e in _wd_free):
+            free_slots = _wd_free
+            _weekday_window = _WIDEN_WINDOW_DAYS
+            _weekday_found = True
+            logger.info(
+                "[ms_tools] check_availability: found %r in the %dd window",
+                _pref, _WIDEN_WINDOW_DAYS,
+            )
+        else:
+            if _wd_free:
+                _weekday_window = _WIDEN_WINDOW_DAYS
+            logger.info(
+                "[ms_tools] check_availability: %r has no slot within %dd either",
+                _pref, _weekday_window,
+            )
+
     presented  = _select_presented_tuples(free_slots, preference=_pref)
     # Build from preference-matching free_slots so available_days honours the
     # requested day/time.  Mirrors the Acuity path fix (bug C5-5).
@@ -5221,10 +5322,28 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     session["available_days"]     = days_data
     # Cap SPEECH only — available_days stays full; last_offered synced to the
     # spoken two so unspoken follow-up (V5) computes remaining correctly.
-    _out = _cap_presented_slots(_filter_same_day_slots(
-        {"available_days": days_data, "total_days": len(days_data)},
-        session,
-    ))
+    _payload: Dict[str, Any] = {
+        "available_days": days_data,
+        "total_days": len(days_data),
+    }
+    if _pref_weekdays:
+        # Say what was looked at, in fields nothing downstream rewrites.
+        # total_days cannot carry this: _cap_presented_slots and
+        # _filter_same_day_slots both redefine it, and they run after us.
+        _payload["day_requested"] = ", ".join(
+            n for n, wd in _WEEKDAY_NAME_TO_INDEX.items() if wd in _pref_weekdays
+        )
+        _payload["day_requested_found"] = _weekday_found
+        _payload["window_examined_days"] = _weekday_window
+        if not _weekday_found:
+            _payload["guidance"] = (
+                f"No slot on the requested day within the next {_weekday_window} days. "
+                "Say EXACTLY that — that you cannot see anything on that day in the "
+                "next couple of weeks — and offer the days below. Do NOT say the day "
+                "is unavailable, fully booked, or that the clinic does not open then: "
+                "nothing beyond this window was checked."
+            )
+    _out = _cap_presented_slots(_filter_same_day_slots(_payload, session))
     _sync_last_offered_to_spoken(session, _out)
     return _out
 
