@@ -81,7 +81,15 @@ UNCHANGED_CLINIC_PROMPTS = {
 # number" without ever speaking the digits, so callers confirmed a number they
 # had never heard. Intended drift, not B-55 leaking into confirmed-booking
 # clinics — the property this table exists to prove still holds.
-    "demo": "ed86dbfbb561af80",
+    # Re-pinned 2026-08-25 under the day-stable helper above. These are NOT a
+    # response to any prompt change: demo and theorem rendered byte-identical
+    # at every one of the 34 commits replayed back to c61ef03e, and jv_v1 moved
+    # only at commits that touch clinic_template_prompt.py. The old values were
+    # simply hashes of a prompt containing a weekday, taken on a different day
+    # of the week. demo, jv_v1 and theorem now agree exactly with the pins in
+    # test_b57_theorem_cancel_gate.py, which is the cross-check that the two
+    # tables finally mean the same thing.
+    "demo": "9d3beae14e4f2493",
     # Re-pinned 2026-08-04. jv_v1 is the only other clinic with a
     # duration-choice service, so it is the only one the DURATIONS-ARE-FIXED
     # rewrite could move — demo, theorem and theorem_v3 are byte-identical
@@ -93,8 +101,8 @@ UNCHANGED_CLINIC_PROMPTS = {
     # a sentence denying a session the clinic sells, in the same breath as the
     # line offering it. The claim is now scoped per service and derived from
     # clinic.json instead of asserted in engine code.
-    "jv_v1": "0c7e427a8308ca93",
-    "theorem": "f5473a9d4e073c27",
+    "jv_v1": "1c9e4e0e016e14ac",
+    "theorem": "b770bcbee81dd601",
     # Re-pinned 2026-08-04 on theorem-onboarding ONLY — this value deliberately
     # diverges from latency-eval's e6202afb47d91820, and a cherry-pick conflict
     # here is expected rather than a mistake.
@@ -185,7 +193,7 @@ UNCHANGED_CLINIC_PROMPTS = {
     # HEAD too, with the same computed values before and after this port, so
     # they are NOT touched here: re-pinning a move nobody can attribute is how
     # a containment table stops meaning anything.
-    "theorem_v3": "9af6c2f082263a7a",
+    "theorem_v3": "c8b94e274006ebdd",
 }
 
 OLD_CONFIRMED_WORDING = ("that's you rescheduled", "you're now in for")
@@ -213,25 +221,38 @@ def _rendered(clinic_id: str) -> str:
 # before hashing: the table still proves a prompt EDIT did not leak into
 # another clinic, which is all it was ever for, and it no longer fails for the
 # passage of time.
-_DATE_NOISE = (
-    re.compile(r"\d{1,2} (?:January|February|March|April|May|June|July|August"
-               r"|September|October|November|December) \d{4}"),
-    re.compile(r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)"
-               r" \d{1,2}(?:st|nd|rd|th)? (?:January|February|March|April|May|June"
-               r"|July|August|September|October|November|December)"),
-    re.compile(r"\d{4}-\d{2}-\d{2}"),
+# Day-stable normalisation, adopted from test_b57_theorem_cancel_gate.py on
+# 2026-08-25. THIS IS WHY THIS TABLE KEPT GOING STALE.
+#
+# The previous version applied three patterns, the first of which rewrote
+# "25 August 2026" to <DATE>. That left the injected weekday orphaned as
+# "Today: Tuesday <DATE>", which the weekday+date pattern could no longer
+# match because the date it needed had already gone. The hash was therefore
+# stable within a day and changed the moment the day-of-week rolled over, so
+# every pin went red overnight with nobody's prompt having moved.
+#
+# b57 has had the fix since it was written, and its own _sha docstring names
+# this file as the broken one. The two tables are meant to use an identical
+# helper so they move together; they now do.
+_DATEISH_RE = re.compile(
+    r"\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b"
+    r"|\b(?:january|february|march|april|may|june|july|august|september"
+    r"|october|november|december)\b"
+    r"|\d+",
+    re.IGNORECASE,
 )
 
 
-def _date_normalised(text: str) -> str:
-    for pattern in _DATE_NOISE:
-        text = pattern.sub("<DATE>", text)
-    return text
-
-
 def _sha(clinic_id: str) -> str:
-    body = _date_normalised(_rendered(clinic_id))
-    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+    """Hash the rendered prompt with every date-ish token redacted.
+
+    Weekday names, month names and digit runs go; the WORDING stays, which is
+    what "did this branch's prompt work leak into another clinic's script"
+    actually asks. Identical to the helper in test_b57_theorem_cancel_gate.py
+    so the two tables cannot disagree about what "unchanged" means.
+    """
+    text = _DATEISH_RE.sub("<date>", _rendered(clinic_id))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------
