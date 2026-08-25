@@ -333,7 +333,17 @@ UNMOVED_PROMPTS = {
     # are byte-identical across the change. Hashes are recomputed per branch —
     # the prompts either side of the addition differ between branches, so these
     # values are NOT the ones on latency-eval. The ADDITION is identical.
-    "jv_v1": "22d3aa9ba71d8809",
+    # Re-pinned 2026-08-25, Wave 1: the SMS switch got ONE owner (9b2691d2).
+    # Both clinic_template_prompt.py sites now call notifications.sms.
+    # sms_enabled() instead of re-reading SMS_ENABLED with their own default,
+    # and on a LIVE branch that default is "true". What left the template was a
+    # sentence that was FALSE here — "no text will be sent on this service" —
+    # while the sender had defaulted to "true" all along.
+    #
+    # CONTAINMENT, verified not assumed: demo, theorem and theorem_v3 all HELD.
+    # Only the two template_v1 clinics move, which is what this table is for.
+    # Hashes recomputed on THIS branch; they differ per branch, never copy.
+    "jv_v1": "0625b55638d5c43e",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -363,7 +373,17 @@ UNMOVED_PROMPTS = {
     # susie_system_prompt.py. demo and theorem are byte-identical either
     # side — that containment is what proves the port stayed in the
     # callback path. Recomputed with THIS file's own _sha.
-    "vital_edge": "8b1b0b34b4bf0a88",
+    # Re-pinned 2026-08-25, Wave 1: the SMS switch got ONE owner (9b2691d2).
+    # Both clinic_template_prompt.py sites now call notifications.sms.
+    # sms_enabled() instead of re-reading SMS_ENABLED with their own default,
+    # and on a LIVE branch that default is "true". What left the template was a
+    # sentence that was FALSE here — "no text will be sent on this service" —
+    # while the sender had defaulted to "true" all along.
+    #
+    # CONTAINMENT, verified not assumed: demo, theorem and theorem_v3 all HELD.
+    # Only the two template_v1 clinics move, which is what this table is for.
+    # Hashes recomputed on THIS branch; they differ per branch, never copy.
+    "vital_edge": "b6ea074ed6fa797d",
 }
 
 
