@@ -244,15 +244,27 @@ class TestTheoremHealthPolicy:
         result = evaluate_policy_gate(s, self._theorem_clinic())
         assert result.action == ASK_CHILD_AGE
 
-    def test_theorem_minor_age_declined(self):
-        s = _session(child_related=True, service_fit=True, age=12)
+    def test_theorem_below_the_minimum_declined(self):
+        """Under 7 is the only band this clinic turns away."""
+        s = _session(child_related=True, service_fit=True, age=6)
         result = evaluate_policy_gate(s, self._theorem_clinic())
         assert result.action == SERVICE_FIT_DISALLOW
 
-    def test_theorem_minor_age_15_declined(self):
-        s = _session(child_related=True, service_fit=True, age=15)
+    def test_theorem_at_the_minimum_allowed(self):
+        s = _session(child_related=True, service_fit=True, age=7)
         result = evaluate_policy_gate(s, self._theorem_clinic())
-        assert result.action == SERVICE_FIT_DISALLOW
+        assert result.action == SERVICE_FIT_ALLOW
+
+    def test_theorem_minor_above_the_minimum_allowed(self):
+        """These two used to assert DISALLOW at 12 and 15, encoding a minimum of
+        18 and then 15. The clinic's minimum is 7 (owner-confirmed 2026-07-10,
+        settled across all sources 2026-08-25), so a 12- and a 15-year-old are
+        patients it sees. Kept as explicit cases because they are the band the
+        old policy wrongly refused."""
+        for age in (12, 15):
+            s = _session(child_related=True, service_fit=True, age=age)
+            result = evaluate_policy_gate(s, self._theorem_clinic())
+            assert result.action == SERVICE_FIT_ALLOW, f"age {age} was refused"
 
     def test_theorem_adult_son_age_19_allowed(self):
         s = _session(child_related=True, service_fit=True, age=19)
@@ -260,11 +272,15 @@ class TestTheoremHealthPolicy:
         assert result.action == SERVICE_FIT_ALLOW
 
     def test_theorem_response_text_is_configured_faq_when_minor(self):
-        s = _session(child_related=True, service_fit=True, age=10)
+        # age 10 until 2026-08-25, when the minimum moved to 7 and 10 became an
+        # accepted patient. 6 is now the case this test exists for.
+        s = _session(child_related=True, service_fit=True, age=6)
         result = evaluate_policy_gate(s, self._theorem_clinic())
         expected = self._theorem_clinic().get("faq", {}).get("children_policy", "")
         assert result.response_text == expected
-        assert "adult" in result.response_text.lower()
+        # was `"adult" in ...` — the FAQ no longer claims an adults-only policy,
+        # so assert it names the actual minimum instead.
+        assert "aged 7 and over" in result.response_text
 
     def test_theorem_adult_booking_not_gated(self):
         s = _session(child_related=False, booking=True)

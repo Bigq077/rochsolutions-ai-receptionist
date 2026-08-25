@@ -27,10 +27,10 @@ write gate refuses `book_appointment` — but on `CA7d7c109b` no booking was eve
 attempted, so a write gate alone would have changed nothing the caller heard.
 The CALL STATE line is what stops the walk toward a booking that cannot happen.
 
-**Scoped to Vital Edge by CONFIG, not by clinic id.** `minimum_age_years` is set
-only for vital_edge. jv_v1's stated policy is the opposite — "No minimum age —
-discounts available for under 18" — so it must never have this key, and its
-absence is what keeps the change to one clinic.
+**Scoped by CONFIG, not by clinic id.** `minimum_age_years` is set for
+vital_edge (18) and, from 2026-08-25, theorem (7). jv_v1's stated policy is the
+opposite — "No minimum age — discounts available for under 18" — so it must
+never have this key, and its absence is what keeps the gate off there.
 """
 from __future__ import annotations
 
@@ -49,9 +49,20 @@ VE, JV = "vital_edge", "jv_v1"
 
 # ── the policy, read from config ───────────────────────────────────────────
 
-def test_only_vital_edge_declares_a_minimum_age():
+def test_the_clinics_that_declare_a_minimum_age():
+    """Vital Edge at 18, Theorem at 7 (added 2026-08-25, see
+    test_theorem_minimum_age_has_one_value.py). jv_v1 and demo must NOT have
+    the key: jv_v1's stated policy is the opposite — "No minimum age —
+    discounts available for under 18" — so adding it there would start refusing
+    the under-18 patients it explicitly serves at a discount."""
     assert minimum_age_years(get_clinic(VE)) == 18
-    for cid in (JV, "theorem_v3", "theorem", "demo"):
+    for cid in ("theorem", "theorem_v2", "theorem_v3"):
+        assert minimum_age_years(get_clinic(cid)) == 7, (
+            f"{cid} lost its minimum age. theorem_v2/_v3 are deepcopies made "
+            "further down clinic_config, so a key added after those lines never "
+            "reaches the live clinic."
+        )
+    for cid in (JV, "demo"):
         assert minimum_age_years(get_clinic(cid)) is None, (
             f"{cid} has acquired a minimum_age_years. jv_v1's policy is 'No "
             "minimum age' — adding this key there would start refusing its "

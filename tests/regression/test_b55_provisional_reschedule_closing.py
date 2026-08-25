@@ -167,7 +167,13 @@ UNCHANGED_CLINIC_PROMPTS = {
     # hardcoded prompt of its own, so nothing here reaches Mark's line.
     "jv_v1": "c66d6e9aff4c8787",
     "theorem": "8565be9a48a7a9aa",
-    "theorem_v3": "761036c8d0da91ed",
+    # Re-pinned 2026-08-25: 'Children under fifteen not seen' -> 'Children
+    # under seven not seen'. Mark's minimum age is 7 (owner-confirmed
+    # 2026-07-10) and the prompt was the only source still saying fifteen —
+    # see tests/regression/test_theorem_minimum_age_has_one_value.py. The
+    # rendered prompt diff is exactly that ONE line; verified before
+    # re-pinning rather than accepted because the test went red.
+    "theorem_v3": "76f54d49d6b62012",
 }
 
 OLD_CONFIRMED_WORDING = ("that's you rescheduled", "you're now in for")

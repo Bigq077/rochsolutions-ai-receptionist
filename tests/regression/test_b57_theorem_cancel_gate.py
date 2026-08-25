@@ -354,7 +354,13 @@ UNMOVED_PROMPTS = {
     # ADDITION is identical. It is confined to the TOOLS block, nowhere near
     # the cancel wording, and the other three pins here are unchanged — which
     # is the containment assertion that matters.
-    "theorem_v3": "761036c8d0da91ed",
+    # Re-pinned 2026-08-25: 'Children under fifteen not seen' -> 'Children
+    # under seven not seen'. Mark's minimum age is 7 (owner-confirmed
+    # 2026-07-10) and the prompt was the only source still saying fifteen —
+    # see tests/regression/test_theorem_minimum_age_has_one_value.py. The
+    # rendered prompt diff is exactly that ONE line; verified before
+    # re-pinning rather than accepted because the test went red.
+    "theorem_v3": "76f54d49d6b62012",
     "vital_edge": "76ac625e89e83e4a",
 }
 
