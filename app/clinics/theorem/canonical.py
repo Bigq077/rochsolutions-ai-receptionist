@@ -505,8 +505,14 @@ KNOWN_CONFLICTS: Dict[str, Dict[str, Any]] = {
         "conflicting_value": 15,
         "conflicting_source": "Historical onboarding materials / earlier prompt revisions",
         "note": "RESOLVED 2026-07-10 (owner confirmed): minimum age is 7. The 15+ "
-                "value was stale older-material drift. The live susie prompt (7+) "
-                "is correct; AGE_POLICY.min_patient_age = 7 stands.",
+                "value was stale older-material drift; AGE_POLICY.min_patient_age "
+                "= 7 stands. CORRECTION 2026-08-25: this note used to add 'the "
+                "live susie prompt (7+) is correct'. It was not. The prompt said "
+                "'Children under fifteen not seen' and had said so since before "
+                "this resolution was written, so the 2026-07-10 decision was "
+                "recorded here and never applied anywhere a caller could hear "
+                "it. Do not treat a 'resolved' flag in this file as evidence "
+                "that the live system agrees — check the renderer.",
         "resolved": True,
         "human_confirmation_required": False,
     },

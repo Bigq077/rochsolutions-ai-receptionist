@@ -420,11 +420,47 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             "new_patient_threshold_years": 2,        # 2+ years since last visit = treated as new
             "different_injury_requires_new_assessment": True,
             "records_follow_patient_across_locations": True,
-            # Authoritative age policy: clinic sees patients aged 15+.
-            # 15, 16, 17 allowed; under 15 disallowed.
+            # Age policy: the clinic sees patients aged 7 and over.
+            #
+            # SETTLED 2026-08-25 by the owner, after this key was found to be
+            # one of FOUR disagreeing sources. What each said, and why they are
+            # all listed here rather than quietly overwritten — a future reader
+            # will find the old values in git history and needs to know they
+            # were considered:
+            #
+            #   7   app/clinics/theorem/canonical.py AGE_POLICY — carries an
+            #       owner confirmation dated 2026-07-10. This is the one that
+            #       stands. Its own note claimed "the live susie prompt (7+) is
+            #       correct", which was false: the prompt said fifteen.
+            #   15  this key, and susie_system_prompt's "Children under fifteen
+            #       not seen" — the line Susie actually spoke on every call
+            #       until today, so the clinic was turning away 7-14 year olds
+            #       it does see.
+            #   18  the "Adults only — no paediatric patients" line in
+            #       never_autobook below, drift from older onboarding material.
+            #
+            # All four now read 7. `min_patient_age` drives policy_gate and
+            # service_fit_policy, which are dead on a free-form clinic;
+            # `minimum_age_years` below is the one the live engine reads.
             "no_children": False,
-            "min_patient_age": 15,
+            "min_patient_age": 7,
         },
+
+        # The MACHINE-READABLE minimum the live engine gates on
+        # (receptionist_tools.minimum_age_years -> capture_under_age ->
+        # book_appointment's under_age_declined backstop). Deliberately a
+        # SEPARATE key from patient_policies.min_patient_age above, which only
+        # policy_gate and service_fit_policy read — and both are reachable only
+        # from flow.py, which every free-form clinic bypasses. Theorem is
+        # free-form, so min_patient_age alone gated nothing at all.
+        #
+        # Top level, not under pricing_and_policies: Theorem's contract is this
+        # hardcoded CLINICS entry, not a clinic.json, and minimum_age_years()
+        # reads both shapes for exactly that reason.
+        #
+        # Absent means NO GATE, which is why jv_v1 must never carry it — its
+        # stated policy is the opposite, "No minimum age".
+        "minimum_age_years": 7,
 
         # Payment
         "payment_methods": ["cash", "debit card", "credit card", "online via Stripe"],
@@ -452,7 +488,9 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             "Alcester: Mark Mon/Tue/Wed, Leanne Thu/Fri. Redditch: Leanne Mon, Mark Thu.",
             "Bookings are separated by clinic location in Acuity.",
             "Insurance referrals always require manual approval.",
-            "Adults only — no paediatric patients.",
+            "Patients aged 7 and over. Under 7s are not seen — see "
+            "patient_policies.min_patient_age, which this line contradicted "
+            "with 'Adults only — no paediatric patients' until 2026-08-25.",
             "If the AI can't fully help, direct to website and/or take a message/offer a callback/escalate to staff.",
         ],
 
