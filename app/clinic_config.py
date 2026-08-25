@@ -962,10 +962,14 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             ),
 
             # ── Do you see children? ───────────────────────────────────────────
+            # A FIFTH statement of the age policy, and the one a caller hears
+            # when they ask outright. It said 15 until 2026-08-25. Wording taken
+            # verbatim from canonical.py AGE_POLICY["faq_answer"] so there is
+            # one phrasing rather than two that have to be kept in step.
             "children_policy": (
-                "Yes — we see patients aged 15 and over. "
-                "For anyone under 15, we'd recommend speaking to your GP about a paediatric "
-                "physiotherapy referral."
+                "We see patients aged 7 and over. For anyone under 7, please contact the "
+                "clinic directly and we'd also recommend speaking to your GP about a "
+                "paediatric physiotherapy referral."
             ),
 
             # ── What happens on my first visit? ───────────────────────────────
