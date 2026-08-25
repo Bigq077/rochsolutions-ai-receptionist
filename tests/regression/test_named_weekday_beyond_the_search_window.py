@@ -419,3 +419,135 @@ def test_a_window_at_or_past_the_widen_horizon_is_left_alone(calendar):
 
     assert calls["freebusy"] == 1, "re-read a window it had already searched"
     assert out.get("day_requested_found") is False
+
+
+# ---------------------------------------------------------------------------
+# Door 2 — finding the day is not the same as having searched it
+#
+# `_weekday_found` is `any(slot falls on the named weekday)`, so ONE slot on
+# the pinned date suppresses the widen entirely. On the abandoned 25 Aug call
+# the caller said "I can only do Tuesdays". 1 September was pinned, had exactly
+# one slot (17:00), and Tuesday 8 September was never examined. They asked for
+# alternatives FOUR times and were re-offered the same time.
+#
+# Widening on a day that already has slots would be a Google round trip on the
+# common path, which the caller hears as silence. The payload can carry the
+# truth for free: a 1- or 7-day window holds exactly ONE occurrence of any
+# weekday, and the model is currently told nothing about that — `guidance` is
+# set only on a miss.
+#
+# The distinction the guidance has to hold, and the reason it is asserted
+# rather than left to wording: "that is the only slot on the 1st" is TRUE and
+# must stay sayable (it is the fix in e9de5eef, which restored exactly that
+# sentence after a gate deleted it four times in one call). "that is all we
+# have on Tuesdays" is NOT true and was never examined. Collapsing the two
+# would silently re-break the sibling fix.
+# ---------------------------------------------------------------------------
+def _occurrences(out):
+    return out.get("day_requested_occurrences_examined")
+
+
+def test_a_single_occurrence_is_reported_as_a_single_occurrence(calendar):
+    """The live shape: pinned to one date, the named day has slots."""
+    today = datetime.now(LONDON_TZ).date()
+    pinned = next(
+        d for d in (today + timedelta(days=n) for n in range(1, 8))
+        if d.weekday() <= 5
+    )
+    calls = calendar([])
+
+    out = _run(
+        _WEEKDAY_NAMES[pinned.weekday()],
+        after_date=pinned.isoformat(),
+        day_window=1,
+    )
+
+    assert calls["freebusy"] == 1, "the payload fix must cost no Google call"
+    assert out.get("day_requested_found") is True
+    assert _occurrences(out) == 1
+    assert out.get("guidance"), (
+        "one occurrence examined and the model is told nothing — this is how "
+        "'that is all we have on Tuesdays' gets said about a day nobody searched"
+    )
+
+
+def test_the_narrow_guidance_separates_the_date_from_the_weekday(calendar):
+    """It must forbid the claim about the WEEKDAY without forbidding the true
+    statement about the DATE.
+
+    e9de5eef restored "that's the only slot on that day" after `that_is_the_only`
+    deleted it four times in one call. Guidance that bans talking about what is
+    on the date would undo that fix from the other side.
+    """
+    today = datetime.now(LONDON_TZ).date()
+    pinned = next(
+        d for d in (today + timedelta(days=n) for n in range(1, 8))
+        if d.weekday() <= 5
+    )
+    calendar([])
+
+    out = _run(
+        _WEEKDAY_NAMES[pinned.weekday()],
+        after_date=pinned.isoformat(),
+        day_window=1,
+    )
+    guidance = (out.get("guidance") or "").lower()
+
+    assert "date" in guidance and "weekday" in guidance, (
+        "the guidance does not draw the date/weekday distinction at all"
+    )
+    # The permitted half, explicitly.
+    assert "you may say" in guidance
+    # The forbidden half, explicitly, and about the weekday — not the date.
+    assert "do not" in guidance
+    # It must route the caller somewhere real rather than inviting a guess.
+    assert "check_availability" in guidance
+    assert "invent" in guidance or "not been given" in guidance
+
+
+def test_two_occurrences_examined_gets_no_warning(calendar):
+    """A window that already spans two of the named weekday has searched it.
+
+    Warning here would be noise on every widened call, and noise in a payload
+    field is how a field stops being read.
+    """
+    _first, name = _target_weekday()
+    calls = calendar([])
+
+    out = _run(name, day_window=_WIDEN_WINDOW_DAYS)
+
+    assert calls["freebusy"] == 1
+    assert out.get("day_requested_found") is True
+    assert _occurrences(out) == 2
+    assert "guidance" not in out
+
+
+def test_a_miss_still_gets_the_miss_guidance(calendar):
+    """The two guidance texts are mutually exclusive. The miss wording — which
+    forbids "fully booked" — must not be displaced by the narrow-window one."""
+    _first, name = _target_weekday()
+    today = datetime.now(LONDON_TZ).date()
+    named_wd = _WEEKDAY_NAMES.index(name)
+    blocked = [
+        today + timedelta(days=n)
+        for n in range(0, _WIDEN_WINDOW_DAYS + 8)
+        if (today + timedelta(days=n)).weekday() == named_wd
+    ]
+    calendar(blocked)
+
+    out = _run(name)
+
+    assert out.get("day_requested_found") is False
+    guidance = (out.get("guidance") or "").lower()
+    assert "fully booked" in guidance, "the miss guidance was displaced"
+    assert "you may say" not in guidance
+
+
+def test_no_weekday_named_gets_no_occurrence_field(calendar):
+    """A vague hint acquires none of this."""
+    calendar([])
+
+    out = _run("evening")
+
+    assert _occurrences(out) is None
+    assert "guidance" not in out
