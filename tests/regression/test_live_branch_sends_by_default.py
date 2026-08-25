@@ -30,8 +30,6 @@ Two things make that failure mode nasty enough to deserve a dedicated test:
 A comment did not stop it. An assertion will.
 """
 
-import ast
-import inspect
 import pathlib
 
 import pytest
@@ -43,37 +41,57 @@ def test_sms_defaults_on_when_the_environment_is_silent(monkeypatch):
     """
     The default lives in code, not in Render's env panel. A live service that
     deploys with SMS_ENABLED unset must still send.
+
+    RE-AIMED 2026-08-25 (Wave 1), as this test's own failure message asked.
+    It used to AST-walk sms.py for os.getenv("SMS_ENABLED", <Constant>) and
+    assert on the literal default. Since 9b2691d2 there is no literal to find:
+    the switch is a single module-level constant read by ONE getenv call, and
+    the second argument is a Name, so the walk returned nothing and this test
+    failed with "no os.getenv call found — re-aim this test rather than
+    deleting it".
+
+    Aiming at the constant is strictly stronger than what it replaced. The
+    prompt no longer carries its own copy of the default; prompts/
+    clinic_template_prompt.py calls sms_enabled() too. So this one assertion
+    now pins BOTH what gets sent AND what Susie tells the caller was sent —
+    which the AST form could not do, and which is why this branch shipped a
+    sender that sent while the prompt denied it.
     """
     monkeypatch.delenv("SMS_ENABLED", raising=False)
-    src = inspect.getsource(sms_mod)
-    tree = ast.parse(src)
 
-    defaults = []
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "getenv"
-            and node.args
-            and isinstance(node.args[0], ast.Constant)
-            and node.args[0].value == "SMS_ENABLED"
-        ):
-            # os.getenv("SMS_ENABLED", <default>)
-            if len(node.args) > 1 and isinstance(node.args[1], ast.Constant):
-                defaults.append(node.args[1].value)
-
-    assert defaults, (
-        "no os.getenv(\"SMS_ENABLED\", ...) call found in app/notifications/sms.py "
-        "— if the gate moved, re-aim this test rather than deleting it"
+    assert hasattr(sms_mod, "_SMS_ENABLED_DEFAULT"), (
+        "the SMS switch moved again — find the single source of truth for the "
+        "default and re-aim this test at it. Do not delete it: this branch is "
+        "a live clinic line and the default is the whole guard."
     )
-    for d in defaults:
-        assert str(d).strip().lower() in ("true", "1", "yes", "on"), (
-            f"SMS_ENABLED defaults to {d!r} on a LIVE clinic branch. That is "
-            f"latency-eval's default and it means this clinic sends NOTHING "
-            f"unless someone remembers a Render variable — the exact failure in "
-            f"3b2f195, where it read as healthy because silence is what a "
-            f"correct eval branch prints."
-        )
+    default = sms_mod._SMS_ENABLED_DEFAULT
+    assert str(default).strip().lower() in sms_mod._TRUTHY, (
+        f"SMS_ENABLED defaults to {default!r} on a LIVE clinic branch. That is "
+        f"latency-eval's default and it means this clinic sends NOTHING unless "
+        f"someone remembers a Render variable — the exact failure in 3b2f195, "
+        f"where it read as healthy because silence is what a correct eval "
+        f"branch prints."
+    )
+    assert sms_mod.sms_enabled() is True
+
+
+def test_the_prompt_may_mention_the_text_it_sends(monkeypatch):
+    """The half the old AST test could not reach.
+
+    With SMS on, the prompt must not be carrying the rule forbidding Susie from
+    mentioning the confirmation text she has just caused to be sent. That
+    contradiction was live on this branch until 9b2691d2.
+    """
+    monkeypatch.delenv("SMS_ENABLED", raising=False)
+    from app.clinic_config import get_clinic
+    from app.prompts.clinic_template_prompt import build_clinic_prompt
+
+    static, dyn = build_clinic_prompt({"clinic_id": "jv_v1"}, get_clinic("jv_v1"))
+    text = static + dyn
+    assert "NEVER tell the caller a confirmation text has been sent" not in text, (
+        "SMS is ON for this clinic but the prompt still forbids mentioning the "
+        "text — the send and the promise disagreeing again."
+    )
 
 
 def test_the_eval_staff_redirect_is_off_unless_explicitly_configured(monkeypatch):
