@@ -260,7 +260,17 @@ UNMOVED_PROMPTS = {
     # so the two template clinics move and the three FlowEngine ones do
     # not — demo, theorem and theorem_v3 all held, which is the
     # containment this table exists to prove.
-    "jv_v1": "536701ad044a9d8d",
+    # Re-pinned 2026-08-25, Wave 1: the SMS switch got ONE owner (9b2691d2).
+    # Both clinic_template_prompt.py sites now call notifications.sms.
+    # sms_enabled() instead of re-reading SMS_ENABLED with their own default,
+    # and on a LIVE branch that default is "true". What left the template was a
+    # sentence that was FALSE here — "no text will be sent on this service" —
+    # while the sender had defaulted to "true" all along.
+    #
+    # CONTAINMENT, verified not assumed: demo, theorem and theorem_v3 all HELD.
+    # Only the two template_v1 clinics move, which is what this table is for.
+    # Hashes recomputed on THIS branch; they differ per branch, never copy.
+    "jv_v1": "1c9e4e0e016e14ac",
     "theorem": "b770bcbee81dd601",
     # Re-pinned 2026-08-05 — JOINT INJECTIONS usage rule (CA0f74573f).
     # Cancel wording untouched; this table is proving containment, and it is.
@@ -340,7 +350,17 @@ UNMOVED_PROMPTS = {
     # NB the b55 table is NOT re-pinned here: its four rows were already
     # red before this port and each move needs attributing to a commit
     # first. Fixing them silently would shrink the failing set.
-    "vital_edge": "4212c88e02694fd0",   # moved with jv_v1, same two commits
+    # Re-pinned 2026-08-25, Wave 1: the SMS switch got ONE owner (9b2691d2).
+    # Both clinic_template_prompt.py sites now call notifications.sms.
+    # sms_enabled() instead of re-reading SMS_ENABLED with their own default,
+    # and on a LIVE branch that default is "true". What left the template was a
+    # sentence that was FALSE here — "no text will be sent on this service" —
+    # while the sender had defaulted to "true" all along.
+    #
+    # CONTAINMENT, verified not assumed: demo, theorem and theorem_v3 all HELD.
+    # Only the two template_v1 clinics move, which is what this table is for.
+    # Hashes recomputed on THIS branch; they differ per branch, never copy.
+    "vital_edge": "386294d4afdee428",   # moved with jv_v1, same two commits
 }
 
 
