@@ -371,7 +371,23 @@ UNMOVED_PROMPTS = {
     #
     # CONTAINMENT: demo, jv_v1, theorem and vital_edge all HELD — the edit is
     # inside _build_theorem_v3's CLINIC block, which only theorem_v3 renders.
-    "theorem_v3": "e626b57ddfc6d84c",
+    # Moved 2026-08-25, deliberately: e626b57ddfc6d84c -> d41b67bc0bd992f2.
+    # Softening the CLINIC block to "Children under seven not seen" (the fix
+    # above) had a side effect nobody asked for: Susie stopped asking a child's
+    # age at all. The old "Adults fifteen and over only" wording read as a hard
+    # restriction and the model volunteered the check off its own bat; there
+    # has never been a RULE telling it to. Two calls on build 8819dc50bd4b went
+    # straight to booking for a child whose age was never established, which
+    # left the deterministic under-age gate — which only arms from an age the
+    # caller STATES — dormant on exactly the calls it exists for.
+    #
+    # So the ask is now a rule rather than an accident. The rendered static diff
+    # is exactly that ONE added line; verified against HEAD before re-pinning
+    # rather than accepted because the test went red.
+    #
+    # CONTAINMENT: demo, jv_v1, theorem and vital_edge all HELD — the edit is
+    # inside _build_theorem_v3's POLICIES block, which only theorem_v3 renders.
+    "theorem_v3": "d41b67bc0bd992f2",
     "vital_edge": "76ac625e89e83e4a",
 }
 
