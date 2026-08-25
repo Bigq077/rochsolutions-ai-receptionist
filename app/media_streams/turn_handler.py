@@ -1499,6 +1499,44 @@ def _clinic_asks_its_own_reason_question(session: Dict[str, Any]) -> bool:
         return False
 
 
+def _scarcity_claim_is_supported(session: Dict[str, Any]) -> bool:
+    """True when "that's the only one" is a statement of fact, not a sales line.
+
+    `that_is_the_only` bans scarcity framing, and the ban is right whenever the
+    claim is unsupported — pressure invented by the model. It is wrong when the
+    claim is simply TRUE and the caller has asked for alternatives, because then
+    the banned sentence IS the answer, and stripping it leaves Susie re-offering
+    the same time as a question.
+
+    CA45357d84 (25 Aug 2026, jv_v1). Tuesday 1 September had exactly one slot.
+    The caller asked four times over 40 seconds — "do you have any other slots
+    on that day", "i asked if you have any other slots on that tuesday" — and
+    three of those turns were answered by a stripped sentence and a re-offer of
+    five o'clock. The truthful reply existed each time and never reached them.
+
+    Discriminated on the DATA, deliberately: not on the caller's wording (that
+    would be another phrase list, and a caller can ask this a hundred ways) and
+    not on any further literal of Susie's speech. The question this answers is
+    "is the claim supported?", and `available_days` is what supports it.
+
+    Conservative by construction — it permits the sentence only when the whole
+    offer on the table is a single slot on a single day, so a claim about ONE
+    day while others are still open keeps today's suppression. That direction is
+    the safe one: the failure mode is the current behaviour, not a false claim
+    of scarcity.
+    """
+    try:
+        days = session.get("available_days")
+        if not isinstance(days, list) or len(days) != 1:
+            return False
+        times = (days[0] or {}).get("slot_times")
+        return isinstance(times, list) and len(times) == 1
+    except Exception:
+        # Fail CLOSED — an unreadable session means the sentence is stripped,
+        # which is exactly what happens today.
+        return False
+
+
 def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     """
     Clean LLM output before it reaches tts_text_queue.
@@ -1547,6 +1585,17 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     result = text
 
     for desc, pattern in _BANNED_SENTENCE_RE:
+        # The one conditional entry in this table. Kept IN the table rather than
+        # lifted out of the loop so it stays discoverable: several call sites and
+        # tests check proposed wording against _BANNED_SENTENCE_RE, and a pattern
+        # hidden elsewhere would not be found by them.
+        if desc == "that_is_the_only" and _scarcity_claim_is_supported(session):
+            logger.info(
+                "[ms_gate5] kept scarcity sentence (%s) — one slot on one day, "
+                "the claim is true and the caller is owed it",
+                desc,
+            )
+            continue
         cleaned = pattern.sub("", result)
         if cleaned != result:
             logger.info("[ms_gate5] removed banned phrase (%s)", desc)
