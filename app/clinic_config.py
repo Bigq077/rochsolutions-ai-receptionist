@@ -8,6 +8,10 @@ import json
 import copy as _copy
 from pathlib import Path
 
+# Canonical source of truth for Theorem clinic facts. Pure data, no app deps —
+# safe to import here. Used to keep structured prices in a single place.
+from app.clinics.theorem import canonical as theorem_canonical
+
 
 def _hours_tuple(start_hour: float, end_hour: float):
     """
@@ -217,6 +221,46 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             ],
         },
         "transfer_phone": "+447870166861",   # E.164 — Twilio dials this for live transfers
+
+        # ── Emergency bypass target (2026-08-21) ─────────────────────────────
+        # DISABLED by default. This block is not a routing change — it is the
+        # target the OFF/ON text toggle needs in order to do anything.
+        #
+        # app/clinic_call_mode.py lets Mark text OFF to the clinic line and have
+        # his own phone ring FIRST (press 1 to take it), falling through to
+        # Susie after ring_timeout, reverting at the next London midnight. That
+        # is the seatbelt PRODUCTION_READINESS_PLAN.md Phase 5 marks "never
+        # cut": the one mitigation operable from a phone, at speed, without a
+        # deploy. But the toggle only flips `enabled`, and the router drops the
+        # entire human-first branch when dial_phone is empty:
+        #
+        #     if _human_first and _dial_phone:   # media_streams/router.py
+        #
+        # With no block at all, Mark could text OFF, be told his routing had
+        # changed, and Susie would keep answering every call. The toggle was
+        # built on 2026-08-19 and this clinic went live without a target for it.
+        #
+        # It belongs HERE and not in app/clinics/theorem/clinic.json: on this
+        # branch Theorem is a hardcoded CLINICS entry, and theorem_v2/_v3 are
+        # deepcopies of it made further down this file — clinic.json does not
+        # reach Mark's live line (+447380841468 -> theorem_v3).
+        #
+        # No `greeting` key: it is dead everywhere (no consumer reads it), and
+        # inventing one here risks colliding with the Alcester/Redditch
+        # location ladder that owns Theorem's opening turn.
+        "call_overflow": {
+            "enabled": False,
+            "dial_phone": "+447870166861",
+            "ring_timeout": 20,
+            "whisper_text_with_caller": (
+                "Business call, from {caller}. Press 1 to take it, "
+                "or hang up and Susie will handle it."
+            ),
+            "whisper_text": (
+                "Business call from your Susie line. Press 1 to take it, "
+                "or hang up and Susie will handle it."
+            ),
+        },
 
         # Oversight relay: every inbound text to the clinic line is copied here
         # verbatim, whichever inbound path handles it (name confirmation, home-
@@ -539,17 +583,17 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             },
         },
         "pricing_details": {
-            "new_patient_assessment_gbp": 75.0,
+            "new_patient_assessment_gbp": 85.0,
             "new_patient_duration_mins": 50,
-            "standard_followup_gbp": 75.0,
+            "standard_followup_gbp": 85.0,
             "standard_followup_duration_mins": 40,
             "rehab_session_gbp": 65.0,
             "rehab_duration_mins": 50,
             "prescribing_gbp": 12.50,
             "specialist_equipment_surcharge_gbp": 45.0,
-            "standalone_shockwave_laser_gbp": 120.0,
+            "standalone_shockwave_laser_gbp": 130.0,
             "standalone_shockwave_laser_duration_mins": 30,
-            "package_4x_shockwave_laser_gbp": 420.0,
+            "package_4x_shockwave_laser_gbp": 468.0,
             "package_validity_months": 6,
             "package_cooling_off_days": 14,
             "notes": [
@@ -1134,6 +1178,7 @@ THEOREM_LOCATIONS = {
         "short_name": "Alcester",
         "address": "Theorem Health and Wellness, The Greig Leisure Centre, Kinwarton Road, Alcester, B49 6AD",
         "acuity_calendar_id": os.getenv("ACUITY_CALENDAR_ID_ALCESTER"),
+        "bookable": True,
     },
     "redditch": {
         "id": "redditch",
@@ -1141,6 +1186,11 @@ THEOREM_LOCATIONS = {
         "short_name": "Redditch",
         "address": "Theorem Health and Wellness, 51 Bromsgrove Road, Redditch, B97 4RH",
         "acuity_calendar_id": os.getenv("ACUITY_CALENDAR_ID_REDDITCH"),
+        # Redirect-only (Mark, 2026-07-08): Redditch is NOT bookable through
+        # Susie for now. Flip to True to fully restore Redditch booking — this
+        # single flag drives both the prompt redirect block and the code guard
+        # in llm_stream.py. Nothing else needs changing to re-enable.
+        "bookable": False,
     },
 }
 
@@ -1270,6 +1320,22 @@ THEOREM_APPOINTMENT_TYPES = {
         "acuity_appointment_type_id": None,
     },
 }
+
+# Maps Acuity appointment-type ids → canonical service ids. Any type not listed
+# keeps its literal above (none currently). Tests assert these stay in sync.
+_CANONICAL_PRICE_MAP = {
+    "physio_assessment": "physio_assessment",
+    "physio_followup":   "physio_followup",
+    "remedial_rehab":    "remedial_rehab",
+    "rehab_pt":          "remedial_rehab",
+    "prescribing":       "prescribing",
+    "acupuncture":       "acupuncture",
+    "psychotherapy":     "psychotherapy",
+}
+for _apt_id, _canon_id in _CANONICAL_PRICE_MAP.items():
+    _canon_price = theorem_canonical.get_price(_canon_id)
+    if _apt_id in THEOREM_APPOINTMENT_TYPES and _canon_price is not None:
+        THEOREM_APPOINTMENT_TYPES[_apt_id]["price_gbp"] = float(_canon_price)
 
 # Specialist equipment surcharges (applied during session, not at booking)
 THEOREM_SURCHARGES = {
