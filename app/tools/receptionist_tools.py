@@ -5407,6 +5407,20 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         )
         _payload["day_requested_found"] = _weekday_found
         _payload["window_examined_days"] = _weekday_window
+        # How many times the named weekday actually came round inside the
+        # window that was read. A 1-day or 7-day window holds exactly ONE
+        # occurrence of any weekday, so "we found Tuesday" can mean a single
+        # date was examined and every later Tuesday is unknown.
+        #
+        # Counted off the window rather than off the slots on purpose: this
+        # states what was LOOKED AT, which is the only thing the payload can
+        # honestly assert. A count of dates that happened to have slots would
+        # go up and down with the diary and say nothing about coverage.
+        _wd_occurrences = sum(
+            1 for _n in range(_weekday_window)
+            if (w_start + timedelta(days=_n)).weekday() in _pref_weekdays
+        )
+        _payload["day_requested_occurrences_examined"] = _wd_occurrences
         if not _weekday_found:
             _payload["guidance"] = (
                 f"No slot on the requested day within the next {_weekday_window} days. "
@@ -5414,6 +5428,35 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
                 "next couple of weeks — and offer the days below. Do NOT say the day "
                 "is unavailable, fully booked, or that the clinic does not open then: "
                 "nothing beyond this window was checked."
+            )
+        elif _wd_occurrences <= 1:
+            # Found it — but on ONE date, and the caller who names a weekday is
+            # usually telling you it is the only one that works. On the
+            # abandoned 25 Aug call the caller said "I can only do Tuesdays",
+            # was given the single slot on 1 September, and asked for
+            # alternatives four times. Tuesday the 8th was never searched.
+            #
+            # Widening a day that already has slots would cost a Google round
+            # trip on the common path, which the caller hears as silence. Say
+            # it instead, and route the follow-up to a real second read rather
+            # than to a guess.
+            #
+            # The date/weekday split is load-bearing in BOTH directions.
+            # "That's the only slot on the 1st" is true and must stay sayable —
+            # e9de5eef restored exactly that sentence after a write gate
+            # deleted it four times in one call. "That's all we have on
+            # Tuesdays" is about dates nobody read. Guidance that blurs the two
+            # re-breaks one fix or the other.
+            _payload["guidance"] = (
+                f"Only ONE {_payload['day_requested'].title()} falls inside the "
+                f"{_weekday_window}-day window that was read, so these are all "
+                "the times on that DATE and nothing is known about any later "
+                f"{_payload['day_requested'].title()}. You may say this is all there is "
+                "on that date. Do NOT say or imply it is all there is on that "
+                "weekday. If the times do not suit, offer to look at the "
+                "following one and call check_availability again with after_date "
+                "past this date; never name a later date you have not been "
+                "given slots for, and never invent times."
             )
     _out = _cap_presented_slots(_filter_same_day_slots(_payload, session))
     _sync_last_offered_to_spoken(session, _out)
