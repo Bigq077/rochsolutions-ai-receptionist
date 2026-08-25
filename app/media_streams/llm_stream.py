@@ -2863,6 +2863,14 @@ class LLMStream:
         # ── 3. Assemble complete text for slot map + re-split ────────────────
         _joined = " ".join(clean_chunks)
 
+        # The weekday must agree with the date. sanitise_response already ran
+        # this per STREAMED chunk, but a date split across two chunks matches
+        # nothing there — and this is the path the defect fired on, where the
+        # model wrote "Tuesday 26th August" over a payload that said Wednesday.
+        # Idempotent, so the second pass costs nothing when the first caught it.
+        from .turn_handler import _correct_weekday_against_known_dates
+        _joined = _correct_weekday_against_known_dates(_joined, session)
+
         # ── 3a. Cap the spoken option count, and record what was read out ───
         # CA6b90c3a2 (24 Aug, jv_v1): the first offer was correctly capped at
         # two, then the caller said "go ahead", the model re-called
