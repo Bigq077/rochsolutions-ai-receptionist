@@ -75,12 +75,12 @@ def test_the_live_prompt_says_the_same_number():
         )
 
 
-def test_no_stale_age_WORD_survives_anywhere_in_the_live_prompt():
+def test_no_stale_age_CLAIM_survives_anywhere_in_the_live_prompt():
     """The catch-all, added after a SIXTH source got through.
 
-    The test above pins one PHRASE — "Children under seven not seen" — and
-    checks the old wording is not sitting beside it. On 2026-08-25 that was not
-    enough: the CLINIC block opened with
+    The phrase test above pins "Children under seven not seen" and checks the
+    old wording is not beside it. On 2026-08-25 that was not enough: the CLINIC
+    block opened with
 
         "Closed all UK bank holidays. Adults fifteen and over only."
 
@@ -89,21 +89,33 @@ def test_no_stale_age_WORD_survives_anywhere_in_the_live_prompt():
     about their son's ankle and Susie said "we do see patients from fifteen
     years old". They rang off.
 
-    So this asserts on the WORD, not on any phrasing: no spelled age other than
-    the real minimum may appear in the rendered prompt at all. Phrasing is
-    where the previous five fixes kept leaking.
+    So this looks for the WORD rather than any one phrasing — but only where it
+    is actually making an age claim. A bare word test is too blunt: the FAQ
+    length example says "the caller cut in at eighteen", meaning eighteen
+    SECONDS, and failing on that would train the next reader to delete this
+    test rather than trust it.
     """
+    import re
     from app.prompts.susie_system_prompt import build_system_prompt
-    prompt = build_system_prompt({"clinic_id": "theorem_v3"}).lower()
+
+    prompt = build_system_prompt({"clinic_id": "theorem_v3"})
+    low = prompt.lower()
+    # Words that turn a spelled number into a policy statement about age.
+    CUES = ("age", "aged", "years old", "year old", "and over", "and under",
+            "under ", "patients", "adults", "children", "minimum", "paediatric")
+
     for age, word in SPOKEN_FORMS.items():
         if age == MINIMUM:
             continue
-        assert word not in prompt, (
-            f"the live theorem_v3 prompt still says {word!r} somewhere. Every "
-            f"spelled age in this prompt is an age policy claim, and the "
-            f"minimum is {MINIMUM}. Find the sentence and change it — this is "
-            f"the sixth place it has hidden."
-        )
+        for m in re.finditer(rf"{word}", low):
+            ctx = low[max(0, m.start() - 55):m.end() + 55]
+            hit = next((c for c in CUES if c in ctx), None)
+            assert hit is None, (
+                f"the live theorem_v3 prompt states an age of {word!r} near "
+                f"{hit!r}: ...{ctx.strip()}... The minimum is {MINIMUM}. This "
+                f"is the sixth place that claim has hidden, each time in a "
+                f"different sentence — fix the sentence, do not narrow this test."
+            )
 
 
 def test_no_adults_only_claim_survives_anywhere():
