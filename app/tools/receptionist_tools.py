@@ -5413,6 +5413,12 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
                 free_slots = _wide_candidates
 
             if free_slots:
+                # The requested day is EMPTY — that is why this branch exists —
+                # so it is absent from available_days and the weekday guard in
+                # Gate 5 has no way to reach it. It is the ONE date the model is
+                # about to name that nothing else in the session records, and it
+                # is the date it got wrong on two live calls.
+                session["requested_day_iso"] = _requested_iso
                 presented   = _select_presented_tuples(free_slots, preference=_pref)
                 days_data   = _build_days_data(free_slots, preference=_pref)
                 pres_raw    = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented]
