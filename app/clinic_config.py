@@ -433,6 +433,23 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         "late_payment_charge": True,
         "deposit_required": False,
         "payment_plans": False,
+
+        # ── Minimum age ───────────────────────────────────────────────────────
+        # Mark sees children from 7. This is the MACHINE-READABLE form and it is
+        # what the engine gates on (receptionist_tools.minimum_age_years reads
+        # this flat shape). Its presence is what ARMS the gate — absent means no
+        # policy and no gate, which is why jv_v1 must never gain this key: its
+        # stated policy is the opposite, "No minimum age".
+        #
+        # Deliberately a number, not prose. The prompt sentence is DERIVED from
+        # it, so a safeguarding refusal can never quote a figure the clinic does
+        # not have — the earlier version hardcoded "18", which was true only of
+        # Vital Edge and would have made Susie refuse correctly while citing a
+        # policy Mark does not hold.
+        #
+        # Declared above the theorem_v2 deepcopy below, so theorem_v2 and
+        # theorem_v3 — the live patient line, +447380841468 — both inherit it.
+        "minimum_age_years": 7,
         "cancellation_fee_pct": 75,            # 75% of session fee if <24h notice
         "cancellation_notice_hours": 24,       # minimum notice to avoid fee
         "reschedule_notice_hours": 24,         # rescheduling with <24h notice = treated as cancellation
