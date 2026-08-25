@@ -2879,19 +2879,24 @@ def _b7_call_state(session: Dict[str, Any], clinic: Dict[str, Any], tk: Dict[str
     # writes that flag and it is already clinic-gated, so this is belt and
     # braces — but a clinic whose policy is "No minimum age" (jv_v1) must not be
     # one stray session key away from telling a caller it cannot book them.
-    _ua = (
-        session.get("_under_age_declared")
-        if (clinic.get("pricing_and_policies") or {}).get("minimum_age_years")
-        else None
-    )
+    # Resolved through the ENGINE helper, not by reading one config shape here.
+    # This branch used to test `pricing_and_policies.minimum_age_years` only,
+    # while `minimum_age_years()` reads that shape AND the flat top-level one
+    # (legacy clinics whose contract comes from clinic_config.CLINICS rather
+    # than a clinic.json). Two readers of one policy that disagree about where
+    # it lives is how a safeguarding gate arms in the engine and stays silent
+    # in the prompt.
+    from app.tools.receptionist_tools import minimum_age_years as _ua_min
+    _min = _ua_min(clinic)
+    _ua = session.get("_under_age_declared") if _min is not None else None
     if _ua:
         state.append(
             f"the caller has said they are {_ua}, which is UNDER this clinic's "
-            "minimum age of 18. No appointment can be booked for them on this "
-            "call. Do not offer times, do not ask for a day, a name or a "
+            f"minimum age of {_min}. No appointment can be booked for them on "
+            "this call. Do not offer times, do not ask for a day, a name or a "
             "number, and do not suggest booking later or leaving details — "
             "there is nothing to book. Say kindly that appointments are for "
-            "those aged 18 and over. You may still answer general questions"
+            f"those aged {_min} and over. You may still answer general questions"
         )
 
     # The reason question has already been PUT to this caller. Rule 1b says "ask
