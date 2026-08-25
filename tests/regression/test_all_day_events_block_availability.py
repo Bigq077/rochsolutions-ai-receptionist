@@ -140,21 +140,31 @@ def test_the_event_cap_is_bounded():
 # ---------------------------------------------------------------------------
 # Wiring — the function existing is not the fix; being CALLED is the fix
 # ---------------------------------------------------------------------------
-def test_both_google_calendar_paths_add_the_all_day_blocks():
-    """The primary read and the widen retry.
+def test_every_google_calendar_read_adds_the_all_day_blocks():
+    """EVERY freebusy site on this path, not a fixed number of them.
 
-    The widen window is LONGER than the primary one, so it is more likely to
+    A widen window is LONGER than the primary one, so it is more likely to
     contain a holiday — wiring only the primary path would leave the more
     exposed site unfixed.
+
+    Asserted as a PAIRING rather than a count. This was `== 2` and went red the
+    first time a third read was added (the named-weekday widen) — which had
+    wired the scan correctly. A test that fails when the property it names is
+    satisfied trains people to edit the number, and the next unwired site then
+    passes.
     """
     import inspect
 
     from app.tools import receptionist_tools as rt
 
     src = inspect.getsource(rt._exec_check_availability)
-    assert src.count("_all_day_blocks_for_window(") == 2, (
-        "expected the all-day scan at BOTH the primary and widen freebusy "
-        "sites on the Google Calendar path"
+    scans = src.count("_all_day_blocks_for_window(")
+    reads = src.count("freebusy,")          # asyncio.to_thread(freebusy, ...)
+    assert reads >= 2, "expected at least the primary and widen freebusy reads"
+    assert scans == reads, (
+        f"{reads} freebusy read(s) on the Google Calendar path but {scans} "
+        "all-day scan(s) — every read must pair with one or a blocked-out week "
+        "is offered as available"
     )
 
 
