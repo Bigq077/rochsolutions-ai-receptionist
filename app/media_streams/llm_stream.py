@@ -2931,6 +2931,7 @@ class LLMStream:
             cap_spoken_options,
             day_key_of,
             extract_slot_options,
+            option_label_candidates,
             record_spoken_slots,
             resolve_spoken_options,
             unspoken_remain_on_day,
@@ -2950,7 +2951,13 @@ class LLMStream:
         # All-or-nothing: a partial resolution would write a last_offered_slots
         # that disagrees with the speech, and that is worse than not writing.
         _spoken_opts = None
-        _spoken_labels = list(extract_slot_options(_joined).values())
+        # Candidates, not the DTMF label: the multi-day readout puts the day
+        # INSIDE the option ("Thursday 27th August - half past seven in the
+        # evening") and extract_slot_options truncates at the dash, throwing
+        # away the only part that can match a slot. The keypad map below keeps
+        # its own extraction — its label is injected as a synthetic transcript
+        # and must not change.
+        _spoken_labels = list(option_label_candidates(_joined).values())
         if _spoken_labels:
             _r = resolve_spoken_options(
                 session.get("available_days"),
