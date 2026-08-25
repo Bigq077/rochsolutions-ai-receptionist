@@ -5242,10 +5242,34 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     # meant "nobody looked". So look. Widen ONCE to _WIDEN_WINDOW_DAYS, which
     # reaches the next occurrence of every weekday.
     #
-    # Only when the model did not name its own day_window — an explicit window is
-    # a deliberate narrowing and the requested_day_empty path above owns it.
-    # Costs one extra Google round trip, and only in the case that is currently a
-    # false refusal.
+    # An explicit day_window does NOT suppress this. That gate was here, and it
+    # silenced the widen in the only shape production emits — every availability
+    # call on the abandoned 25 Aug call carried one:
+    #
+    #   {service, location, after_date: "2026-09-01", day_window: 1,
+    #    date_hint: "Tuesday"}
+    #
+    # Its justification was that "an explicit window is a deliberate narrowing
+    # and the requested_day_empty path above owns it". Neither half holds:
+    #
+    #   * requested_day_empty lives inside `if not free_slots:`, and that block
+    #     ends in an unconditional `return`. It cannot fall through to here.
+    #     Every call that reaches this point has a NON-empty window — exactly
+    #     the case that path does not own.
+    #   * day_window=1 next to a date_hint is not the caller narrowing anything.
+    #     SPECIFIC DAY in the template prompt tells the model to emit
+    #     after_date + day_window=1 for a named weekday and to put only the TIME
+    #     in date_hint. Production also puts the weekday name there — which is
+    #     the only reason _pref_weekdays is non-empty on this shape at all. So
+    #     when the pinned date and the named weekday disagree, the weekday is
+    #     the caller's own word and the window is the model's arithmetic. Trust
+    #     the caller.
+    #
+    # Still bounded, for latency: only when the named day is genuinely absent
+    # (so the ordinary call stays at one Google round trip), and only when the
+    # window searched was shorter than the widen window — a model that asked for
+    # 14+ days has already been given it, and re-reading is a duplicate call for
+    # an identical answer.
     _pref_weekdays = _named_weekdays(_pref)
     _weekday_window = day_window_days
     _weekday_found = True
@@ -5254,7 +5278,6 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     if (
         _pref_weekdays
         and not _weekday_found
-        and not args.get("day_window")
         and day_window_days < _WIDEN_WINDOW_DAYS
     ):
         _wd_end = w_start + timedelta(days=_WIDEN_WINDOW_DAYS)
