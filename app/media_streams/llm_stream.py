@@ -4475,10 +4475,36 @@ class LLMStream:
                     # minimum_age_years, which jv_v1 does not set — its policy is
                     # "No minimum age".
                     _ua = session.get("_under_age_declared")
+                    # The minimum is READ, never written into the sentence as a
+                    # literal. It was "18" here and in _b7_call_state, which was
+                    # true of the only clinic that had the gate (Vital Edge) and
+                    # would have been a lie the moment a second clinic switched
+                    # it on with a different number — Susie would have refused
+                    # correctly and then quoted a policy the clinic does not
+                    # have. Same reason `minimum_age` (prose) and
+                    # `minimum_age_years` (engine) are separate keys: a
+                    # safeguarding sentence must not depend on copywriting.
+                    try:
+                        from app.clinic_config import get_clinic as _ua_clinic
+                        from app.tools.receptionist_tools import (
+                            minimum_age_years as _ua_min,
+                        )
+                        _min = _ua_min(_ua_clinic(session.get("clinic_id")) or {})
+                    except Exception:
+                        _min = None
                     logger.error(
                         "[ms_llm] book_appointment BLOCKED — caller stated age "
-                        "%s, below the clinic minimum. Booking refused for the "
-                        "rest of this call.", _ua,
+                        "%s, below the clinic minimum (%s). Booking refused for "
+                        "the rest of this call.", _ua, _min,
+                    )
+                    # A gate that armed can only have armed because a minimum
+                    # was configured, so _min is None only if config changed
+                    # mid-call. Fall back to naming no number rather than
+                    # naming the wrong one.
+                    _floor = (
+                        f"appointments are for those aged {_min} and over"
+                        if _min is not None
+                        else "they are below the age this clinic can see"
                     )
                     result = {
                         "status": "under_age_declined",
@@ -4488,11 +4514,10 @@ class LLMStream:
                             f"minimum age. Do NOT book, do NOT offer times, and "
                             f"do NOT ask for a day, a name or a number — the "
                             f"appointment cannot go ahead whatever they answer. "
-                            f"Say kindly that appointments are for those aged 18 "
-                            f"and over, so this is not something you can book, "
-                            f"and do not offer an alternative appointment. If "
-                            f"they ask why, it is the clinic's policy. You may "
-                            f"still answer general questions."
+                            f"Say kindly that {_floor}, so this is not something "
+                            f"you can book, and do not offer an alternative "
+                            f"appointment. If they ask why, it is the clinic's "
+                            f"policy. You may still answer general questions."
                         ),
                     }
                 elif (
