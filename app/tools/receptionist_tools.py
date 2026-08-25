@@ -5127,6 +5127,15 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     from app.clinic_config import get_clinic as _gc_prov
     _prov_clinic = _gc_prov(session.get("clinic_id"))
     if _prov_clinic.get("booking_system") == "google_calendar_provisional":
+        # availability_mode picks HOW that calendar is read, because the same
+        # provisional write path serves two opposite calendars:
+        #   published (default) — events ARE the offer  (slots he published)
+        #   diary               — events are the OPPOSITE of the offer (his work)
+        #   handoff             — offer nothing, he proposes
+        # Naming all three means falling back is a config edit, not a revert.
+        _mode = (_prov_clinic.get("availability_mode") or "").strip().lower()
+        if _mode == "diary":
+            return await _check_availability_diary(args, session, _prov_clinic)
         return await _check_availability_published(args, session, _prov_clinic)
 
     from app.tools.slots import (
@@ -5450,6 +5459,273 @@ def _parse_event_dt(raw: str):
     return datetime.fromisoformat((raw or "").replace("Z", "+00:00")).astimezone(LONDON_TZ)
 
 
+def _availability_handoff_payload(clinic: Dict[str, Any]) -> Dict[str, Any]:
+    """Offer no times; let the practitioner propose.
+
+    Used by the `handoff` mode AND as the fail-closed result whenever the diary
+    cannot be read. Both are the same caller-facing situation: we do not know
+    when they are free, so the only safe answer is to say nothing specific.
+    """
+    # Named from clinic.json — the practitioner's name must never be a literal
+    # in engine code (CLAUDE.md §5), and this message is spoken.
+    _who = str(clinic.get("practitioner") or "").strip() or "the practitioner"
+    return {
+        "error": "availability_handoff",
+        "message": (
+            "You cannot see live availability for this practitioner, so you "
+            "must NOT offer, guess or invent any specific dates or times, and "
+            "must not say you are checking the calendar. Instead: ask which "
+            "days and rough times of day would suit them, take their details "
+            f"with add_to_waitlist, and tell them {_who} will text or call "
+            "shortly to confirm a time that works. This is normal and should "
+            "sound routine — do not apologise for a fault or suggest anything "
+            "is broken."
+        ),
+        "slots": [],
+        "available_days": [],
+        "total_days": 0,
+    }
+
+
+def _log_busy_blocks(busy_blocks, events, break_min: int) -> None:
+    """Name every interval that was subtracted from the working envelope.
+
+    The counts line says "9 busy block(s)" and nothing else, so when a caller is
+    offered 10:00 on a morning the practitioner believes is empty there is no way
+    to tell an over-block from an entry he has forgotten or cannot see. (Google
+    draws a multi-day TIMED event — a holiday, a flight home — as a banner across
+    the top of day view, not in the hour grid, so the grid looks free while
+    freebusy correctly reports it busy. That is exactly the shape of Vital Edge's
+    Ibiza trip, and exactly the question asked of Friday 14 Aug 2026.)
+
+    freebusy returns bare intervals with no titles, so each one is matched back
+    to the timed event it came from. Diagnostic only — nothing here changes what
+    is offered. Every failure is swallowed: a logging helper must never be able
+    to take down an availability read.
+    """
+    try:
+        timed = []
+        for ev in events or []:
+            s_raw = ((ev.get("start") or {}).get("dateTime"))
+            e_raw = ((ev.get("end") or {}).get("dateTime"))
+            if not s_raw or not e_raw:
+                continue
+            try:
+                timed.append((
+                    datetime.fromisoformat(s_raw.replace("Z", "+00:00")).astimezone(LONDON_TZ),
+                    datetime.fromisoformat(e_raw.replace("Z", "+00:00")).astimezone(LONDON_TZ),
+                    (ev.get("summary") or "(no title)")[:60],
+                ))
+            except ValueError:
+                continue
+        pad = timedelta(minutes=int(break_min or 0))
+        for bs, be in sorted(busy_blocks or [], key=lambda b: b[0]):
+            # freebusy merges overlapping events, so a block can cover several —
+            # name every timed event it contains rather than guessing at one.
+            names = [t[2] for t in timed if max(t[0], bs) < min(t[1], be)]
+            logger.info(
+                "[availability] busy %s → %s (blocks %s → %s with the %dm gap) — %s",
+                bs.strftime("%a %d %b %H:%M"), be.strftime("%a %d %b %H:%M"),
+                (bs - pad).strftime("%H:%M"), (be + pad).strftime("%H:%M"),
+                int(break_min or 0),
+                " + ".join(names) if names else "no timed event matched (all-day or external)",
+            )
+    except Exception as e:  # diagnostics must never break a call
+        logger.warning("[availability] busy-block logging failed (non-fatal): %r", e)
+
+
+# list_upcoming_events takes no page token, so this cap is the whole window. At
+# Vital Edge's density (~8 entries/day) a 17-day window is ~140; 250 leaves room.
+# A truncated read is dangerous in a way an empty one is not — the missing tail
+# looks FREE — so a full page is treated as a failure, not as a result.
+_MAX_DIARY_EVENTS = 250
+
+
+async def _check_availability_diary(
+    args: Dict[str, Any], session: Dict[str, Any], clinic: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Availability = a working envelope MINUS everything in the diary.
+
+    For a practitioner whose calendar records the work he has BOOKED rather than
+    the slots he has published (Vital Edge — see `_check_availability_published`
+    for how that inversion reached a live caller). He publishes nothing and
+    changes nothing about how he uses his diary; the envelope only bounds when
+    Susie may propose, and every entry — client work, padel, the mortgage call —
+    carves itself out. His personal life blocks by default, which the published
+    model could not do.
+
+    ── Fails CLOSED, unlike the non-provisional Google path ──────────────────
+    That path falls back to UNFILTERED candidates when freebusy errors, on the
+    reasoning that offering something beats killing the conversation. That
+    reasoning does not survive here. Unfiltered candidates are the bare 9–19
+    grid with nothing subtracted — i.e. exactly the defect this function exists
+    to fix, re-created on every calendar hiccup, and every "slot" would be a
+    time he may already have a client in. So any failure to read the diary
+    returns the handoff payload: offer nothing, let him propose. Offering
+    nothing is recoverable; double-booking someone is not.
+    """
+    from app.tools.calendar_google import freebusy, list_upcoming_events
+    from app.tools.slots import (
+        generate_candidate_slots,
+        filter_free_slots,
+        format_slot,
+        parse_busy,
+    )
+
+    location = (args.get("location") or session.get("selected_location", "")).lower().strip()
+    _pref = (args.get("date_hint") or args.get("preference") or "").strip()
+    _raw_service = args.get("service") or session.get("selected_service") or ""
+    calendar_id = _resolve_calendar_id(clinic, location)
+    days_ahead = int(clinic.get("days_ahead") or 14)
+
+    _slot_minutes = int(clinic.get("slot_minutes") or 60)
+    _break_min = int(clinic.get("slot_break_minutes") or 0)
+    duration_min = _resolve_duration_minutes(
+        clinic, _raw_service, args, session, _slot_minutes
+    )
+    # B-77, same question the generic grid asks: on a reschedule the
+    # appointment being moved sizes the grid, not the service the model
+    # named.  This reader builds its own candidates and so returns before
+    # _exec_check_availability's copy of this call ever runs — which is how
+    # a 90-minute session was grid-tested at 60 and written at 90, leaving
+    # its last half-hour never checked against the diary.
+    duration_min = _reschedule_duration_override(
+        session, duration_min, _raw_service
+    )
+    # Same re-anchor as the gcal path: working_hours end was baked as
+    # last_appointment + slot_minutes, so shift it to keep the LAST offered
+    # start equal to last_appointment for any service length. New dict — never
+    # mutate the shared clinic config.
+    working_hours = clinic.get("working_hours") or {}
+    if working_hours and duration_min != _slot_minutes:
+        _delta_h = (duration_min - _slot_minutes) / 60.0
+        working_hours = {
+            _day: ((_hrs[0], _hrs[1] + _delta_h) if _hrs else None)
+            for _day, _hrs in working_hours.items()
+        }
+
+    now = datetime.now(LONDON_TZ)
+    horizon = now + timedelta(days=days_ahead)
+
+    # Next-day floor: nothing today. Callers are booking with a practitioner who
+    # confirms by hand, so same-day cannot be honoured. allow_same_day opts out.
+    w_start = now
+    if not clinic.get("allow_same_day"):
+        _tomorrow = (now + timedelta(days=1)).date()
+        w_start = LONDON_TZ.localize(datetime.combine(_tomorrow, datetime.min.time()))
+
+    after_date_str = (args.get("after_date") or "").strip()
+    if after_date_str:
+        try:
+            from datetime import date as _d
+            _ad = LONDON_TZ.localize(
+                datetime.combine(_d.fromisoformat(after_date_str), datetime.min.time())
+            )
+            if _ad > w_start:
+                w_start = _ad
+        except Exception as e:
+            logger.warning(
+                "_check_availability_diary: bad after_date=%r — ignoring: %r",
+                after_date_str, e,
+            )
+
+    if w_start > horizon:
+        return {
+            "error": "beyond_booking_horizon",
+            "message": (
+                f"That date is more than {days_ahead} days away, which is beyond "
+                "how far ahead bookings are taken. Explain that to the caller and "
+                "offer to take their details (add_to_waitlist) so they can be "
+                "contacted when later dates open up. Do NOT offer any slot beyond "
+                "that window."
+            ),
+            "slots": [],
+        }
+
+    day_window = args.get("day_window")
+    w_end = (w_start + timedelta(days=int(day_window))) if day_window else horizon
+    if w_end > horizon:
+        w_end = horizon
+
+    tokens = await _get_tokens(_resolve_clinic_id(session))
+    if not tokens:
+        logger.error(
+            "_check_availability_diary: no Google tokens — cannot read the diary,"
+            " handing off rather than offering an unfiltered grid"
+        )
+        return _availability_handoff_payload(clinic)
+
+    candidates = generate_candidate_slots(
+        w_start, w_end,
+        duration_min=duration_min,
+        clinic_working_hours=working_hours,
+        increment_min=clinic.get("slot_increment_minutes"),
+        break_min=_break_min,
+    )
+
+    try:
+        busy_raw = await asyncio.to_thread(freebusy, tokens, w_start, w_end, calendar_id)
+        events = await asyncio.to_thread(
+            list_upcoming_events, tokens, days_ahead, _MAX_DIARY_EVENTS, calendar_id
+        )
+        await _save_gcal_tokens(tokens, _resolve_clinic_id(session))
+    except Exception as e:
+        logger.error(
+            "_check_availability_diary: diary read failed (%r) — handing off. NOT"
+            " falling back to unfiltered candidates: every one would be a time he"
+            " may already be working.", e,
+        )
+        return _availability_handoff_payload(clinic)
+
+    if len(events or []) >= _MAX_DIARY_EVENTS:
+        # A truncated read hides the TAIL of the window, and a hidden entry reads
+        # as free. Refuse rather than offer over whatever we could not see.
+        logger.error(
+            "_check_availability_diary: event read hit the %d cap — window may be"
+            " truncated, handing off rather than offering over unseen entries",
+            _MAX_DIARY_EVENTS,
+        )
+        return _availability_handoff_payload(clinic)
+
+    busy_blocks = parse_busy(busy_raw or [])
+    busy_blocks += _all_day_busy_blocks(events, w_start, w_end)
+    free_slots = filter_free_slots(candidates, busy_blocks, break_min=_break_min)
+
+    logger.info(
+        "[availability] diary: %d candidate(s) − %d busy block(s) = %d free"
+        " (window %s → %s, duration=%dm gap=%dm)",
+        len(candidates), len(busy_blocks), len(free_slots),
+        w_start.date(), w_end.date(), duration_min, _break_min,
+    )
+    _log_busy_blocks(busy_blocks, events, _break_min)
+
+    if not free_slots:
+        return {
+            "error": "no_availability",
+            "message": (
+                "There is nothing free in that window. Say so plainly, offer to "
+                "look at a different period, or take their details with "
+                "add_to_waitlist. Do NOT invent a time."
+            ),
+            "slots": [],
+            "available_days": [],
+            "total_days": 0,
+        }
+
+    presented = _select_presented_tuples(free_slots, preference=_pref)
+    days_data = _build_days_data(free_slots, preference=_pref)
+    session["last_offered_slots"] = [
+        {"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented
+    ]
+    session["slot_labels"] = [format_slot(s) for s in presented]
+    session["available_days"] = days_data
+    _out = _cap_presented_slots(_filter_same_day_slots(
+        {"available_days": days_data, "total_days": len(days_data)}, session,
+    ))
+    _sync_last_offered_to_spoken(session, _out)
+    return _out
+
+
 async def _check_availability_published(
     args: Dict[str, Any], session: Dict[str, Any], clinic: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -5461,6 +5737,14 @@ async def _check_availability_published(
     """
     from app.tools.calendar_google import list_upcoming_events
     from app.tools.slots import format_slot
+
+    if (clinic.get("availability_mode") or "").strip().lower() == "handoff":
+        logger.info(
+            "_check_availability_published: availability_mode=handoff for clinic=%r"
+            " — offering no times, handing off to the practitioner",
+            clinic.get("clinic_id"),
+        )
+        return _availability_handoff_payload(clinic)
 
     location = (args.get("location") or session.get("selected_location", "")).lower().strip()
     _pref = (args.get("date_hint") or args.get("preference") or "").strip()
