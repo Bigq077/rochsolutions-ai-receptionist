@@ -134,8 +134,15 @@ def test_the_superseded_wording_is_gone(prompt):
 
 @pytest.mark.parametrize("rule", [
     "AI DISCLOSURE",                       # T-0
-    "Adults fifteen and over only",        # age gate, verified live on call 5
-    "Children under fifteen not seen",     # its counterpart
+    # Re-pinned 2026-08-25. Both sentences said FIFTEEN; Mark sees patients
+    # from SEVEN. This test was pinning the defect as a safety rule — it
+    # guarded the wording against a brevity edit while the wording itself
+    # was turning away the 7-14 year olds the clinic actually sees. The
+    # second sentence is the one a live caller heard on
+    # CA750c8d70d2ecab156fc87540749fc863. The guard is still worth having:
+    # what it protects is now true.
+    "Patients seen from seven years old",  # age gate (was "Adults fifteen and over only")
+    "Children under seven not seen",       # its counterpart
 ])
 def test_neighbouring_safety_rules_intact(prompt, rule):
     """A brevity edit is exactly the kind of change that quietly trims a safety

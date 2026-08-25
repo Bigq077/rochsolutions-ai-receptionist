@@ -343,7 +343,17 @@ UNMOVED_PROMPTS = {
     # vital_edge are all byte-identical across the change — the template
     # clinics already carry their own copy of both rules and must not gain a
     # second one from here.
-    "theorem_v3": "a93953888fa2eda6",
+    # Moved 2026-08-25, deliberately: a93953888fa2eda6 -> 519e16e0bbef440f.
+    # Two changes to _build_theorem_v3, both age policy:
+    #   cbdf37e2 — "Children under fifteen not seen" -> "under seven"
+    #   0e19e836 — the CLINIC block's "Adults fifteen and over only" -> "Patients
+    #              seen from seven years old", a SIXTH source and the one a live
+    #              caller actually heard on CA750c8d70d2ecab156fc87540749fc863.
+    # Mark sees patients from 7; the prompt had been saying 15.
+    #
+    # CONTAINMENT: demo, jv_v1, theorem and vital_edge all HELD — the edits are
+    # inside the block only theorem_v3 renders. Recomputed on THIS branch.
+    "theorem_v3": "519e16e0bbef440f",
     # Re-pinned 2026-08-17: ported the ring-back fixes (34becd6, 3938720),
     # which touch clinic_template_prompt.py and susie_system_prompt.py.
     # demo and theorem hold either side — the containment proof.
