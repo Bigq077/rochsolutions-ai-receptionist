@@ -228,6 +228,18 @@ _BARGE_IN_THRESHOLD_S: float = BARGE_IN_THRESHOLD_MS / 1000.0
 _MAX_ECHO_RESUMES: int = 2
 
 
+# Clock hours as SPOKEN vs as TRANSCRIBED. The offer is generated text and
+# spells the hour ("ten in the morning"); AssemblyAI hands back the caller's
+# echo of it as a numeral ("the 10 in the morning"). Folding both onto one
+# spelling is what lets _norm_offer_label compare them at all — see the B-91
+# note there.
+_NUM_WORD_TO_DIGIT: Dict[str, str] = {
+    "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+    "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10",
+    "eleven": "11", "twelve": "12",
+}
+
+
 def _norm_offer_label(value: Any) -> str:
     """Normalise a spoken slot label for 'did the caller just pick this one?'.
 
@@ -235,11 +247,25 @@ def _norm_offer_label(value: Any) -> str:
     in the morning please" is the same selection as the bare label the offer was
     read out with — and exact about the label itself, which is generated text
     and therefore stable.
+
+    B-91, CA70cc833f (26 Aug 2026, theorem_v3). "Exact about the label" was
+    exact about its SPELLING too, and the two sides of this comparison do not
+    share one. Susie offered "ten in the morning"; the caller asked "any other
+    slots than the 10 in the morning" and AssemblyAI wrote the numeral. The
+    containment test missed on ten-versus-10 alone, so B-90 did not fire and
+    the utterance was banked as a fresh mornings preference — the very filter
+    B-90 exists to prevent. The keypad half never showed it: there the label is
+    injected verbatim from the map, so both sides are the same string.
+
+    Hours fold to digits BEFORE filler removal, which also rescues "one in the
+    afternoon" — "one" is a filler word, so that label used to normalise to the
+    alarmingly loose "in afternoon".
     """
     try:
         if not isinstance(value, str):
             return ""
         t = re.sub(r"[^a-z0-9\s]", " ", value.lower())
+        t = " ".join(_NUM_WORD_TO_DIGIT.get(w, w) for w in t.split())
         _FILLER = {
             "um", "uh", "er", "yeah", "yes", "yep", "aye", "ok", "okay",
             "please", "thanks", "ta", "cheers", "the", "ill", "take", "have",
@@ -12152,7 +12178,43 @@ class WebSocketCallHandler:
                                     "time preference — soft context not set (B-90)",
                                     utterance[:60],
                                 )
-                            if not _is_slot_pick and not self.session.get("time_of_day_preference"):
+                            # A band named inside a QUESTION is not a stated
+                            # preference. B-91 again, same call: "any other
+                            # slots than the 10 in the morning, is that all you
+                            # have that day" banked mornings for the rest of
+                            # the call, and every later prompt then carried
+                            # "TIME OF DAY PREFERENCE CONFIRMED (caller stated
+                            # this explicitly)" about something the caller
+                            # never said. The sweep comment on the soft-context
+                            # block below already records this exact shape —
+                            # "what if I rearrange the morning of" -> mornings
+                            # (T-11) — and that block has carried the gate
+                            # since 6e6d7aa. This one never got it.
+                            #
+                            # Direction is deliberate and matches the bias
+                            # stated above: failing to latch costs a re-ask,
+                            # latching wrongly hides real availability behind a
+                            # filter and reports the remainder as complete.
+                            # Note the cost is real — "have you got anything in
+                            # the mornings" contains "have you" and so stops
+                            # latching. That caller still gets mornings on THIS
+                            # turn (the model reads the utterance); what is lost
+                            # is persistence across later turns.
+                            _tod_is_question = (
+                                not _is_slot_pick
+                                and _transcript_is_question(utterance)
+                            )
+                            if _tod_is_question:
+                                logger.info(
+                                    "[ms_conn v3] time-of-day capture skipped"
+                                    " — caller asked a question: %r",
+                                    utterance[:60],
+                                )
+                            if (
+                                not _is_slot_pick
+                                and not _tod_is_question
+                                and not self.session.get("time_of_day_preference")
+                            ):
                                 _tod = _extract_time_preference(utterance)
                                 if _tod:
                                     self.session["time_of_day_preference"] = _tod

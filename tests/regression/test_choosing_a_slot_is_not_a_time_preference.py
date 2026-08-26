@@ -137,7 +137,12 @@ def test_the_capture_site_consults_the_current_offer():
     # test then measures a window above the wrong line and passes or fails for
     # reasons unrelated to the wiring.
     i = src.index('"[ms_conn v3] time_of_day_preference captured: %s"')
-    window = src[i - 3000:i]
+    # Widened 3000 -> 8000 on 26 Aug 2026 (B-91/B-92). The window is a proxy
+    # for "in the same block", and the block grew when the question gate and
+    # its evidence landed above the log call. The anchors below are what this
+    # test is actually about; the byte count is an implementation detail of
+    # the test, and a too-small one fails for a reason unrelated to wiring.
+    window = src[i - 8000:i]
     assert "_is_slot_pick" in window, (
         "the preference capture does not check whether the utterance was a "
         "selection from the offer just read out"
@@ -146,3 +151,58 @@ def test_the_capture_site_consults_the_current_offer():
         "both the spoken labels and the keypad map must be consulted — the "
         "keypad injects a map value, the caller speaks a slot_label"
     )
+
+
+# ---------------------------------------------------------------------------
+# B-91 — the SPOKEN half of the same guard, defeated by spelling
+#
+# `CA70cc833f` (26 Aug 2026, theorem_v3, build `1a711a54`). B-90 above was
+# already deployed and fired correctly on the keypress:
+#
+#   18:28:38  'ten in the morning' is a slot SELECTION, not a time preference
+#             — soft context not set (B-90)
+#
+# Four seconds later the caller asked about that same slot out loud, and the
+# guard missed:
+#
+#   18:28:53  time_of_day_preference captured: mornings (from utterance 'um
+#             actually on that wednesday do you have any other slots than the
+#             10 in the morning is that all you have that day')
+#
+# The offer was generated as "ten"; AssemblyAI transcribed the caller's echo
+# as "10". Containment is exact about the label, and ten != 10, so a spoken
+# pick of an offered slot read as a fresh standing preference. The keypad half
+# could never show this — there the label is injected verbatim from the map.
+# ---------------------------------------------------------------------------
+LIVE_QUESTION_B91 = (
+    "um actually on that wednesday do you have any other slots than the "
+    "10 in the morning is that all you have that day"
+)
+
+
+def test_a_numeral_echo_of_a_spoken_label_is_still_a_selection():
+    """The live utterance. Before the fix this returned False."""
+    assert _is_pick(LIVE_QUESTION_B91), (
+        "the caller named a slot that had just been read out; spelling the "
+        "hour as a numeral must not turn a selection into a preference"
+    )
+
+
+@pytest.mark.parametrize(
+    "spoken,transcribed",
+    [
+        ("ten in the morning", "10 in the morning"),
+        ("nine in the morning", "9 in the morning"),
+        ("two in the afternoon", "2 in the afternoon"),
+        ("half past ten", "half past 10"),
+    ],
+)
+def test_word_and_numeral_spellings_normalise_alike(spoken, transcribed):
+    assert _norm_offer_label(spoken) == _norm_offer_label(transcribed)
+
+
+def test_the_one_oclock_label_keeps_its_hour():
+    """"one" is a filler word, so "one in the afternoon" used to normalise to
+    the alarmingly loose "in afternoon" — a label that would contain-match far
+    too much. Folding the hour to a digit before filler removal rescues it."""
+    assert "1" in _norm_offer_label("one in the afternoon").split()
