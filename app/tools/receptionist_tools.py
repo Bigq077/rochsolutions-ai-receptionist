@@ -2884,12 +2884,37 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                 if _week_range[0] == _week_range[1]
                 else f"{_week_range[0].isoformat()}..{_week_range[1].isoformat()}"
             )
+        # How many days will actually be SPOKEN. single_day speaks exactly one
+        # — days_data[0] becomes first_day below — however many days_data holds.
+        # Measuring days_not_shown against len(_present_days) therefore reported
+        # 0 on the one presentation that hides the most.
+        #
+        # B-94, CA390f03d2 (26 Aug 2026, theorem_v3). "have you got anything on
+        # a friday": a bare weekday with no week phrase is a specific-day
+        # request, so _build_days_data kept every Friday and the mode went
+        # single_day. The payload handed to the model was
+        #
+        #     first_day            Friday 28th August, one slot
+        #     available_days       28 Aug, 4 Sep, 11 Sep, 18 Sep
+        #     days_found_in_window 4
+        #     days_not_shown       0        <- three Fridays, with 4, 5 and 2
+        #                                      free slots, described as nothing
+        #
+        # Susie said "The available slot for Friday 28th August is two in the
+        # afternoon", and then "That's the only slot we have on Friday 28th
+        # August". Both sentences are TRUE about the date and both are a
+        # faithful reading of a payload that said nothing was held back. The
+        # caller had asked about Fridays and hung up.
+        _spoken_days = (
+            1 if (_presentation_mode == "single_day" and days_data)
+            else len(_present_days)
+        )
         _result = {
             "available_days":       _present_days,
             "total_days":           len(_present_days),
             "presentation_mode":    _presentation_mode,
             "days_found_in_window": _days_found,
-            "days_not_shown":       max(0, _days_found - len(_present_days)),
+            "days_not_shown":       max(0, _days_found - _spoken_days),
             "window_examined_days": used_window,
             "search_narrowed_to":   _narrowed,
         }
@@ -2911,6 +2936,35 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                     "more_times":        True,
                 }
             _result["first_day"] = _fd
+            # A bare weekday that matched several dates. The count above is now
+            # honest, but a number does not stop a sentence: say the rule.
+            #
+            # THE DATE/WEEKDAY SPLIT IS LOAD-BEARING IN BOTH DIRECTIONS and is
+            # asserted rather than left to wording, the same way the Google path
+            # states it (28245401). "That's the only slot on the 28th" is TRUE
+            # and must stay sayable. "That's all we have on Fridays" is about
+            # dates nobody was shown.
+            #
+            # Scoped to the bare-weekday case on purpose. A specific DATE
+            # ("the 23rd") resolves to one day, so _days_found is 1 and nothing
+            # fires; an ASAP request asked for the soonest day and is answered
+            # by it, and the owner decision of 2026-06-15 is that it shows that
+            # one day take-it-or-leave-it.
+            #
+            # No em dash in the guidance text: TTS pause punctuation is chunker
+            # input, and model-facing strings have been echoed into speech.
+            _not_shown = max(0, _days_found - 1)
+            if _not_shown and _has_weekday_name and not _has_week_anchor:
+                _result["guidance"] = (
+                    f"{_not_shown} further date(s) matching the requested day "
+                    "also have times, and are NOT in this result. You may say "
+                    "these are all the times on that DATE. Do NOT say or imply "
+                    "it is all there is on that weekday, or that the clinic is "
+                    "full or closed then. If the date does not suit, offer to "
+                    "look at the next one and call check_availability again "
+                    "with after_date past this date; never name a later date "
+                    "you have not been given slots for, and never invent times."
+                )
             # Warm lead-in only on a single_day ASAP request ("soonest/earliest").
             # Never on a specific-day request like "do you have Tuesday?".
             if _is_asap:

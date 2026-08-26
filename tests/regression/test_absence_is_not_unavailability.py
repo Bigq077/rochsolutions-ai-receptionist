@@ -192,14 +192,31 @@ def test_the_acuity_payload_carries_the_honesty_field(field):
     )
 
 
-def test_days_not_shown_is_measured_against_the_full_day_set():
-    """It must count what the SWEEP found minus what is presented. Measuring it
-    against the presented list would make it constantly zero and the payload
-    would go back to claiming completeness."""
+def test_days_not_shown_is_measured_against_what_is_spoken():
+    """It must count what the SWEEP found minus what the caller will HEAR.
+
+    This asserted `_days_found - len(_present_days)` until 26 Aug 2026, and
+    that formula did the very thing this docstring warns about — went
+    constantly zero and claimed completeness — in single_day mode.
+    `_present_days` IS all of days_data there, while only `days_data[0]` ever
+    becomes first_day.
+
+    B-94, CA390f03d2 (theorem_v3): "have you got anything on a friday" showed
+    Friday 28th August with its single slot and reported days_not_shown=0 while
+    three further Fridays holding 4, 5 and 2 free slots sat in available_days.
+    Susie said "that's the only slot we have" and the caller hung up.
+
+    So the denominator is the SPOKEN breadth, not the presented list. multi_day
+    is unchanged, because there the two are the same thing.
+    """
     assert "_days_found = len(days_data)" in _SRC
-    assert "max(0, _days_found - len(_present_days))" in _SRC, (
+    assert "max(0, _days_found - _spoken_days)" in _SRC, (
         "days_not_shown is no longer the difference between days found and "
-        "days presented"
+        "days spoken"
+    )
+    assert '_presentation_mode == "single_day" and days_data' in _SRC, (
+        "the spoken-day count no longer singles out single_day, so "
+        "days_not_shown is measured against days nobody will hear"
     )
 
 
