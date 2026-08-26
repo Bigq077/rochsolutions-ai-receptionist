@@ -1512,8 +1512,12 @@ _WEEKDAY_NAMES_FOR_SPEECH = (
 # "Tuesday 26th August", "Tuesday the 26th of August", "Tuesday 26 August".
 _SPOKEN_DATE_RE = re.compile(
     r"\b(" + "|".join(_WEEKDAY_NAMES_FOR_SPEECH) + r")\b"
-    r"(\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?"
-    r"(" + "|".join(_MONTHS_FOR_SPEECH) + r")\b)",
+    r"(\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?"
+    # The month is OPTIONAL. On CA7d38fb42 the model said "Wednesday the 27th"
+    # with no month at all, and a month-required pattern let it straight
+    # through. A bare day is only acted on when the session knows exactly one
+    # date with that day-of-month — see _known_dates_for_speech.
+    r"(?:\s+(?:of\s+)?(" + "|".join(_MONTHS_FOR_SPEECH) + r")\b)?)",
     re.IGNORECASE,
 )
 
@@ -1553,7 +1557,19 @@ def _known_dates_for_speech(session: Dict[str, Any]) -> Dict[tuple, Any]:
     except Exception:
         return {}
 
-    return {k: next(iter(v)) for k, v in found.items() if len(v) == 1}
+    out = {k: next(iter(v)) for k, v in found.items() if len(v) == 1}
+
+    # Day-only keys, for a spoken date that carries no month ("Wednesday the
+    # 27th"). Same rule: a day-of-month the session knows exactly ONE date for
+    # is usable; two dates sharing a day-of-month across months are not, and
+    # are left alone. Keyed (day, None) so it cannot collide with a real month.
+    by_day_only: Dict[int, set] = {}
+    for (_d, _m), _dt in out.items():
+        by_day_only.setdefault(_d, set()).add(_dt)
+    for _d, _dts in by_day_only.items():
+        if len(_dts) == 1:
+            out[(_d, None)] = next(iter(_dts))
+    return out
 
 
 def _correct_weekday_against_known_dates(text, session: Dict[str, Any]):
@@ -1593,8 +1609,14 @@ def _correct_weekday_against_known_dates(text, session: Dict[str, Any]):
 
         def _sub(m):
             said, tail, day_s, month_s = m.group(1), m.group(2), m.group(3), m.group(4)
-            month = _MONTHS_FOR_SPEECH.get(month_s.lower())
-            if month is None:
+            # month_s is None when the model spoke a bare day ("Wednesday the
+            # 27th"). Fall back to the day-only key, which exists only when the
+            # session knows exactly one date with that day-of-month.
+            month = (
+                _MONTHS_FOR_SPEECH.get(month_s.lower())
+                if month_s else None
+            )
+            if month_s and month is None:
                 return m.group(0)
             real = known.get((int(day_s), month))
             if real is None:
