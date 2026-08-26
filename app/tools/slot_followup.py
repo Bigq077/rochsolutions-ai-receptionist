@@ -838,7 +838,28 @@ def _is_extra_slots_claim(sentence: str) -> bool:
     # parsed for keypad selection and must survive untouched.
     if re.search(r"\bNumber\s+[1-9]\b", s, re.IGNORECASE):
         return False
-    return bool(_EXTRA_QUANTITY_RE.search(s) and _FURTHER_TIMES_RE.search(s))
+    # TWO signals means two WORDS. The alternations overlap — "other",
+    # "others" and "more" are members of both — so a lone match satisfied the
+    # quantity half and the further-times half at once, and the two-signal rule
+    # the docstring promises collapsed to a one-word rule.
+    #
+    # B-92, CAe0bccbcf (26 Aug 2026, theorem_v3). "Would one of the other days
+    # work better for you?" tripped both halves off the single word "other" and
+    # was deleted as an unfounded availability claim. It is not a claim about
+    # times at all — it is the offer to look elsewhere, and the day it was
+    # deleted from had one slot while the clinic had 95 across the month. The
+    # caller had asked three times, heard "No, that's the only slot ..." with no
+    # question behind it, and hung up. The watchdog BACKSTOP armed one turn
+    # later, which is the sentence-with-no-question state the append path is
+    # explicitly ordered to avoid; the strip path had no such protection.
+    #
+    # Requiring the two matches at DIFFERENT offsets restores the rule as
+    # written without touching either alternation: "a few others", "a couple
+    # more" and "more times" all still carry two distinct words and are still
+    # stripped.
+    _q = [m.span() for m in _EXTRA_QUANTITY_RE.finditer(s)]
+    _f = [m.span() for m in _FURTHER_TIMES_RE.finditer(s)]
+    return any(_qs != _fs for _qs in _q for _fs in _f)
 
 
 def reconcile_extra_slots_claim(
