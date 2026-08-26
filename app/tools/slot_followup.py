@@ -829,6 +829,191 @@ def day_key_of(slot: Dict[str, Any]) -> str:
     return _day_key(slot)
 
 
+_READBACK_FILLER = {"the", "of", "at", "on", "a", "so", "thats", "that", "is"}
+
+# A read-back this guard can judge has to name a TIME. Without this,
+# "let me look at Friday 4th September" names a known day, names none of its
+# offered times, and is reported as a mismatch -- a WARNING on every ordinary
+# sentence that mentions a date. That noise is paid for by the operator who
+# has to pick the real ones out of it, on the very surface this defect is
+# about. Deliberately generous: it only decides whether to LOOK, and a
+# hallucinated time ("half past four") must still be caught.
+_TIME_REFERENCE_RE = re.compile(
+    r"\b\d{1,2}[:.]\d{2}\b"
+    r"|\bo\W?clock\b"
+    r"|\b(?:midday|noon|midnight)\b"
+    r"|\b(?:half|quarter)\s+(?:past|to)\b"
+    r"|\b(?:morning|afternoon|evening)\b",
+    re.IGNORECASE,
+)
+
+
+def _readback_norm(value: Any) -> str:
+    """Fold a spoken phrase or a payload label onto one comparable form.
+
+    "Friday the 4th of September at two in the afternoon" and the payload's
+    "Friday 4th September" have to meet somewhere: the model narrates, the
+    payload labels. Only filler is dropped — every content word survives, so
+    "one in the afternoon" and "two in the afternoon" stay distinct.
+    """
+    if not isinstance(value, str):
+        return ""
+    t = re.sub(r"[^a-z0-9\s]", " ", value.lower())
+    return " ".join(w for w in t.split() if w not in _READBACK_FILLER)
+
+
+def _spoken_starts_for_current_offer(session: Dict[str, Any]) -> set:
+    """The ISO starts this caller has actually HEARD, for the current fetch.
+
+    Read-only on purpose. `_spoken_key_set` RESETS the record when the
+    availability fingerprint moves, and a Gate 5 text guard must never be the
+    thing that clears a booking record on its way past. So the fingerprint is
+    compared here and a stale record is declined rather than rebuilt.
+    """
+    fp = _availability_fingerprint(session.get("available_days") or [])
+    if not fp or session.get(_SPOKEN_FP_KEY) != fp:
+        return set()
+    return {str(s)[:19] for s in (session.get(_SPOKEN_KEY) or [])}
+
+
+def reconcile_readback_time(
+    text: str, session: Dict[str, Any]
+) -> Tuple[str, str, str]:
+    """Make a confirmation read-back name a time that was actually OFFERED.
+
+    Returns `(text, action, detail)`; action is "unchanged", "corrected" or
+    "mismatch".
+
+    B-95, CA1cd253cb (26 Aug 2026, theorem_v3). Two options were read out:
+
+        Number 1, Wednesday 2nd September - two in the afternoon.
+        Number 2, Friday 4th September - one in the afternoon.
+
+    The caller said "the second one please" and heard back
+
+        "So that's Friday the 4th of September at TWO in the afternoon
+         - could I take your first name and surname?"
+
+    Number 2's day with Number 1's time. Nothing compared the read-back against
+    the option that had been selected, so the caller was asked to agree to a
+    time they had never been offered.
+
+    It reached the caller because a multi-day readout deliberately does not
+    write the position-indexed offer record, so an ordinal choice is resolved by
+    the model rather than from data. Rather than widen that record, this checks
+    the sentence against the payload on the way out.
+
+    THE DENOMINATOR IS WHAT WAS SPOKEN, NOT WHAT IS BOOKABLE. This is the whole
+    difficulty. `_cap_presented_slots` says it outright - "available_days stays
+    the FULL bookable set ... Does not touch session['available_days']" - and in
+    multi_day it speaks exactly ONE time per day. So available_days for Friday
+    holds every time the diary has free, while the caller heard one of them.
+    Checking against available_days would fail in both directions at once: the
+    live sentence would be unfixable ("more than one time that day, nothing to
+    choose between") AND, where the wrongly-named time happens to be bookable
+    but unspoken that day, it would be waved through as correct. The guard would
+    be inert on the exact call it was written for.
+
+    The set the caller actually heard is the cumulative spoken record, which IS
+    written on the multi-day path (`record_spoken_slots(session, _all_heard or
+    _r)`) even where the offer record is not. Cumulative rather than
+    `last_offered_slots` on purpose: a caller may confirm a time from an earlier
+    offer in the same call, and that is a legitimate confirmation, not a
+    mismatch.
+
+    THE TIME IS CORRECTED TO THE DAY, NEVER THE REVERSE, for the same reason the
+    weekday corrector goes one way only: the caller picked an option and the
+    slot map corroborates which DAY that option was; nothing corroborates the
+    time. Rewriting the day to suit a time the model invented would move the
+    appointment rather than repair the sentence.
+
+    Deny by default. A correction happens only when the phrase names exactly one
+    known day, names no time that was spoken for that day, and exactly ONE time
+    was spoken for it, so there is nothing to choose between. Anything else is
+    returned untouched and reported as "mismatch", because a wrong time the code
+    cannot safely fix is still worth having in the call record.
+    """
+    if not text or not isinstance(text, str):
+        return text, "unchanged", ""
+    if not isinstance(session, dict):
+        return text, "unchanged", ""
+
+    available_days = session.get("available_days")
+    if not isinstance(available_days, list) or not available_days:
+        return text, "unchanged", ""
+
+    phrase = _readback_norm(text)
+    if not phrase:
+        return text, "unchanged", ""
+
+    flat = [s for s in flatten_bookable_slots(available_days) if s.get("start")]
+    if not flat:
+        return text, "unchanged", ""
+
+    # Exactly one known day, or no opinion. A sentence naming two days is a
+    # readout, not a confirmation, and is none of this function's business.
+    dates = {
+        s.get("date")
+        for s in flat
+        if s.get("date")
+        and s.get("day_label")
+        and _readback_norm(s["day_label"]) in phrase
+    }
+    if len(dates) != 1:
+        return text, "unchanged", ""
+    date = dates.pop()
+
+    spoken_starts = _spoken_starts_for_current_offer(session)
+    if not spoken_starts:
+        return text, "unchanged", ""
+
+    offered: List[str] = []
+    for s in flat:
+        if s.get("date") != date:
+            continue
+        if str(s.get("start") or "")[:19] not in spoken_starts:
+            continue                      # bookable that day, but never said
+        label = str(s.get("spoken") or "").strip()
+        if label and label not in offered:
+            offered.append(label)
+    if not offered:
+        return text, "unchanged", ""
+    if any(_readback_norm(t) in phrase for t in offered):
+        return text, "unchanged", ""      # names a time really offered that day
+    if not _TIME_REFERENCE_RE.search(text):
+        return text, "unchanged", ""      # names the day but no time at all
+
+    day_label = next(
+        (s["day_label"] for s in flat if s.get("date") == date and s.get("day_label")),
+        date,
+    )
+
+    # The phrase names this day and none of its offered times. Find the time it
+    # DID name, and only among labels the payload actually contains - never a
+    # free-form parse, so an unrecognised phrasing is left alone.
+    wrong = None
+    for s in flat:
+        label = str(s.get("spoken") or "").strip()
+        if not label or label in offered:
+            continue
+        if _readback_norm(label) in phrase:
+            wrong = label
+            break
+
+    if wrong is None or len(offered) != 1:
+        return (
+            text,
+            "mismatch",
+            f"read-back names {day_label} but not one of the times offered on "
+            f"it {offered!r}",
+        )
+
+    out = re.sub(re.escape(wrong), offered[0], text, flags=re.IGNORECASE)
+    if out == text:
+        return text, "mismatch", f"could not locate {wrong!r} to correct"
+    return out, "corrected", f"{wrong!r} -> {offered[0]!r} for {day_label}"
+
+
 def day_named_in_readout(available_days: Any, text: str) -> "str | None":
     """The calendar day this readout NAMES, or None when it names 0 or 2+.
 

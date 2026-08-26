@@ -1725,6 +1725,33 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     # otherwise have carried the correction into the caller's ear.
     result = _correct_weekday_against_known_dates(text, session)
 
+    # ── Gate 5a-e: a confirmed time must be one that was offered ─────────────
+    # Same rung, same reason: a strip below could remove the sentence carrying
+    # the correction. B-95, CA1cd253cb — "the second one please" was read back
+    # as option 2's DAY with option 1's TIME, and the caller was asked to agree
+    # to a slot that did not exist. Corrects only when the payload leaves no
+    # choice; reports and leaves alone otherwise.
+    try:
+        from app.tools.slot_followup import reconcile_readback_time
+
+        result, _rb_action, _rb_detail = reconcile_readback_time(
+            result, session
+        )
+        if _rb_action == "corrected":
+            logger.warning(
+                "[ms_gate5] read-back time corrected: %s "
+                "(the offer had it right; the model crossed two options)",
+                _rb_detail,
+            )
+        elif _rb_action == "mismatch":
+            logger.warning(
+                "[ms_gate5] read-back time NOT in the offer and not safely "
+                "correctable: %s", _rb_detail,
+            )
+    except Exception:
+        # A confirmation sentence is the last thing that should die in a guard.
+        logger.exception("[ms_gate5] read-back reconcile failed — text unchanged")
+
     # ── Gate 5b: sentence-level stripping ────────────────────────────────────
 
     for desc, pattern in _BANNED_SENTENCE_RE:
