@@ -152,14 +152,27 @@ def test_every_google_calendar_read_adds_the_all_day_blocks():
     wired the scan correctly. A test that fails when the property it names is
     satisfied trains people to edit the number, and the next unwired site then
     passes.
+
+    COMMENTS ARE NOT CODE. `src.count("freebusy,")` is a proxy for "call site",
+    and on 26 Aug 2026 it counted a COMMENT — vitaledge-onboarding carries
+
+        # persist any token refresh that happened inside freebusy, under THIS
+
+    which canonical and jv_v2 do not. Three real reads paired with three scans
+    read as 4-against-3, and the test went red on a branch whose wiring was
+    correct: the exact failure this docstring warns about, one level down.
+    Comment lines are dropped before counting so the proxy sees only code.
     """
     import inspect
 
     from app.tools import receptionist_tools as rt
 
     src = inspect.getsource(rt._exec_check_availability)
-    scans = src.count("_all_day_blocks_for_window(")
-    reads = src.count("freebusy,")          # asyncio.to_thread(freebusy, ...)
+    _code_lines = [
+        _l for _l in src.splitlines() if not _l.lstrip().startswith("#")
+    ]
+    scans = sum(_l.count("_all_day_blocks_for_window(") for _l in _code_lines)
+    reads = sum(_l.count("freebusy,") for _l in _code_lines)
     assert reads >= 2, "expected at least the primary and widen freebusy reads"
     assert scans == reads, (
         f"{reads} freebusy read(s) on the Google Calendar path but {scans} "
