@@ -624,7 +624,9 @@ def _norm_day(value: Any) -> str:
 
 
 def _resolve_within(
-    slots: List[Dict[str, Any]], labels: List[str]
+    slots: List[Dict[str, Any]],
+    labels: List[str],
+    known_days: Optional[set] = None,
 ) -> Optional[List[Dict[str, Any]]]:
     if not slots or not labels:
         return None
@@ -658,7 +660,20 @@ def _resolve_within(
         # multi-day readout presents several, so it can only ever rescue one.
         _scoped = by_label
         for _c in cands:
-            _pool = by_day.get(_norm_day(_c))
+            _nd = _norm_day(_c)
+            if known_days is not None and _nd in known_days and _nd not in by_day:
+                # This option NAMES a day the current pool does not contain —
+                # it belongs to another day entirely. Falling through to the
+                # pool's global map would resolve it to whatever slot happens to
+                # share its spoken time, which is how "Number 2, Tuesday 8th
+                # September" was recorded as MONDAY 09:00 on CA0453bd85.
+                #
+                # Both options then shared one day, so the single-day branch
+                # wrote last_offered_slots — the record _resolve_slot_iso
+                # indexes BY POSITION — and "the second one" would have booked
+                # the wrong day. Refuse, so the caller retries unscoped.
+                return None
+            _pool = by_day.get(_nd)
             if _pool:
                 _scoped = {}
                 for _s in _pool:
@@ -706,13 +721,18 @@ def resolve_spoken_options(
     labels = list(labels or [])
     if not flat or not labels:
         return None
+    # Every day the payload knows, so a prefer_day-scoped pass can tell
+    # "this option names another day" apart from "this option names no day".
+    _known_days = {
+        _norm_day(s.get("day_label") or "") for s in flat
+    } - {""}
     if prefer_day:
         scoped = _resolve_within(
-            [s for s in flat if _day_key(s) == prefer_day], labels
+            [s for s in flat if _day_key(s) == prefer_day], labels, _known_days
         )
         if scoped is not None:
             return scoped
-    return _resolve_within(flat, labels)
+    return _resolve_within(flat, labels, _known_days)
 
 
 def unspoken_remain_on_day(session: Dict[str, Any], day: str) -> bool:
