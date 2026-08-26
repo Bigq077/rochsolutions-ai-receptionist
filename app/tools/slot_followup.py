@@ -876,6 +876,17 @@ def _spoken_starts_for_current_offer(session: Dict[str, Any]) -> set:
     return {str(s)[:19] for s in (session.get(_SPOKEN_KEY) or [])}
 
 
+def spoken_starts_for_offer(session: Dict[str, Any]) -> set:
+    """Public alias -- the ISO starts the caller has HEARD, for the current offer.
+
+    Read-only, like the function it wraps. The availability builders call this
+    while session["available_days"] still holds the PREVIOUS fetch, which is
+    exactly the comparison they want: what did this caller already hear, before
+    the lookup now running overwrites it.
+    """
+    return _spoken_starts_for_current_offer(session)
+
+
 def reconcile_readback_time(
     text: str, session: Dict[str, Any]
 ) -> Tuple[str, str, str]:
