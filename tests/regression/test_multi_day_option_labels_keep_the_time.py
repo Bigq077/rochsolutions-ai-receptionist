@@ -259,8 +259,9 @@ def test_a_multi_day_offer_is_recorded_as_heard_but_not_as_the_offer():
     src = inspect.getsource(ls)
     i = src.index("spoken options span")
     window = src[i - 1400:i + 200]
-    assert "record_spoken_slots(session, _r)" in window, (
-        "a multi-day readout still teaches the spoken record nothing"
+    assert "record_spoken_slots(session, _all_heard or _r)" in window, (
+        "a multi-day readout still teaches the spoken record nothing — and it "
+        "must record EVERY time named, not one per numbered option"
     )
     assert 'session["last_offered_slots"] = [' not in window, (
         "the positional offer record was widened to multiple days without "
@@ -335,3 +336,46 @@ def test_an_option_naming_an_unknown_day_is_not_forced_into_the_scope():
         [THURSDAY], _candidates(text), prefer_day="2026-08-27",
     ) is not None  # unknown day is not in known_days -> falls back, resolves
 
+
+
+# ---------------------------------------------------------------------------
+# An option carrying TWO times
+# ---------------------------------------------------------------------------
+def test_a_second_time_inside_one_option_is_recorded():
+    """CAcb5988e0: "Number 1, Monday 7th September - ten in the morning. Or two
+    in the afternoon." Only the first was recorded, so "what else have you got?"
+    re-offered "two in the afternoon" 19 seconds after reading it out.
+
+    Two causes: the positional resolver stops at the first hit per option (it
+    must — last_offered_slots is indexed BY POSITION), and the trailing segment
+    arrived as "Or two in the afternoon", which can never match a slot label.
+    """
+    from app.tools.slot_followup import resolve_all_spoken_times
+
+    monday = _day("2026-08-27", ["19:30", "20:15"], "Thursday 27th August")
+    text = (
+        "Number 1, Thursday 27th August \u2014 half past seven in the evening. "
+        "Or quarter past eight in the evening."
+    )
+    cands = _candidates(text)
+    assert "quarter past eight in the evening" in cands[0], (
+        "the leading connective was not stripped"
+    )
+    assert [s["start"] for s in resolve_all_spoken_times([monday], cands)] == [
+        "2026-08-27T19:30:00",
+        "2026-08-27T20:15:00",
+    ]
+
+
+def test_the_positional_record_still_holds_one_slot_per_option():
+    """The counterpart. last_offered_slots must stay 1:1 with the numbered
+    options or "the second one" shifts onto option 1's second time."""
+    monday = _day("2026-08-27", ["19:30", "20:15"], "Thursday 27th August")
+    text = (
+        "Number 1, Thursday 27th August \u2014 half past seven in the evening. "
+        "Or quarter past eight in the evening."
+    )
+    got = resolve_spoken_options([monday], _candidates(text))
+    assert [s["start"] for s in got] == ["2026-08-27T19:30:00"], (
+        "one numbered option must yield exactly one positional entry"
+    )
