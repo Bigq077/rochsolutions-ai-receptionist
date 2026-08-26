@@ -228,6 +228,28 @@ _BARGE_IN_THRESHOLD_S: float = BARGE_IN_THRESHOLD_MS / 1000.0
 _MAX_ECHO_RESUMES: int = 2
 
 
+def _norm_offer_label(value: Any) -> str:
+    """Normalise a spoken slot label for 'did the caller just pick this one?'.
+
+    Deliberately loose about the filler a caller wraps a choice in — "yeah, ten
+    in the morning please" is the same selection as the bare label the offer was
+    read out with — and exact about the label itself, which is generated text
+    and therefore stable.
+    """
+    try:
+        if not isinstance(value, str):
+            return ""
+        t = re.sub(r"[^a-z0-9\s]", " ", value.lower())
+        _FILLER = {
+            "um", "uh", "er", "yeah", "yes", "yep", "aye", "ok", "okay",
+            "please", "thanks", "ta", "cheers", "the", "ill", "take", "have",
+            "lets", "let", "do", "go", "with", "that", "one", "sounds", "good",
+        }
+        return " ".join(w for w in t.split() if w not in _FILLER)
+    except Exception:
+        return ""
+
+
 def _partial_is_own_speech(partial: Any, spoken: Any) -> bool:
     """True when the partial that started a barge-in is Susie's own audio.
 
@@ -12082,7 +12104,55 @@ class WebSocketCallHandler:
                             # gate has been removed — _extract_time_preference()
                             # handles false-positive avoidance internally.
                             # Once set this field is never cleared within a call.
-                            if not self.session.get("time_of_day_preference"):
+                            # CHOOSING an offered slot is not a statement about
+                            # mornings. B-90, CAa415c88d (26 Aug, theorem_v3):
+                            #
+                            #   tool  -> slot_times ["10:00","14:00"]
+                            #   Susie: "Number 1, ten in the morning.
+                            #           Number 2, two in the afternoon."
+                            #   caller presses 1 -> injects 'ten in the morning'
+                            #   time_of_day_preference captured: mornings
+                            #   next call -> date_hint="morning Wednesday 2 Sep"
+                            #             -> slot_times ["10:00"]  (14:00 GONE)
+                            #   Susie: "That's all we have ... just the ten in
+                            #           the morning."
+                            #
+                            # The 2pm was free in Acuity. The caller had asked
+                            # the most direct question available — "or is that
+                            # all you have that day" — and was told yes.
+                            #
+                            # Discriminated on DATA, not a phrase list: if the
+                            # utterance IS one of the labels just offered, it is
+                            # a selection. Covers the keypad (the injected label
+                            # is a map value) and the spoken form ("ten in the
+                            # morning") with one test, because both are the same
+                            # string the offer was read out with.
+                            _offered_now = {
+                                _norm_offer_label(_l)
+                                for _l in (
+                                    list(self.session.get("slot_labels") or [])
+                                    + list(
+                                        (self.session.get("v3_dtmf_slot_map") or {}).values()
+                                    )
+                                )
+                            } - {""}
+                            # Containment, not equality: a caller wraps a choice
+                            # in words the offer did not have ("I'll take two in
+                            # the afternoon"). The bias is deliberate — treating
+                            # a preference as a selection merely fails to set a
+                            # filter, while the reverse is the defect above.
+                            _utt_norm = _norm_offer_label(utterance)
+                            _is_slot_pick = bool(_utt_norm) and any(
+                                f" {_lbl} " in f" {_utt_norm} "
+                                for _lbl in _offered_now
+                            )
+                            if _is_slot_pick:
+                                logger.info(
+                                    "[ms_conn v3] %r is a slot SELECTION, not a "
+                                    "time preference — soft context not set (B-90)",
+                                    utterance[:60],
+                                )
+                            if not _is_slot_pick and not self.session.get("time_of_day_preference"):
                                 _tod = _extract_time_preference(utterance)
                                 if _tod:
                                     self.session["time_of_day_preference"] = _tod
