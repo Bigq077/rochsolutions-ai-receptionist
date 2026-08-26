@@ -2880,6 +2880,13 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         _week_range = _extract_week_range(preference) if _has_week_anchor else None
         if _week_range is not None:
             _wk_start, _wk_end = _week_range
+            # A single-day range IS the date the caller named, and it is the
+            # only place that date exists when the hint carried no after_date
+            # ("Wednesday 27 August 2026"). The weekday guard needs it even —
+            # especially — when this reader is about to return no_availability.
+            # See the pre-dispatch stash in _exec_check_availability.
+            if _wk_start == _wk_end:
+                session["requested_day_iso"] = _wk_start.isoformat()
             _all_slots_pre_wk = slots[:]  # save before week filter for next_available lookup
             _pre_wk_count = len(slots)
             slots = [s for s in slots if _wk_start <= s.start_time.date() <= _wk_end]
@@ -4911,6 +4918,28 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     )
     if _dur_block:
         return _dur_block
+
+    # ── The date the caller asked about, before ANY reader returns ──────────
+    # The weekday guard in Gate 5 verifies a spoken "Wednesday the 27th"
+    # against dates the session knows. It reads available_days — which a
+    # no-availability answer does not have.
+    #
+    # CA7d38fb42 (26 Aug, theorem_v3): the caller said "Wednesday the 27th ...
+    # so tomorrow" and Susie repeated it. 27 August 2026 is a THURSDAY. The tool
+    # knew the date — it printed it in error_detail — but the Acuity reader
+    # returns {"error": "no_availability", "slots": []} with no available_days,
+    # so the guard had an empty map and correctly declined to act.
+    #
+    # Stashed HERE, above the dispatcher, so every reader is covered by one line
+    # rather than one patch per return site. The Acuity week filter adds the
+    # date_hint-only case below, where there is no after_date to parse.
+    _rq_iso = (args.get("after_date") or "").strip()
+    if _rq_iso:
+        try:
+            _date_type.fromisoformat(_rq_iso)
+            session["requested_day_iso"] = _rq_iso
+        except Exception:
+            pass
 
     # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
     if _gate_cid in ("theorem", "theorem_v2", "theorem_v3"):

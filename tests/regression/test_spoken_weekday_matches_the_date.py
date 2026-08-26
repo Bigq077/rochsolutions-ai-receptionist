@@ -182,3 +182,83 @@ def test_the_requested_day_is_stashed_for_the_guard():
     from app.tools import receptionist_tools as rt
     src = inspect.getsource(rt._exec_check_availability)
     assert 'session["requested_day_iso"]' in src
+
+
+# ---------------------------------------------------------------------------
+# A month-less date, and a payload with no available_days at all
+#
+# CA7d38fb42 (26 Aug, theorem_v3, build f05c59f7) — the guard was DEPLOYED and
+# still let this through:
+#
+#     caller: "have you got anything on wednesday the 27th ... so tomorrow"
+#     tool:   {"error": "no_availability", "slots": []}
+#     Susie:  "Nothing on Wednesday the 27th I'm afraid — the next I have is
+#              Friday the 28th of August at two in the afternoon"
+#
+# 27 August 2026 is a THURSDAY. Two independent reasons it escaped:
+#
+#   1. The pattern REQUIRED a month, and "Wednesday the 27th" has none.
+#   2. Even with a month it would have had nothing to check: a no-availability
+#      answer carries no `available_days`, and `requested_day_iso` was only
+#      written in the Google-Calendar body, which Acuity clinics never reach.
+#
+# Both are fixed: the month is optional (acted on only when the session knows
+# exactly ONE date with that day-of-month), and the requested date is stashed
+# above the dispatcher so every reader has it.
+# ---------------------------------------------------------------------------
+def test_the_live_month_less_sentence_is_corrected():
+    s = {"requested_day_iso": "2026-08-27",
+         "available_days": [{"date": "2026-08-28"}]}
+    out = _fix(
+        "Nothing on Wednesday the 27th I'm afraid - the next I have is "
+        "Friday the 28th of August at two in the afternoon",
+        s,
+    )
+    assert out.startswith("Nothing on Thursday the 27th")
+    assert "Friday the 28th of August" in out, "a correct date was rewritten"
+
+
+def test_a_month_less_day_the_session_cannot_pin_is_left_alone():
+    """Deny by default survives the month becoming optional. 27 August and
+    27 September share a day-of-month, so a bare "the 27th" is ambiguous."""
+    s = {"available_days": [{"date": "2026-08-27"}, {"date": "2026-09-27"}]}
+    assert _fix("Wednesday the 27th", s) == "Wednesday the 27th"
+
+
+def test_a_month_less_day_with_no_known_date_is_left_alone():
+    assert _fix("Nothing on Wednesday the 27th", {}) == "Nothing on Wednesday the 27th"
+
+
+def test_a_correct_month_less_weekday_is_untouched():
+    s = {"requested_day_iso": "2026-08-27"}
+    assert _fix("Thursday the 27th", s) == "Thursday the 27th"
+
+
+def test_the_requested_date_is_stashed_above_the_dispatcher():
+    """One line covering every reader, rather than a patch per return site.
+    Without it an Acuity/diary clinic has no known date on a no-availability
+    answer — which is exactly how CA7d38fb42 escaped."""
+    import inspect
+
+    from app.tools import receptionist_tools as rt
+
+    src = inspect.getsource(rt._exec_check_availability)
+    i_stash = src.index('session["requested_day_iso"] = _rq_iso')
+    i_dispatch = src.index('_check_availability_acuity(args, session)')
+    assert i_stash < i_dispatch, (
+        "the stash must run BEFORE the Acuity/provisional early returns"
+    )
+
+
+def test_a_named_day_with_no_after_date_is_stashed_by_the_week_filter():
+    """The date_hint-only shape ("Wednesday 27 August 2026") carries no
+    after_date, so the pre-dispatch stash cannot see it."""
+    import inspect
+
+    from app.tools import receptionist_tools as rt
+
+    src = inspect.getsource(rt._check_availability_acuity)
+    assert 'session["requested_day_iso"] = _wk_start.isoformat()' in src
+    assert "_wk_start == _wk_end" in src, (
+        "a multi-day week range is not a single requested day"
+    )
