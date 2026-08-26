@@ -324,3 +324,95 @@ async def test_flush_appends_on_single_day():
     ], session))
 
     assert "few others" in spoken.lower()
+
+
+# ---------------------------------------------------------------------------
+# B-92 — the guard deleted the offer to look at another day
+#
+# `CAe0bccbcf` (26 Aug 2026, theorem_v3, build `1a711a54`). Tuesday 1 September
+# had exactly one slot; the clinic had 95 across the month. The caller asked
+# about that Tuesday three times. On the third:
+#
+#   18:33:28  REMOVED unfounded extra-availability claim (more_times=False)
+#     before= "No, that's the only slot on Tuesday 1st September — just the
+#              nine in the morning. Would one of the other days work better
+#              for you?"
+#     after=  "No, that's the only slot on Tuesday 1st September — just the
+#              nine in the morning."
+#   18:33:32  BACKSTOP armed — turn asked nothing but a question is still
+#             outstanding: 'Would one of the other days work better for you?'
+#   18:33:35  caller hung up.  outcome=abandoned
+#
+# The deleted sentence makes no claim about times on that day. It is the offer
+# to look elsewhere — the one thing that could have saved the call.
+#
+# ROOT CAUSE: the two alternations OVERLAP. "other", "others" and "more" are
+# members of both _EXTRA_QUANTITY_RE and _FURTHER_TIMES_RE, so the single word
+# "other" satisfied the quantity half and the further-times half at once and
+# the two-signal rule promised in the comment above collapsed to a one-word
+# rule. Requiring the two matches at DIFFERENT offsets restores the rule as
+# written, without editing either alternation.
+#
+# Note the asymmetry this repairs: the APPEND path is explicitly ordered to
+# keep the closing question last, because ending on a statement "arms the
+# watchdog BACKSTOP and reads as dead air". The STRIP path created exactly
+# that state and had no equivalent protection.
+# ---------------------------------------------------------------------------
+LIVE_REPLY_B92 = (
+    "No, that's the only slot on Tuesday 1st September — just the nine in "
+    "the morning. Would one of the other days work better for you?"
+)
+
+
+def test_an_offer_to_look_at_another_day_is_not_an_availability_claim():
+    """The defect itself. more_times is genuinely False — that day really did
+    hold one slot — so the strip path runs; it must leave this sentence."""
+    out, action = reconcile_extra_slots_claim(LIVE_REPLY_B92, more_times=False)
+    assert action == "unchanged"
+    assert "Would one of the other days work better for you?" in out
+
+
+def test_the_reply_still_ends_in_a_question():
+    """The harm, stated as the caller experienced it: a dead end with nothing
+    to answer. This is the assertion that would have caught the live call."""
+    out, _ = reconcile_extra_slots_claim(LIVE_REPLY_B92, more_times=False)
+    assert out.rstrip().endswith("?"), (
+        "the turn asks the caller nothing — the watchdog BACKSTOP is the only "
+        "thing left between this and dead air"
+    )
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "And I've a few others that day if neither suits.",
+        "I've got a couple more that day.",
+        "There are more times that day.",
+        "I have several other slots that day.",
+    ],
+)
+def test_two_distinct_words_still_strips(sentence):
+    """The fix must not blunt the guard: every one of these carries a quantity
+    word AND a separate further-times word, which is what the rule always
+    meant."""
+    text = "Number 1, three in the afternoon. " + sentence
+    out, action = reconcile_extra_slots_claim(text, more_times=False)
+    assert action == "stripped"
+    assert sentence not in out
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "Would one of the other days work better for you?",
+        "Shall I look at another day for you?",
+        "Would you rather I checked other days?",
+    ],
+)
+def test_a_single_shared_word_is_not_two_signals(sentence):
+    """Each of these trips both alternations off ONE word, and each is an offer
+    about DAYS, not a claim about times."""
+    text = "That's the only slot on Tuesday. " + sentence
+    out, action = reconcile_extra_slots_claim(text, more_times=False)
+    assert action == "unchanged", f"deleted a legitimate sentence: {sentence!r}"
+    assert sentence in out
