@@ -2953,6 +2953,7 @@ class LLMStream:
             MAX_SPOKEN_OPTIONS,
             cap_spoken_options,
             day_key_of,
+            day_named_in_readout,
             extract_slot_options,
             option_label_candidates,
             record_spoken_slots,
@@ -2982,6 +2983,34 @@ class LLMStream:
         # its own extraction — its label is injected as a synthetic transcript
         # and must not change.
         _spoken_labels = list(option_label_candidates(_joined).values())
+        # WHICH day these bare times belong to. The sentence about to be spoken
+        # outranks `_slot_presented_day`, which is inherited from the previous
+        # payload's first day and is stale the moment the caller moves to a
+        # different one — B-93, CA903bd6ef (26 Aug 2026, vital_edge):
+        #
+        #   offer:  "Number 1, Monday 31st August - one in the afternoon.
+        #            Number 2, Tuesday 1st September - one in the afternoon."
+        #   caller: "the second one please"
+        #   tool:   BLOCKED (already retrieved) -> no first_day -> the fallback
+        #           takes last_offered_slots[0] = MONDAY
+        #   spoken: "Tuesday 1st September - Number 1, one in the afternoon ..."
+        #   record: ['2026-08-31T13:00', '2026-08-31T14:00', '2026-08-31T15:00']
+        #
+        # She said Tuesday and wrote Monday three times over, and the read-back
+        # the caller confirmed ("Tuesday the 1st at three") then disagreed with
+        # the only machine-readable record of what was offered. Both days held
+        # the same afternoon times, so nothing downstream could notice.
+        #
+        # Only overrides when the readout names exactly ONE known day; a
+        # multi-day readout or a paraphrase returns None and nothing changes.
+        _named_day = day_named_in_readout(session.get("available_days"), _joined)
+        _prefer_day = _named_day or session.get("_slot_presented_day")
+        if _named_day and _named_day != session.get("_slot_presented_day"):
+            logger.info(
+                "[ms_gate5] slot buf: readout names %s — preferring it over "
+                "inherited presented_day=%r (B-93)",
+                _named_day, session.get("_slot_presented_day"),
+            )
         _all_heard: list = []
         if _spoken_labels:
             # Every time actually named, for the cumulative record only — see
@@ -2989,12 +3018,12 @@ class LLMStream:
             _all_heard = resolve_all_spoken_times(
                 session.get("available_days"),
                 _spoken_labels,
-                prefer_day=session.get("_slot_presented_day"),
+                prefer_day=_prefer_day,
             )
             _r = resolve_spoken_options(
                 session.get("available_days"),
                 _spoken_labels,
-                prefer_day=session.get("_slot_presented_day"),
+                prefer_day=_prefer_day,
             )
             if _r and len({day_key_of(_s) for _s in _r}) == 1:
                 _spoken_opts = _r
