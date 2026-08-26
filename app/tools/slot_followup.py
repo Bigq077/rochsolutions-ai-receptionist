@@ -511,6 +511,11 @@ SLOT_OPTION_ANCHOR_RE = re.compile(
 
 _OPTION_LABEL_STOP_RE = re.compile(r"[\u2014\u2013.]")
 
+# "Or two in the afternoon" / "and quarter past eight" \u2014 how the model joins a
+# SECOND time inside ONE numbered option. Without stripping it the segment can
+# never match a slot's spoken label, so the time is spoken and never recorded.
+_LEADING_CONNECTIVE_RE = re.compile(r"^(?:or|and)\b[\s,]*", re.IGNORECASE)
+
 
 def _option_anchors(text: str) -> List[Tuple[int, int, str]]:
     return [
@@ -565,6 +570,12 @@ def option_label_candidates(text: str) -> Dict[str, List[str]]:
         seen: List[str] = []
         for cand in [whole] + _OPTION_LABEL_STOP_RE.split(whole):
             cand = cand.strip().rstrip(".,;- ").lstrip(", ")
+            # An option carrying two times reads "<day> — <t1>. Or <t2>", so the
+            # trailing segment arrives as "Or two in the afternoon" and could
+            # never match a slot's spoken label. Live on CAcb5988e0: the second
+            # time was read out and never recorded, so the follow-up re-offered
+            # it 19 seconds later.
+            cand = _LEADING_CONNECTIVE_RE.sub("", cand).strip()
             if cand and cand not in seen:
                 seen.append(cand)
         if seen:
@@ -733,6 +744,67 @@ def resolve_spoken_options(
         if scoped is not None:
             return scoped
     return _resolve_within(flat, labels, _known_days)
+
+
+def resolve_all_spoken_times(
+    available_days: Any, labels: Any, prefer_day: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """EVERY slot the readout actually named — for the cumulative record ONLY.
+
+    `resolve_spoken_options` returns at most ONE slot per numbered option,
+    deliberately: `last_offered_slots` is indexed BY POSITION for an ordinal
+    choice ("the second one"), so a second entry for option 1 would shift what
+    option 2 means and book the wrong slot.
+
+    But an option can carry more than one time — "Number 1, Monday 7th
+    September — ten in the morning. Or two in the afternoon" — and the caller
+    HEARD both. On CAcb5988e0 only the first was recorded, so "what else have
+    you got?" re-offered "two in the afternoon" 19 seconds after reading it out.
+
+    Same day-scoping as the positional resolver, but collects every candidate
+    that hits instead of stopping at the first. Best-effort by design: this
+    feeds only `record_spoken_slots`, where a missed slot costs a repeat and a
+    wrong slot would cost a withheld one. Nothing here reaches a booking, which
+    is why it may return a partial set where the positional resolver refuses.
+    """
+    flat = flatten_bookable_slots(available_days)
+    labels = list(labels or [])
+    if not flat or not labels:
+        return []
+    by_day: Dict[str, List[Dict[str, Any]]] = {}
+    for slot in flat:
+        _dl = _norm_day(slot.get("day_label") or "")
+        if _dl:
+            by_day.setdefault(_dl, []).append(slot)
+
+    out: List[Dict[str, Any]] = []
+    seen_starts: set = set()
+    for label in labels:
+        cands = [label] if isinstance(label, str) else list(label or [])
+        # Scope to the day THIS option names; else the presented day; else all.
+        pool = None
+        for cand in cands:
+            _p = by_day.get(_norm_day(cand))
+            if _p:
+                pool = _p
+                break
+        if pool is None and prefer_day:
+            pool = [s for s in flat if _day_key(s) == prefer_day] or None
+        search = pool if pool is not None else flat
+        by_label: Dict[str, List[Dict[str, Any]]] = {}
+        for slot in search:
+            by_label.setdefault(
+                _norm_label(slot.get("spoken") or ""), []
+            ).append(slot)
+        for cand in cands:
+            hits = by_label.get(_norm_label(cand)) or []
+            if len(hits) != 1:
+                continue          # ambiguous or absent — never guessed
+            start = str(hits[0].get("start") or "")
+            if start and start not in seen_starts:
+                seen_starts.add(start)
+                out.append(hits[0])
+    return out
 
 
 def unspoken_remain_on_day(session: Dict[str, Any], day: str) -> bool:

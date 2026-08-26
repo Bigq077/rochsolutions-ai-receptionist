@@ -2956,6 +2956,7 @@ class LLMStream:
             extract_slot_options,
             option_label_candidates,
             record_spoken_slots,
+            resolve_all_spoken_times,
             resolve_spoken_options,
             unspoken_remain_on_day,
         )
@@ -2981,7 +2982,15 @@ class LLMStream:
         # its own extraction — its label is injected as a synthetic transcript
         # and must not change.
         _spoken_labels = list(option_label_candidates(_joined).values())
+        _all_heard: list = []
         if _spoken_labels:
+            # Every time actually named, for the cumulative record only — see
+            # resolve_all_spoken_times. Never feeds last_offered_slots.
+            _all_heard = resolve_all_spoken_times(
+                session.get("available_days"),
+                _spoken_labels,
+                prefer_day=session.get("_slot_presented_day"),
+            )
             _r = resolve_spoken_options(
                 session.get("available_days"),
                 _spoken_labels,
@@ -3002,7 +3011,7 @@ class LLMStream:
                 # for an ordinal choice, and `slot_labels` is times-only, which
                 # across two days is ambiguous to a caller. Widening those is a
                 # separate change with its own consumers to audit.
-                record_spoken_slots(session, _r)
+                record_spoken_slots(session, _all_heard or _r)
                 logger.info(
                     "[ms_gate5] slot buf: spoken options span %d days — "
                     "recorded as heard, offer record left unchanged",
@@ -3017,7 +3026,14 @@ class LLMStream:
         if _spoken_opts:
             # Cumulative FIRST: last_offered_slots is about to be overwritten
             # and is the only other record that these were ever spoken.
-            record_spoken_slots(session, _spoken_opts)
+            #
+            # And it records EVERY time named, not one per option. An option can
+            # carry two ("Number 1, Monday 7th — ten in the morning. Or two in
+            # the afternoon"); the caller heard both, but _spoken_opts holds one
+            # per option because last_offered_slots is indexed BY POSITION below.
+            # On CAcb5988e0 the second time was re-offered 19s after being read
+            # out because only the first was ever recorded.
+            record_spoken_slots(session, _all_heard or _spoken_opts)
             session["last_offered_slots"] = [
                 {"start": _s["start"], "end": _s.get("end") or ""}
                 for _s in _spoken_opts
