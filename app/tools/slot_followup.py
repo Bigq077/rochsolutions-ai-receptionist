@@ -829,6 +829,52 @@ def day_key_of(slot: Dict[str, Any]) -> str:
     return _day_key(slot)
 
 
+def day_named_in_readout(available_days: Any, text: str) -> "str | None":
+    """The calendar day this readout NAMES, or None when it names 0 or 2+.
+
+    B-93, CA903bd6ef (26 Aug 2026, vital_edge). A readout may put the day in a
+    HEADER rather than inside each option —
+
+        "Tuesday 1st September — Number 1, one in the afternoon.
+         Number 2, two in the afternoon. Number 3, three in the afternoon."
+
+    — which leaves every option a bare time. Bare times cannot say which day
+    they belong to, so the resolver leans on `_slot_presented_day`, and that
+    field is inherited from the previous payload's FIRST day. When the previous
+    offer spanned two days and the caller picked the second, the inherited day
+    is the one they did NOT choose: the caller heard Tuesday and the offer
+    record was written with Monday's ISO times.
+
+    Matched against the payload's own `day_label` strings rather than parsed out
+    of prose. Those labels are what the formatter is given and what it echoes,
+    so this asks "which of the days I know about did this sentence name?" — a
+    data question with a checkable answer — instead of trying to read English
+    dates. A paraphrase matches nothing and returns None, which falls back to
+    the previous behaviour rather than guessing.
+
+    None on 2+ matches is deliberate: a multi-day readout has no single day, and
+    the multi_day branch above already declines to write the offer record.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    if not isinstance(available_days, list):
+        return None
+    low = text.lower()
+    hits = set()
+    for day in available_days:
+        if not isinstance(day, dict):
+            continue
+        label = str(day.get("day_label") or "").strip().lower()
+        date = str(day.get("date") or "").strip()
+        if not label or not date:
+            continue
+        if label in low:
+            hits.add(date)
+    if len(hits) == 1:
+        return hits.pop()
+    return None
+
+
 def _is_extra_slots_claim(sentence: str) -> bool:
     """True when `sentence` asserts further times beyond those listed."""
     s = sentence.strip()
