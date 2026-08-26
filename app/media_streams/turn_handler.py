@@ -1668,8 +1668,25 @@ def _scarcity_claim_is_supported(session: Dict[str, Any]) -> bool:
         days = session.get("available_days")
         if not isinstance(days, list) or len(days) != 1:
             return False
-        times = (days[0] or {}).get("slot_times")
-        return isinstance(times, list) and len(times) == 1
+        day = days[0] or {}
+        times = day.get("slot_times")
+        if not (isinstance(times, list) and len(times) == 1):
+            return False
+        # slot_times is what SURVIVED the caller's time-of-day preference, not
+        # what the day holds. "the only one we have that day" is a claim about
+        # the DAY, so it has to be judged against the day.
+        #
+        # B-97, CA6fa4b433: Wednesday 2 September had two bookable slots and a
+        # caller who had asked for afternoons. One survived, this returned
+        # True, and a live caller who had just said the 2pm did not suit was
+        # told it was the only one. Counting the survivors made a false
+        # sentence look supported.
+        #
+        # Absent count -> False, deliberately. This function already fails
+        # CLOSED into the pre-B-92 behaviour (strip the sentence), and an
+        # unverifiable claim is exactly the case the ban exists for.
+        found = day.get("times_found_on_day")
+        return isinstance(found, int) and found == 1
     except Exception:
         # Fail CLOSED — an unreadable session means the sentence is stripped,
         # which is exactly what happens today.

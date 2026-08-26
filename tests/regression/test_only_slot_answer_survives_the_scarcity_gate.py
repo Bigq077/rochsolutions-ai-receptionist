@@ -52,11 +52,20 @@ def _session(days=None, **extra):
 
 
 def _one_day_one_slot():
+    """A day that really does hold one slot.
+
+    times_found_on_day is what makes that TRUE rather than merely apparent.
+    B-97 (CA6fa4b433) showed slot_times is the set left after the caller's
+    time-of-day preference, so a one-entry slot_times can be one slot out of
+    four. The gate now needs the day to say so, and fails closed without it.
+    """
     return [{
         "date": "2026-09-01",
         "day_label": "Tuesday 1st September",
         "slot_times": ["17:00"],
         "slot_times_spoken": ["five in the evening"],
+        "times_found_on_day": 1,
+        "times_not_shown": 0,
     }]
 
 
@@ -66,6 +75,8 @@ def _one_day_three_slots():
         "day_label": "Tuesday 1st September",
         "slot_times": ["17:00", "17:45", "18:30"],
         "slot_times_spoken": ["five in the evening", "quarter to six", "half six"],
+        "times_found_on_day": 3,
+        "times_not_shown": 0,
     }]
 
 
@@ -115,9 +126,44 @@ def test_surrounding_sentences_are_untouched():
     assert "Would five in the evening work for you?" in out
 
 
+def _one_shown_of_four():
+    """Friday 4 September on CA6fa4b433: four bookable slots, one afternoon,
+    and a caller who had asked for afternoons."""
+    return [{
+        "date": "2026-09-04",
+        "day_label": "Friday 4th September",
+        "slot_times": ["13:00"],
+        "slot_times_spoken": ["one in the afternoon"],
+        "times_found_on_day": 4,
+        "times_not_shown": 3,
+    }]
+
+
 # ---------------------------------------------------------------------------
 # Containment — the ban must still do its job
 # ---------------------------------------------------------------------------
+def test_a_day_the_caller_has_only_partly_seen_cannot_support_the_claim():
+    """B-97. One entry in slot_times is not one slot on the day. Counting the
+    survivors of a time-of-day filter let this gate approve "that's the only
+    one we have that day" about a day holding four, to a caller who had just
+    said the offered time did not suit."""
+    out = sanitise_response(
+        "That's the only slot I have on that day.",
+        _session(_one_shown_of_four()),
+    )
+    assert "only" not in out.lower()
+
+
+def test_a_day_that_cannot_say_how_many_slots_it_has_fails_closed():
+    """The pre-B-97 payload shape. Unverifiable is exactly what the ban is
+    for, so the sentence goes."""
+    out = sanitise_response(
+        "That's the only slot I have on that day.",
+        _session([{"date": "2026-09-01", "day_label": "Tuesday 1st September",
+                   "slot_times": ["17:00"]}]),
+    )
+    assert "only" not in out.lower()
+
 @pytest.mark.parametrize("days,why", [
     (_one_day_three_slots(), "three slots on the day — the claim is false"),
     (_two_days(),            "another day is still on the table"),
@@ -192,7 +238,9 @@ def test_the_keep_is_logged_only_when_something_was_kept(caplog):
     from app.media_streams.turn_handler import sanitise_response
 
     # One day, one slot — the claim is supported, so the gate is in keep mode.
-    session = {"available_days": [{"date": "2026-09-01", "slot_times": ["17:00"]}]}
+    session = {"available_days": [{"date": "2026-09-01",
+                                   "slot_times": ["17:00"],
+                                   "times_found_on_day": 1}]}
 
     with caplog.at_level(logging.INFO):
         sanitise_response("All booked, you're in for Friday the 28th.", session)

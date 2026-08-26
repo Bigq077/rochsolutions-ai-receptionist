@@ -252,8 +252,23 @@ def _build_days_data(
     request — keeping the day-first presentation consistent with slot_labels
     (bug C5-5).  Falls back to all days when nothing matches the preference.
     """
-    slot_tuples = _filter_tuples_by_preference(slot_tuples, preference)
+    # Count each day BEFORE the preference filter. A time-of-day band
+    # ("afternoons") removes real, bookable slots from the day it keeps, and
+    # every completeness signal downstream -- more_times,
+    # unspoken_remain_on_day, _scarcity_claim_is_supported -- was reading the
+    # survivors and calling them the whole day.
+    #
+    # B-97, CA6fa4b433 (26 Aug 2026, theorem_v3). Wednesday 2 September holds
+    # TWO bookable slots; the caller had said "afternoons are best", so the
+    # band kept one. They were told the 2pm and said it did not work, and
+    # Susie answered "that's the only one we have that day". It was not, and
+    # the other slot was never offered. They hung up.
     from collections import defaultdict as _dd
+    _found_per_day: "_dd[Any, int]" = _dd(int)
+    for _fstart, _fend in slot_tuples:
+        _found_per_day[_fstart.date()] += 1
+
+    slot_tuples = _filter_tuples_by_preference(slot_tuples, preference)
     days_map: "_dd[Any, list]" = _dd(list)
     for start, end in slot_tuples:
         days_map[start.date()].append((start, end))
@@ -274,6 +289,13 @@ def _build_days_data(
             # itself (it dropped/invented slots when it did, booking phantoms).
             "slot_times_spoken": [_spoken_slot_time(t) for t in _times],
             "slots":             [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in day_slots],
+            # What this day really holds, and how much of it the preference
+            # filter hid. slot_times is the SURVIVORS; these two are the day.
+            # Never derive completeness from len(slot_times) alone.
+            "times_found_on_day": _found_per_day.get(day, len(day_slots)),
+            "times_not_shown":    max(
+                0, _found_per_day.get(day, len(day_slots)) - len(day_slots)
+            ),
         })
     return days_data
 
@@ -3093,6 +3115,17 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                     "slots":             (_fd.get("slots") or [])[:3],
                     "more_times":        True,
                 }
+            elif _fd.get("times_not_shown"):
+                # Times the caller's time-of-day preference hid are still
+                # times. more_times is what the formatter reads to decide
+                # whether it may use a COMPLETENESS opener -- "The available
+                # slot for [day] is [time]" -- and that sentence is the
+                # second, unguarded face of B-97: it makes the same claim as
+                # "that's the only one we have that day" in wording no
+                # banned-phrase table matches. The presentation cap was the
+                # only thing that ever set this flag, so a day cut from four
+                # slots to one by a band filter read as complete.
+                _fd = {**_fd, "more_times": True}
             _result["first_day"] = _fd
             # Warm lead-in only on a single_day ASAP request ("soonest/earliest").
             # Never on a specific-day request like "do you have Tuesday?".
@@ -4524,6 +4557,12 @@ def _cap_presented_slots(
             presented.append(day)
             continue
         trimmed = dict(day)
+        # A preference filter already removed times from this day before it
+        # got here, so the day is truncated whether or not the cap below
+        # bites. Same reason as the Acuity branch: more_times gates the
+        # completeness opener (B-97).
+        if int(trimmed.get("times_not_shown") or 0) > 0:
+            truncated = True
         for key in ("slot_times", "slot_times_spoken", "slots"):
             value = trimmed.get(key)
             if isinstance(value, list):
