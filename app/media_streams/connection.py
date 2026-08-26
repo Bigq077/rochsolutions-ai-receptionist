@@ -1370,6 +1370,43 @@ def _transcript_is_question(text: str) -> bool:
     return t.endswith("?") or any(s in t for s in _QUESTION_SIGNALS)
 
 
+def _time_preference_tier(utterance: str, is_slot_pick: bool) -> str:
+    """How much authority a time-of-day mention in *utterance* has earned.
+
+    Returns "none", "soft" or "hard".
+
+    The prompt builders render two different sentences from two different
+    fields, and only one of them claims the caller said it:
+
+        session["time_of_day_preference"]   -> "TIME OF DAY CONFIRMED (caller
+                                                stated explicitly — do NOT ask
+                                                again): mornings"
+        soft_context["time_preference"]     -> "Caller's time preference:
+                                                mornings"
+
+    B-91 wrote BOTH off any utterance a band could be extracted from, so
+    "any other slots than the 10 in the morning, is that all you have that
+    day" produced a sentence asserting the caller had explicitly asked for
+    mornings. They had asked whether mornings were all there was.
+
+    The first cut of this gate refused BOTH tiers on any question, and that
+    was too blunt by half: "do you have anything in the afternoon" is a
+    preference by any reading and contains "do you". Measured over eighteen
+    natural phrasings, nine were suppressed, including every interrogative
+    form — which is how most people ask.
+
+    So a question earns the SOFT tier, not nothing. The model still sees the
+    preference and still steers on it; what it no longer sees is a claim the
+    caller never made. Only an utterance that is not a question, and not a
+    pick from the offer just read out, earns the hard latch.
+    """
+    if is_slot_pick:
+        # Choosing option 1 says "I'll take that one", not "I only do
+        # mornings" — B-90, and B-91 for the spoken form of the same thing.
+        return "none"
+    return "soft" if _transcript_is_question(utterance) else "hard"
+
+
 # Use-this-clinic confirm gates.
 # _USE_THIS_CLINIC_AFFIRMATIVES — the ONLY responses that trigger clinic
 # confirmation.  Everything else (rejections, questions, ambiguous answers)
@@ -11708,31 +11745,32 @@ class WebSocketCallHandler:
                             # latching. That caller still gets mornings on THIS
                             # turn (the model reads the utterance); what is lost
                             # is persistence across later turns.
-                            _tod_is_question = (
-                                not _is_slot_pick
-                                and _transcript_is_question(utterance)
+                            _tod_tier = _time_preference_tier(
+                                utterance, is_slot_pick=_is_slot_pick
                             )
-                            if _tod_is_question:
-                                logger.info(
-                                    "[ms_conn v3] time-of-day capture skipped"
-                                    " — caller asked a question: %r",
-                                    utterance[:60],
-                                )
                             if (
-                                not _is_slot_pick
-                                and not _tod_is_question
+                                _tod_tier != "none"
                                 and not self.session.get("time_of_day_preference")
                             ):
                                 _tod = _extract_time_preference(utterance)
                                 if _tod:
-                                    self.session["time_of_day_preference"] = _tod
+                                    # SOFT always; HARD only when the caller
+                                    # stated it rather than asked it. Both
+                                    # tiers reach the four location-intercept
+                                    # routers and the hold-clip arming, which
+                                    # read soft_context first — so a question
+                                    # keeps every behaviour except the
+                                    # "caller stated this explicitly" claim.
                                     _sc = self.session.setdefault("soft_context", {})
                                     if not _sc.get("time_preference"):
                                         _sc["time_preference"] = _tod
+                                    if _tod_tier == "hard":
+                                        self.session["time_of_day_preference"] = _tod
                                     logger.info(
                                         "[ms_conn v3] time_of_day_preference captured: %s"
-                                        " (from utterance %r)",
+                                        " (tier=%s, from utterance %r)",
                                         _tod,
+                                        _tod_tier,
                                         utterance,
                                     )
 
@@ -12121,6 +12159,17 @@ class WebSocketCallHandler:
                                 # utterance still qualifies.
                                 timing_preference_known=bool(
                                     self.session.get("time_of_day_preference")
+                                    # The SOFT tier counts here. This is the
+                                    # only reader of the hard latch that had no
+                                    # soft fallback, so without this line a
+                                    # question-shaped preference holsters the
+                                    # hold clip and the caller hears ~3s of
+                                    # silence — Job 3c.4 / CAce1457d1, the
+                                    # regression _extract_day_preference exists
+                                    # to prevent.
+                                    or (self.session.get("soft_context") or {}).get(
+                                        "time_preference"
+                                    )
                                     or self.session.get("day_preference")
                                     or self.session.get(
                                         "v3_last_presented_date_hint"
