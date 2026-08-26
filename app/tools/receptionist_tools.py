@@ -169,7 +169,109 @@ def _named_weekdays(preference: str) -> List[int]:
     return [wd for name, wd in _WEEKDAY_NAME_TO_INDEX.items() if name in pref]
 
 
-def _filter_tuples_by_preference(slot_tuples: list, preference: str = "") -> list:
+def _spoken_starts_for(session: Dict[str, Any]) -> set:
+    """The ISO starts this caller has already HEARD, or an empty set.
+
+    Called while session["available_days"] still holds the PREVIOUS fetch --
+    the builders below overwrite it -- so this reads what the caller has heard
+    so far, which is the only thing that can tell a band it has been served.
+
+    Never raises: a preference filter must not be the thing that fails a
+    lookup, and an empty set restores the pre-B-98 behaviour exactly.
+    """
+    try:
+        from app.tools.slot_followup import spoken_starts_for_offer
+        return spoken_starts_for_offer(session or {})
+    except Exception:
+        return set()
+
+
+def _days_where_the_band_is_spent(
+    day_scoped: list, in_band: list, spoken_starts: set,
+) -> set:
+    """Days whose in-band slots the caller has ALREADY HEARD, while the band
+    still hides other bookable slots on that same day.
+
+    B-98. B-97 made Susie tell the truth about such a day -- more_times is set
+    from times_not_shown, so she says "and I've a few others that day". It did
+    not make those others REACHABLE: every follow-up lookup re-applied the same
+    band, returned the same survivor, and she answered the identical sentence.
+    CA6fa4b433's successor asked twice and heard the same slot three times
+    before hanging up (judge score 1). A promise the retrieval path cannot keep
+    is a worse failure than the false claim it replaced -- it loops instead of
+    ending.
+
+    Once every in-band slot on a day has been spoken, re-applying the band to
+    that day is a guaranteed no-op: by construction it can only return what was
+    already read out. So the band is SPENT there, and the day opens up.
+
+    Scoped per DAY, and keyed on the cumulative spoken record rather than on
+    the caller's words. Deliberately not an utterance matcher: "what are the
+    others", "anything else", "go on then" and silence-then-repeat are the same
+    request, and a phrase table would have to guess which. What it costs when
+    it fires without being asked is bounded -- dropping a band only ever ADDS
+    slots, never removes the one the caller preferred, and their stated
+    preference is still in the prompt, so the in-band slot is still led with.
+
+    Empty spoken record -> empty set, so a day the caller has never heard keeps
+    its band. That is the first lookup of every call, and the whole point: the
+    band is honoured until it has actually been served.
+    """
+    if not spoken_starts:
+        return set()
+    from collections import defaultdict as _sd
+    _band_by_day: "_sd[Any, list]" = _sd(list)
+    for _s, _e in in_band:
+        _band_by_day[_s.date()].append(_s)
+    _all_by_day: "_sd[Any, int]" = _sd(int)
+    for _s, _e in day_scoped:
+        _all_by_day[_s.date()] += 1
+    spent: set = set()
+    for _day, _starts in _band_by_day.items():
+        if _all_by_day[_day] <= len(_starts):
+            continue          # the band hides nothing here -- nothing to free
+        if all(_st.isoformat()[:19] in spoken_starts for _st in _starts):
+            spent.add(_day)
+    return spent
+
+
+def _cached_offer_is_exhausted(available_days: Any, spoken_starts: set) -> bool:
+    """True when a cached payload has nothing left to say.
+
+    The 90s availability cache keys on the date_hint TEXT, so an identical
+    re-ask replays the previous answer verbatim. That is the behaviour it
+    exists for -- until the day it replays a band-filtered day whose every
+    shown slot the caller has already heard, which is the B-98 loop served
+    from memory. CA6fa4b433's successor escaped this only because the model
+    reworded the hint each time ("afternoon Wednesday 2 September 2026" ->
+    "Wednesday 2 September 2026 afternoon"); a model that repeats itself
+    verbatim within 90 seconds would loop with no fetch at all.
+
+    So the cache stands down exactly when the fresh lookup would differ --
+    when _days_where_the_band_is_spent would open a day up.
+    """
+    if not spoken_starts or not isinstance(available_days, list):
+        return False
+    for day in available_days:
+        if not isinstance(day, dict):
+            continue
+        try:
+            if int(day.get("times_not_shown") or 0) <= 0:
+                continue          # nothing hidden -- a replay is still honest
+            starts = [
+                str((s or {}).get("start") or "")[:19]
+                for s in (day.get("slots") or [])
+            ]
+            if starts and all(st in spoken_starts for st in starts):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _filter_tuples_by_preference(
+    slot_tuples: list, preference: str = "", spoken_starts: Optional[set] = None,
+) -> list:
     """
     Filter (start_dt, end_dt) tuples to those matching the caller's stated
     day-of-week and/or time-of-day preference (e.g. 'Thursday afternoon').
@@ -214,18 +316,37 @@ def _filter_tuples_by_preference(slot_tuples: list, preference: str = "") -> lis
     # exact time wins so a boundary slot (e.g. 12:30 for "around 12") is never
     # dropped. Band-only hints are unaffected. See _has_explicit_clock.
     if not _has_explicit_clock(pref):
+        _band = None
         if "morning" in pref:
-            time_filtered = [(s, e) for s, e in filtered if s.hour < 12]
-            if time_filtered:
-                filtered = time_filtered
+            _band = lambda _s: _s.hour < 12                        # noqa: E731
         elif "afternoon" in pref:
-            time_filtered = [(s, e) for s, e in filtered if 13 <= s.hour < 17]
-            if time_filtered:
-                filtered = time_filtered
+            _band = lambda _s: 13 <= _s.hour < 17                  # noqa: E731
         elif "evening" in pref:
-            time_filtered = [(s, e) for s, e in filtered if s.hour >= 17]
+            _band = lambda _s: _s.hour >= 17                       # noqa: E731
+        if _band is not None:
+            time_filtered = [(s, e) for s, e in filtered if _band(s)]
             if time_filtered:
-                filtered = time_filtered
+                # A band the caller has already been served on a given day has
+                # nothing left to give there: re-applying it returns exactly
+                # what was read out last time. Those days keep ALL their slots
+                # so the "a few others that day" promise can be kept (B-98);
+                # every other day is banded as before.
+                _spent = _days_where_the_band_is_spent(
+                    filtered, time_filtered, spoken_starts or set(),
+                )
+                if _spent:
+                    filtered = [
+                        (s, e) for s, e in filtered
+                        if s.date() in _spent or _band(s)
+                    ]
+                    logger.info(
+                        "[ms_tools] band %r is SPENT on %s -- every slot it "
+                        "kept there has been spoken, so the day is opened to "
+                        "its hidden times (B-98)",
+                        pref, sorted(str(d) for d in _spent),
+                    )
+                else:
+                    filtered = time_filtered
 
     # Fall back to all future slots if preference produced no matches
     if not filtered:
@@ -235,6 +356,7 @@ def _filter_tuples_by_preference(slot_tuples: list, preference: str = "") -> lis
 
 def _build_days_data(
     slot_tuples: list, max_days: int = 30, preference: str = "",
+    spoken_starts: Optional[set] = None,
 ) -> list:
     """
     Group (start_dt, end_dt) tuples into per-day summaries for the day-first
@@ -268,7 +390,9 @@ def _build_days_data(
     for _fstart, _fend in slot_tuples:
         _found_per_day[_fstart.date()] += 1
 
-    slot_tuples = _filter_tuples_by_preference(slot_tuples, preference)
+    slot_tuples = _filter_tuples_by_preference(
+        slot_tuples, preference, spoken_starts,
+    )
     days_map: "_dd[Any, list]" = _dd(list)
     for start, end in slot_tuples:
         days_map[start.date()].append((start, end))
@@ -300,7 +424,10 @@ def _build_days_data(
     return days_data
 
 
-def _select_presented_tuples(slot_tuples: list, preference: str = "") -> list:
+def _select_presented_tuples(
+    slot_tuples: list, preference: str = "",
+    spoken_starts: Optional[set] = None,
+) -> list:
     """
     Pick up to 3 (start_dt, end_dt) tuples to present to the caller.
     Prefer one slot per day for variety.  Fall back to first 3 chronological
@@ -317,7 +444,7 @@ def _select_presented_tuples(slot_tuples: list, preference: str = "") -> list:
     # Apply preference filtering so stored slot_labels match LLM verbal output.
     # Shared helper guarantees available_days (built by _build_days_data) uses
     # the identical day/time filter — see _filter_tuples_by_preference.
-    filtered = _filter_tuples_by_preference(slot_tuples, preference)
+    filtered = _filter_tuples_by_preference(slot_tuples, preference, spoken_starts)
 
     day_seen: set = set()
     day_firsts: list = []
@@ -2637,6 +2764,10 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
 
     service = (args.get("service") or "physiotherapy assessment").strip()
     preference = (args.get("date_hint") or args.get("preference") or "").strip()
+    # What the caller has already heard, read BEFORE this lookup overwrites
+    # available_days. A time-of-day band that has already been served on a day
+    # cannot offer anything new there, so that day is opened up (B-98).
+    _spoken = _spoken_starts_for(session)
 
     # ── Availability cache (90s TTL) ──────────────────────────────────────
     # When the user selects a slot from already-presented options on the next
@@ -2645,10 +2776,21 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
     _cache = session.get("_availability_cache")
     if _cache:
         _cache_age = _time.monotonic() - _cache.get("_ts", 0)
+        _cache_spent = _cached_offer_is_exhausted(
+            _cache.get("available_days"), _spoken,
+        )
+        if _cache_spent:
+            logger.info(
+                "_check_availability_acuity: CACHE STOOD DOWN hint=%r — the "
+                "caller has heard every slot it shows on a day that still "
+                "hides times, so replaying it would repeat the offer (B-98)",
+                preference,
+            )
         if (
             _cache.get("location") == location
             and (_cache.get("date_hint") or "").lower() == preference.lower()
             and _cache_age < 90
+            and not _cache_spent
         ):
             logger.info(
                 "_check_availability_acuity: CACHE HIT loc=%r hint=%r age=%.1fs — "
@@ -2980,13 +3122,13 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         # Present exactly 3 slots (one per day where possible) so that
         # slot_labels[0/1/2] map 1:1 to the 1st/2nd/3rd slot spoken by Susie.
         slot_tuples = [(s.start_time, s.end_time) for s in slots]
-        presented   = _select_presented_tuples(slot_tuples, preference=preference)
+        presented   = _select_presented_tuples(slot_tuples, preference=preference, spoken_starts=_spoken)
         # Build days_data from preference-matching slots so each day shows all
         # its available times for the requested day/time, not just the one slot
         # selected for variety by _select_presented_tuples.  Passing preference
         # keeps available_days consistent with slot_labels (bug C5-5): a
         # "Thursday afternoon" request no longer yields non-Thursday days.
-        days_data   = _build_days_data(slot_tuples, preference=preference)
+        days_data   = _build_days_data(slot_tuples, preference=preference, spoken_starts=_spoken)
 
         # Drop TODAY at the source — same-day bookings are never offered (min lead
         # = next working day).  Doing it here (not only in the post-return
@@ -5299,6 +5441,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     # presentation builders so available_days honours it, mirroring the Acuity
     # path (bug C5-5).
     _pref = (args.get("date_hint") or args.get("preference") or "").strip()
+    _spoken = _spoken_starts_for(session)
 
     clinic = get_clinic(session.get("clinic_id"))
     working_hours = clinic.get("working_hours", {})
@@ -5398,10 +5541,10 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     if not tokens:
         if not candidates:
             return {"error": "No slots found in the next 7 days.", "slots": []}
-        presented  = _select_presented_tuples(candidates, preference=_pref)
+        presented  = _select_presented_tuples(candidates, preference=_pref, spoken_starts=_spoken)
         # Build from preference-matching candidates so available_days honours
         # the requested day/time.  Mirrors the Acuity path fix (bug C5-5).
-        days_data  = _build_days_data(candidates, preference=_pref)
+        days_data  = _build_days_data(candidates, preference=_pref, spoken_starts=_spoken)
         pres_raw   = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented]
         pres_labels = [format_slot(s) for s in presented]
         session["last_offered_slots"] = pres_raw
@@ -5464,10 +5607,10 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         free_slots = candidates
         if not free_slots:
             return {"error": "No candidate slots found in the next 7 days.", "slots": []}
-        presented  = _select_presented_tuples(free_slots, preference=_pref)
+        presented  = _select_presented_tuples(free_slots, preference=_pref, spoken_starts=_spoken)
         # Build from preference-matching free_slots so available_days honours
         # the requested day/time.  Mirrors the Acuity path fix (bug C5-5).
-        days_data  = _build_days_data(free_slots, preference=_pref)
+        days_data  = _build_days_data(free_slots, preference=_pref, spoken_starts=_spoken)
         pres_raw   = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented]
         pres_labels = [format_slot(s) for s in presented]
         session["last_offered_slots"] = pres_raw
@@ -5541,8 +5684,8 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
                 # about to name that nothing else in the session records, and it
                 # is the date it got wrong on two live calls.
                 session["requested_day_iso"] = _requested_iso
-                presented   = _select_presented_tuples(free_slots, preference=_pref)
-                days_data   = _build_days_data(free_slots, preference=_pref)
+                presented   = _select_presented_tuples(free_slots, preference=_pref, spoken_starts=_spoken)
+                days_data   = _build_days_data(free_slots, preference=_pref, spoken_starts=_spoken)
                 pres_raw    = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented]
                 pres_labels = [format_slot(s) for s in presented]
                 session["last_offered_slots"] = pres_raw
@@ -5678,10 +5821,10 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
                 _pref, _weekday_window,
             )
 
-    presented  = _select_presented_tuples(free_slots, preference=_pref)
+    presented  = _select_presented_tuples(free_slots, preference=_pref, spoken_starts=_spoken)
     # Build from preference-matching free_slots so available_days honours the
     # requested day/time.  Mirrors the Acuity path fix (bug C5-5).
-    days_data  = _build_days_data(free_slots, preference=_pref)
+    days_data  = _build_days_data(free_slots, preference=_pref, spoken_starts=_spoken)
     pres_raw   = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented]
     pres_labels = [format_slot(s) for s in presented]
     session["last_offered_slots"] = pres_raw
@@ -5887,6 +6030,7 @@ async def _check_availability_diary(
 
     location = (args.get("location") or session.get("selected_location", "")).lower().strip()
     _pref = (args.get("date_hint") or args.get("preference") or "").strip()
+    _spoken = _spoken_starts_for(session)
     _raw_service = args.get("service") or session.get("selected_service") or ""
     calendar_id = _resolve_calendar_id(clinic, location)
     days_ahead = int(clinic.get("days_ahead") or 14)
@@ -6025,8 +6169,8 @@ async def _check_availability_diary(
             "total_days": 0,
         }
 
-    presented = _select_presented_tuples(free_slots, preference=_pref)
-    days_data = _build_days_data(free_slots, preference=_pref)
+    presented = _select_presented_tuples(free_slots, preference=_pref, spoken_starts=_spoken)
+    days_data = _build_days_data(free_slots, preference=_pref, spoken_starts=_spoken)
     session["last_offered_slots"] = [
         {"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented
     ]
@@ -6061,6 +6205,7 @@ async def _check_availability_published(
 
     location = (args.get("location") or session.get("selected_location", "")).lower().strip()
     _pref = (args.get("date_hint") or args.get("preference") or "").strip()
+    _spoken = _spoken_starts_for(session)
     calendar_id = _resolve_calendar_id(clinic, location)
     days_ahead = int(clinic.get("days_ahead") or 14)
 
@@ -6153,8 +6298,8 @@ async def _check_availability_published(
             "slots": [],
         }
 
-    presented = _select_presented_tuples(candidates, preference=_pref)
-    days_data = _build_days_data(candidates, preference=_pref)
+    presented = _select_presented_tuples(candidates, preference=_pref, spoken_starts=_spoken)
+    days_data = _build_days_data(candidates, preference=_pref, spoken_starts=_spoken)
     # Provisional model: each published slot is a START-TIME marker only. The
     # caller chooses 60 or 90 minutes and the practitioner confirms, so a slot's
     # own published window length is NOT the session length (same reason as the
