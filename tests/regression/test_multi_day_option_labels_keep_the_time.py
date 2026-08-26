@@ -267,3 +267,71 @@ def test_a_multi_day_offer_is_recorded_as_heard_but_not_as_the_offer():
         "auditing _resolve_slot_iso's index path"
     )
 
+
+# ---------------------------------------------------------------------------
+# prefer_day must not collapse a cross-day readout onto one day
+#
+# Live on CA0453bd85 (26 Aug, vital_edge, build 324174dc):
+#
+#   Susie: "Number 1, Monday 7th September — nine in the morning.
+#           Number 2, Tuesday 8th September — nine in the morning."
+#   log:   2 spoken option(s) recorded as offered —
+#          ['2026-09-07T09:00:00+01:00', '2026-09-07T09:00:00+01:00']
+#
+# BOTH recorded as Monday. `resolve_spoken_options` tries a pool filtered to
+# `prefer_day` first; the per-option `by_day` index is built from that filtered
+# pool, so option 2's "Tuesday 8th September" found no Tuesday, fell through to
+# the pool's global map — which held only Monday — and matched Monday's "nine
+# in the morning". Both options resolved, so the scoped attempt was accepted and
+# the correct unscoped pass never ran.
+#
+# The consequence is worse than a bad record: both slots then shared one day, so
+# the SINGLE-DAY branch ran and wrote `last_offered_slots`, which
+# `_resolve_slot_iso` indexes BY POSITION. "The second one" would have booked
+# Monday when the caller meant Tuesday.
+#
+# Introduced by the day-scoping commit. Before it, option 2's label was
+# day-only, resolved to nothing, and the whole set was discarded — so this
+# turned "record nothing" into "record the wrong slot".
+# ---------------------------------------------------------------------------
+def test_prefer_day_does_not_collapse_a_cross_day_readout():
+    text = (
+        "Number 1, Monday 7th September — nine in the morning. "
+        "Number 2, Tuesday 8th September — nine in the morning."
+    )
+    monday = _day("2026-09-07", ["19:30"], "Monday 7th September")
+    tuesday = _day("2026-09-08", ["19:30"], "Tuesday 8th September")
+    monday["slot_times_spoken"] = ["nine in the morning"]
+    tuesday["slot_times_spoken"] = ["nine in the morning"]
+    got = resolve_spoken_options(
+        [monday, tuesday], _candidates(text), prefer_day="2026-09-07",
+    )
+    assert [s["start"] for s in got] == [
+        "2026-09-07T19:30:00",
+        "2026-09-08T19:30:00",
+    ], "prefer_day collapsed Tuesday onto Monday"
+
+
+def test_prefer_day_still_scopes_a_single_day_readout():
+    """The behaviour prefer_day exists for must survive: a clinic running the
+    same rota every evening has the same spoken time on several days, and the
+    day being presented is what tells them apart."""
+    text = "Number 1, half past seven in the evening. Number 2, quarter past eight in the evening."
+    other = _day("2026-08-28", ["19:30", "20:15"], "Friday 28th August")
+    got = resolve_spoken_options(
+        [THURSDAY, other], _candidates(text), prefer_day="2026-08-27",
+    )
+    assert [s["start"] for s in got] == [
+        "2026-08-27T19:30:00",
+        "2026-08-27T20:15:00",
+    ]
+
+
+def test_an_option_naming_an_unknown_day_is_not_forced_into_the_scope():
+    """A day the payload has never heard of must not silently resolve to the
+    preferred day's slot of the same time."""
+    text = "Number 1, Someday 40th Smarch — half past seven in the evening."
+    assert resolve_spoken_options(
+        [THURSDAY], _candidates(text), prefer_day="2026-08-27",
+    ) is not None  # unknown day is not in known_days -> falls back, resolves
+
