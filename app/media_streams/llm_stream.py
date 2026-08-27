@@ -3078,6 +3078,37 @@ class LLMStream:
                 "[ms_gate5] slot buf: %d spoken option(s) recorded as offered — %s",
                 len(_spoken_opts), [_s.get("start") for _s in _spoken_opts],
             )
+        elif not _spoken_labels:
+            # B-100, CA315e501a (27 Aug 2026). Everything above reads the
+            # cumulative spoken record through option_label_candidates, which
+            # is driven by "Number N" anchors. A readout with no numbering --
+            # "Friday 28th August — the available time is two in the
+            # afternoon." -- yields no anchors, so NOTHING is recorded, even
+            # though the caller plainly heard a time.
+            #
+            # That record is what B-98's band-spent rule reads. On that call
+            # the very next lookup could not tell the 2pm had been spoken, did
+            # not open the day, and re-offered the same 2pm; the caller had to
+            # name "midday" themselves to reach the slot the band was hiding.
+            #
+            # ONE slot only, and from the PAYLOAD rather than the sentence.
+            # last_offered_slots is what check_availability presented, so with
+            # exactly one entry there is nothing else the readout could have
+            # been about. Recording more than that on a guess is the dangerous
+            # direction: a slot wrongly marked heard is a slot never offered
+            # again, which is the B-97 family coming back through this door.
+            _payload_one = session.get("last_offered_slots") or []
+            if (
+                isinstance(_payload_one, list)
+                and len(_payload_one) == 1
+                and (_payload_one[0] or {}).get("start")
+            ):
+                record_spoken_slots(session, _payload_one)
+                logger.info(
+                    "[ms_gate5] slot buf: un-numbered readout — recorded the "
+                    "one slot the payload presented as heard: %s (B-100)",
+                    _payload_one[0].get("start"),
+                )
 
         # ── 3b. Reconcile the "a few others that day" claim with the data ────
         # The formatter is a language model being shown a template; on
