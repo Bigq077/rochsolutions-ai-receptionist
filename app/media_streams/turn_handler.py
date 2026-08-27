@@ -1665,6 +1665,33 @@ def _scarcity_claim_is_supported(session: Dict[str, Any]) -> bool:
     of scarcity.
     """
     try:
+        # B-108, CA1b7b2c58 (Theorem, 27 Aug 2026). Every check below passed and
+        # the sentence was still misleading, because they all interrogate the
+        # DAY and none asks where the day came from.
+        #
+        # The caller said "do you have anything on tuesday" — a WEEKDAY, no
+        # date. _check_availability's `_is_specific_day` arm resolved that to
+        # the next occurrence, 1 September, which held exactly one slot. So
+        # available_days was one day, slot_times one time, times_found_on_day 1,
+        # and this returned True for "That's the only slot on Tuesday 1st
+        # September". True about the 1st. The same scan had already returned
+        # 7 slots on the 8th, 8 on the 15th and 9 on the 22nd — 24 more
+        # Tuesdays slots the caller was never told about, and the sentence
+        # tells them Tuesdays are all but gone.
+        #
+        # The claim has to be judged against the QUESTION, not just the day.
+        # When the day was picked for the caller rather than named by them, a
+        # scarcity claim about that day answers a question nobody asked, so it
+        # goes back to being stripped. A caller who names an actual date
+        # ("the 1st", "tomorrow") is unaffected — that arm sets the flag False
+        # — and so is CA45357d84, the call this guard was built for, where the
+        # caller had been given a date and was asking about that date.
+        #
+        # Absent flag -> treated as bare-weekday-free, i.e. no change from the
+        # pre-B-108 answer. Only an availability call sets it, and only that
+        # same call can put a scarcity claim on the table.
+        if session.get("day_chosen_from_bare_weekday"):
+            return False
         days = session.get("available_days")
         if not isinstance(days, list) or len(days) != 1:
             return False
