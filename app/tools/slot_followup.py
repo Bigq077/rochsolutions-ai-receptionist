@@ -199,6 +199,52 @@ _WEEKDAY_WORDS = (
 )
 
 
+# Day-of-month as a caller may say it. A closed set of 31, in the same spirit
+# as _WEEKDAY_WORDS: bounded vocabulary, no date parsing. ORDINALS ONLY --
+# "second", not "two". A date is spoken as an ordinal, and mapping cardinals
+# as well would fold "two in the afternoon" into a bare 2 for no gain.
+_ORDINAL_UNITS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+    "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
+    "eleventh": 11, "twelfth": 12, "thirteenth": 13, "fourteenth": 14,
+    "fifteenth": 15, "sixteenth": 16, "seventeenth": 17, "eighteenth": 18,
+    "nineteenth": 19, "twentieth": 20, "thirtieth": 30,
+}
+_ORDINAL_COMPOUNDS = {
+    f"{tens_word} {unit_word}": tens + unit
+    for tens_word, tens in (("twenty", 20), ("thirty", 30))
+    for unit_word, unit in _ORDINAL_UNITS.items()
+    if unit <= 9 and tens + unit <= 31
+}
+_ORDINAL_SUFFIX_RE = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)\b")
+_ORDINAL_COMPOUND_RE = re.compile(
+    r"\b(" + "|".join(sorted(_ORDINAL_COMPOUNDS, key=len, reverse=True)) + r")\b"
+)
+_ORDINAL_UNIT_RE = re.compile(
+    r"\b(" + "|".join(sorted(_ORDINAL_UNITS, key=len, reverse=True)) + r")\b"
+)
+
+
+def _fold_ordinals(text: str) -> str:
+    """"22nd", "22" and "twenty second" all become "22".
+
+    B-104. The payload writes "Tuesday 22nd September"; callers say any of
+
+        "tuesday the 22nd of september"      <- the only one that used to match
+        "tuesday the twenty second of september"
+        "tuesday the 22 of september"
+
+    and the two that did not match fell back to scoping by the offer's first
+    slot -- B-103's defect, reached by phrasing rather than by code. Folding
+    BOTH sides to a bare number makes them one string.
+
+    Compounds before units, so "twenty second" is 22 and not "20 2".
+    """
+    t = _ORDINAL_SUFFIX_RE.sub(r"\1", text)
+    t = _ORDINAL_COMPOUND_RE.sub(lambda m: str(_ORDINAL_COMPOUNDS[m.group(1)]), t)
+    return _ORDINAL_UNIT_RE.sub(lambda m: str(_ORDINAL_UNITS[m.group(1)]), t)
+
+
 def _caller_norm(value: Any) -> str:
     """Caller speech and a payload label, folded onto one comparable form.
 
@@ -208,8 +254,12 @@ def _caller_norm(value: Any) -> str:
     token counting below. Both drop the filler that separates "Wednesday 2nd
     September" from "wednesday the 2nd of september"; only this one also
     strips the comma.
+
+    B-104 adds ordinal folding, applied to the LABEL as well as the speech --
+    the point is that both land on the same string, so doing it to one side
+    only would move the mismatch rather than remove it.
     """
-    return _readback_norm(value)
+    return _fold_ordinals(_readback_norm(value))
 
 
 def _days_the_caller_named(available_days: Any, text: str) -> Dict[str, str]:
