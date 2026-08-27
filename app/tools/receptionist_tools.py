@@ -18,7 +18,7 @@ import logging
 import re
 import time as _time
 from datetime import datetime, timedelta, date as _date_type
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pytz
 
@@ -250,6 +250,25 @@ def _cached_offer_is_exhausted(available_days: Any, spoken_starts: set) -> bool:
     return False
 
 
+_WEEKDAY_NAME_TO_INDEX: Dict[str, int] = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+
+
+def _named_weekdays(preference: str) -> List[int]:
+    """Weekday indexes named in a caller's date_hint ('Tuesday afternoon' → [1]).
+
+    ONE owner for "did the caller name a day?".  _filter_tuples_by_preference
+    silently DROPS a day filter that matches nothing, so anything that wants to
+    know a named day went unanswered has to ask the same question the same way
+    — otherwise the two disagree and the caller is told a day is unavailable on
+    the strength of a filter that was never applied.
+    """
+    pref = (preference or "").lower()
+    return [wd for name, wd in _WEEKDAY_NAME_TO_INDEX.items() if name in pref]
+
+
 def _filter_tuples_by_preference(
     slot_tuples: list, preference: str = "", spoken_starts: Optional[set] = None,
 ) -> list:
@@ -275,11 +294,7 @@ def _filter_tuples_by_preference(
     pref = preference.lower()
     filtered = future_only
 
-    day_map = {
-        "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
-        "friday": 4, "saturday": 5, "sunday": 6,
-    }
-    pref_days = [wd for name, wd in day_map.items() if name in pref]
+    pref_days = _named_weekdays(pref)
     if pref_days:
         day_filtered = [(s, e) for s, e in filtered if s.weekday() in pref_days]
         if day_filtered:
@@ -2677,10 +2692,12 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         # Use after_date as the search start if it is later than today
         search_start = max(today, after_date_cutoff) if after_date_cutoff else today
 
-        # Always scan a full 30-day window so near-term scarcity (bank holidays,
-        # blocked days) doesn't leave the caller with only 1–2 options.
-        # Explicit day_window from the LLM overrides this (e.g. for "next week").
-        used_window = int(explicit_window) if explicit_window else 30
+        # Always scan a full _ACUITY_FULL_WINDOW_DAYS window so near-term
+        # scarcity (bank holidays, blocked days) doesn't leave the caller with
+        # only 1–2 options. Explicit day_window from the LLM overrides this
+        # (e.g. for "next week") — and see the widen below for the case where
+        # that override is the model's arithmetic rather than the caller's wish.
+        used_window = int(explicit_window) if explicit_window else _ACUITY_FULL_WINDOW_DAYS
         end_date = search_start + timedelta(days=used_window)
 
         try:
@@ -2723,6 +2740,88 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                 "_check_availability_acuity: no slots for %s in %d days",
                 location, used_window,
             )
+
+        # ── B-86 on the ACUITY path ────────────────────────────────────────
+        # This reader scans _ACUITY_FULL_WINDOW_DAYS by default, which contains
+        # the next occurrence of every weekday — so a bare weekday was safe
+        # here for as long as the model sent no window. It no longer does.
+        # B-105's SPECIFIC DAY rule tells the model to send a named day as
+        # after_date + day_window=1, and the line above takes that literally:
+        #
+        #     used_window = int(explicit_window) if explicit_window else 30
+        #
+        # One day is scanned, the named weekday is not in it, and the caller is
+        # told the day is unavailable. That is a statement about a day nobody
+        # looked at, and a gap in a payload can never mean the clinic is shut.
+        # Same defect as the Google and diary readers, reached by a different
+        # mechanism: there the window is built from day_window, here the window
+        # REPLACES a 30-day scan that would have found the day anyway.
+        #
+        # day_window=1 next to a named weekday is not the caller narrowing
+        # anything — it is the model's arithmetic. When the pinned window and
+        # the named weekday disagree, the weekday is the caller's own word.
+        # Trust the caller and look.
+        #
+        # Bounded: only when a weekday was actually NAMED, only when the window
+        # scanned was shorter than the full one (a model that asked for 30+ has
+        # already been given it, and re-reading is a duplicate Acuity call for
+        # an identical answer), and at most ONE extra call.
+        _pref_weekdays = _named_weekdays(preference)
+        _weekday_window = used_window
+        _weekday_found = True
+        if _pref_weekdays:
+            _weekday_found = any(
+                _s.start_time.weekday() in _pref_weekdays for _s in slots
+            )
+        if (
+            _pref_weekdays
+            and not _weekday_found
+            and used_window < _ACUITY_FULL_WINDOW_DAYS
+        ):
+            _wd_end = search_start + timedelta(days=_ACUITY_FULL_WINDOW_DAYS)
+            logger.info(
+                "_check_availability_acuity: %r not in the %dd window — widening"
+                " to %dd before saying the day is unavailable",
+                preference, used_window, _ACUITY_FULL_WINDOW_DAYS,
+            )
+            try:
+                _wd_slots = await adapter.get_available_slots(
+                    appointment_type_id=appointment_type_id,
+                    start_date=search_start,
+                    end_date=_wd_end,
+                    practitioner_id=practitioner_id,
+                )
+            except Exception as _wd_err:
+                # Keep the narrow result rather than killing the turn. The
+                # caller still hears real alternatives, and _weekday_found
+                # stays False so the payload still forbids asserting the day
+                # is unavailable.
+                logger.error(
+                    "_check_availability_acuity: widen failed (%r) — keeping the"
+                    " %dd result", _wd_err, used_window,
+                )
+            else:
+                if any(_s.start_time.weekday() in _pref_weekdays
+                       for _s in _wd_slots):
+                    slots = _wd_slots
+                    used_window = _ACUITY_FULL_WINDOW_DAYS
+                    _weekday_window = _ACUITY_FULL_WINDOW_DAYS
+                    _weekday_found = True
+                    logger.info(
+                        "_check_availability_acuity: found %r in the %dd window",
+                        preference, _ACUITY_FULL_WINDOW_DAYS,
+                    )
+                else:
+                    if _wd_slots:
+                        # Genuinely absent across the full window, but the wider
+                        # read found real alternatives — offer those.
+                        slots = _wd_slots
+                        used_window = _ACUITY_FULL_WINDOW_DAYS
+                        _weekday_window = _ACUITY_FULL_WINDOW_DAYS
+                    logger.info(
+                        "_check_availability_acuity: %r has no slot within %dd"
+                        " either", preference, _ACUITY_FULL_WINDOW_DAYS,
+                    )
 
         # ── Post-fetch filters ─────────────────────────────────────────────
         # 1. Minimum lead-time filter: drop slots starting within 2 hours of now.
@@ -3082,6 +3181,50 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
             "window_examined_days": used_window,
             "search_narrowed_to":   _narrowed,
         }
+        if _pref_weekdays:
+            # Say what was LOOKED AT. Same contract the Google body states, and
+            # the half that makes the widen above worth having: without it a
+            # widen that still finds nothing is indistinguishable from a clinic
+            # that does not open that day, and the model picks the confident
+            # reading every time.
+            #
+            # These go in fields nothing downstream rewrites -- total_days
+            # cannot carry them, because _cap_presented_slots and
+            # _filter_same_day_slots both redefine it and both run after us.
+            _result["day_requested"] = ", ".join(
+                n for n, wd in _WEEKDAY_NAME_TO_INDEX.items()
+                if wd in _pref_weekdays
+            )
+            _result["day_requested_found"] = _weekday_found
+            # How many times the named weekday came round inside the window
+            # that was READ. Counted off the window, not off the slots: this
+            # states coverage, and a count of dates that happened to have slots
+            # would move with the diary and say nothing about what was examined.
+            _wd_occurrences = sum(
+                1 for _n in range(_weekday_window)
+                if (search_start + timedelta(days=_n)).weekday() in _pref_weekdays
+            )
+            _result["day_requested_occurrences_examined"] = _wd_occurrences
+            if not _weekday_found:
+                _result["guidance"] = (
+                    f"No slot on the requested day within the next {_weekday_window} days. "
+                    "Say EXACTLY that - that you cannot see anything on that day in the "
+                    "next few weeks - and offer the days below. Do NOT say the day "
+                    "is unavailable, fully booked, or that the clinic does not open then: "
+                    "nothing beyond this window was checked."
+                )
+            elif _wd_occurrences <= 1:
+                _result["guidance"] = (
+                    f"Only ONE {_result['day_requested'].title()} falls inside the "
+                    f"{_weekday_window}-day window that was read, so these are all "
+                    "the times on that DATE and nothing is known about any later "
+                    f"{_result['day_requested'].title()}. You may say this is all there is "
+                    "on that date. Do NOT say or imply it is all there is on that "
+                    "weekday. If the times do not suit, offer to look at the "
+                    "following one and call check_availability again with after_date "
+                    "past this date; never name a later date you have not been "
+                    "given slots for, and never invent times."
+                )
         if _presentation_mode == "single_day" and days_data:
             # Cap a single day's SPOKEN times to the soonest 3 so a busy day
             # (e.g. "the 29th" with 10 slots) isn't a wall of times.  When more
@@ -3128,8 +3271,24 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
             #
             # No em dash in the guidance text: TTS pause punctuation is chunker
             # input, and model-facing strings have been echoed into speech.
+            # `_weekday_found` is load-bearing here, not decoration.
+            # `_days_found` counts every day in the result, NOT days matching
+            # the named weekday -- and _filter_tuples_by_preference silently
+            # DROPS a day filter that matches nothing (see _named_weekdays).
+            # So when the requested weekday has no times at all, days_data
+            # falls back to the unfiltered set and this sentence would tell the
+            # model that N further dates "matching the requested day" have
+            # times, about a weekday that has none. That is the same confident
+            # false claim this whole family exists to prevent, and the widen
+            # above makes it far more reachable: a 1-day scan used to return
+            # empty and bail out before ever getting here.
             _not_shown = max(0, _days_found - 1)
-            if _not_shown and _has_weekday_name and not _has_week_anchor:
+            if (
+                _not_shown
+                and _has_weekday_name
+                and not _has_week_anchor
+                and _weekday_found
+            ):
                 _result["guidance"] = (
                     f"{_not_shown} further date(s) matching the requested day "
                     "also have times, and are NOT in this result. You may say "
@@ -4887,6 +5046,12 @@ def _filter_same_day_slots(result: Dict[str, Any], session: Dict[str, Any]) -> D
 # "the next couple of days"), so an empty result is a MISS worth widening rather
 # than a genuine absence of availability.
 _NARROW_WINDOW_MAX_DAYS = 3
+
+# The Acuity reader's own full scan. It is deliberately WIDER than
+# _WIDEN_WINDOW_DAYS (14): 30 days is what that path has always scanned when the
+# model sends no day_window, so widening back to it restores the behaviour the
+# caller would have had, rather than inventing a third window size.
+_ACUITY_FULL_WINDOW_DAYS = 30
 # How far ahead to look once a narrow search misses.
 _WIDEN_WINDOW_DAYS = 14
 
