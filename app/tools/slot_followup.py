@@ -470,6 +470,25 @@ _COMPLETENESS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The SINGULAR completeness claim, and only that. "The available TIME is X" /
+# "the only time available that day is X" says the day holds exactly one
+# bookable appointment. When more_times is true that is false, and it is the
+# one form that can be corrected without touching the times themselves.
+#
+# Deliberately NOT _COMPLETENESS_RE, which matches the plural opener too ("The
+# available slots for Wednesday are — Number 1 ...") and whose own comment
+# records that it is safe only because it never rewrites. Widening that one
+# into a rewrite would mangle the legitimate multi-slot readout.
+#
+# B-100, CA315e501a: "Friday 28th August — the available time is two in the
+# afternoon." Friday held midday AND two in the afternoon.
+_SINGULAR_COMPLETENESS_RE = re.compile(
+    r"\bthe\s+(?:only|available)\s+(?:time|slot)\b"
+    r"(?:\s+available)?(?:\s+(?:that|on\s+that)\s+day)?\s+is\b",
+    re.IGNORECASE,
+)
+_SINGULAR_COMPLETENESS_SUB = "I've got"
+
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
 
@@ -1148,12 +1167,35 @@ def reconcile_extra_slots_claim(
             return text, "unchanged"
         return " ".join(kept).strip(), "stripped"
 
+    # more_times is TRUE from here, so a claim that the day holds exactly one
+    # time is false. Correcting it comes BEFORE the allow_append bail for the
+    # same reason stripping does in the other direction: a false claim is wrong
+    # in either presentation mode, and only the optional tail is mode-gated.
+    #
+    # The phrase is replaced, not the sentence removed -- the sentence carries
+    # the time the caller needs, and "never blank a reply" applies here too.
+    text, _n_rewritten = _SINGULAR_COMPLETENESS_RE.subn(
+        _SINGULAR_COMPLETENESS_SUB, text,
+    )
+    if _n_rewritten:
+        sentences = _SENTENCE_SPLIT_RE.split(text.strip())
+        # Loud on purpose, like the strip in the other direction: this is the
+        # model telling a caller a day is full when the tool result says it is
+        # not, and it belongs in the call record.
+        logger.warning(
+            "[slot_followup] CORRECTED a false 'the only time is' claim — the "
+            "day holds more times (B-100). after=%r", text[:160],
+        )
+
     if not allow_append:
-        return text, "unchanged"
+        return text, ("rewritten" if _n_rewritten else "unchanged")
     if any(_is_extra_slots_claim(s) for s in sentences):
-        return text, "unchanged"
+        return text, ("rewritten" if _n_rewritten else "unchanged")
     if _COMPLETENESS_RE.search(text):
-        return text, "unchanged"
+        # A completeness claim this cannot safely correct (the plural opener).
+        # Staying quiet is still right: appending "and I've a few others" next
+        # to it would make Susie contradict herself in one breath.
+        return text, ("rewritten" if _n_rewritten else "unchanged")
 
     tail = more_times_tail(n_offered)
     # BEFORE the closing question, not after it. "Any of those work? And I've a
