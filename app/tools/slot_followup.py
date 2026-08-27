@@ -1343,6 +1343,88 @@ def build_followup_tool_result(
     }
 
 
+def offer_day_hides_times(session: Dict[str, Any]) -> bool:
+    """True when a preference band removed times from a day now on the table.
+
+    available_days is what SURVIVED the caller's time-of-day band, so when this
+    is True the session's copy of that day is not the day. Every follow-up here
+    subtracts from that copy, so it can only ever offer the survivors -- and
+    then report the day exhausted when it runs out of them.
+
+    B-98 taught the retrieval path to open such a day up once its in-band times
+    have been spoken. This is how the session-served paths know to let it.
+    """
+    days_by_date = {
+        str(d.get("date") or ""): d
+        for d in (session.get("available_days") or [])
+        if isinstance(d, dict)
+    }
+    for offer in (session.get("last_offered_slots") or []):
+        day = days_by_date.get(str((offer or {}).get("start") or "")[:10])
+        try:
+            if day is not None and int(day.get("times_not_shown") or 0) > 0:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def exhaustion_claim_is_supported(session: Dict[str, Any]) -> bool:
+    """May Susie say "I don't have any further times on that day"?
+
+    That sentence is a completeness claim about a DAY -- the same claim B-97
+    caught in "that's the only one we have that day", made by a different
+    producer that no banned-phrase table and no availability guard can see. It
+    needs the same two things to be true, and this is the one place that asks.
+
+    B-99, CA890b511e (27 Aug 2026, theorem_v3, Alcester). At 08:42:49 Susie
+    said it about Friday 28 August. At 08:43:39, fifty seconds later and on the
+    same call, that day produced a midday appointment. Both halves were wrong
+    at once:
+
+      1. THE DAY WAS NOT IDENTIFIED. The caller had asked about "wednesday the
+         2nd of september". The offer on the table spanned THREE days, and the
+         follow-up takes "the day under discussion" from last_offered_slots[0]
+         -- whichever sorts first, here Friday 28 August. So the answer was
+         about a day nobody had asked about, in words ("that day") that sound
+         like it was about the one they did.
+
+      2. THE DAY WAS NOT EXHAUSTED. The caller had said "afternoons", so the
+         band had already removed midday from Friday before the session ever
+         saw it. Subtracting the spoken times from the survivors reaches zero
+         while the day still holds a bookable appointment.
+
+    So: exactly one day on the table, and that day complete. Anything else and
+    the caller is better served by a real lookup, which B-98 will open up.
+
+    Fails CLOSED, like _scarcity_claim_is_supported: an unreadable session
+    declines to make the claim rather than making it unverified.
+    """
+    try:
+        offered = session.get("last_offered_slots") or []
+        if not isinstance(offered, list) or not offered:
+            return False
+        days = {str((o or {}).get("start") or "")[:10] for o in offered}
+        days.discard("")
+        if len(days) != 1:
+            return False          # no single "that day" to be speaking about
+        want = days.pop()
+        # POSITIVE proof, deliberately not "we did not find a reason to doubt".
+        # The day has to be present and readable and say it hides nothing --
+        # an available_days this cannot parse has verified NOTHING, and the
+        # asymmetry with offer_day_hides_times is the point: that one opens the
+        # guard on positive knowledge of hiding, this one speaks a sentence on
+        # positive knowledge of completeness, and both stay quiet when the
+        # session cannot answer.
+        for day in (session.get("available_days") or []):
+            if not isinstance(day, dict) or str(day.get("date") or "") != want:
+                continue
+            return int(day.get("times_not_shown") or 0) == 0
+        return False
+    except Exception:
+        return False
+
+
 def try_unspoken_followup_speech(
     session: Dict[str, Any], user_text: str
 ) -> Optional[str]:
@@ -1374,6 +1456,14 @@ def try_unspoken_followup_speech(
         # day" while three sat unoffered. The honest answer is deterministic,
         # so it should not be generated.
         if utterance_requests_more_slots(user_text):
+            if not exhaustion_claim_is_supported(session):
+                logger.info(
+                    "[slot_followup] declining the exhaustion sentence -- the "
+                    "offer on the table is not one complete day, so 'no further "
+                    "times on that day' is unverifiable here (B-99). Falling "
+                    "through to a real lookup."
+                )
+                return None
             return format_next_batch_speech([], False)
         return None
 
@@ -1394,6 +1484,20 @@ def try_unspoken_followup_speech(
             # This DAY is exhausted even though other days remain. Say so
             # rather than falling to the model — the same reasoning as the
             # empty-remaining branch above, and the same sentence.
+            #
+            # ...but only when there is one day it could be about and that day
+            # is really empty. B-99: on a three-day offer this branch spoke
+            # about last_offered_slots[0] while the caller had named a
+            # different day, and did it about a day whose midday the band had
+            # hidden. See exhaustion_claim_is_supported.
+            if not exhaustion_claim_is_supported(session):
+                logger.info(
+                    "[slot_followup] declining the exhaustion sentence -- the "
+                    "offer on the table is not one complete day, so 'no further "
+                    "times on that day' is unverifiable here (B-99). Falling "
+                    "through to a real lookup."
+                )
+                return None
             return format_next_batch_speech([], False)
         return apply_next_batch_to_session(session, batch, more)
 
