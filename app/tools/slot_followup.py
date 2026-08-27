@@ -348,6 +348,126 @@ def day_named_by_caller(available_days: Any, text: str) -> "str | None":
     return next(iter(named)) if len(named) == 1 else None
 
 
+# Cardinals as well as ordinals: after a numbered readout a caller says
+# "the SECOND day" and equally often "number TWO". _fold_ordinals covers the
+# first form only -- "second" is in _ORDINAL_UNITS, "two" is not.
+_CARDINAL_UNITS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}
+_CARDINAL_RE = re.compile(
+    r"\b(" + "|".join(sorted(_CARDINAL_UNITS, key=len, reverse=True)) + r")\b"
+)
+
+# A position is only a position when it is FRAMED as one. A bare number is a
+# date far more often than an index ("the 2nd of September"), so every arm
+# here carries an explicit positional word -- number/option/day/one -- and a
+# lone digit matches nothing.
+_POSITION_RE = re.compile(
+    r"\b(?:number|option)\s+(\d{1,2})\b"
+    r"|\b(\d{1,2})\s+(?:one|day)\b"
+    r"|\bday\s+(\d{1,2})\b"
+)
+
+
+def _positions_named(text: str) -> set:
+    """Every list position `text` refers to, as a set of ints.
+
+    Matched against BOTH folded forms, because the two foldings are mutually
+    destructive on the commonest phrasing of all:
+
+        "the second one"  --ordinals-->  "2 one"  --cardinals-->  "2 1"
+
+    Cardinal folding is what makes "number TWO" resolve, and it is also what
+    eats the positional noun in "the second ONE" -- leaving "2 1", which
+    matches nothing. Neither ordering saves both, so both forms are tried and
+    the hits unioned.
+
+    Unioning is safe in the direction that matters: it can only ever ADD a
+    position, and two positions make the caller ambiguous, which declines. A
+    phrase resolving to one position under both forms stays one.
+    """
+    ordinal_only = _fold_ordinals(_caller_norm(text))
+    both = _CARDINAL_RE.sub(
+        lambda m: str(_CARDINAL_UNITS[m.group(1)]), ordinal_only
+    )
+    return {
+        int(g)
+        for form in (ordinal_only, both)
+        for match in _POSITION_RE.finditer(form)
+        for g in match.groups() if g
+    }
+
+
+def day_selected_by_position(
+    available_days: Any, session: Dict[str, Any], text: str
+) -> "str | None":
+    """The calendar day the caller picked BY ITS POSITION in the readout.
+
+    B-105, CA0eb9a12c (JV go-live rehearsal, 27 Aug 2026). The rung B-103 and
+    B-104 left open. Those two taught this family to honour a day the caller
+    NAMES; a numbered readout invites the caller to pick by NUMBER instead,
+    and that phrasing still fell through to `last_offered_slots[0]`:
+
+        offer:   Number 1, Monday 7th September | Number 2, Tuesday 8th September
+        caller:  "the second day suits me, could you give me all the slots
+                  you have on that day"
+        answer:  "On MONDAY 7th September I also have ..."
+
+    The caller then picked a time from Monday's list, the read-back corrector
+    saw a time that was not in Tuesday's offer and rewrote the TIME to fit the
+    day the model had drifted to, and the caller was asked to agree to -- and
+    did agree to -- a day and time that were never on the table together.
+
+    Resolved against `v3_dtmf_slot_map`, which is the same index -> label map
+    the keypad path uses, so a spoken "number two" and a pressed 2 resolve
+    through one table rather than two that can disagree.
+
+    Returns None unless the map's value CONTAINS a day label: the identical
+    map is built for a time_selection readout, where "the second one" means a
+    time and scoping a day by it would be the very error this prevents.
+    Matching the resolved label back against `available_days` is what tells
+    the two apart, and it costs nothing when the map is absent.
+
+    Containment rather than equality, and the difference is not cosmetic.
+    `extract_slot_options` cuts an option's label at an em dash, an en dash or
+    a full stop -- and at nothing else. "Number 2, Tuesday 8th September - five
+    in the evening" stores "Tuesday 8th September" and would match either way;
+    "Number 2, Tuesday 8th September at five in the evening" stores the whole
+    line, which equals no day label at all. That phrasing is the model's to
+    choose, so an equality test would leave this guard silently inert on a
+    wording nothing enforces -- the failure mode this fix exists to end.
+
+    Requiring exactly ONE label to be contained keeps the loosening safe: two
+    labels in one option is not a day pick, and declines to the old behaviour
+    rather than guessing between them.
+    """
+    if not isinstance(text, str) or not isinstance(available_days, list):
+        return None
+    slot_map = (session or {}).get("v3_dtmf_slot_map") or {}
+    if not isinstance(slot_map, dict) or not slot_map:
+        return None
+
+    hits = _positions_named(text)
+    if len(hits) != 1:
+        return None                      # named none, or named two -- decline
+    label = slot_map.get(str(next(iter(hits))))
+    if not label:
+        return None
+
+    hay = f" {_caller_norm(label)} "
+    hits = []
+    for day in available_days:
+        if not isinstance(day, dict):
+            continue
+        day_label = _caller_norm(day.get("day_label") or "")
+        date = str(day.get("date") or "").strip()
+        if day_label and date and f" {day_label} " in hay:
+            hits.append(date)
+    # More than one label inside one option is not a day pick -- decline.
+    return hits[0] if len(hits) == 1 else None
+
+
 def remaining_unspoken_on_current_day(
     session: Dict[str, Any], user_text: str = ""
 ) -> List[Dict[str, Any]]:
@@ -358,6 +478,10 @@ def remaining_unspoken_on_current_day(
 
       1. The day the CALLER NAMED in this very utterance, when they named
          exactly one (B-103).
+      1b. The day the caller picked BY POSITION -- "the second day",
+         "number two" -- resolved through the same index -> label map the
+         keypad uses (B-105). Below naming on purpose: an explicit date
+         beats a positional reference to the same readout.
       2. NOTHING, when they named more than one and none can be picked. An
          empty scope makes the caller's branch decline (a multi-day offer
          cannot support an exhaustion claim) and fall through to a real
@@ -387,8 +511,9 @@ def remaining_unspoken_on_current_day(
     answered about a different day — confidently, and under that day's label,
     which is the shape that sends a patient in on the wrong date.
 
-    Step 1 only fires on an unambiguous full naming; everything else falls to
-    step 2 and behaves exactly as before.
+    Step 1 only fires on an unambiguous full naming, step 1b on an
+    unambiguous positional pick; everything else falls to step 2 and behaves
+    exactly as before.
     """
     remaining = remaining_unspoken(session)
     days = session.get("available_days") or []
@@ -402,6 +527,15 @@ def remaining_unspoken_on_current_day(
             named, _lead,
         )
         return [slot for slot in remaining if _day_key(slot) == named]
+    picked = day_selected_by_position(days, session, user_text)
+    if picked:
+        logger.info(
+            "[slot_followup] scoping the follow-up to %s -- the caller picked "
+            "it by position in the readout, and the offer on the table leads "
+            "with %s (B-105)",
+            picked, _lead,
+        )
+        return [slot for slot in remaining if _day_key(slot) == picked]
     if caller_named_conflicting_days(days, user_text):
         logger.info(
             "[slot_followup] the caller named more than one day and none of "
