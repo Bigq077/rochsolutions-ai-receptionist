@@ -193,13 +193,128 @@ def remaining_unspoken(session: Dict[str, Any]) -> List[Dict[str, Any]]:
     ]
 
 
-def remaining_unspoken_on_current_day(
-    session: Dict[str, Any]
-) -> List[Dict[str, Any]]:
-    """remaining_unspoken(), scoped to the day of the offer on the table.
+_WEEKDAY_WORDS = (
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "sunday",
+)
 
-    "Anything else THAT DAY?" means the day the caller is discussing, and the
-    only record of which day that is, is the offer they were just given.
+
+def _caller_norm(value: Any) -> str:
+    """Caller speech and a payload label, folded onto one comparable form.
+
+    `_readback_norm` rather than its sibling `_norm_day` because this reads
+    CALLER speech, which arrives with punctuation -- "not wednesday, what else
+    on friday the 4th" -- and `_norm_day` keeps it, which silently breaks the
+    token counting below. Both drop the filler that separates "Wednesday 2nd
+    September" from "wednesday the 2nd of september"; only this one also
+    strips the comma.
+    """
+    return _readback_norm(value)
+
+
+def _days_the_caller_named(available_days: Any, text: str) -> Dict[str, str]:
+    """{date: normalised label} for every day of the payload `text` names in
+    full. Word-boundary matched -- both sides are space-joined single words
+    after normalisation, so padding makes containment a token test."""
+    if not isinstance(text, str) or not text.strip():
+        return {}
+    if not isinstance(available_days, list):
+        return {}
+    hay = f" {_caller_norm(text)} "
+    found: Dict[str, str] = {}
+    for day in available_days:
+        if not isinstance(day, dict):
+            continue
+        label = _caller_norm(day.get("day_label") or "")
+        date = str(day.get("date") or "").strip()
+        if label and date and f" {label} " in hay:
+            found[date] = label
+    return found
+
+
+def caller_named_conflicting_days(available_days: Any, text: str) -> bool:
+    """True when `text` refers to more days than it pins down to exactly one.
+
+    Two ways that happens, and the second is why counting matches is not
+    enough on its own:
+
+      1. Two full labels match.
+      2. ONE full label matches and a weekday is named that the label cannot
+         account for -- because callers elide:
+
+             "anything else on wednesday the 2nd or friday the 4th
+              of september"
+
+         names TWO days and matches ONE label. The month is spoken once, so
+         "wednesday the 2nd" is a partial and invisible to the match. Without
+         this check that reads as an unambiguous naming and gets answered
+         about Friday.
+
+    Weekdays are a closed set of seven words, so this stays a token count and
+    does not become the date parsing Tier 2 needs.
+
+    Eager on purpose: "not wednesday, what else on friday the 4th of
+    september" trips it too, and loses an answer this could have got right.
+    That is the acceptable direction ONLY because an ambiguous scope now falls
+    through to a real lookup rather than to day one -- see
+    remaining_unspoken_on_current_day. Bailing to day one would have made this
+    guard a way of producing the very wrong-day answer it exists to stop.
+    """
+    named = _days_the_caller_named(available_days, text)
+    if len(named) > 1:
+        return True
+    if not named:
+        return False
+    label = next(iter(named.values()))
+    hay = f" {_caller_norm(text)} "
+    spoken = sum(hay.count(f" {w} ") for w in _WEEKDAY_WORDS)
+    return spoken > sum(label.count(w) for w in _WEEKDAY_WORDS)
+
+
+def day_named_by_caller(available_days: Any, text: str) -> "str | None":
+    """The one calendar day the CALLER named, or None.
+
+    B-103. Sibling of `day_named_in_readout`, and deliberately not the same
+    function. That one judges SUSIE'S readout, which echoes `day_label`
+    verbatim, so its raw substring test is exactly right there and normalising
+    it would loosen a guard that is load-bearing for B-93's offer record. This
+    one judges CALLER SPEECH, which never arrives verbatim: the payload says
+    "Wednesday 2nd September" and the caller says "wednesday the 2nd of
+    september".
+
+    None when they named nothing, and None when they named more than one --
+    the same rule and the same reason as `day_named_in_readout`. The two cases
+    are NOT interchangeable to the consumer, which asks
+    `caller_named_conflicting_days` to tell them apart.
+
+    A PARTIAL naming -- "that wednesday", "friday the 28th" -- matches nothing
+    and returns None with no conflict, so it keeps the pre-B-103 behaviour
+    exactly. That is Tier 2, out of scope on purpose: it needs its own corpus
+    before anything reads it.
+    """
+    if caller_named_conflicting_days(available_days, text):
+        return None
+    named = _days_the_caller_named(available_days, text)
+    return next(iter(named)) if len(named) == 1 else None
+
+
+def remaining_unspoken_on_current_day(
+    session: Dict[str, Any], user_text: str = ""
+) -> List[Dict[str, Any]]:
+    """remaining_unspoken(), scoped to the day under discussion.
+
+    "Anything else THAT DAY?" means the day the caller is discussing. Where
+    that day comes from, in order:
+
+      1. The day the CALLER NAMED in this very utterance, when they named
+         exactly one (B-103).
+      2. NOTHING, when they named more than one and none can be picked. An
+         empty scope makes the caller's branch decline (a multi-day offer
+         cannot support an exhaustion claim) and fall through to a real
+         lookup. Falling back to rule 3 there would answer about a day they
+         did not ask about, which is the defect itself.
+      3. Otherwise the offer they were just given -- `last_offered_slots[0]`.
+
     `remaining_unspoken` flattens the whole sweep — a clinic on a fixed evening
     rota has four more days of it — so an unscoped batch takes remaining[0]'s
     day, which is whichever day sorts first, not the one under discussion.
@@ -208,8 +323,42 @@ def remaining_unspoken_on_current_day(
     asking "anything else that day?" was answered with TUESDAY, announced under
     Tuesday's own label. That is CA5c4fb14f's failure mode — a real patient
     sent to the clinic on the wrong day — reached through a different door.
+
+    B-103 is that same door, one step further in. `last_offered_slots[0]` is
+    the FIRST slot of the offer, so on a multi-day offer it is day one whatever
+    the caller then asks about:
+
+        offer:   Friday 28 Aug | Wednesday 2 Sep | Friday 4 Sep
+        caller:  "what else have you got on wednesday the 2nd of september"
+        answer:  "On Friday 28th August I also have 16:00."
+
+    B-99 stopped this branch CLAIMING A DAY IS FULL when it cannot identify
+    one. It did not make it identify one, so a caller who names a day is still
+    answered about a different day — confidently, and under that day's label,
+    which is the shape that sends a patient in on the wrong date.
+
+    Step 1 only fires on an unambiguous full naming; everything else falls to
+    step 2 and behaves exactly as before.
     """
     remaining = remaining_unspoken(session)
+    days = session.get("available_days") or []
+    _lead = str(((session.get("last_offered_slots") or [{}])[0] or {})
+                .get("start") or "?")[:10]
+    named = day_named_by_caller(days, user_text)
+    if named:
+        logger.info(
+            "[slot_followup] scoping the follow-up to %s -- the caller named "
+            "it, and the offer on the table leads with %s (B-103)",
+            named, _lead,
+        )
+        return [slot for slot in remaining if _day_key(slot) == named]
+    if caller_named_conflicting_days(days, user_text):
+        logger.info(
+            "[slot_followup] the caller named more than one day and none of "
+            "them can be picked -- scoping to nothing so this falls through "
+            "to a real lookup rather than answering about %s (B-103)", _lead,
+        )
+        return []
     offered = session.get("last_offered_slots") or []
     day = str((offered[0] or {}).get("start") or "")[:10] if offered else ""
     if not day:
@@ -1598,8 +1747,12 @@ def try_unspoken_followup_speech(
         # sweep on purpose: resolve_requested_time names the slot's OWN day, so
         # a caller-named time on another day cannot mislead, and refusing it
         # would tell them a real time does not exist.
+        #
+        # user_text is handed down so a day the caller NAMED in this utterance
+        # wins over the first slot of the offer (B-103). Without it the scope
+        # is always day one of a multi-day offer, whatever they asked about.
         batch, more = all_remaining_on_next_day(
-            remaining_unspoken_on_current_day(session)
+            remaining_unspoken_on_current_day(session, user_text)
         )
         if not batch:
             # This DAY is exhausted even though other days remain. Say so
