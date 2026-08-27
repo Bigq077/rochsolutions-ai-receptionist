@@ -927,16 +927,45 @@ def _spoken_starts_for_current_offer(session: Dict[str, Any]) -> set:
     availability fingerprint moves, and a Gate 5 text guard must never be the
     thing that clears a booking record on its way past. So the fingerprint is
     compared here and a stale record is declined rather than rebuilt.
+
+    B-102, CA102f053758f4720339a5278a98fc8b9f (27 Aug 2026, theorem_v3,
+    Alcester). B-101 made the WRITER day-granular and this reader was left
+    deciding trust the other way round, so the two-round-trip shape B-101 was
+    aimed at stayed live:
+
+      10:37:44  spoken record dropped for ['2026-09-02'] -- Friday's 14:00
+                SURVIVED the Wednesday detour, exactly as B-101 intends
+      10:38:03  back to Friday -> ["14:00"], NO band-spent line
+      10:38:17  caller asks a second time -> band ... is SPENT -> 12:00, 14:00
+
+    The trusted set used to be built by iterating `new` -- the day set of the
+    payload the session is HOLDING. As the public alias below documents, the
+    availability builders call this while `available_days` still holds the
+    PREVIOUS fetch, so on the first return to Friday `new` was the Wednesday
+    payload, Friday was not a key in it, and the record B-101 had just
+    preserved was filtered straight back out. The second ask only worked
+    because the first return had by then put Friday back into `available_days`.
+
+    So trust is decided against `old`, which is the writer's rule and the same
+    sentence: a day the payload in hand does not mention keeps what it knew,
+    because ABSENCE IS NOT CHANGE. `new` can still veto -- a day it mentions
+    with a different fingerprint has really moved and cannot vouch for what was
+    heard on it, which is the B-97 protection the reset existed for.
+
+    Iterating the RECORD rather than either fingerprint map is what makes the
+    empty-payload case fall out correctly instead of needing its own early
+    return: no record, no opinion. `old.get(day) is not None` keeps it
+    fail-closed -- a day nothing ever vouched for is not trusted on the
+    strength of appearing in the record.
     """
     old = session.get(_SPOKEN_FP_KEY)
     if not isinstance(old, dict):
         return set()          # pre-B-101 shape, or nothing -- verify nothing
     new = _day_fingerprints(session.get("available_days") or [])
-    if not new:
-        return set()
-    # Per DAY, matching _spoken_key_set: a day whose slots have moved cannot
-    # vouch for what was heard on it, but it says nothing about the others.
-    trusted = {day for day, fp in new.items() if old.get(day) == fp}
+    trusted = {
+        day for day in {str(s)[:10] for s in (session.get(_SPOKEN_KEY) or [])}
+        if old.get(day) is not None and new.get(day, old[day]) == old[day]
+    }
     if not trusted:
         return set()
     return {
