@@ -7400,6 +7400,7 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
     await _cancel_reminders_for(session, args, event_start)
 
     # SMS notification — non-fatal
+    _cancel_sms_sent = False
     try:
         from app.notifications.booking_sms import send_cancellation_confirmation
         from app.clinic_config import get_clinic as _get_clinic_sms
@@ -7407,18 +7408,35 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
         _c_sms = _get_clinic_sms(session.get("clinic_id"))
         appt_time = _dt.fromisoformat(event_start.replace("Z", "+00:00")) if event_start else None
         if appt_time:
-            await send_cancellation_confirmation(
+            _cancel_sms_sent = bool(await send_cancellation_confirmation(
                 patient_phone=args.get("phone", ""),
                 patient_name=_appt_name,
                 appointment_time=appt_time,
                 clinic_name=_c_sms.get("sms_name") or _c_sms.get("display_name"),
                 clinic_phone=_c_sms.get("sms_phone") or _c_sms.get("phone"),
+            ))
+        else:
+            logger.warning(
+                "_exec_cancel_appointment: no appointment time on record — "
+                "cancellation confirmation SMS SKIPPED for %s",
+                args.get("phone", ""),
             )
     except Exception as e:
         logger.warning("cancel_appointment SMS failed (non-fatal): %r", e)
 
-    # Prevent smart router from sending a duplicate follow-up SMS
-    session["confirmation_sms_sent"] = True
+    # Latch ONLY when a text actually went out. This flag tells the end-of-call
+    # follow-up router that the caller has already been texted, and the router
+    # stands down on it. Setting it unconditionally is how a caller ends up with
+    # NO confirmation and NO follow-up, over a log line reading "sent" -- the
+    # send may have been suppressed (SMS_ENABLED off), may have raised into the
+    # handler above, or may never have been attempted because the guard around
+    # it was false. `send_sms` returns the Twilio SID or None, and both
+    # send_*_confirmation helpers return bool(sid), so the truthful value is
+    # already available at every one of these call sites; it was simply thrown
+    # away. The latch records what HAPPENED, not what was attempted -- the same
+    # rule _reschedule_appointment_acuity already follows.
+    if _cancel_sms_sent:
+        session["confirmation_sms_sent"] = True
 
     # Provisional clinics: keep the owner informed of the cancellation.
     if clinic.get("booking_system") == "google_calendar_provisional":
@@ -7640,6 +7658,7 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
         logger.warning("reschedule reminder re-scheduling failed (non-fatal): %r", e)
 
     # SMS notification — non-fatal
+    _resched_sms_sent = False
     try:
         from app.clinic_config import get_clinic as _get_clinic_sms
         _c_sms = _get_clinic_sms(session.get("clinic_id"))
@@ -7659,7 +7678,9 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
                 + (f" {_line}" if _line else "")
             )
             if args.get("phone"):
-                await _send_sms_caller(to=args.get("phone", ""), message=_pmsg)
+                _resched_sms_sent = bool(
+                    await _send_sms_caller(to=args.get("phone", ""), message=_pmsg)
+                )
         else:
             from app.notifications.booking_sms import send_reschedule_confirmation
             old_start_str = (found.get("start") or {}).get("dateTime", "")
@@ -7676,7 +7697,7 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
                         "home_visit", "home visit",
                     ) else _evt_loc.title()
                 )
-                await send_reschedule_confirmation(
+                _resched_sms_sent = bool(await send_reschedule_confirmation(
                     patient_phone=args.get("phone", ""),
                     patient_name=_appt_name,
                     old_time=old_time,
@@ -7684,12 +7705,29 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
                     location=_sms_location,
                     clinic_name=_c_sms.get("sms_name") or _c_sms.get("display_name"),
                     clinic_phone=_c_sms.get("sms_phone") or _c_sms.get("phone"),
+                ))
+            else:
+                logger.warning(
+                    "_exec_reschedule_appointment: no original appointment time "
+                    "on record — reschedule confirmation SMS SKIPPED for %s",
+                    args.get("phone", ""),
                 )
     except Exception as e:
         logger.warning("reschedule_appointment SMS failed (non-fatal): %r", e)
 
-    # Prevent smart router from sending a duplicate follow-up SMS
-    session["confirmation_sms_sent"] = True
+    # Latch ONLY when a text actually went out. This flag tells the end-of-call
+    # follow-up router that the caller has already been texted, and the router
+    # stands down on it. Setting it unconditionally is how a caller ends up with
+    # NO confirmation and NO follow-up, over a log line reading "sent" -- the
+    # send may have been suppressed (SMS_ENABLED off), may have raised into the
+    # handler above, or may never have been attempted because the guard around
+    # it was false. `send_sms` returns the Twilio SID or None, and both
+    # send_*_confirmation helpers return bool(sid), so the truthful value is
+    # already available at every one of these call sites; it was simply thrown
+    # away. The latch records what HAPPENED, not what was attempted -- the same
+    # rule _reschedule_appointment_acuity already follows.
+    if _resched_sms_sent:
+        session["confirmation_sms_sent"] = True
 
     # Provisional clinics: the new time is still subject to the owner's
     # confirmation — notify them of the change.
