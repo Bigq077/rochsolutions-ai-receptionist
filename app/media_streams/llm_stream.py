@@ -700,6 +700,97 @@ def _offered_day_vocabulary(session: Optional[Dict[str, Any]]) -> frozenset:
     return frozenset(_vocab)
 
 
+# "the 22nd" -- a date written with a digit and an ordinal suffix. Unambiguous:
+# a list position is spoken "number two", never "the 2nd", so any value 1-31
+# counts here.
+_DIGIT_DATE_ORDINAL_RE = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)\b")
+_BARE_NUMBER_RE = re.compile(r"\b(\d{1,2})\b")
+
+
+def _dates_of_month_the_caller_named(txt: str) -> set:
+    """Every day-of-month `txt` refers to, as a set of ints.
+
+    Two passes, because the two spellings carry different certainty.
+
+    DIGITS ("the 22nd") are unambiguous and taken at any value. A numbered
+    readout is spoken "number two", never "the 2nd", so nothing else in this
+    system produces that shape.
+
+    WORDS ("the twenty second") have to be folded to a number first, and the
+    fold is lossy in the one place it matters: "the second one" -- a caller
+    picking option 2 off a numbered list -- folds to exactly the same "2" that
+    "the 2nd" does. So a folded WORD ordinal is only read as a date above
+    `MAX_SPOKEN_OPTIONS`, which caps a readout at three options; 4 and up
+    cannot be a position, and 1-3 are left to the day-word tests below rather
+    than guessed at. "the twenty second" survives that cut; "the second one"
+    does not, which is the point.
+
+    Folding alone cannot find the word ordinals, because it also leaves
+    ordinary numbers where they were -- "quarter past 6 works" folds to itself.
+    A number that is bare in the FOLDED text but not bare in the RAW text is
+    one the fold created, and that is exactly the set of word ordinals: a
+    word boundary does not match inside "22nd", so a digit ordinal is never
+    bare in the raw text.
+
+    RESIDUAL, deliberately: a word ordinal of 1-3 with a month behind it --
+    "the second of September" -- is still invisible here, and still reaches the
+    month-name test that cannot separate it from the September already on the
+    table. Narrower than the defect this closes, and not guessable without
+    parsing the date properly, which is Tier 2 work.
+    """
+    from app.tools.slot_followup import _fold_ordinals, MAX_SPOKEN_OPTIONS
+
+    txt = (txt or "").lower()
+    found = {int(m) for m in _DIGIT_DATE_ORDINAL_RE.findall(txt)}
+
+    _folded = _fold_ordinals(txt)
+    _bare_raw = set(_BARE_NUMBER_RE.findall(txt))
+    for _num in _BARE_NUMBER_RE.findall(_folded):
+        if _num in _bare_raw:
+            continue                     # was already a number -- not an ordinal
+        if int(_num) > MAX_SPOKEN_OPTIONS:
+            found.add(int(_num))
+    return {d for d in found if 1 <= d <= 31}
+
+
+def _caller_named_an_unoffered_date(txt: str, session) -> bool:
+    """True when `txt` names a day-of-month that is on no day already offered.
+
+    B-106, CA8c4efedbc7fbc2cc74ab47fcc834ecdf (JV go-live rehearsal, 27 Aug
+    2026). Susie had offered Wednesday 2nd September. The caller asked:
+
+        13:54:31  caller: "uh what about the 22nd"
+        13:54:35  Susie:  "Wednesday 22nd September is fully booked, I'm
+                           afraid -- the available slots for Wednesday 2nd
+                           September are ..."
+
+    The 22nd was never looked at. "the 22nd" carries no weekday and no month,
+    so `_DIFFERENT_DAY_WORDS` -- weekday names, month names and the relative
+    tokens, and nothing else -- matched nothing, the predicate returned False,
+    and check_availability was refused as `already_retrieved`. That refusal
+    hands the model the day it had ALREADY offered under a message that says
+    "present the existing slots", and it reconciled the two by declaring the
+    day it could not see to be full.
+
+    A caller who is told a day is fully booked does not ask again. This is the
+    quiet one: no error, no alert, no retry -- the call sounds completely
+    normal and the patient is simply gone.
+
+    Fires when the named date is on none of the offered days, which also
+    catches the same-weekday form of CA166de2a9 ("wednesday the 22nd" while
+    the 2nd is on the table) that the name-only test reads as an acceptance.
+    With nothing offered yet there is nothing to be accepting, so a named date
+    is a request -- the conservative direction this module takes everywhere.
+    """
+    _named = _dates_of_month_the_caller_named(txt)
+    if not _named:
+        return False
+    _offered_days = {d.day for d in _offered_day_dates(session)}
+    if not _offered_days:
+        return True
+    return not _named.issubset(_offered_days)
+
+
 def _note_availability_seen(session: Dict[str, Any], result: Any) -> bool:
     """Record that a check_availability result carried real slots. Returns that
     same fact, which the caller keeps as the per-turn `_check_av_had_slots`.
@@ -880,6 +971,19 @@ def _caller_requests_different_day(
     if not txt:
         return False
     if any(p in txt for p in _DIFFERENT_DAY_PHRASES):
+        return True
+
+    # A bare day-of-month is a day-word the vocabulary below cannot see, and
+    # "uh what about the 22nd" carries neither a weekday nor a month -- so the
+    # day-word test matched nothing and this returned False three lines down.
+    # check_availability was then refused as already_retrieved, and the model,
+    # holding only the day it had already offered, announced that the day it
+    # had never looked at was fully booked (B-106, CA8c4efedb).
+    if _caller_named_an_unoffered_date(txt, session):
+        logger.info(
+            "[ms_llm] caller named a date that is on no offered day "
+            "-- treating as a different-day request (B-106)",
+        )
         return True
 
     _named = set(re.findall(r"[a-z']+", txt)) & _DIFFERENT_DAY_WORDS
