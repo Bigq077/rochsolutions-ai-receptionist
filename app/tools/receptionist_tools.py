@@ -3263,6 +3263,42 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                 # slots to one by a band filter read as complete.
                 _fd = {**_fd, "more_times": True}
             _result["first_day"] = _fd
+            # B-108b, same call (CA1b7b2c58). last_offered_slots and
+            # slot_labels were written far above from _select_presented_tuples
+            # - ONE slot per day across up to three DIFFERENT days (1, 8 and
+            # 15 September here). That happens before the presentation mode is
+            # known. single_day then speaks first_day and nothing else, so the
+            # record of "what was offered" names two dates the caller was
+            # never read out.
+            #
+            # It is not inert. _try_slot_selection (fast_path) and
+            # _resolve_slot_iso both resolve an ordinal by INDEX into
+            # last_offered_slots, so "the second one" resolves to 8 September
+            # - a date never spoken - and that is what gets booked. The
+            # trigger list already holds "would you like", which is an
+            # ordinary way to close a single-slot offer.
+            #
+            # The other five executors call this aligner; the Acuity body
+            # never did, and Theorem short-circuits to the Acuity executors.
+            # It rewrites both keys from first_day, restoring the 1:1 mapping
+            # this function's own header asserts. slot_labels becomes the
+            # spoken form ("nine in the morning"), which is what the two live
+            # readers want: connection.py matches the caller's utterance
+            # against these strings, and _build_slot_clarify speaks them.
+            #
+            # Scoped to single_day. The multi_day seam - speech naming a
+            # second time per day that the list does not hold - is older,
+            # documented at the resolver, and is not this commit.
+            _sync_last_offered_to_spoken(session, _result)
+            # The 90s cache was filled with the UNSYNCED lists above, before
+            # the mode was decided, and a CACHE HIT restores them verbatim
+            # into the session. That is the same defect through a second door,
+            # reachable whenever the caller asks again inside 90 seconds with
+            # the same hint. Reconcile it with what was actually spoken.
+            _cache_now = session.get("_availability_cache")
+            if isinstance(_cache_now, dict):
+                _cache_now["last_offered_slots"] = session.get("last_offered_slots") or []
+                _cache_now["slot_labels"] = session.get("slot_labels") or []
             # A bare weekday that matched several dates. The count above is now
             # honest, but a number does not stop a sentence: say the rule.
             #
