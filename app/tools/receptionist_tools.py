@@ -3266,10 +3266,19 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         # the NEXT occurrence — present that one day, not three upcoming weekdays.
         _WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
         _has_weekday_name = any(_d in _hint_lower for _d in _WEEKDAYS)
+        _bare_weekday_pick = bool(_has_weekday_name and not _has_week_anchor)
         _is_specific_day = (
             (_week_range is not None and _week_range[0] == _week_range[1])
-            or (_has_weekday_name and not _has_week_anchor)
+            or _bare_weekday_pick
         )
+        # Which of those two arms won is the difference between a date the
+        # CALLER named and one this code CHOSE for them, and downstream needs
+        # to know. The scarcity guard is the consumer: "that's the only slot on
+        # Tuesday 1st September" is fair when the caller asked about the 1st,
+        # and misleading when they asked about "Tuesday" and this line picked
+        # the 1st. Written unconditionally on every availability call so it can
+        # never carry over from an earlier turn.
+        session["day_chosen_from_bare_weekday"] = _bare_weekday_pick
 
         if _is_asap:
             # Owner decision 2026-06-15: ASAP shows the ONE soonest day as-is
