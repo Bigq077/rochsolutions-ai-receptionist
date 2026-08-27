@@ -100,10 +100,24 @@ def test_single_time_gets_the_singular_tail():
     assert action == "appended"
     assert MORE_TIMES_TAIL_ONE in out
     assert out.rstrip().endswith("Does that work?")
-    # ...and a completeness opener suppresses the append rather than
-    # contradicting itself in one breath.
-    _, action2 = reconcile_extra_slots_claim(reply, more_times=True, n_offered=1)
-    assert action2 == "unchanged"
+    # ...and a SINGULAR completeness opener is CORRECTED, then the tail added.
+    #
+    # RE-AIMED by B-100 (was: assert action2 == "unchanged"). The original
+    # rule was that such an opener suppresses the append rather than
+    # contradicting itself in one breath. Avoiding the contradiction was
+    # right; concluding "so do nothing" left a FALSE sentence live, and on
+    # CA315e501a (27 Aug 2026, 09:21:20) a caller was told "Friday 28th
+    # August - the available time is two in the afternoon" about a day that
+    # produced a midday appointment thirty seconds later.
+    #
+    # Correcting the clause satisfies both: no falsehood AND no
+    # contradiction, which the assertions below hold to.
+    out2, action2 = reconcile_extra_slots_claim(reply, more_times=True, n_offered=1)
+    assert action2 == "appended"
+    assert "the available slot is" not in out2.lower()
+    assert "three in the afternoon" in out2      # the time survives
+    assert MORE_TIMES_TAIL_ONE in out2
+    assert out2.lower().count("few others") == 1  # still no self-contradiction
 
 
 def test_no_double_tail_when_model_already_said_it_truthfully():
