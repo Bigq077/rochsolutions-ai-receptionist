@@ -211,6 +211,71 @@ _NEW_SLOT_INTENT_WORDS: frozenset = frozenset({
 })
 
 
+# An affirmative is a SHAPE, not a phrase table: a short reply carrying a
+# yes-word and no negation. The alternative is the treadmill documented on
+# _PHONE_CONFIRM_AFFIRMATIVE_PHRASES, patched four times, once for each literal
+# a single live call happened to use.
+#
+# Word-boundary matching throughout: the screening negators were substring-
+# matched once and "know" contained "no".
+_DAY_OFFER_YES: frozenset = frozenset({
+    "yes", "yeah", "yep", "yup", "aye", "sure", "ok", "okay", "okey",
+    "please", "alright", "right", "fine", "great", "perfect", "lovely",
+    "go", "do", "definitely", "absolutely", "certainly", "cheers", "ta",
+})
+_DAY_OFFER_NO: frozenset = frozenset({
+    "no", "nope", "nah", "not", "dont", "don't", "never", "cant", "can't",
+})
+
+
+def _is_short_affirmative(text: str) -> bool:
+    """True for "yes" / "yeah go for it" / "go on then" / "please do"."""
+    words = re.findall(r"[a-z']+", (text or "").lower())
+    if not words or len(words) > 6:
+        return False
+    if set(words) & _DAY_OFFER_NO:
+        return False
+    return bool(set(words) & _DAY_OFFER_YES)
+
+
+def _answering_susies_different_day_offer(messages, session) -> bool:
+    """The caller said yes to Susie's OWN offer to look at another day.
+
+    Finding 2 / CA890b511e (27 Aug 2026, 08:42:53):
+
+        Susie:  "I don't have any further times on that day - would you like
+                 me to look at a different day?"
+        caller: "yeah go for it"
+        -> _caller_requests_different_day found no day word and no change
+           phrase, so the dedup guard held, the model's correct
+           check_availability was blocked, and she re-read the SAME two days.
+
+    The day was named by SUSIE, so a predicate that only reads the caller's
+    words cannot see it -- the same shape as the Gate-5g name deadlock, where
+    the only source of the first name was Susie's own speech.
+
+    Matched against the sentence THIS CODEBASE generates, taken from the
+    function that generates it, so a reword cannot leave a stale literal
+    behind. That is why this is not the banned "match one literal of model
+    speech": the text is ours, deterministic, and has exactly one producer.
+
+    One-turn scoped for free: it reads the IMMEDIATELY PRECEDING assistant
+    message, so it cannot fire on a stale flag a turn later.
+    """
+    try:
+        if not isinstance(session, dict):
+            return False          # no history to read -- stay conservative
+        from app.tools.slot_followup import format_next_batch_speech
+        offer = format_next_batch_speech([], False).strip().lower()
+        if not offer:
+            return False
+        if offer not in _last_assistant_text(session).strip().lower():
+            return False
+        return _is_short_affirmative(_last_user_text(messages))
+    except Exception:
+        return False
+
+
 def _last_user_text(messages) -> str:
     """Return the most recent caller TEXT utterance from the message list,
     skipping tool_result-only user turns (which carry no spoken text)."""
@@ -758,6 +823,18 @@ def _caller_requests_different_day(
     a call site that has not been threaded stays conservative rather than
     silently gaining the suppression.
     """
+    # An affirmative inherits the question it answers. Everything below reads
+    # only the caller's words, and cannot see a day that SUSIE named -- so a
+    # plain "yeah go for it" to her own "shall I look at a different day?" read
+    # as no request at all and the guard held (Finding 2, CA890b511e 08:42:53).
+    # Checked first because such a reply carries no day word to compare.
+    if _answering_susies_different_day_offer(messages, session):
+        logger.info(
+            "[ms_llm] caller said yes to Susie's own offer of a different day "
+            "— treating as a different-day request (Finding 2)",
+        )
+        return True
+
     txt = _last_user_text(messages).lower()
     if not txt:
         return False
