@@ -106,25 +106,64 @@ _SPOKEN_KEY = "slot_starts_spoken"
 _SPOKEN_FP_KEY = "slot_starts_spoken_fp"
 
 
-def _availability_fingerprint(available_days: Any) -> str:
-    """Identify the current availability set, so a NEW fetch resets the record.
+def _day_fingerprints(available_days: Any) -> Dict[str, str]:
+    """One fingerprint PER DAY, so a fetch can invalidate a day without
+    invalidating the days it does not mention.
 
-    Self-healing on purpose: no call site has to remember to reset. A fresh
-    check_availability produces a different fingerprint and the spoken record
-    drops, so re-asking about a day the caller already explored offers it in
-    full again rather than silently hiding times behind a stale record.
+    Self-healing, same as before and for the same reason: no call site has to
+    remember to reset, and a day whose slot set has really moved drops its
+    record rather than hiding times behind a stale one. What changed is the
+    GRANULARITY.
+
+    B-101, CA315e501a (27 Aug 2026). The fingerprint used to cover the whole
+    payload, so ANY lookup for ANY day wiped the record for EVERY day. The
+    caller heard Friday's two o'clock, asked about Wednesday, and that lookup
+    erased Friday. When they came back to Friday, B-98 could not tell the 2pm
+    had been spoken, did not open the day, and re-offered the same 2pm -- the
+    caller had to name "midday" themselves to reach the slot the band was
+    hiding. Two round trips for one appointment.
+
+    The record is a set of ISO starts, and an ISO start already names its own
+    day, so the data was always day-separable; only the guard was not.
     """
-    flat = flatten_bookable_slots(available_days)
-    if not flat:
-        return ""
-    return f"{len(flat)}|{flat[0].get('start')}|{flat[-1].get('start')}"
+    by_day: Dict[str, List[str]] = {}
+    for slot in flatten_bookable_slots(available_days):
+        start = str(slot.get("start") or "")
+        if start:
+            by_day.setdefault(_day_key(slot), []).append(start)
+    return {
+        day: f"{len(starts)}|{starts[0]}|{starts[-1]}"
+        for day, starts in by_day.items()
+    }
 
 
 def _spoken_key_set(session: Dict[str, Any]) -> set:
-    fp = _availability_fingerprint(session.get("available_days") or [])
-    if session.get(_SPOKEN_FP_KEY) != fp:
+    """The ISO starts the caller has heard, dropping any day that has moved."""
+    new = _day_fingerprints(session.get("available_days") or [])
+    old = session.get(_SPOKEN_FP_KEY)
+    if not isinstance(old, dict):
+        # Either the pre-B-101 single-string form (a call in flight across the
+        # deploy) or nothing at all. Neither can verify a day, so nothing is
+        # trusted -- the same fail-closed direction the old whole-payload
+        # mismatch took.
         session[_SPOKEN_KEY] = []
-        session[_SPOKEN_FP_KEY] = fp
+        old = {}
+    changed = {
+        day for day, fp in new.items()
+        if old.get(day) is not None and old.get(day) != fp
+    }
+    if changed:
+        session[_SPOKEN_KEY] = [
+            s for s in (session.get(_SPOKEN_KEY) or [])
+            if str(s)[:10] not in changed
+        ]
+        logger.info(
+            "[slot_followup] spoken record dropped for %s -- their slots have "
+            "moved since the caller heard them. Every other day is kept "
+            "(B-101).", sorted(changed),
+        )
+    old.update(new)
+    session[_SPOKEN_FP_KEY] = old
     return {str(s)[:19] for s in (session.get(_SPOKEN_KEY) or [])}
 
 
@@ -889,10 +928,21 @@ def _spoken_starts_for_current_offer(session: Dict[str, Any]) -> set:
     thing that clears a booking record on its way past. So the fingerprint is
     compared here and a stale record is declined rather than rebuilt.
     """
-    fp = _availability_fingerprint(session.get("available_days") or [])
-    if not fp or session.get(_SPOKEN_FP_KEY) != fp:
+    old = session.get(_SPOKEN_FP_KEY)
+    if not isinstance(old, dict):
+        return set()          # pre-B-101 shape, or nothing -- verify nothing
+    new = _day_fingerprints(session.get("available_days") or [])
+    if not new:
         return set()
-    return {str(s)[:19] for s in (session.get(_SPOKEN_KEY) or [])}
+    # Per DAY, matching _spoken_key_set: a day whose slots have moved cannot
+    # vouch for what was heard on it, but it says nothing about the others.
+    trusted = {day for day, fp in new.items() if old.get(day) == fp}
+    if not trusted:
+        return set()
+    return {
+        str(s)[:19] for s in (session.get(_SPOKEN_KEY) or [])
+        if str(s)[:10] in trusted
+    }
 
 
 def spoken_starts_for_offer(session: Dict[str, Any]) -> set:
