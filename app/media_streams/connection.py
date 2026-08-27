@@ -16401,18 +16401,60 @@ class WebSocketCallHandler:
                 _echo_partial = self.session.get("barge_in_trigger_partial")
                 _interrupted_now = self.session.get("interrupted_tts_text") or ""
                 _echoes = int(self.session.get("echo_resume_count") or 0)
-                if (
-                    _partial_is_own_speech(_echo_partial, _interrupted_now)
-                    and _echoes < _MAX_ECHO_RESUMES
-                ):
+                _own_audio = _partial_is_own_speech(_echo_partial, _interrupted_now)
+                # B-107, CAf6a63145 (JV rehearsal, 27 Aug 2026). The same
+                # "Yes, go on." to nobody, on a partial the echo test above
+                # cannot see. Susie was reading the number back -- "I have got
+                # you on oh seven five oh two ... is that the best number for
+                # the booking?" -- a barge-in fired on partial='bye', the final
+                # came back empty, and the caller answered "oh i didn't say
+                # anything". 'bye' appears nowhere in that sentence.
+                #
+                # NOT fixable by loosening `_partial_is_own_speech`. A caller
+                # whose words STT dropped (B-67's 'yeah yep') and a garbled
+                # echo leave IDENTICAL evidence: a partial absent from the
+                # interrupted text, and an empty final. Nothing available here
+                # separates them, so a fuzzier match would only begin
+                # swallowing real callers -- the direction this family must
+                # never fail in.
+                #
+                # What changes is the ACK. All three _BARGE_IN_ACKS assert the
+                # caller spoke, and every one of them is false when nobody
+                # did. When there is an outstanding question, re-asking it is
+                # right whichever happened: correct against an echo, and
+                # better than "Yes, go on." for a caller STT lost, who gets
+                # the question again rather than an invitation to repeat words
+                # they cannot know were missed.
+                #
+                # `last_question` and not `interrupted_tts_text`, deliberately.
+                # The latter is only the CHUNK in flight, and the chunker
+                # splits a sentence at its em dash -- so on this very call the
+                # question may well have been a different chunk from the one
+                # the barge-in interrupted. It is also how B-67 keeps its ack:
+                # there the interrupted chunk was the filler "Right with you…"
+                # and no question was outstanding, so this arm stands down and
+                # the ack still plays. Replaying a filler would have left that
+                # caller waiting for an answer that never came.
+                _nothing_was_said = not (text or "").strip()
+                _outstanding_q = ""
+                if _nothing_was_said and not _own_audio:
+                    _outstanding_q = (
+                        getattr(
+                            getattr(self, "_silence_handler", None),
+                            "last_question", "",
+                        ) or ""
+                    ).strip()
+                _resume = _interrupted_now if _own_audio else _outstanding_q
+                if _resume and _echoes < _MAX_ECHO_RESUMES:
                     self.session["echo_resume_count"] = _echoes + 1
-                    await self.tts_text_queue.put(_interrupted_now)
+                    await self.tts_text_queue.put(_resume)
                     logger.warning(
-                        "[ms_conn] barge-in #%d was Susie's own audio "
-                        "(partial=%r is inside %r) and the final was empty — "
-                        "resuming instead of acking (%d/%d)",
+                        "[ms_conn] barge-in #%d carried no words "
+                        "(partial=%r own_audio=%s) — speaking %r instead of an "
+                        "ack that would claim the caller spoke (%d/%d)",
                         self.session.get("barge_in_count", 0), _echo_partial,
-                        _interrupted_now[:60], _echoes + 1, _MAX_ECHO_RESUMES,
+                        _own_audio, _resume[:60], _echoes + 1,
+                        _MAX_ECHO_RESUMES,
                     )
                     return
                 _barge_ack = random.choice(_BARGE_IN_ACKS)
