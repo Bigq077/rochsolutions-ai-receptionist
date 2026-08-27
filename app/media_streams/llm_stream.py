@@ -300,10 +300,28 @@ def _answering_susies_different_day_offer(messages, session) -> bool:
         offer = format_next_batch_speech([], False).strip().lower()
         if not offer:
             return False
-        if offer not in _last_assistant_text(session).strip().lower():
+        # Inlined rather than calling _last_assistant_text, which exists ONLY
+        # on latency-eval -- it arrived with the B-19 filler re-arm and never
+        # ported. Depending on it made this whole predicate a silent no-op on
+        # all three live branches: the NameError was swallowed by the except
+        # below and every caller simply read False, which is the defect this
+        # function exists to fix. Four lines is cheaper than a cross-branch
+        # dependency.
+        said = ""
+        for _m in reversed((session.get("conversation_history") or [])):
+            if isinstance(_m, dict) and _m.get("role") == "assistant":
+                said = str(_m.get("content") or "")
+                break
+        if offer not in said.strip().lower():
             return False
         return _is_short_affirmative(_last_user_text(messages))
     except Exception:
+        # NEVER silently: a swallowed error here reads exactly like "the caller
+        # did not ask", which is the bug. That is how the missing helper above
+        # went unnoticed until the port suites caught it.
+        logger.exception(
+            "[ms_llm] different-day-offer check failed — treating as no request"
+        )
         return False
 
 
