@@ -6156,6 +6156,95 @@ async def _check_availability_diary(
     )
     _log_busy_blocks(busy_blocks, events, _break_min)
 
+    # -- B-86 on the diary path: a named weekday outside a narrow window ---
+    # `_exec_check_availability` early-returns into this reader at the
+    # availability_mode branch, so NEITHER of the two widens in the Google body
+    # is reachable for Vital Edge. Their code IS in this file and a
+    # content-based port audit scores it "present"; the dispatch never arrives.
+    # This is that widen, written for the diary.
+    #
+    # Why it matters more since B-105: SPECIFIC DAY tells the model to send a
+    # named day as after_date + day_window=1, so a bare weekday now routinely
+    # arrives with a ONE-DAY window. Here `w_end = w_start + day_window` with
+    # nothing behind it, so a Tuesday that does not fall inside that single day
+    # comes back as "nothing free in that window" -- said about a day nobody
+    # looked at. A gap in a payload can never mean the clinic is shut.
+    #
+    # Bounded, for latency: only when the caller actually NAMED a weekday, only
+    # when the window read was shorter than the booking horizon, and at most ONE
+    # extra freebusy call. A request naming no weekday costs nothing.
+    #
+    # `events` is deliberately NOT re-read: `list_upcoming_events` above already
+    # spans `days_ahead`, and the widen is clamped to `horizon = now +
+    # days_ahead`, so the all-day entries covering the wider window are already
+    # in hand. That also keeps the `_MAX_DIARY_EVENTS` truncation check above
+    # authoritative for the widened window.
+    #
+    # -- The one thing that must NOT be copied from the Google body ----------
+    # Its widen falls back to UNFILTERED candidates when freebusy errors, on the
+    # reasoning that offering something beats killing the conversation. That
+    # reasoning does not survive here, and this function's own docstring says
+    # why: an unfiltered candidate is the bare working-hours grid with nothing
+    # subtracted -- every one a time he may already have a client in. On any
+    # error the narrow, properly filtered result stands.
+    _pref_weekdays = _named_weekdays(_pref)
+    _weekday_window = max(0, (w_end.date() - w_start.date()).days)
+    _weekday_found = True
+    if _pref_weekdays:
+        _weekday_found = any(s.weekday() in _pref_weekdays for s, _e in free_slots)
+    if _pref_weekdays and not _weekday_found and w_end < horizon:
+        _wd_end = horizon
+        logger.info(
+            "[availability] diary: %r not in the window %s -> %s - widening to"
+            " %s before saying the day is unavailable",
+            _pref, w_start.date(), w_end.date(), _wd_end.date(),
+        )
+        try:
+            _wd_busy = await asyncio.to_thread(
+                freebusy, tokens, w_start, _wd_end, calendar_id
+            )
+            await _save_gcal_tokens(tokens, _resolve_clinic_id(session))
+        except Exception as _wd_err:
+            # Fail closed. _weekday_found stays False, so the payload below
+            # still forbids asserting the day is unavailable.
+            logger.error(
+                "[availability] diary: widen freebusy failed (%r) - keeping the"
+                " narrow result rather than offering over an unread diary",
+                _wd_err,
+            )
+        else:
+            _wd_candidates = generate_candidate_slots(
+                w_start, _wd_end,
+                duration_min=duration_min,
+                clinic_working_hours=working_hours,
+                increment_min=clinic.get("slot_increment_minutes"),
+                break_min=_break_min,
+            )
+            _wd_blocks = parse_busy(_wd_busy or [])
+            _wd_blocks += _all_day_busy_blocks(events, w_start, _wd_end)
+            _wd_free = filter_free_slots(
+                _wd_candidates, _wd_blocks, break_min=_break_min,
+            )
+            if any(s.weekday() in _pref_weekdays for s, _e in _wd_free):
+                free_slots = _wd_free
+                _weekday_found = True
+                _weekday_window = max(0, (_wd_end.date() - w_start.date()).days)
+                logger.info(
+                    "[availability] diary: found %r by %s - %d free slot(s)",
+                    _pref, _wd_end.date(), len(_wd_free),
+                )
+            else:
+                if _wd_free:
+                    # The named day is genuinely absent right across the
+                    # horizon, but the wider read found real alternatives.
+                    # Offer those rather than "nothing free in that window".
+                    free_slots = _wd_free
+                    _weekday_window = max(0, (_wd_end.date() - w_start.date()).days)
+                logger.info(
+                    "[availability] diary: %r has no slot by %s either",
+                    _pref, _wd_end.date(),
+                )
+
     if not free_slots:
         return {
             "error": "no_availability",
@@ -6176,9 +6265,46 @@ async def _check_availability_diary(
     ]
     session["slot_labels"] = [format_slot(s) for s in presented]
     session["available_days"] = days_data
-    _out = _cap_presented_slots(_filter_same_day_slots(
-        {"available_days": days_data, "total_days": len(days_data)}, session,
-    ))
+    _payload = {"available_days": days_data, "total_days": len(days_data)}
+    if _pref_weekdays:
+        # Say what was LOOKED AT, in fields nothing downstream rewrites --
+        # total_days cannot carry it, because _cap_presented_slots and
+        # _filter_same_day_slots both redefine it and both run after us.
+        _payload["day_requested"] = ", ".join(
+            n for n, wd in _WEEKDAY_NAME_TO_INDEX.items() if wd in _pref_weekdays
+        )
+        _payload["day_requested_found"] = _weekday_found
+        _payload["window_examined_days"] = _weekday_window
+        # How many times the named weekday actually came round inside the
+        # window that was read. Counted off the WINDOW, not off the slots: this
+        # states coverage, and a count of dates that happened to have slots
+        # would move with the diary and say nothing about what was examined.
+        _wd_occurrences = sum(
+            1 for _n in range(_weekday_window)
+            if (w_start + timedelta(days=_n)).weekday() in _pref_weekdays
+        )
+        _payload["day_requested_occurrences_examined"] = _wd_occurrences
+        if not _weekday_found:
+            _payload["guidance"] = (
+                f"No slot on the requested day within the next {_weekday_window} days. "
+                "Say EXACTLY that - that you cannot see anything on that day in the "
+                "next couple of weeks - and offer the days below. Do NOT say the day "
+                "is unavailable, fully booked, or that the clinic does not open then: "
+                "nothing beyond this window was checked."
+            )
+        elif _wd_occurrences <= 1:
+            _payload["guidance"] = (
+                f"Only ONE {_payload['day_requested'].title()} falls inside the "
+                f"{_weekday_window}-day window that was read, so these are all "
+                "the times on that DATE and nothing is known about any later "
+                f"{_payload['day_requested'].title()}. You may say this is all there is "
+                "on that date. Do NOT say or imply it is all there is on that "
+                "weekday. If the times do not suit, offer to look at the "
+                "following one and call check_availability again with after_date "
+                "past this date; never name a later date you have not been "
+                "given slots for, and never invent times."
+            )
+    _out = _cap_presented_slots(_filter_same_day_slots(_payload, session))
     _sync_last_offered_to_spoken(session, _out)
     return _out
 
