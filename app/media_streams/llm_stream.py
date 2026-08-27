@@ -706,6 +706,35 @@ _DAY_SHIFT_WORDS: frozenset = frozenset({
 })
 
 
+def _followup_must_yield_to_a_real_lookup(
+    session: Optional[Dict[str, Any]], messages
+) -> bool:
+    """True when the session cannot honestly answer "what else that day?".
+
+    Two things have to hold. The band hid times on the day now on the table --
+    so available_days is not the day, and every subtraction below it runs out
+    of survivors while a bookable appointment sits behind the filter (B-99).
+    And the caller is asking for MORE times rather than taking one: an
+    acceptance must still be intercepted, because letting "that works for me"
+    reach a real lookup is CAce1457d1, where the caller had to accept twice.
+
+    Never raises: a session this cannot read keeps the guard's existing
+    behaviour rather than opening it.
+    """
+    try:
+        from app.tools.slot_followup import (
+            offer_day_hides_times,
+            utterance_accepts_offered_slot,
+        )
+        if not offer_day_hides_times(session or {}):
+            return False
+        if utterance_accepts_offered_slot(_last_user_text(messages or [])):
+            return False
+        return True
+    except Exception:
+        return False
+
+
 def _caller_requests_different_day(
     messages, session: Optional[Dict[str, Any]] = None, today=None
 ) -> bool:
@@ -4557,6 +4586,21 @@ class LLMStream:
                     # come here: re-fetching leads with the earliest times again,
                     # which is what 368b4e0 (V5) exists to prevent.
                     and not _caller_requests_different_day(messages or [], session)
+                    # B-99. Everything below subtracts from available_days,
+                    # which is what SURVIVED the caller's time-of-day band. If
+                    # the band hid times on the day now on the table, that copy
+                    # is not the day: the follow-up can only re-offer survivors
+                    # and then report the day full while a bookable appointment
+                    # sits behind the filter. On CA890b511e Susie said "I don't
+                    # have any further times on that day" at 08:42:49 and that
+                    # same day produced a midday at 08:43:39.
+                    #
+                    # A real lookup is the one path that can reach them --
+                    # B-98's band-spent rule opens the day once its in-band
+                    # times have been spoken -- so stand down and let it run.
+                    and not _followup_must_yield_to_a_real_lookup(
+                        session, messages
+                    )
                 ):
                     # V5: if the caller asked for later / an unspoken time, do NOT
                     # tell the model to re-present the already-spoken slots.
@@ -4573,6 +4617,7 @@ class LLMStream:
                         build_followup_tool_result,
                         remaining_unspoken,
                         remaining_unspoken_on_current_day,
+                        exhaustion_claim_is_supported,
                     )
                     _days = session.get("available_days") or []
                     _offered = session.get("last_offered_slots") or []
@@ -4602,8 +4647,57 @@ class LLMStream:
                         _batch, _more = all_remaining_on_next_day(
                             remaining_unspoken_on_current_day(session)
                         )
-                        apply_next_batch_to_session(session, _batch, _more)
-                        result = build_followup_tool_result(_days, _batch, _more)
+                        if not _batch:
+                            # B-99. An empty batch is NOT an answer here.
+                            #
+                            # apply_next_batch_to_session would set
+                            # last_offered_slots to [] -- destroying the only
+                            # record of what is on the table, which is what
+                            # this whole module reads -- and
+                            # build_followup_tool_result would return "No
+                            # further times on that day", a completeness claim
+                            # about a day taken from last_offered_slots[0].
+                            # On the three-day offer of CA890b511e that day is
+                            # not the day the caller asked about.
+                            #
+                            # exhaustion_claim_is_supported owns the question.
+                            # When it says no, say nothing about the day: ask
+                            # which one they mean. That terminates -- their
+                            # answer names a day, _caller_requests_different_day
+                            # fires on the next turn, and a real lookup runs.
+                            if exhaustion_claim_is_supported(session):
+                                result = build_followup_tool_result(
+                                    _days, [], False,
+                                )
+                            else:
+                                logger.warning(
+                                    "[ms_llm] follow-up came up empty on a day "
+                                    "it cannot name — offer spans %d day(s); "
+                                    "asking which day instead of claiming the "
+                                    "day is full (B-99) call_sid=%s",
+                                    len({
+                                        str((o or {}).get("start") or "")[:10]
+                                        for o in _offered
+                                    }),
+                                    call_sid,
+                                )
+                                result = {
+                                    "status": "which_day",
+                                    "message": (
+                                        "You offered times on more than one day, "
+                                        "so which day the caller means is not "
+                                        "established. Do NOT say you have no "
+                                        "further times on that day — you cannot "
+                                        "know that here. Ask which day they "
+                                        "mean, then check that day."
+                                    ),
+                                    "available_days": _days,
+                                }
+                        else:
+                            apply_next_batch_to_session(session, _batch, _more)
+                            result = build_followup_tool_result(
+                                _days, _batch, _more,
+                            )
                         logger.info(
                             "[ms_llm] check_availability → next unspoken batch "
                             "%s call_sid=%s",
