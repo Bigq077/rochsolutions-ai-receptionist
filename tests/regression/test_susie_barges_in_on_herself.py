@@ -56,6 +56,7 @@ from app.media_streams.connection import (
     SilenceHandler,
     WebSocketCallHandler,
     _BARGE_IN_ACKS,
+    _WATCHDOG_REASK_MARKER,
     _partial_is_own_speech,
 )
 
@@ -102,9 +103,22 @@ def _echo_session(**over) -> dict:
 
 
 def _queued(h) -> list:
+    """Queued speech, with the replay marker stripped.
+
+    The put-back is enqueued behind _WATCHDOG_REASK_MARKER, which _tts_loop
+    strips before the text reaches TTS or the obs record. It has to be: the
+    text put back IS the chunk that was just spoken, so without the marker the
+    consecutive-duplicate dedup guard drops it and the caller hears nothing.
+    Tests here assert on the WORDS and strip it, the same convention as
+    test_watchdog_no_repeat.py; the marker itself is the subject of
+    test_b107_resume_survives_the_dedup_guard.py.
+    """
     out = []
     while not h.tts_text_queue.empty():
-        out.append(h.tts_text_queue.get_nowait())
+        text = h.tts_text_queue.get_nowait()
+        if text.startswith(_WATCHDOG_REASK_MARKER):
+            text = text[len(_WATCHDOG_REASK_MARKER):]
+        out.append(text)
     return out
 
 

@@ -16447,7 +16447,33 @@ class WebSocketCallHandler:
                 _resume = _interrupted_now if _own_audio else _outstanding_q
                 if _resume and _echoes < _MAX_ECHO_RESUMES:
                     self.session["echo_resume_count"] = _echoes + 1
-                    await self.tts_text_queue.put(_resume)
+                    # _WATCHDOG_REASK_MARKER, or this never reaches the caller.
+                    # _resume is `last_question` -- the sentence the barge-in
+                    # tore down -- so it is by construction equal to the chunk
+                    # just spoken, and the consecutive-duplicate dedup guard in
+                    # the TTS worker drops it. That is the COMMON case on this
+                    # arm, not the edge one.
+                    #
+                    # On CAfead969a (JV, 27 Aug 2026) it was invisible: the
+                    # barge-in landed in the playback-only window, so the
+                    # original audio was still in the caller's ear and they
+                    # answered the question they were already hearing. The log
+                    # read "speaking ... instead of an ack" and "TTS dedup:
+                    # skipping duplicate chunk" one millisecond apart. Move the
+                    # same barge-in past the end of playback and the caller gets
+                    # SILENCE -- this arm `return`s, so there is no fall-through
+                    # to the ack -- until the 10s watchdog, with one of the two
+                    # budgeted resumes already spent on speech nobody heard.
+                    #
+                    # The marker is exactly the right tool: it means "deliberate
+                    # replay, bypass dedup", which is what this is. Its only
+                    # other effect is excluding the chunk from the latency
+                    # content-mark, also correct -- a recovery replay is not the
+                    # turn's first content. It is stripped before the obs
+                    # transcript seam, so stored transcripts are unchanged.
+                    await self.tts_text_queue.put(
+                        _WATCHDOG_REASK_MARKER + _resume
+                    )
                     logger.warning(
                         "[ms_conn] barge-in #%d carried no words "
                         "(partial=%r own_audio=%s) — speaking %r instead of an "
