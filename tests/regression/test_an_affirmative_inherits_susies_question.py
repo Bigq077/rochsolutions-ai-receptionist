@@ -170,3 +170,44 @@ def test_the_offer_is_taken_from_its_producer_not_copied():
     assert "further times on that day" not in code, (
         "the sentence is copied as a literal — derive it from its producer"
     )
+
+
+def test_it_does_not_lean_on_a_helper_that_exists_on_one_branch_only():
+    """`_last_assistant_text` arrived with the B-19 filler re-arm and exists on
+    latency-eval and NOWHERE else. Calling it made this predicate a silent
+    no-op on all three live branches: the NameError was swallowed by the
+    except and every call site simply read False — which is precisely the
+    defect this function exists to fix, shipped as its own fix.
+
+    Canonical was green. Only the port suites caught it. This test moves that
+    catch back to the branch where the code is written."""
+    import app.media_streams.llm_stream as ls
+
+    fn = ls._answering_susies_different_day_offer
+    body = ast.parse(inspect.getsource(fn)).body[0].body
+    if isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        body = body[1:]
+    code = " ".join(ast.unparse(node) for node in body)
+    assert "conversation_history" in code, "read the history directly"
+    assert "_last_assistant_text" not in code, (
+        "this helper does not exist on the deployment branches"
+    )
+
+
+def test_a_failure_is_logged_not_swallowed(caplog):
+    """A silent except here is indistinguishable from "the caller did not ask",
+    which is how the missing helper stayed invisible. Whatever goes wrong, it
+    has to reach the call record."""
+    import logging
+
+    class _Exploding(dict):
+        def get(self, *a, **k):
+            raise RuntimeError("boom")
+
+    with caplog.at_level(logging.ERROR):
+        assert _answering_susies_different_day_offer(
+            [{"role": "user", "content": "yeah"}], _Exploding()
+        ) is False
+    assert any(r.levelno >= logging.ERROR for r in caplog.records), (
+        "the failure was swallowed without a trace"
+    )
