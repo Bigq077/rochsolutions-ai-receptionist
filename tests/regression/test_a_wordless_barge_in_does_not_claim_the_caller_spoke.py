@@ -56,6 +56,7 @@ from app.media_streams.connection import (
     WebSocketCallHandler,
     _BARGE_IN_ACKS,
     _MAX_ECHO_RESUMES,
+    _WATCHDOG_REASK_MARKER,
 )
 
 # The chunk that was in flight, and the question outstanding at that moment.
@@ -111,9 +112,21 @@ def _live(question: str = NUMBER_Q):
 
 
 def _queued(h) -> list:
+    """Queued speech, with the replay marker stripped.
+
+    The re-ask is enqueued behind _WATCHDOG_REASK_MARKER, which _tts_loop
+    strips before the text reaches TTS or the obs record. Tests here assert on
+    the WORDS, so they strip it too — the same convention as
+    test_watchdog_no_repeat.py. That the marker is present at all is the
+    subject of test_b107_resume_survives_the_dedup_guard.py: without it the
+    re-ask repeats the chunk just spoken and the dedup guard drops it.
+    """
     out = []
     while not h.tts_text_queue.empty():
-        out.append(h.tts_text_queue.get_nowait())
+        text = h.tts_text_queue.get_nowait()
+        if text.startswith(_WATCHDOG_REASK_MARKER):
+            text = text[len(_WATCHDOG_REASK_MARKER):]
+        out.append(text)
     return out
 
 
