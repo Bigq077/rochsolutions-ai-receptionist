@@ -4782,6 +4782,95 @@ def _cap_presented_slots(
     return out
 
 
+def _name_the_other_matching_dates(
+    out: Dict[str, Any], pref_weekdays
+) -> None:
+    """Hand the model the matching dates it is holding back, so it can offer them.
+
+    B-110. The weekday contract had three cases and the non-Acuity readers
+    carried two: "that weekday has nothing" and "only ONE of that weekday falls
+    in the window". The third - N further dates DO have times and were cut by
+    the presentation cap - had no guidance at all here, so a caller asking
+    about Tuesdays heard two of four and was never told the other two existed.
+
+    Milder than the Acuity version this mirrors (B-109): _MAX_PRESENTED_DAYS is
+    2 and _cap_presented_slots only calls it single_day when ONE day survives,
+    so these readers show two real dates rather than one, and the scarcity
+    guard already declines while available_days holds more than one day. What
+    was missing is the OFFER, not a false claim.
+
+    Dates only, never times: reading further days of slots is the wall of times
+    the caps exist to prevent, and it would put dates the caller never heard
+    into the ordinal map (B-108b).
+
+    Runs AFTER _cap_presented_slots so it reads what was actually presented,
+    rather than assuming the cap: _filter_same_day_slots runs in between and
+    can drop a day, which would put a guess off by one.
+
+    Silent when the more specific cases already spoke - they set `guidance`
+    first and both describe a diary this one does not apply to.
+    """
+    if not pref_weekdays or out.get("guidance"):
+        return
+    days = out.get("available_days")
+    if not isinstance(days, list) or len(days) < 2:
+        return
+
+    spoken = set()
+    _fd = out.get("first_day")
+    if isinstance(_fd, dict) and _fd.get("date"):
+        spoken.add(_fd["date"])
+    for _d in (out.get("presented_days") or []):
+        if isinstance(_d, dict) and _d.get("date"):
+            spoken.add(_d["date"])
+    if not spoken:
+        return
+
+    others = []
+    for _d in days:
+        if not isinstance(_d, dict):
+            continue
+        _iso = _d.get("date") or ""
+        if not _iso or _iso in spoken:
+            continue
+        # Filtered to the requested weekday explicitly.
+        # _filter_tuples_by_preference silently DROPS a day filter that matches
+        # nothing, so available_days can hold unrelated days, and naming one of
+        # those as another Tuesday is the false confidence this family exists
+        # to prevent.
+        try:
+            if _date_type.fromisoformat(_iso).weekday() not in pref_weekdays:
+                continue
+        except Exception:
+            continue
+        _label = _spoken_day_label(_iso)
+        if not _label:
+            continue
+        others.append({
+            "date":            _iso,
+            "spoken":          _label,
+            "times_available": _d.get("times_found_on_day")
+                               or len(_d.get("slot_times") or []),
+        })
+        if len(others) == 3:
+            break
+    if not others:
+        return
+
+    out["other_dates_for_requested_day"] = others
+    out["guidance"] = (
+        f"{len(others)} further date(s) matching the requested day also have "
+        "times, listed in other_dates_for_requested_day. NAME those dates "
+        "using their 'spoken' field and offer them if the dates above do not "
+        "suit. You have NOT been given the times on them: never state a time "
+        "on those dates, and never invent times. To read times from one, call "
+        "check_availability again with after_date set to the day before it. "
+        "Do NOT say or imply the dates above are all there is on that weekday, "
+        "or that the clinic is full or closed then, and never name a date that "
+        "is not in other_dates_for_requested_day."
+    )
+
+
 def _sync_last_offered_to_spoken(
     session: Dict[str, Any], result: Dict[str, Any]
 ) -> None:
@@ -5672,6 +5761,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
                 "given slots for, and never invent times."
             )
     _out = _cap_presented_slots(_filter_same_day_slots(_payload, session))
+    _name_the_other_matching_dates(_out, _pref_weekdays)
     _sync_last_offered_to_spoken(session, _out)
     return _out
 
