@@ -1668,6 +1668,85 @@ def spoken_starts_for_offer(session: Dict[str, Any]) -> set:
     return _spoken_starts_for_current_offer(session)
 
 
+def choose_presented_indices(
+    session: Dict[str, Any], day: Dict[str, Any], limit: int
+) -> List[int]:
+    """Which positions in a day's parallel slot arrays should be SPOKEN.
+
+    Returns CHRONOLOGICAL indices, at most `limit`, preferring times this
+    caller has not already heard.
+
+    B-116, CA13b8dc5cb8 (28 Aug 2026, theorem_v3, Alcester). B-98 opened a
+    band-spent day from 2 slots to its full 7, exactly as designed:
+
+        band 'morning tuesday 8 september 2026' is SPENT on ['2026-09-08']
+        slot_times 09:00 10:00 12:00 13:00 14:00 15:00 16:00
+
+    The readout then took the chronologically first three - 09:00, 10:00,
+    12:00 - and two of those were the two the caller had just been read. She
+    had asked "do you have anything else that day then" and was given
+    two-thirds old news. The retrieval was right and the readout threw it away.
+
+    ONE owner, because there were already two answers to "what else is there"
+    in this codebase and they disagreed on that call: this module's unspoken
+    follow-up subtracted what was spoken and got it right thirty seconds later,
+    while both presentation caps sliced [:limit] blind. A caller got a correct
+    or a repeating answer depending only on which route their wording took.
+
+    NEVER STARVES A REPEAT. When every time on the day has been heard the
+    unheard list is empty and this returns the first `limit` chronologically -
+    byte-identical to the old behaviour. The preference reorders; it never
+    withholds.
+
+    Falls back to chronological whenever it cannot prove the arrays are
+    parallel. Speaking `slot_times_spoken[i]` against `slots[j]` would name a
+    time the caller cannot book, so a desynchronised day is not worth a
+    cleverer readout.
+    """
+    slots = day.get("slots") if isinstance(day, dict) else None
+    n = len(slots) if isinstance(slots, list) else 0
+    if n == 0 or limit <= 0:
+        return list(range(max(0, min(limit, n))))
+
+    # The three arrays are built from one list and documented as aligned 1:1.
+    # If that ever stops being true, say the safe thing.
+    for key in ("slot_times", "slot_times_spoken"):
+        value = day.get(key)
+        if isinstance(value, list) and len(value) != n:
+            logger.warning(
+                "[slot_followup] %s has %d entries against %d slots -- falling "
+                "back to a chronological readout (B-116).", key, len(value), n,
+            )
+            return list(range(min(limit, n)))
+
+    if n <= limit:
+        return list(range(n))
+
+    try:
+        spoken = spoken_starts_for_offer(session)
+    except Exception:      # never let a readout fail on its own preference
+        spoken = set()
+    if not spoken:
+        return list(range(limit))
+
+    unheard = [
+        i for i, s in enumerate(slots)
+        if str((s or {}).get("start") or "")[:19] not in spoken
+    ]
+    picked = unheard[:limit]
+    if len(picked) < limit:
+        seen = set(picked)
+        picked += [i for i in range(n) if i not in seen][:limit - len(picked)]
+    return sorted(picked)
+
+
+def pick_by_index(value: Any, indices: List[int]) -> Any:
+    """Select `indices` from a parallel slot array, leaving non-lists alone."""
+    if not isinstance(value, list):
+        return value
+    return [value[i] for i in indices if 0 <= i < len(value)]
+
+
 def reconcile_readback_time(
     text: str, session: Dict[str, Any]
 ) -> Tuple[str, str, str]:
