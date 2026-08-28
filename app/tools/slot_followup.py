@@ -104,6 +104,7 @@ def remaining_slots_after_offer(
 
 _SPOKEN_KEY = "slot_starts_spoken"
 _SPOKEN_FP_KEY = "slot_starts_spoken_fp"
+_SPOKEN_LOC_KEY = "slot_starts_spoken_loc"
 
 
 def _day_fingerprints(available_days: Any) -> Dict[str, str]:
@@ -125,6 +126,12 @@ def _day_fingerprints(available_days: Any) -> Dict[str, str]:
 
     The record is a set of ISO starts, and an ISO start already names its own
     day, so the data was always day-separable; only the guard was not.
+
+    B-115: the VALUE is no longer compared for equality -- see
+    `_day_record_survives`. It stays because `old.get(day) is not None` is how
+    both readers ask "have we ever vouched for this day", because the shape has
+    to keep parsing for a call in flight across the deploy, and because it is
+    worth having in the log when a day does get dropped.
     """
     by_day: Dict[str, List[str]] = {}
     for slot in flatten_bookable_slots(available_days):
@@ -137,9 +144,109 @@ def _day_fingerprints(available_days: Any) -> Dict[str, str]:
     }
 
 
+def _day_slot_starts(available_days: Any) -> Dict[str, set]:
+    """{day: {ISO starts it currently holds}} -- what `_day_record_survives`
+    tests the spoken record against."""
+    by_day: Dict[str, set] = {}
+    for slot in flatten_bookable_slots(available_days):
+        start = str(slot.get("start") or "")[:19]
+        if start:
+            by_day.setdefault(_day_key(slot), set()).add(start)
+    return by_day
+
+
+def _days_showing_a_filtered_view(available_days: Any) -> set:
+    """Days whose payload is a FILTERED view rather than the whole day.
+
+    `times_not_shown` is the count a time-of-day band removed before the
+    session ever saw the day (B-97). Where it is positive, a slot missing from
+    `slots` is missing because of the filter, and its absence is no evidence
+    at all about the diary.
+    """
+    out: set = set()
+    for day in (available_days or []):
+        if not isinstance(day, dict):
+            continue
+        try:
+            if int(day.get("times_not_shown") or 0) > 0:
+                date = str(day.get("date") or "")
+                if date:
+                    out.add(date)
+        except Exception:
+            continue
+    return out
+
+
+def _spoken_on_day(spoken: Any, day: str) -> List[str]:
+    return [str(s)[:19] for s in (spoken or []) if str(s)[:10] == day]
+
+
+def _day_record_survives(
+    current_starts: Optional[set],
+    spoken_on_day: List[str],
+    day_is_a_filtered_view: bool = False,
+) -> bool:
+    """May we still trust what the caller was recorded as having HEARD on this
+    day?
+
+    ONE owner, because two functions ask it -- `_spoken_key_set`, which drops
+    the record, and `_spoken_starts_for_current_offer`, which declines to read
+    it. They disagreed once already (B-102) and the cost was the B-101 shape
+    surviving its own fix.
+
+    Yes when every start the caller heard is still in the day. A slot that has
+    since been booked by someone else, or a day that has become a different
+    clinic's diary, takes the record with it.
+
+    B-115, CA0f8ffe7b (28 Aug 2026, theorem_v3). The test used to be equality
+    on the day's `count|first|last` fingerprint, which cannot tell a day that
+    GREW from a day that CHANGED:
+
+        10:40:37  band-filtered payload, 2 of the day's 7 slots
+                  fingerprint 2|...T09:00|...T10:00 -- caller hears both
+        10:40:56  B-98 sees the band is spent and opens the day to all 7
+                  fingerprint 7|...T09:00|...T16:00
+        10:40:57  spoken record dropped for ['2026-09-08']
+
+    B-98 opens a day precisely BECAUSE its in-band times have been spoken, so
+    the act of opening it destroyed the record that justified opening it. The
+    two slots were still there; five more had appeared beside them.
+
+    Nothing the caller heard on that call was lost by the drop -- the
+    presentation is spoken-blind and re-read them anyway -- so this is a
+    latent fault, not the cause of that re-offer. It is a prerequisite: any
+    future presentation that filters by "already heard" reads this record, and
+    would find it empty at exactly the moment it matters.
+
+    A day absent from the current payload keeps its record (B-101): a lookup
+    for Wednesday says nothing about Friday.
+
+    And a day shown through a BAND keeps it too. A payload can shrink for two
+    unrelated reasons -- the diary lost a slot, or a filter hid one -- and the
+    slot list alone cannot tell them apart. `times_not_shown` can: where it is
+    positive the view is partial by construction, so a missing heard time is
+    missing because of the filter.
+
+    Found by the failing-set diff, not by design. The first cut of B-115 read
+    any absence as removal, which broke
+    test_b112::test_a_day_heard_in_full_before_a_band_shrank_it_is_not_re_promised
+    -- a caller who had heard all seven of a day unbanded, then met a banded
+    payload showing two, had their record wiped and was promised "a few others
+    that day" with nothing left to give. Over-promising is the harm
+    reconcile_extra_slots_claim exists to prevent, so the rule reached the one
+    outcome this family must never produce.
+    """
+    if current_starts is None:
+        return True
+    if day_is_a_filtered_view:
+        return True
+    return all(start in current_starts for start in spoken_on_day)
+
+
 def _spoken_key_set(session: Dict[str, Any]) -> set:
     """The ISO starts the caller has heard, dropping any day that has moved."""
     new = _day_fingerprints(session.get("available_days") or [])
+    starts_now = _day_slot_starts(session.get("available_days") or [])
     old = session.get(_SPOKEN_FP_KEY)
     if not isinstance(old, dict):
         # Either the pre-B-101 single-string form (a call in flight across the
@@ -148,9 +255,33 @@ def _spoken_key_set(session: Dict[str, Any]) -> set:
         # mismatch took.
         session[_SPOKEN_KEY] = []
         old = {}
+
+    # A different clinic's diary is not the same day, however similar the
+    # times look. The old equality test caught this by accident whenever the
+    # slot COUNT happened to differ; B-115's rule would not, because a 9am
+    # that exists at both locations looks like the same 9am. Made explicit
+    # rather than left to coincidence -- and the whole record goes, because
+    # every day in it was read off the other diary.
+    _loc = str(session.get("selected_location") or "")
+    _loc_before = session.get(_SPOKEN_LOC_KEY)
+    if _loc_before is not None and _loc_before != _loc:
+        logger.info(
+            "[slot_followup] spoken record cleared -- the location moved from "
+            "%r to %r, so every day in it was read off another diary (B-115).",
+            _loc_before, _loc,
+        )
+        session[_SPOKEN_KEY] = []
+        old = {}
+    session[_SPOKEN_LOC_KEY] = _loc
+
+    _spoken = session.get(_SPOKEN_KEY) or []
+    _filtered = _days_showing_a_filtered_view(session.get("available_days") or [])
     changed = {
-        day for day, fp in new.items()
-        if old.get(day) is not None and old.get(day) != fp
+        day for day in new
+        if old.get(day) is not None
+        and not _day_record_survives(
+            starts_now.get(day), _spoken_on_day(_spoken, day), day in _filtered,
+        )
     }
     if changed:
         session[_SPOKEN_KEY] = [
@@ -158,9 +289,9 @@ def _spoken_key_set(session: Dict[str, Any]) -> set:
             if str(s)[:10] not in changed
         ]
         logger.info(
-            "[slot_followup] spoken record dropped for %s -- their slots have "
-            "moved since the caller heard them. Every other day is kept "
-            "(B-101).", sorted(changed),
+            "[slot_followup] spoken record dropped for %s -- a time the caller "
+            "heard is no longer in that day. Every other day is kept "
+            "(B-101/B-115).", sorted(changed),
         )
     old.update(new)
     session[_SPOKEN_FP_KEY] = old
@@ -1504,10 +1635,19 @@ def _spoken_starts_for_current_offer(session: Dict[str, Any]) -> set:
     old = session.get(_SPOKEN_FP_KEY)
     if not isinstance(old, dict):
         return set()          # pre-B-101 shape, or nothing -- verify nothing
-    new = _day_fingerprints(session.get("available_days") or [])
+    # Same predicate as the writer, deliberately. These two disagreed once
+    # (B-102) and the defect the writer had just been taught to avoid came
+    # straight back through the reader. B-115 moved the rule itself into
+    # _day_record_survives so there is nothing left here to drift.
+    starts_now = _day_slot_starts(session.get("available_days") or [])
+    _filtered = _days_showing_a_filtered_view(session.get("available_days") or [])
+    _spoken = session.get(_SPOKEN_KEY) or []
     trusted = {
-        day for day in {str(s)[:10] for s in (session.get(_SPOKEN_KEY) or [])}
-        if old.get(day) is not None and new.get(day, old[day]) == old[day]
+        day for day in {str(s)[:10] for s in _spoken}
+        if old.get(day) is not None
+        and _day_record_survives(
+            starts_now.get(day), _spoken_on_day(_spoken, day), day in _filtered,
+        )
     }
     if not trusted:
         return set()
