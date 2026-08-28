@@ -114,13 +114,23 @@ def test_a_day_that_really_holds_one_is_left_alone():
 def test_the_legitimate_plural_opener_is_never_rewritten():
     """_COMPLETENESS_RE matches this sentence. If the correction were hung off
     that pattern instead of a singular-only one, a true two-slot readout would
-    be mangled."""
+    be mangled.
+
+    B-112 changed what happens NEXT to it, not this. The opener itself must
+    still arrive at the caller untouched, word for word; what it may no longer
+    do is suppress the "a few others that day" tail, because it introduces a
+    list rather than claiming the list is the whole day. The assertion below is
+    a prefix match for exactly that reason -- it is the anti-mangle guarantee
+    this test was written for, and it is unchanged.
+    """
     out, action = reconcile_extra_slots_claim(
         PLURAL_OPENER, more_times=True, n_offered=2,
     )
-    assert out == PLURAL_OPENER
-    assert action == "unchanged"
+    assert out.startswith(PLURAL_OPENER.split(" Any of those work?")[0])
+    assert "Any of those work?" in out
+    assert action == "appended"
     assert not _SINGULAR_COMPLETENESS_RE.search(PLURAL_OPENER)
+    assert not _SINGULAR_COMPLETENESS_RE.search(out)
 
 
 def test_the_singular_pattern_covers_the_forms_the_model_uses():
