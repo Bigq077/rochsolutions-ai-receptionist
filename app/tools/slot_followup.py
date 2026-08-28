@@ -1747,6 +1747,41 @@ def pick_by_index(value: Any, indices: List[int]) -> Any:
     return [value[i] for i in indices if 0 <= i < len(value)]
 
 
+_BAND_SPENT_SENTENCE = "I've given you all the {label} I have that day, I'm afraid."
+
+
+def acknowledge_spent_band(text: str, label: str) -> Tuple[str, str]:
+    """Say WHY the times that follow are outside the band the caller asked for.
+
+    Returns `(text, action)`; action is "unchanged" or "prepended".
+
+    B-117, the wording half of B-116. Once B-98 opens a band the caller has
+    used up, the readout leads with times outside it -- afternoons to someone
+    who said "morning". That is the only new true thing left to say about the
+    day, and B-116 makes it what she says. Unexplained it still sounds like she
+    ignored the question; the caller on CA13b8dc5cb8 asked for the mornings a
+    third time and hung up.
+
+    So this is a SENTENCE change, not a selection change. It must never alter
+    which times are offered, and there is a test that fails if it does.
+
+    The claim is decided by the retrieval path and carried here on the payload
+    (`band_spent_label`), never re-derived from the text. "You have heard all
+    the mornings" is a statement about this caller's history, and the only code
+    that knows it is the code that opened the band.
+
+    Idempotent: a re-flush of the same buffer must not stack the apology.
+    """
+    _t = (text or "").strip()
+    _l = (label or "").strip()
+    if not _t or not _l:
+        return text, "unchanged"
+    _sentence = _BAND_SPENT_SENTENCE.format(label=_l)
+    if _sentence.lower() in _t.lower():
+        return text, "unchanged"
+    return f"{_sentence} {_t}", "prepended"
+
+
 def reconcile_readback_time(
     text: str, session: Dict[str, Any]
 ) -> Tuple[str, str, str]:

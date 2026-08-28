@@ -3392,6 +3392,21 @@ class LLMStream:
             )
         _joined = _reconciled
 
+        # ── 3b-ii. Say why these times are outside the band they asked for ──
+        # B-117. B-98 opened a band this caller has used up and B-116 leads
+        # with the times they have not heard, which for a "morning" request
+        # means afternoons. Unexplained that reads as not listening.
+        # Sentence only: it must not change which times were chosen.
+        _band_spent = str(session.get("_slot_band_spent_label") or "")
+        if _band_spent and _allow_append:
+            from app.tools.slot_followup import acknowledge_spent_band
+            _joined, _ack = acknowledge_spent_band(_joined, _band_spent)
+            if _ack == "prepended":
+                logger.info(
+                    "[ms_gate5] slot buf: acknowledged the spent band (%s) "
+                    "before reading times outside it (B-117)", _band_spent,
+                )
+
         # ── 3c. Name the further dates matching the caller's weekday ─────────
         # Same contract as 3b and for the same reason: which dates exist is a
         # fact about the provider's calendar, decided here from the tool
@@ -5592,6 +5607,14 @@ class LLMStream:
                 # the same place and for the same reason as more_times: the
                 # sentence naming them is a claim about the clinic's calendar,
                 # so it is built from the tool result rather than by the model.
+                # B-117. Same contract and the same reason as more_times:
+                # whether this caller has used up the band they asked for is
+                # decided by the retrieval path, which is the only thing that
+                # knows, and carried here rather than guessed by the model.
+                session["_slot_band_spent_label"] = (
+                    result.get("band_spent_label")
+                    if isinstance(result, dict) else ""
+                ) or ""
                 session["_slot_other_dates"] = (
                     result.get("other_dates_for_requested_day")
                     if isinstance(result, dict) else None
