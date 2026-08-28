@@ -1695,8 +1695,13 @@ def choose_presented_indices(
 
     NEVER STARVES A REPEAT. When every time on the day has been heard the
     unheard list is empty and this returns the first `limit` chronologically -
-    byte-identical to the old behaviour. The preference reorders; it never
-    withholds.
+    byte-identical to the old behaviour.
+
+    It DOES withhold while anything is still unheard (B-119). Padding a
+    short unheard list back up to `limit` with times already read out is the
+    very defect B-116 exists to prevent, arriving one turn later and
+    contradicting B-117's spent-band sentence out loud. Returning FEWER than
+    `limit` is the correct answer to "what else have you got".
 
     Falls back to chronological whenever it cannot prove the arrays are
     parallel. Speaking `slot_times_spoken[i]` against `slots[j]` would name a
@@ -1733,11 +1738,25 @@ def choose_presented_indices(
         i for i, s in enumerate(slots)
         if str((s or {}).get("start") or "")[:19] not in spoken
     ]
-    picked = unheard[:limit]
-    if len(picked) < limit:
-        seen = set(picked)
-        picked += [i for i in range(n) if i not in seen][:limit - len(picked)]
-    return sorted(picked)
+    if unheard:
+        # Fewer than `limit` unheard is NOT a reason to pad with heard
+        # ones. B-119, CA9bafe3615359 (28 Aug 2026, theorem_v3, Alcester,
+        # build e430d7ec -- B-116/117/118 all live). Two unheard slots
+        # remained on the day (15:00, 16:00) against a limit of 3, so the
+        # back-fill this replaces reached back for index 0 and `sorted`
+        # led the readout with it:
+        #
+        #     13:57:23  "I've given you all the mornings I have that day"
+        #     13:57:46  "Number 1, nine in the morning."
+        #
+        # Twenty-three seconds apart, in one caller's ear. They repeated
+        # themselves and hung up without booking (judge score 1). Speaking
+        # two times is a smaller failure than speaking three where one
+        # contradicts the sentence before it.
+        return unheard[:limit]
+    # Every time on the day has been heard, so this IS a repeat request.
+    # Answer it chronologically -- byte-identical to the old behaviour.
+    return list(range(limit))
 
 
 def pick_by_index(value: Any, indices: List[int]) -> Any:
