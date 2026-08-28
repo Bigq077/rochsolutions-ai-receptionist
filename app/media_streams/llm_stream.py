@@ -791,6 +791,41 @@ def _caller_named_an_unoffered_date(txt: str, session) -> bool:
     return not _named.issubset(_offered_days)
 
 
+def _presentation_for_refusal(session, days):
+    """Carry diary data on a REFUSAL in the shape a real lookup returns.
+
+    B-118, CA14c0707a (28 Aug 2026, theorem_v3, build f2cc28dc -- B-116 and
+    B-117 already live). The caller asked for the others on a day, B-98 opened
+    the spent band, B-116 read the three UNHEARD times and B-117 explained why
+    they were afternoons. All correct. One turn later the model called
+    check_availability again, the guard refused it as `already_retrieved`, and
+    that refusal handed back session["available_days"] -- the full seven -- with
+    a sentence of English asking for "AT MOST 3 times, soonest first". The model
+    read out all seven, mornings included, twenty seconds after Susie had said
+    "I have given you all the mornings I have that day".
+
+    A prose cap is not a cap. Worse, "soonest first" had become the WRONG
+    instruction: after B-116 the soonest times on a spent-band day are exactly
+    the ones the caller has already heard.
+
+    So a refusal now carries `first_day`, chosen by the same selector a real
+    lookup uses. available_days stays whole, exactly as `_cap_presented_slots`
+    leaves it on a normal result, so `_resolve_slot_iso`, DTMF and the unspoken
+    follow-up still see every bookable time and `_note_availability_seen` --
+    which arms on result["available_days"] -- behaves identically.
+
+    Never raises: a refusal must still refuse if the presentation helper is
+    unavailable, and the fallback is the raw payload this replaced.
+    """
+    try:
+        from app.tools.receptionist_tools import _cap_presented_slots
+        if not isinstance(days, list) or not days:
+            return {"available_days": days}
+        return _cap_presented_slots({"available_days": days}, session)
+    except Exception:
+        return {"available_days": days}
+
+
 def _note_availability_seen(session: Dict[str, Any], result: Any) -> bool:
     """Record that a check_availability result carried real slots. Returns that
     same fact, which the caller keeps as the per-turn `_check_av_had_slots`.
@@ -4898,7 +4933,7 @@ class LLMStream:
                                         "know that here. Ask which day they "
                                         "mean, then check that day."
                                     ),
-                                    "available_days": _days,
+                                    **_presentation_for_refusal(session, _days),
                                 }
                         else:
                             apply_next_batch_to_session(session, _batch, _more)
@@ -4936,8 +4971,8 @@ class LLMStream:
                                     "the offered times they want — then move on. "
                                     "Do NOT present the existing slots again."
                                 ),
-                                "available_days": session.get(
-                                    "available_days", {}
+                                **_presentation_for_refusal(
+                                    session, session.get("available_days") or []
                                 ),
                             }
                             session[FORCE_TEXT_NEXT_ITERATION] = True
@@ -4951,13 +4986,16 @@ class LLMStream:
                                 "status": "already_retrieved",
                                 "message": (
                                     "check_availability has already returned slot data. "
-                                    "Use the data in available_days that was already returned. "
-                                    "Do NOT call check_availability again — present the existing "
-                                    "slots to the caller. Read out AT MOST 3 times, soonest "
-                                    "first. If the day holds more than that, say you have a few "
-                                    "others that day instead of listing them."
+                                    "Do NOT call it again. Read out ONLY the times in "
+                                    "first_day.slot_times_spoken, verbatim and in the order "
+                                    "given — they have already been chosen and limited for "
+                                    "you. Do NOT read anything from available_days and do "
+                                    "NOT re-order them. If more_times is true, say you have "
+                                    "a few others that day rather than naming them."
                                 ),
-                                "available_days": session.get("available_days", {}),
+                                **_presentation_for_refusal(
+                                    session, session.get("available_days") or []
+                                ),
                             }
                 elif (
                     tool_name == "book_appointment"
