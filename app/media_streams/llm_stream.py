@@ -4883,7 +4883,14 @@ class LLMStream:
                     # the caller ping-pongs between two pairs for ever.
                     _remaining = remaining_unspoken(session)
                     _user = _last_user_text(messages or [])
-                    _hit = resolve_requested_time(_user, _remaining) if _remaining else None
+                    # _days as well (B-114). This is the SECOND branch that
+                    # resolves a caller time phrase, and it hands the model
+                    # an instruction to confirm and offer to book -- so a
+                    # wrong hit here is louder than one on the speech path.
+                    _hit = (
+                        resolve_requested_time(_user, _remaining, _days)
+                        if _remaining else None
+                    )
                     if _hit is not None:
                         apply_resolved_time_to_session(session, _hit)
                         result = build_followup_tool_result(_days, [_hit], more=False)
