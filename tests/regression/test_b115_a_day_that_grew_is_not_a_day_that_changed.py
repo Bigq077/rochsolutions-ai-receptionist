@@ -15,13 +15,27 @@ act of opening it destroyed the record that justified opening it. The two slots
 were still there; five more had appeared beside them. An equality test on
 `count|first|last` cannot tell a day that GREW from a day that CHANGED.
 
-SCOPE, stated because it is easy to get wrong later: nothing the caller heard
-was lost on that call. The availability presentation is spoken-blind - it caps
+SCOPE, stated because it is easy to get wrong later. On THAT call nothing the
+caller heard was lost: the availability presentation is spoken-blind - it caps
 to the chronologically first three whatever the record says - so 09:00 and
-10:00 were re-read regardless of this drop. This is a LATENT fault and a
-prerequisite, not the cause of that re-offer. Any presentation that later
-filters by "already heard" reads this record and would find it empty at exactly
-the moment it matters.
+10:00 were re-read regardless of this drop. The drop did not cause that
+re-offer.
+
+It is NOT, however, merely latent, and an earlier draft of this docstring said
+it was. B-98's own spent-band detection reads this record, one turn later,
+through spoken_starts_for_offer - called while available_days still holds the
+day B-98 just opened. Measured on the pre-fix tree:
+
+    next-turn spoken_starts_for_offer -> EMPTY
+
+So a band re-applied on any LATER lookup cannot be seen as spent, and the
+caller is read the same in-band times again - the loop B-98 exists to break.
+Opening a day disarmed the mechanism that opened it, for the rest of the call.
+That is the caller-audible half, and it needs a band on a follow-up lookup to
+surface, which is why it did not show on the call above.
+
+Any presentation that later filters by "already heard" reads this same record
+and would find it empty at exactly the moment it matters.
 
 TWO functions ask "is this record still trustworthy", and they disagreed once
 before (B-102), which let the B-101 shape survive its own fix. The rule now
@@ -32,6 +46,7 @@ from __future__ import annotations
 import inspect
 
 from app.tools.slot_followup import (
+    spoken_starts_for_offer,
     _day_record_survives,
     _spoken_key_set,
     _spoken_starts_for_current_offer,
@@ -162,3 +177,25 @@ def test_both_consumers_use_the_shared_predicate():
         src = inspect.getsource(fn)
         assert "_day_record_survives(" in src, f"{fn.__name__} has its own rule"
         assert "] == old[" not in src, f"{fn.__name__} still compares fingerprints"
+
+
+def test_b98_can_still_see_the_band_it_spent_on_the_next_turn():
+    """The caller-audible half, and the reason this is not merely latent.
+
+    B-98 decides a band is SPENT by asking which of its in-band times the
+    caller has already heard -- `_spoken_starts_for` in receptionist_tools,
+    which is this module's `spoken_starts_for_offer`. It runs while
+    session["available_days"] still holds the PREVIOUS fetch, so on the turn
+    after B-98 opened a day it is reading across the very growth that the old
+    equality test called a change.
+
+    Before this fix that call returned an empty set, so a band re-applied on
+    any later lookup could not be recognised as spent, and the same in-band
+    times were read out again -- the loop B-98 exists to break. Opening the day
+    disarmed the mechanism that opened it.
+    """
+    session = _heard_the_band_then_opened_the_day()
+    assert sorted(s[11:16] for s in spoken_starts_for_offer(session)) == [
+        "09:00",
+        "10:00",
+    ]
