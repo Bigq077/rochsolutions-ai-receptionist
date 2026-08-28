@@ -37,8 +37,19 @@ import asyncio
 import inspect
 from datetime import datetime, timedelta
 
+import pytest
+
 from app.tools import receptionist_tools as rt
 from app.tools.receptionist_tools import LONDON_TZ
+
+# The diary reader is Vital Edge's and exists only where a clinic reads a
+# provisional calendar. jv_v1 is plain google_calendar and its branch has no
+# such function -- a test that drove it there would fail for the branch's
+# shape, not for this defect. The generic reader is checked on every branch.
+_HAS_DIARY = hasattr(rt, "_check_availability_diary")
+_diary_only = pytest.mark.skipif(
+    not _HAS_DIARY, reason="this branch has no diary reader (no provisional clinic)"
+)
 
 _WD_NAMES = ["monday", "tuesday", "wednesday", "thursday",
              "friday", "saturday", "sunday"]
@@ -101,6 +112,7 @@ def _a_weekday_with_several_occurrences():
 # ---------------------------------------------------------------------------
 # The defect
 # ---------------------------------------------------------------------------
+@_diary_only
 def test_the_hidden_dates_are_named(monkeypatch):
     _install(monkeypatch)
     name, first = _a_weekday_with_several_occurrences()
@@ -119,6 +131,7 @@ def test_the_hidden_dates_are_named(monkeypatch):
         assert datetime.fromisoformat(o["date"]).weekday() == first.weekday()
 
 
+@_diary_only
 def test_each_named_date_carries_a_label_and_a_count(monkeypatch):
     _install(monkeypatch)
     name, _ = _a_weekday_with_several_occurrences()
@@ -128,6 +141,7 @@ def test_each_named_date_carries_a_label_and_a_count(monkeypatch):
         assert o["times_available"] > 0
 
 
+@_diary_only
 def test_no_time_is_handed_over_for_a_date_nobody_heard(monkeypatch):
     """The rule that keeps B-108b shut."""
     _install(monkeypatch)
@@ -136,12 +150,14 @@ def test_no_time_is_handed_over_for_a_date_nobody_heard(monkeypatch):
         assert set(o) == {"date", "spoken", "times_available"}
 
 
+@_diary_only
 def test_at_most_three_are_named(monkeypatch):
     _install(monkeypatch)
     name, _ = _a_weekday_with_several_occurrences()
     assert len(_run({"date_hint": name})["other_dates_for_requested_day"]) <= 3
 
 
+@_diary_only
 def test_the_guidance_states_the_whole_contract(monkeypatch):
     _install(monkeypatch)
     name, _ = _a_weekday_with_several_occurrences()
@@ -156,6 +172,7 @@ def test_the_guidance_states_the_whole_contract(monkeypatch):
 # ---------------------------------------------------------------------------
 # What must NOT change
 # ---------------------------------------------------------------------------
+@_diary_only
 def test_the_one_occurrence_case_still_wins(monkeypatch):
     """The existing, more specific guidance is set first and describes a diary
     this one does not apply to. The new case must stay silent under it."""
@@ -166,12 +183,14 @@ def test_the_one_occurrence_case_still_wins(monkeypatch):
     assert "other_dates_for_requested_day" not in out
 
 
+@_diary_only
 def test_a_request_naming_no_weekday_is_untouched(monkeypatch):
     _install(monkeypatch)
     out = _run({"date_hint": "next week"})
     assert "other_dates_for_requested_day" not in out
 
 
+@_diary_only
 def test_the_spoken_days_are_unchanged(monkeypatch):
     """This commit adds an offer, not a second readout. The cap still holds."""
     _install(monkeypatch)
@@ -188,14 +207,16 @@ def test_both_non_acuity_readers_call_it():
     """VE runs the diary reader; jv_v1 runs the generic path in
     _exec_check_availability. A fix on one is half a fix."""
     call = "_name_the_other_matching_dates(_out, _pref_weekdays)"
-    assert call in inspect.getsource(rt._check_availability_diary), (
-        "the diary reader (Vital Edge) no longer names the dates it hides"
-    )
     assert call in inspect.getsource(rt._exec_check_availability), (
         "the generic reader (jv_v1) no longer names the dates it hides"
     )
+    if _HAS_DIARY:
+        assert call in inspect.getsource(rt._check_availability_diary), (
+            "the diary reader (Vital Edge) no longer names the dates it hides"
+        )
 
 
+@_diary_only
 def test_it_runs_after_the_cap_not_before():
     """Reading the presented set before _cap_presented_slots would name a date
     that is about to be spoken, and _filter_same_day_slots runs in between."""
