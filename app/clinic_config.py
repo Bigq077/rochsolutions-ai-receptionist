@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
+import logging
 import os
 import json
 import copy as _copy
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Canonical source of truth for Theorem clinic facts. Pure data, no app deps —
 # safe to import here. Used to keep structured prices in a single place.
@@ -1496,7 +1499,15 @@ def _map_json_to_clinic_contract(loaded: Dict[str, Any]) -> Dict[str, Any]:
     # calendar cannot currently be read as availability. "diary" reads the
     # calendar as booked work rather than published slots. Absent → normal.
     clinic["availability_mode"] = op.get("availability_mode", "")
-    clinic["calendar_id"] = op.get("calendar_id")
+    # `operational.calendar_id` is the real key, but a top-level `calendar_id`
+    # is the obvious one to reach for: it is what every clinic in the legacy
+    # CLINICS dict uses. Setting it used to do NOTHING — this line overwrote it
+    # with operational's value, or with None. On a clinic.json copied from
+    # another tenant (which is the onboarding motion) that means the new clinic
+    # silently keeps writing into the PREVIOUS tenant's calendar, and nothing
+    # in the call sounds wrong. `or` rather than a replacement, so every
+    # existing clinic — all of which set operational.calendar_id — is unchanged.
+    clinic["calendar_id"] = op.get("calendar_id") or loaded.get("calendar_id")
     clinic["digest"] = op.get("digest", {})  # end-of-day booking digest config
     clinic["owner_alerts"] = op.get("owner_alerts", {})  # real-time owner SMS alert config
     clinic["call_overflow"] = op.get("call_overflow", {})  # human-first overflow ring config
@@ -1534,8 +1545,24 @@ def _load_clinic_json(cid: str) -> Optional[Dict[str, Any]]:
     if cached and cached["mtime"] == mtime:
         return cached["clinic"]
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+        loaded = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception as e:
+        # A MISSING clinic.json is ordinary (the legacy clinics have none) and
+        # is handled by the OSError above. An UNREADABLE one is a deployment
+        # fault, and returning None here sends get_clinic to the demo fallback:
+        # the caller would hear the Roch Solutions demo persona and bookings
+        # would go to whatever DEFAULT_CALENDAR_ID happens to be. Silently.
+        #
+        # The runtime behaviour is deliberately unchanged — dropping a live
+        # call is worse than serving a wrong persona, and that trade is the
+        # owner's to make, not this function's. But it must not be quiet.
+        # validate_clinic_config() turns it into a pre-deploy failure instead.
+        logger.error(
+            "[clinic_config] %s exists but could not be read (%r) — falling "
+            "back to the DEMO clinic. Bookings will not go to this tenant's "
+            "calendar. Run validate_clinic_config(%r) before deploying.",
+            path, e, cid,
+        )
         return None
     clinic = _map_json_to_clinic_contract(loaded)
     _CLINIC_JSON_CACHE[cid] = {"mtime": mtime, "clinic": clinic}
@@ -1606,6 +1633,115 @@ def single_location_template(clinic_id: Optional[str]) -> Optional[str]:
     if locs:
         return (locs[0].get("location_id") or "").strip().lower() or None
     return ((c.get("operational") or {}).get("primary_location") or "").strip().lower() or None
+
+
+def validate_clinic_config(clinic_id: str) -> List[str]:
+    """Every way a newly onboarded clinic can be wrong AND sound fine.
+
+    Onboarding a clinic is meant to be: a clinic.json, a number in
+    TWILIO_TO_CLINIC, and calendar credentials. No engine change, no branch.
+    The failure mode that makes that dangerous is that almost every mistake
+    here is INAUDIBLE -- the call plays perfectly and the damage is in someone
+    else's calendar, which is this system's worst failure class.
+
+    So this is the onboarding checklist as code. Returns a list of problems,
+    empty when the clinic is safe to take calls. Run it before pointing a
+    number at a new tenant; `tests/tenancy/` runs it over every clinic.
+
+    Deliberately NOT called at runtime: on a live call, dropping the call is
+    worse than serving a degraded one, and that trade is the owner's to make.
+    """
+    cid = (clinic_id or "").strip().lower()
+    problems: List[str] = []
+    if not cid:
+        return ["no clinic_id given"]
+
+    is_legacy = cid in CLINICS
+    json_path = _CLINICS_DIR / cid / "clinic.json"
+    if not is_legacy:
+        if not json_path.is_file():
+            return [f"no clinic.json at {json_path} and {cid!r} is not a "
+                    f"legacy clinic — get_clinic() would serve DEMO instead"]
+        if _load_clinic_json(cid) is None:
+            return [f"{json_path} exists but does not parse — get_clinic() "
+                    f"would silently serve the DEMO clinic to this tenant's "
+                    f"callers, and send bookings to the demo calendar"]
+
+    clinic = get_clinic(cid)
+
+    if not twilio_number_for_clinic(cid):
+        problems.append(
+            f"no number in TWILIO_TO_CLINIC maps to {cid!r}, so no inbound "
+            "call can ever reach it")
+
+    booking_system = (clinic.get("booking_system") or "").strip()
+    if not booking_system or booking_system == "manual_handoff":
+        problems.append(
+            f"booking_system is {booking_system or 'unset'!r} — the clinic "
+            "cannot take a booking (operational.booking_system)")
+
+    # The one that writes into someone else's diary. A clinic.json is onboarded
+    # by copying another tenant's, and the calendar id is an opaque hash that a
+    # find-and-replace of the clinic's NAME will not touch.
+    if booking_system.startswith("google_calendar"):
+        cal = (clinic.get("calendar_id") or "").strip()
+        if not cal:
+            problems.append(
+                "no calendar_id — bookings would fall back to "
+                "DEFAULT_CALENDAR_ID or 'primary', i.e. the service account's "
+                "own calendar (operational.calendar_id)")
+        elif cal == "primary":
+            problems.append(
+                "calendar_id is 'primary' — that is the service account's own "
+                "calendar, not the clinic's")
+        else:
+            for other in _all_known_clinic_ids():
+                if other == cid:
+                    continue
+                if (get_clinic(other).get("calendar_id") or "").strip() == cal:
+                    problems.append(
+                        f"calendar_id is shared with {other!r} — every booking "
+                        "for this clinic would land in that clinic's diary. "
+                        "This is what copying a clinic.json without changing "
+                        "operational.calendar_id produces.")
+                    break
+
+    # Scoped to clinic.json clinics on purpose. It is a true statement about
+    # the legacy ids too -- is_freeform_clinic('theorem_v2') really is False --
+    # but that is a deliberate, known state for a retired test line, and this
+    # check exists to stop a NEW tenant being onboarded into the FlowEngine
+    # path that no live clinic runs.
+    if not is_legacy and not clinic.get("prompt_engine"):
+        problems.append(
+            "no prompt_engine — the clinic will not run the free-form loop "
+            "that every live clinic uses (set 'template_v1')")
+
+    if not (clinic.get("services") or []):
+        problems.append("no services — nothing is bookable")
+
+    if not (clinic.get("locations") or []) and not (
+            (clinic.get("operational") or {}).get("primary_location")):
+        problems.append("no locations and no operational.primary_location")
+
+    return problems
+
+
+def _all_known_clinic_ids() -> List[str]:
+    """Legacy clinics plus every clinic.json on disk."""
+    ids = set(CLINICS)
+    try:
+        for child in _CLINICS_DIR.iterdir():
+            if (child / "clinic.json").is_file():
+                ids.add(child.name)
+    except OSError:
+        pass
+    return sorted(ids)
+
+
+def validate_all_clinics() -> Dict[str, List[str]]:
+    """{clinic_id: problems} for every clinic a number could route to."""
+    return {cid: validate_clinic_config(cid)
+            for cid in sorted(set(TWILIO_TO_CLINIC.values()))}
 
 
 def clinic_id_from_twilio_to(to_number: Optional[str]) -> str:
