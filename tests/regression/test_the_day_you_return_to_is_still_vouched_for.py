@@ -128,9 +128,15 @@ def test_the_detoured_to_day_is_vouched_for_too():
 # The veto the reset existed for -- unchanged
 # ---------------------------------------------------------------------------
 def test_a_day_the_payload_mentions_with_moved_slots_is_still_dropped():
-    """B-97: a stale record hides times. Absence is not change; CHANGE is."""
+    """B-97: a stale record hides times. Absence is not change; CHANGE is.
+
+    B-115 changed the fixture, not the subject — see the sibling test of the
+    same name in test_asking_about_one_day_does_not_erase_another. Friday used
+    to GAIN a 09:00 here, which is growth and is what B-98 does to every day it
+    opens. The heard 14:00 now actually goes.
+    """
     session = _mid_detour()
-    session["available_days"] = [_day(FRI, ["09:00", "14:00"], found=2)]
+    session["available_days"] = [_day(FRI, ["09:00"], found=1)]
 
     assert _iso(FRI, "14:00")[:19] not in spoken_starts_for_offer(session)
 
