@@ -835,8 +835,13 @@ _FURTHER_TIMES_RE = re.compile(
     r"\b(?:others?|more|further|times|slots|openings|availability)\b",
     re.IGNORECASE,
 )
-# A claim that the listed times are the COMPLETE set. Used only to SUPPRESS an
-# optional append (never to rewrite), so a false positive costs nothing.
+# A claim that the listed times are the COMPLETE set.
+#
+# No longer read by reconcile_extra_slots_claim: it matches the plural
+# list-introducing opener as well as a real completeness claim, and B-112
+# records what suppressing the tail on that cost a caller. Kept as the
+# definition of the family for the tests that pin the singular pattern
+# against it, and because the two must not drift apart if either is widened.
 _COMPLETENESS_RE = re.compile(
     r"\bthe\s+available\s+(?:slot|slots|time|times)\b[^.!?]{0,40}?\b(?:is|are)\b",
     re.IGNORECASE,
@@ -1205,6 +1210,37 @@ def unspoken_remain_on_day(session: Dict[str, Any], day: str) -> bool:
     spoken record rather than from one turn's tool flag. All three producers of
     more_times are subsumed: a follow-up batch that finishes a day reads False
     here even though its own payload knows only about its own slots.
+
+    Both halves of the day are read, and that is the whole point:
+
+      available_days holds the SURVIVORS of the caller's time-of-day band.
+        Walking those catches the ordinary case -- times presented and not yet
+        spoken.
+      times_found_on_day holds what the day really has. A slot the band hid is
+        never in available_days at all, so no walk over that list can see it,
+        and the caller cannot possibly have heard it.
+
+    B-112, CAf5c4febac4 (28 Aug 2026, theorem_v3, Alcester). "can you show me
+    the dates on the 8th" -> the model sent date_hint "Tuesday 8 September 2026
+    morning", the band kept 2 of the day's 7 slots, and both were read out as
+    Number 1 and Number 2. This function walked the two survivors, found both
+    spoken, and returned False. That answer overrides the tool's more_times in
+    llm_stream (which _was_ correct -- times_not_shown was 5), so the tail was
+    never appended, the caller said "no, none of those work", and Susie moved
+    them to the following week with five bookable slots left on the day.
+
+    That is B-97's false completeness reaching the caller through a third door,
+    and this docstring's own claim to subsume every more_times producer was
+    what made the override look safe. The promise is keepable: B-98 opens a
+    band-spent day on the next lookup, so a caller who asks for the others is
+    served them.
+
+    Counting rather than matching, because the hidden slots are not in the
+    payload -- only the count is. Heard fewer distinct times on that day than
+    the day holds => something is left. That subsumes the walk above and stays
+    correct when a caller heard the whole day UNBANDED on an earlier turn and a
+    later banded fetch shrank it, which a bare `times_not_shown > 0` test would
+    have called "more available" with nothing left to offer.
     """
     spoken = _spoken_key_set(session)
     for slot in flatten_bookable_slots(session.get("available_days") or []):
@@ -1212,6 +1248,23 @@ def unspoken_remain_on_day(session: Dict[str, Any], day: str) -> bool:
             continue
         if str(slot.get("start") or "")[:19] not in spoken:
             return True
+
+    # Slots the band removed before the session ever saw them.
+    heard_on_day = sum(1 for _s in spoken if str(_s)[:10] == day)
+    for _d in (session.get("available_days") or []):
+        if not isinstance(_d, dict) or str(_d.get("date") or "") != day:
+            continue
+        try:
+            # Falls back to the visible count, which makes this a no-op for a
+            # reader whose payload carries no such field -- the pre-B-112
+            # behaviour exactly, rather than a guess about a day it cannot see.
+            _found = int(
+                _d.get("times_found_on_day")
+                or len(_d.get("slots") or [])
+            )
+        except Exception:
+            return False
+        return heard_on_day < _found
     return False
 
 
@@ -1670,10 +1723,26 @@ def reconcile_extra_slots_claim(
         return text, ("rewritten" if _n_rewritten else "unchanged")
     if any(_is_extra_slots_claim(s) for s in sentences):
         return text, ("rewritten" if _n_rewritten else "unchanged")
-    if _COMPLETENESS_RE.search(text):
-        # A completeness claim this cannot safely correct (the plural opener).
-        # Staying quiet is still right: appending "and I've a few others" next
-        # to it would make Susie contradict herself in one breath.
+    if _SINGULAR_COMPLETENESS_RE.search(text):
+        # A completeness claim the rewrite above could not reach. Staying quiet
+        # is still right: appending "and I've a few others" next to a sentence
+        # that has just said the day holds exactly one would make Susie
+        # contradict herself in one breath.
+        #
+        # This used to test _COMPLETENESS_RE, which also matches the plural
+        # list-introducing opener -- "The available slots for Wednesday are —
+        # Number 1 ...". That is the sentence B-112 died on. It introduces a
+        # list; it does not claim the list is the whole day, and _EXTRA_QUANTITY
+        # _RE's own comment calls it a legitimate opener. Suppressing on it
+        # meant every NUMBERED readout of a band-filtered day went out with no
+        # tail -- which is the same false completeness the plural opener was
+        # being credited with avoiding, arriving as silence instead.
+        #
+        # "The available slots for Tuesday 8th September are — Number 1, nine
+        # in the morning. Number 2, ten in the morning. And I've a few others
+        # that day if neither suits. Any of those work?" is what a receptionist
+        # says, and on the 28 Aug call it was also the truth: the day held five
+        # more.
         return text, ("rewritten" if _n_rewritten else "unchanged")
 
     tail = more_times_tail(n_offered)

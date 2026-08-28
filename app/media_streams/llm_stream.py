@@ -3327,6 +3327,14 @@ class LLMStream:
             # record knows what EARLIER turns already read out, which no single
             # tool result does. A follow-up batch that finishes a day reads
             # False here even though its own payload cannot tell.
+            #
+            # It REPLACES the flag rather than lowering it, so it has to know
+            # everything the flag knows. B-112: it did not -- a slot the
+            # caller's time-of-day band removed is never in available_days for
+            # it to walk, so a fully-spoken pair of survivors read as a
+            # finished day and the tail was dropped from a day holding five
+            # more. The hidden count is read there now; do not reintroduce a
+            # second owner for this here.
             _more_times = unspoken_remain_on_day(session, day_key_of(_spoken_opts[0]))
             _n_offered = len(_spoken_opts)
             # Every option resolved to ONE day, so "that day" has a referent.
