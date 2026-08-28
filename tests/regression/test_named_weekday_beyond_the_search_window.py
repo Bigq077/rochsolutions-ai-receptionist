@@ -110,6 +110,18 @@ def calendar(monkeypatch):
         monkeypatch.setattr(
             rt, "_all_day_blocks_for_window", lambda *a, **k: _async([])
         )
+        # Same reasoning for bank holidays, and it is not hypothetical: these
+        # tests ask for a named weekday relative to TODAY, so in the week of
+        # 2026-08-29 the next Monday is the 31st — the August bank holiday.
+        # Once bank holidays stopped being bookable, six tests here started
+        # failing for a reason that has nothing to do with what they pin: the
+        # named day genuinely was not available, so the widen they assert must
+        # not happen, happened.
+        #
+        # Neutralised rather than re-dated, because a fixed date would only
+        # move the problem to the next holiday. Bank holidays have their own
+        # suite in test_bank_holidays_are_not_bookable.py.
+        monkeypatch.setattr(rt, "_closed_dates_for", lambda *a, **k: _async(frozenset()))
         return calls
 
     return _apply

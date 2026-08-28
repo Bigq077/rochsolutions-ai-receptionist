@@ -30,6 +30,7 @@ they are how a clinic differs without a code change:
 | `operational.calendar_id` | **the dangerous one — see below.** |
 | `locations[]` | one entry for a single-site clinic; its `location_id` is auto-confirmed so the caller is never asked which site. Street address goes in `address_full`, not `address` — `address` is not read by anything. |
 | `services[]` | each needs a `service_id`, a caller-facing `name`, and a duration. Nothing is bookable without this. |
+| `operational.open_on_bank_holidays` | defaults to **false** — no slots on England/Wales bank holidays. Set it true only for a clinic that genuinely works them. Not to be confused with `opening_hours.bank_holidays`, which is free prose for the model and books nothing. |
 
 ### 2. A number in `app/clinic_config.py` → `TWILIO_TO_CLINIC`
 

@@ -2411,6 +2411,32 @@ async def _fetch_uk_bank_holidays() -> frozenset:
     return combined
 
 
+async def _closed_dates_for(clinic: Dict[str, Any]) -> frozenset:
+    """Whole dates this clinic cannot be booked on, whatever its weekly hours.
+
+    Today that means England/Wales bank holidays. Returns an EMPTY set — never
+    None — for a clinic that works them, so the caller can pass the result
+    straight through and the day-loop still runs its filter.
+
+    Why this exists: `_fetch_uk_bank_holidays()` had exactly one consumer,
+    `_check_availability_acuity`. The Google, diary and published readers never
+    called it, so on 2026-08-28 the first live call to a new clinic booked
+    08:00 on the August bank holiday — a perfect-sounding call and a locked
+    door. Same remedy as the service pin: one helper every reader shares
+    instead of one filter per reader.
+
+    ONE reader is deliberately not covered: `_check_availability_published`
+    generates nothing — every time it offers is an event the practitioner put
+    on the availability calendar themselves. A published slot on a bank holiday
+    is a decision, not an oversight, and filtering it would delete a slot they
+    chose to open. The filter belongs where slots are DERIVED from a weekly
+    pattern, which is exactly `generate_candidate_slots`.
+    """
+    if clinic.get("open_on_bank_holidays"):
+        return frozenset()
+    return await _fetch_uk_bank_holidays()
+
+
 def _filter_slots_by_working_hours(slots: list, location: str, location_working_hours: dict) -> list:
     """
     Remove slots that fall outside the configured working hours for the given location.
@@ -3064,7 +3090,10 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         #    the hardcoded 2025-2027 fallback set even if the GOV.UK API is down.
         #    NOTE: do NOT guard with "if bank_holidays:" — bool(empty set) is False
         #    and would silently skip the filter. Always run the comprehension.
-        bank_holidays = await _fetch_uk_bank_holidays()
+        #    Routed through _closed_dates_for so the SAME clinic.json key
+        #    (operational.open_on_bank_holidays) governs every reader. Default
+        #    is closed, so Theorem's behaviour here is unchanged.
+        bank_holidays = await _closed_dates_for(clinic_cfg)
         if slots:
             before_bh = len(slots)
             slots = [s for s in slots if s.start_time.date() not in bank_holidays]
@@ -5916,6 +5945,10 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
 
     _slot_minutes = int(clinic.get("slot_minutes") or 50)
     _break_min = int(clinic.get("slot_break_minutes") or 0)
+    # Dates this clinic cannot be booked on at all (bank holidays unless it
+    # opts in). Resolved ONCE here and handed to every generate_candidate_slots
+    # call below, so a new call site cannot quietly skip the filter.
+    _closed_dates = await _closed_dates_for(clinic)
     # Slot length: caller-passed override, else the length configured for THIS
     # service (services[].typical_duration_minutes), else the clinic slot_minutes.
     # Per-service so a 30-min treatment and a 60-min neuro assessment grid (and
@@ -5977,6 +6010,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         clinic_working_hours=working_hours,
         increment_min=clinic.get("slot_increment_minutes"),
         break_min=_break_min,
+        closed_dates=_closed_dates,
     )
 
     tokens = await _get_tokens(_resolve_clinic_id(session))
@@ -6091,6 +6125,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
                 clinic_working_hours=working_hours,
                 increment_min=clinic.get("slot_increment_minutes"),
                 break_min=_break_min,
+                closed_dates=_closed_dates,
             )
             try:
                 # Same two-call shape as the primary path. The widen window is
@@ -6221,6 +6256,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
             clinic_working_hours=working_hours,
             increment_min=clinic.get("slot_increment_minutes"),
             break_min=_break_min,
+            closed_dates=_closed_dates,
         )
         try:
             # Same two-call concurrent shape as the primary read — the all-day
@@ -6480,6 +6516,10 @@ async def _check_availability_diary(
 
     _slot_minutes = int(clinic.get("slot_minutes") or 60)
     _break_min = int(clinic.get("slot_break_minutes") or 0)
+    # Dates this clinic cannot be booked on at all (bank holidays unless it
+    # opts in). Resolved ONCE here and handed to every generate_candidate_slots
+    # call below, so a new call site cannot quietly skip the filter.
+    _closed_dates = await _closed_dates_for(clinic)
     duration_min = _resolve_duration_minutes(
         clinic, _raw_service, args, session, _slot_minutes
     )
@@ -6561,6 +6601,7 @@ async def _check_availability_diary(
         clinic_working_hours=working_hours,
         increment_min=clinic.get("slot_increment_minutes"),
         break_min=_break_min,
+        closed_dates=_closed_dates,
     )
 
     try:
@@ -6662,6 +6703,7 @@ async def _check_availability_diary(
                 clinic_working_hours=working_hours,
                 increment_min=clinic.get("slot_increment_minutes"),
                 break_min=_break_min,
+                closed_dates=_closed_dates,
             )
             _wd_blocks = parse_busy(_wd_busy or [])
             _wd_blocks += _all_day_busy_blocks(events, w_start, _wd_end)

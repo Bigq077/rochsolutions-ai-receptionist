@@ -1521,6 +1521,16 @@ def _map_json_to_clinic_contract(loaded: Dict[str, Any]) -> Dict[str, Any]:
     clinic["owner_alerts"] = op.get("owner_alerts", {})  # real-time owner SMS alert config
     clinic["call_overflow"] = op.get("call_overflow", {})  # human-first overflow ring config
     clinic["allow_same_day"] = bool(op.get("allow_same_day", False))
+    # Does this clinic open on England/Wales bank holidays? Defaults to NO,
+    # because the two mistakes are not symmetric: a clinic wrongly closed loses
+    # a caller one day of options, and a clinic wrongly OPEN sends a patient to
+    # a locked door — the failure this system exists to avoid. A clinic that
+    # genuinely works bank holidays sets operational.open_on_bank_holidays true.
+    #
+    # NOTE this is not `opening_hours.bank_holidays`, which is free prose for
+    # the model ("TBC — varies by week"). This one is read by the slot
+    # generator and decides what can actually be booked.
+    clinic["open_on_bank_holidays"] = bool(op.get("open_on_bank_holidays", False))
     clinic["slot_minutes"] = slot_minutes
     # Slot-offering increment (spacing between offered start times). An EXPLICIT
     # override only — e.g. 60 to force hourly starts. When unset it stays None so
