@@ -107,9 +107,19 @@ async def test_the_availability_payload_has_the_real_shape():
     table = build_tool_executors(diary, [], now=now)
     session = _fresh_session()
     session["clinic_id"] = CLINIC
+    # The fake runs the REAL _exec_check_availability, so the real gates apply.
+    # A session that has not chosen a length gets `duration_choice_required`,
+    # correctly — Vital Edge's massages are 60 or 90. Satisfy the gate rather
+    # than bypass it; bypassing is how a harness stops testing the engine.
+    session["_service_duration_choice"] = 60
+    session["selected_location"] = "kingston"
+    session["location_confirmed"] = True
+    session["confirmed_location"] = "kingston"
 
     out = await table["check_availability"](
-        {"service": "sports_massage", "date_hint": "Tuesday afternoon"}, session
+        {"service": "sports_massage", "date_hint": "Tuesday afternoon",
+         "duration_minutes": 60, "location": "kingston"},
+        session,
     )
 
     for key in ("available_days", "total_days", "presentation_mode",
@@ -168,7 +178,13 @@ async def test_a_full_booking_arc_writes_exactly_one_diary_entry():
         booked = diary.bookings[0]
         assert booked.name == "Daniel Okafor", call.transcript
         assert booked.duration_min == 60, call.transcript
-        assert call.session.get("booking_confirmed") is True
+
+        # Vital Edge is a PROVISIONAL clinic: the slot is written as PENDING and
+        # Jonathan confirms it directly. `booking_confirmed` is deliberately NOT
+        # set here - asserting it would be asserting that Susie lied to the
+        # caller about a booking being final.
+        assert call.session.get("provisional_booking") is True
+        assert call.session.get("calendar_status") == "provisional"
 
         # The time written must be a time she actually read out.
         spoken_hours = {

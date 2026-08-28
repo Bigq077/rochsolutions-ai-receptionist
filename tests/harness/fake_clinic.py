@@ -20,17 +20,24 @@ same order, calling the SAME functions:
 Only the calendar read is replaced. Everything downstream of the payload is
 production code, so an offer-record defect reproduces here.
 
-`book_appointment` does NOT mirror its executor - it records the write and
-returns. Booking's failure modes are provider-shaped (Acuity 400s, admin flags,
-SMS latches) and belong in their own tests; what this harness needs from it is
-a truthful record of WHAT WOULD HAVE BEEN WRITTEN, so a test can assert the
-diary entry matches what the caller was told.
+`book_appointment` goes further still: it runs the REAL executor and fakes only
+its I/O (the token store, create_event, and the owner SMS). The booking path
+carries the service and modality reconciliations, `_resolve_duration_minutes`
+and the past-slot guard - all of which decide WHAT LANDS IN A PRACTITIONER'S
+CALENDAR. A stub that recorded `args["service"]` would be blind to every one of
+them, and would report a fix to any of them as still broken.
+
+The recorded Booking is therefore built from the create_event call arguments
+and `session["collected"]`, i.e. from what the executor actually resolved -
+never from what the model asked for.
 """
 from __future__ import annotations
 
 import dataclasses
+from contextlib import ExitStack
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from unittest.mock import patch
 
 
 @dataclasses.dataclass
@@ -152,8 +159,55 @@ def build_tool_executors(diary: FakeDiary, calls: List[ToolCall],
     from app.tools import receptionist_tools as rt
     from app.tools.slots import format_slot
 
+    # Captured BEFORE the driver patches the table, so book_appointment can
+    # still reach the genuine executor.
+    real_executors = dict(getattr(rt, "TOOL_EXECUTORS", {}) or {})
+
     async def check_availability(args: Dict[str, Any],
                                  session: Dict[str, Any]) -> Dict[str, Any]:
+        """Run the REAL `_exec_check_availability`, faking only the READER.
+
+        `_exec_check_availability` is not a thin dispatcher - it is a gate
+        stack (service validity, location confirmed, duration choice) plus the
+        session pins that later turns depend on, and only then a dispatch to
+        one of four readers.
+
+        An earlier version of this stub replaced the whole executor and went
+        straight to the payload builders. That skipped every gate and every
+        pin - including `_checked_service`, which is what makes
+        book_appointment book the service the caller was actually shown. So a
+        fix to that pin was invisible here: the harness reported the defect as
+        still live because it never ran the fixed line.
+
+        Now only the reader is replaced, per clinic arm. The Google-Calendar
+        body is inline in the executor and cannot be patched, so that arm is
+        cut off at `freebusy` instead.
+        """
+        import app.tools.calendar_google as gcal
+
+        async def _reader(a, s, clinic=None):
+            return await _payload_from_diary(a, s)
+
+        def _no_busy(*a, **kw):
+            return {}
+
+        async def _tokens(*a, **kw):
+            return {"token": "fake", "migrated": True}
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch.object(rt, "_check_availability_diary", _reader))
+            stack.enter_context(
+                patch.object(rt, "_check_availability_published", _reader))
+            stack.enter_context(
+                patch.object(rt, "_check_availability_acuity",
+                             lambda a, s: _reader(a, s)))
+            stack.enter_context(patch.object(rt, "_get_tokens", _tokens))
+            stack.enter_context(patch.object(gcal, "freebusy", _no_busy))
+            return await real_executors["check_availability"](args, session)
+
+    async def _payload_from_diary(args: Dict[str, Any],
+                                  session: Dict[str, Any]) -> Dict[str, Any]:
         anchor = now or datetime.now()
         after_raw = (args.get("after_date") or "").strip()
         if after_raw:
@@ -210,64 +264,83 @@ def build_tool_executors(diary: FakeDiary, calls: List[ToolCall],
 
     async def book_appointment(args: Dict[str, Any],
                                session: Dict[str, Any]) -> Dict[str, Any]:
-        """Record the write and mirror the session state the real path sets.
+        """Run the REAL booking executor with only its I/O faked.
 
-        The arg is `slot_iso` and the success key is `booked_slot` - both taken
-        from the schema and the executor, not guessed. Getting either wrong
-        makes the model apologise for a booking that "failed" while the stub
-        happily recorded it, which is the harness telling a lie in the most
-        expensive possible direction.
+        An earlier version of this stub replaced the executor wholesale and
+        recorded `args["service"]` as the booked service. That made the harness
+        blind to the entire booking path - including the service and modality
+        reconciliations, `_resolve_duration_minutes`, and the past-slot guard -
+        and it would have reported a fix to any of them as still broken,
+        because the stub never ran the fixed code.
 
-        The session writes below are not decoration: `booking_confirmed` is
-        what connection.py reads at teardown to decide "booked" vs
-        "caller_hung_up", and omitting it made every harness booking look like
-        an abandoned call - the exact defect that hid 25 real bookings in July.
+        So the executor runs. Faked here, and only here:
+
+          * `_get_tokens`      - the Google token store (Redis)
+          * `create_event` / `update_event` / `patch_event_time` - the write
+          * `notify_owner`     - the owner SMS
+
+        The recorded Booking is derived from the create_event CALL ARGUMENTS,
+        which is the truest possible record: it is literally what would have
+        landed in the practitioner's calendar.
+
+        The provisional path imports create_event INSIDE the function, so
+        patching the module attribute is what takes effect.
         """
-        start = (args.get("slot_iso") or "").strip()
-        if not start:
-            return {"success": False, "error": "Invalid slot datetime: missing slot_iso"}
+        import app.notifications.owner_notify as owner_notify
+        import app.tools.calendar_google as gcal
 
-        dur = args.get("duration_minutes")
-        try:
-            dur = int(dur) if dur is not None else None
-        except (TypeError, ValueError):
-            dur = None
+        created: Dict[str, Any] = {}
 
-        try:
-            sdt = datetime.fromisoformat(start)
-        except ValueError as exc:
-            return {"success": False, "error": f"Invalid slot datetime: {exc}"}
-        edt = sdt + timedelta(minutes=dur or diary.default_duration_min)
+        def _fake_create_event(stored_tokens, start_dt, end_dt, summary,
+                               description="", calendar_id=None,
+                               visibility="default"):
+            created["start_dt"] = start_dt
+            created["end_dt"] = end_dt
+            created["summary"] = summary
+            created["description"] = description
+            created["calendar_id"] = calendar_id
+            return {"id": f"fake-event-{len(diary.bookings) + 1}"}
 
-        name = (args.get("patient_name") or "").strip()
-        phone = (args.get("phone") or "").strip()
-        service = (args.get("service") or "").strip()
-        location = (args.get("location") or "").strip()
+        def _fake_update_event(*a, **kw):
+            return {"id": created.get("id") or "fake-event"}
 
-        booking = Booking(
-            start=sdt.isoformat(), end=edt.isoformat(), name=name, phone=phone,
-            service=service, duration_min=dur, raw_args=dict(args),
-        )
-        diary.book(booking)
+        def _fake_patch_event_time(*a, **kw):
+            return {"id": created.get("id") or "fake-event"}
 
-        event_id = f"fake-event-{len(diary.bookings)}"
-        rt._sync_booked_patient_name(session, name)
-        collected = session.setdefault("collected", {})
-        collected["phone"] = phone
-        collected["service"] = service
-        collected["location"] = location
-        collected["slot"] = start
-        session["selected_slot"] = start
-        session["calendar_event_id"] = event_id
-        session["calendar_status"] = "created"
-        session["booking_confirmed"] = True
+        async def _fake_get_tokens(*a, **kw):
+            return {"token": "fake", "refresh_token": "fake", "migrated": True}
 
-        return {
-            "success": True,
-            "event_id": event_id,
-            "booked_slot": sdt.strftime("%A %d %B at %H:%M"),
-            "location": location.title(),
-        }
+        async def _fake_notify_owner(clinic, message):
+            return True
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(gcal, "create_event", _fake_create_event))
+            stack.enter_context(patch.object(gcal, "update_event", _fake_update_event))
+            stack.enter_context(patch.object(gcal, "patch_event_time", _fake_patch_event_time))
+            stack.enter_context(patch.object(rt, "_get_tokens", _fake_get_tokens))
+            stack.enter_context(
+                patch.object(owner_notify, "notify_owner", _fake_notify_owner))
+            result = await real_executors["book_appointment"](args, session)
+
+        if created:
+            start_dt = created["start_dt"]
+            end_dt = created["end_dt"]
+            dur = int((end_dt - start_dt).total_seconds() // 60)
+            diary.book(Booking(
+                start=start_dt.isoformat(),
+                end=end_dt.isoformat(),
+                name=(args.get("patient_name") or "").strip(),
+                phone=(args.get("phone") or "").strip(),
+                # The SERVICE AS WRITTEN, resolved by the executor - NOT the
+                # model's argument. This is the field the wrong-service defect
+                # lives in, so reading args here would make the harness blind
+                # to the very reconciliation that fixes it. `collected` is what
+                # the SMS templates and the call record read too.
+                service=(session.get("collected") or {}).get("service") or "",
+                duration_min=dur,
+                raw_args=dict(args),
+            ))
+        return result
 
     async def cancel_appointment(args: Dict[str, Any],
                                  session: Dict[str, Any]) -> Dict[str, Any]:

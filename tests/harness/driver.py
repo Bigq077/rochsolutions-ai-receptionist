@@ -198,6 +198,8 @@ class ConversationDriver:
         if self._llm is None:
             raise RuntimeError("ConversationDriver.start() has not run")
 
+        self._pre_turn(text)
+
         tts_q: asyncio.Queue = asyncio.Queue()
         audio_q: asyncio.Queue = asyncio.Queue()
         before = len(self.tool_calls)
@@ -220,6 +222,52 @@ class ConversationDriver:
                     tools=list(self.tool_calls[before:]))
         self.turns.append(turn)
         return turn
+
+    def _pre_turn(self, text: str) -> None:
+        """The part of a caller turn that happens OUTSIDE run_turn.
+
+        `run_turn` is not the whole turn. connection.py's _llm_loop does work
+        either side of it, and one piece is load-bearing for any booking:
+        the VERBAL PHONE CONFIRM. `phone_confirmed` is written in connection.py
+        and (dead) flow.py, never in llm_stream - so a driver that only calls
+        run_turn can never satisfy the A1 guard, and every booking is refused
+        with "the caller has not confirmed a number" while Susie re-asks the
+        same question forever.
+
+        The three predicates are IMPORTED, never re-typed. `_phone_confirm_is_yes`
+        exists because a substring list failed in both directions on one call
+        ("don't use that one" read as yes), and `_phone_question_on_the_table`
+        exists because answering "did they say yes?" without "yes to WHAT?"
+        fired on a caller DECLINING to give a number. Re-implementing either
+        here would rebuild both bugs inside the tool meant to catch them.
+
+        Deliberately NOT modelled: the DTMF/keypad path. It needs digit events
+        this driver has no way to send, and `phone_entered_by_keypad` is one of
+        the conditions below, so the un-modelled path stays correctly inert.
+        """
+        from app.media_streams.connection import (
+            _confirm_caller_number,
+            _phone_confirm_is_yes,
+            _phone_question_on_the_table,
+        )
+
+        if self.session.get("phone_entered_by_keypad"):
+            return
+        caller_num = _confirm_caller_number(self.session)
+        if not caller_num:
+            return
+        if not _phone_confirm_is_yes(text):
+            return
+        if not _phone_question_on_the_table(self.session):
+            return
+
+        self.session.setdefault("collected", {})
+        self.session["collected"]["phone"] = caller_num
+        # REQUIRED, not incidental: _get_confirmed_phone only returns the
+        # number when this is True, so without it the SMS router sees no phone.
+        self.session["phone_confirmed"] = True
+        self.session["v3_phone_dtmf_active"] = False
+        self.session["phone_dtmf_buffer"] = ""
 
     def _drain(self, tts_q: asyncio.Queue):
         """Apply the TTS loop's own suppression rules to the queued chunks.
