@@ -3084,9 +3084,11 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         # part-of-day request shows a real spread instead of one lonely slot.
         # single_day (one day, all its times) is reserved for the two cases where
         # a single day is genuinely what the caller wants:
-        #   (a) ASAP  — "soonest/earliest" → the one earliest day + warm lead-in,
-        #               but it FALLS BACK to multi_day when that day is too thin
-        #               so the caller still hears ≥2 options ("fill-forward").
+        #   (a) ASAP  — "soonest/earliest" → the one earliest day, as-is.
+        #               There is NO fill-forward: it was removed by owner
+        #               decision 2026-06-15 (see the branch below). This
+        #               line described it for months after it was gone and
+        #               was read as a live mechanism on 2026-08-28.
         #   (b) a SPECIFIC named day — "Tuesday", "the 23rd", "tomorrow" → the
         #               week filter resolved a 1-day range; show that day in full.
         _ASAP_SIGNALS = ("soon", "asap", "earliest", "first avail", "as soon as")
@@ -3334,16 +3336,83 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                 and not _has_week_anchor
                 and _weekday_found
             ):
-                _result["guidance"] = (
-                    f"{_not_shown} further date(s) matching the requested day "
-                    "also have times, and are NOT in this result. You may say "
-                    "these are all the times on that DATE. Do NOT say or imply "
-                    "it is all there is on that weekday, or that the clinic is "
-                    "full or closed then. If the date does not suit, offer to "
-                    "look at the next one and call check_availability again "
-                    "with after_date past this date; never name a later date "
-                    "you have not been given slots for, and never invent times."
-                )
+                # B-109, owner decision 28 Aug 2026. The rule above stopped
+                # Susie MISDESCRIBING the hidden dates; it did not let her
+                # OFFER them. She was told to "offer to look at the next one"
+                # while being forbidden to name it, so the caller had to think
+                # to ask a second time. On CA1b7b2c58 he did not: he heard one
+                # slot on Tuesday 1st September and hung up, while the 8th,
+                # 15th and 22nd held 7, 8 and 9.
+                #
+                # That shape is the norm, not bad luck. The soonest matching
+                # date is the nearest, so it is the most booked, and single_day
+                # shows it. The thinnest member of the set is the one spoken
+                # almost every time.
+                #
+                # So hand over the DATES. Not the times: reading three dates
+                # worth of slots is the wall of times the presentation caps
+                # exist to prevent, and it would put dates the caller never
+                # heard back into the ordinal map that B-108b just cleared.
+                # Dates alone let her say "I have also got times on the 8th,
+                # 15th and 22nd" and stop, which is the offer that was missing.
+                #
+                # Labels come from _spoken_day_label, which exists so the model
+                # never renders a date itself. Filtered to the requested
+                # weekday explicitly: _filter_tuples_by_preference silently
+                # DROPS a day filter matching nothing, so days_data can hold
+                # unrelated days, and naming one of those as "another Tuesday"
+                # is the same false confidence this family exists to stop.
+                _other_dates = []
+                for _od in days_data[1:]:
+                    _od_iso = _od.get("date") or ""
+                    if not _od_iso:
+                        continue
+                    if _pref_weekdays:
+                        try:
+                            if _date_type.fromisoformat(_od_iso).weekday() not in _pref_weekdays:
+                                continue
+                        except Exception:
+                            continue
+                    _od_label = _spoken_day_label(_od_iso)
+                    if not _od_label:
+                        continue
+                    _other_dates.append({
+                        "date":            _od_iso,
+                        "spoken":          _od_label,
+                        "times_available": _od.get("times_found_on_day")
+                                           or len(_od.get("slot_times") or []),
+                    })
+                    if len(_other_dates) == 3:
+                        break
+                if _other_dates:
+                    _result["other_dates_for_requested_day"] = _other_dates
+                    _result["guidance"] = (
+                        f"The times above are for ONE date. {len(_other_dates)} "
+                        "further date(s) matching the requested day also have "
+                        "times, listed in other_dates_for_requested_day. NAME "
+                        "those dates using their 'spoken' field and offer them "
+                        "if the date above does not suit. You have NOT been "
+                        "given the times on them: never state a time on those "
+                        "dates, and never invent times. To read times from "
+                        "one, "
+                        "call check_availability again with after_date set to "
+                        "the day before it. You may say these are all the times "
+                        "on the DATE above. Do NOT say or imply it is all there "
+                        "is on that weekday, or that the clinic is full or "
+                        "closed then, and never name a date that is not in "
+                        "other_dates_for_requested_day."
+                    )
+                else:
+                    _result["guidance"] = (
+                        f"{_not_shown} further date(s) matching the requested day "
+                        "also have times, and are NOT in this result. You may say "
+                        "these are all the times on that DATE. Do NOT say or imply "
+                        "it is all there is on that weekday, or that the clinic is "
+                        "full or closed then. If the date does not suit, offer to "
+                        "look at the next one and call check_availability again "
+                        "with after_date past this date; never name a later date "
+                        "you have not been given slots for, and never invent times."
+                    )
             # Warm lead-in only on a single_day ASAP request ("soonest/earliest").
             # Never on a specific-day request like "do you have Tuesday?".
             if _is_asap:
