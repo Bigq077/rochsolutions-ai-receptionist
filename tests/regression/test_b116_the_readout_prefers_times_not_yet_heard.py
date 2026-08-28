@@ -120,14 +120,21 @@ def test_a_caller_who_has_heard_everything_is_not_starved():
     assert [ALL_SEVEN[i] for i in idx] == ["09:00", "10:00", "12:00"]
 
 
-def test_a_partly_heard_day_tops_up_in_chronological_order():
-    """Two unheard on a three-slot readout: lead with them, then fill from the
-    front. The result is still spoken soonest-first."""
+def test_a_partly_heard_day_speaks_only_the_unheard():
+    """Two unheard on a three-slot readout: speak the two and STOP.
+
+    This assertion is the reverse of the one B-116 shipped with, which
+    topped the list back up to three from the front. B-119 reversed it: the
+    top-up reached for a time the caller had already been read, one turn
+    after B-117 had said "I've given you all the mornings I have that day".
+    A short list is the honest answer; a padded one contradicts the sentence
+    before it. See test_b119_the_readout_never_pads_with_a_heard_time.
+    """
     session = {"available_days": [_day(ALL_SEVEN)]}
     record_spoken_slots(session, _slots(["12:00", "13:00", "14:00", "15:00", "16:00"]))
     idx = choose_presented_indices(session, _day(ALL_SEVEN), 3)
     picked = [ALL_SEVEN[i] for i in idx]
-    assert picked == ["09:00", "10:00", "12:00"]
+    assert picked == ["09:00", "10:00"]
     assert picked == sorted(picked)
 
 
