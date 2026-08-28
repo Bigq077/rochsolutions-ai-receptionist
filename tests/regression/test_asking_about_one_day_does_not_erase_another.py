@@ -118,14 +118,32 @@ def test_a_day_the_payload_does_not_mention_is_left_alone():
 # ---------------------------------------------------------------------------
 def test_a_day_whose_slots_really_moved_still_drops_its_record():
     """A stale record would hide times, which is the whole B-97 family. That
-    must still self-heal — just for the day it applies to."""
+    must still self-heal — just for the day it applies to.
+
+    B-115 changed the FIXTURE, not the subject. This used to grow Friday from
+    [14:00] to [09:00, 14:00] and call that "moved" — but the caller's 14:00
+    was still there, and the 09:00 beside it was unheard and still offered, so
+    nothing was hidden and nothing needed dropping. That shape is what B-98
+    does to a day every time it opens a spent band, and reading it as removal
+    is the defect B-115 fixes. The 14:00 now actually GOES, which is the case
+    this test was written for.
+    """
     session: dict = {"available_days": [_day(FRI, ["14:00"])]}
     _heard(session, FRI, "14:00")
 
-    session["available_days"] = [_day(FRI, ["09:00", "14:00"])]   # Friday moved
+    session["available_days"] = [_day(FRI, ["09:00"])]   # the heard 14:00 is gone
     assert spoken_starts_for_offer(session) == set()
     record_spoken_slots(session, [])
     assert session[_SPOKEN_KEY] == []
+
+
+def test_a_day_that_merely_grew_keeps_its_record():
+    """The other side of the same line (B-115)."""
+    session: dict = {"available_days": [_day(FRI, ["14:00"])]}
+    _heard(session, FRI, "14:00")
+
+    session["available_days"] = [_day(FRI, ["09:00", "14:00"])]
+    assert spoken_starts_for_offer(session) == {_iso(FRI, "14:00")[:19]}
 
 
 def test_only_the_day_that_moved_is_dropped():
@@ -134,7 +152,7 @@ def test_only_the_day_that_moved_is_dropped():
     session["available_days"] = [_day(WED, ["14:00"])]
     _heard(session, WED, "14:00")
 
-    session["available_days"] = [_day(FRI, ["09:00", "14:00"])]   # Friday only
+    session["available_days"] = [_day(FRI, ["09:00"])]   # Friday only, 14:00 gone
     record_spoken_slots(session, [])
 
     assert session[_SPOKEN_KEY] == [_iso(WED, "14:00")[:19]], (
