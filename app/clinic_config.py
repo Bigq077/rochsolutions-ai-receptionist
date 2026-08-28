@@ -1694,6 +1694,11 @@ def validate_clinic_config(clinic_id: str) -> List[str]:
             problems.append(
                 "calendar_id is 'primary' — that is the service account's own "
                 "calendar, not the clinic's")
+        elif "@" not in cal:
+            problems.append(
+                f"calendar_id {cal!r} is not a calendar address — a Google "
+                "calendar id is an email-style address. A placeholder left in "
+                "clinic.json reads as configured and books nowhere.")
         else:
             for other in _all_known_clinic_ids():
                 if other == cid:
@@ -1723,7 +1728,90 @@ def validate_clinic_config(clinic_id: str) -> List[str]:
             (clinic.get("operational") or {}).get("primary_location")):
         problems.append("no locations and no operational.primary_location")
 
+    problems.extend(_hours_disagreements(clinic))
     return problems
+
+
+_DAY_ALIASES = {"monday": "mon", "tuesday": "tue", "wednesday": "wed",
+                "thursday": "thu", "friday": "fri", "saturday": "sat",
+                "sunday": "sun"}
+
+
+def _hours_disagreements(clinic: Dict[str, Any]) -> List[str]:
+    """The clinic has TWO hours blocks, and they are read by different things.
+
+    `operational.working_hours` generates the slots Susie OFFERS.
+    `opening_hours`, keyed by location, is rendered into the prompt
+    (clinic_template_prompt.py:942) and is what Susie SAYS.
+
+    Onboard by copying another tenant, update one and not the other, and the
+    caller is told the clinic opens at half four while being offered nine in
+    the morning -- inside a single call, from a single config file, with
+    nothing logged. Both halves survive a find-and-replace of the clinic's
+    name intact, which is why this is checked rather than documented.
+    """
+    problems: List[str] = []
+    opening = clinic.get("opening_hours") or {}
+    if not isinstance(opening, dict) or not opening:
+        return problems
+
+    # `opening_hours` mixes per-site blocks with free-text siblings
+    # (`last_appointment`, `bank_holidays`), so a site is identified by its
+    # SHAPE -- a dict carrying day names -- not by "every key here is a site".
+    sites = {k: v for k, v in opening.items()
+             if isinstance(v, dict) and (set(v) & set(_DAY_ALIASES))}
+    if not sites:
+        return problems
+
+    known = {(loc.get("location_id") or "").strip().lower()
+             for loc in (clinic.get("locations") or [])}
+    known.discard("")
+    primary = ((clinic.get("operational") or {}).get("primary_location")
+               or "").strip().lower()
+    if primary:
+        known.add(primary)
+
+    for site in sites:
+        if known and site.strip().lower() not in known:
+            problems.append(
+                f"opening_hours names {site!r}, which is not one of this "
+                f"clinic's locations ({sorted(known)}) — Susie would read out "
+                "another clinic's opening hours")
+
+    site_hours = sites.get(primary)
+    if site_hours is None:
+        return problems
+
+    working = (clinic.get("operational") or {}).get("working_hours") or {}
+    for long_day, short_day in _DAY_ALIASES.items():
+        spoken, booked = site_hours.get(long_day), working.get(short_day)
+        if _closed(spoken) != _closed(booked):
+            problems.append(
+                f"{long_day}: opening_hours says "
+                f"{'closed' if _closed(spoken) else 'open'} but "
+                f"operational.working_hours says "
+                f"{'closed' if _closed(booked) else 'open'} — she would say "
+                "one and offer the other")
+            continue
+        if not isinstance(spoken, dict) or not isinstance(booked, dict):
+            continue
+        for field in ("open", "last_appointment"):
+            if spoken.get(field) and booked.get(field) and \
+                    spoken[field] != booked[field]:
+                problems.append(
+                    f"{long_day} {field}: opening_hours says "
+                    f"{spoken[field]!r}, operational.working_hours says "
+                    f"{booked[field]!r}")
+    return problems
+
+
+def _closed(value: Any) -> bool:
+    """A closed day is written as null in one block and "Closed" in the other."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"", "closed", "none", "n/a"}
+    return False
 
 
 def _all_known_clinic_ids() -> List[str]:

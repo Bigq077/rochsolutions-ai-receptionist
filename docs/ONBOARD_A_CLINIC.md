@@ -92,6 +92,47 @@ arrive.
 
 ---
 
+## Renaming the tenant is the easy half
+
+Onboarding is a copy, so the instinct is find-and-replace the clinic's name.
+That handles names. It does not touch **facts**, and the donor's facts are
+still in there, still stated as true. Building `northgate` from `jv_v1` on
+2026-08-28, a clean name sweep still left:
+
+- the donor's **prices and durations** (`£52`, "40 minutes") in `faq`
+- an **evenings-only** book in the FAQ, under daytime `working_hours`
+- **home visits** and **acupuncture** offered in `faq` and `treatment_guidance`
+  by a clinic that sells neither
+- a real **HCPC registration number** and a real **rugby club** in
+  `team_and_availability`
+- **`stt_variants`** — pure donor identity, and lowercase, so a case-sensitive
+  rename misses it entirely. Left alone it teaches the recogniser the previous
+  clinic's name as this clinic's name.
+
+**Rewrite these blocks by hand, every time:** `faq`, `team_and_availability`,
+`stt_variants`, `modality_labels`, `prompt_facts`, `pricing_and_policies`,
+`call_handling`, and the `services` list in `treatment_guidance`.
+
+`condition_knowledge` and `clinical_screening` — the ~49KB clinical layer —
+are generic and *should* be inherited. That is the product, not the tenant.
+
+### The two hours blocks
+
+There are two, read by different things, and they must agree:
+
+| block | read by | what it controls |
+|---|---|---|
+| `operational.working_hours` | the slot generator | the times Susie **offers** |
+| `opening_hours.<location_id>` | `clinic_template_prompt.py:942` | the hours Susie **says** |
+
+Update one and not the other and the caller is told you open at half four while
+being offered nine in the morning — one call, one config file, nothing logged.
+`validate_clinic_config` compares them day by day. Note the two blocks spell a
+closed day differently: `null` in `working_hours`, the string `"Closed"` in
+`opening_hours`. Both are accepted.
+
+---
+
 ## What is *not* config yet
 
 - **Theorem** (`theorem*`) is Acuity-backed and reads its prompt from a Python

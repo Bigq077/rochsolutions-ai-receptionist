@@ -165,7 +165,19 @@ UNCHANGED_CLINIC_PROMPTS = {
     # CONTAINMENT, which is what this table is for: demo, theorem and
     # theorem_v3 are byte-identical across the change. Theorem runs a
     # hardcoded prompt of its own, so nothing here reaches Mark's line.
-    "jv_v1": "c66d6e9aff4c8787",
+    # Re-pinned 2026-08-28, c66d6e9aff4c8787 -> a55429e037c05913. The shared
+    # template named REAL PRACTITIONERS in engine code: _render_insurance said
+    # "Marcus will be in touch", and two callback examples said "Jonathan/
+    # Marcus". So each template clinic's model was told about the OTHER
+    # clinic's practitioner — vital_edge's prompt carried "Marcus" and jv_v1's
+    # carried "Jonathan" — and a fourth clinic would have got both. All four
+    # now render tk["practitioner"].
+    #
+    # Found by tests/tenancy/: a clinic built entirely from config still had
+    # the donor's practitioner in its rendered prompt, which can only come from
+    # engine code. Nothing else in this file's containment claim changes —
+    # demo / theorem / theorem_v3 use a different engine and are byte-identical.
+    "jv_v1": "a55429e037c05913",
     "theorem": "8565be9a48a7a9aa",
     # Re-pinned 2026-08-25: 'Children under fifteen not seen' -> 'Children
     # under seven not seen'. Mark's minimum age is 7 (owner-confirmed

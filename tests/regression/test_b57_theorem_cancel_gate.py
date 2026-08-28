@@ -338,7 +338,20 @@ UNMOVED_PROMPTS = {
     # CONTAINMENT, which is what this table is for: demo, theorem and
     # theorem_v3 are byte-identical across the change. Theorem runs a
     # hardcoded prompt of its own, so nothing here reaches Mark's line.
-    "jv_v1": "c66d6e9aff4c8787",
+    # Re-pinned 2026-08-28. The shared template named REAL PRACTITIONERS in
+    # engine code: _render_insurance said "Marcus will be in touch", and two
+    # callback examples said "Jonathan/Marcus". Each template clinic was
+    # therefore told about the OTHER clinic's practitioner - vital_edge's
+    # prompt carried "Marcus", jv_v1's carried "Jonathan" - and a fourth
+    # clinic would have inherited both. All four sites now render
+    # tk["practitioner"], so both template clinics move together and demo /
+    # theorem / theorem_v3 are byte-identical.
+    #
+    # Found by tests/tenancy/: a clinic built purely from config still had
+    # the donor's practitioner in its prompt, which can only come from code.
+    # Hashes recomputed with THIS file's _sha - the two pin tables hash
+    # differently, so a value must never be copied between them.
+    "jv_v1": "a55429e037c05913",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -397,7 +410,7 @@ UNMOVED_PROMPTS = {
     # is gated on minimum_age_years, so jv_v1 - the other template_v1 clinic,
     # whose policy is "No minimum age" - renders nothing and HELD, as did demo,
     # theorem and theorem_v3.
-    "vital_edge": "e52579ab12c53eab",
+    "vital_edge": "9344be1c88fb18e5",
 }
 
 
