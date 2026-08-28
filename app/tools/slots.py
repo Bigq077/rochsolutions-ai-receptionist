@@ -86,6 +86,7 @@ def generate_candidate_slots(
     clinic_working_hours: Optional[dict] = None,
     increment_min: Optional[int] = None,
     break_min: int = 0,
+    closed_dates: Optional[frozenset] = None,
 ) -> list[tuple[datetime, datetime]]:
     """
     Generate candidate slots inside [window_start, window_end], all tz-aware.
@@ -97,6 +98,9 @@ def generate_candidate_slots(
     break steps 45 min: 5:00, 5:45, 6:30 …). The break is spacing only; each
     slot still lasts exactly `duration_min`, so the calendar event stays the
     true appointment length. Each slot lasts duration_min.
+
+    `closed_dates` removes whole DATES the clinic is shut on, independently of
+    the weekly pattern — bank holidays today. A day in that set emits nothing.
 
     Working-hours bounds support FRACTIONAL hours (16.5 = 16:30, 21.1667 ≈
     21:10), so half-hour openings/closings are respected exactly — a slot is
@@ -125,6 +129,20 @@ def generate_candidate_slots(
     d = window_start.date()
     end_d = window_end.date()
     while d <= end_d:
+        # Dates the clinic is shut regardless of its weekly hours — bank
+        # holidays today. Enforced HERE, in the one day-loop every generated
+        # reader shares, rather than at each reader's return site: the Acuity
+        # reader had this filter and the Google, diary and published readers
+        # did not, so on 2026-08-28 a caller was booked into 08:00 on the
+        # August bank holiday. One loop covers all of them.
+        #
+        # `is not None` matters: an empty frozenset is falsy, and guarding on
+        # truthiness would silently skip the filter for a clinic that has no
+        # closures in the window — the same trap the Acuity site warns about.
+        if closed_dates is not None and d in closed_dates:
+            d += timedelta(days=1)
+            continue
+
         wd = d.weekday()  # 0=mon
         if clinic_working_hours:
             hours = clinic_working_hours.get(day_keys[wd])
