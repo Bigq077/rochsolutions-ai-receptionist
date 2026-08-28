@@ -3384,6 +3384,25 @@ class LLMStream:
             )
         _joined = _reconciled
 
+        # ── 3c. Name the further dates matching the caller's weekday ─────────
+        # Same contract as 3b and for the same reason: which dates exist is a
+        # fact about the provider's calendar, decided here from the tool
+        # result. B-109/B-110 wrote guidance asking the formatter to do this
+        # and it never did -- its prompt does not mention the field and, since
+        # 8de7e7d0, forbids it from mentioning further availability at all.
+        # Runs AFTER the more_times reconcile so it appends to the final text,
+        # and after the write-guards, which have already run upstream.
+        from app.tools.slot_followup import append_other_dates_offer
+
+        _joined, _od_action = append_other_dates_offer(
+            _joined, session.get("_slot_other_dates"),
+        )
+        if _od_action == "appended":
+            logger.info(
+                "[ms_gate5] slot buf: named %d further date(s) the payload held "
+                "back (B-111)", len(session.get("_slot_other_dates") or []),
+            )
+
         # ── 4. Slot map extraction (Bug 7 fix) ───────────────────────────────
         # Runs on the complete assembled response so every option's date string
         # is present and untruncated (last_bot_prompt is capped at 200 chars).
@@ -5554,6 +5573,14 @@ class LLMStream:
                 else:
                     session["_slot_more_times"] = False
                     session["_slot_n_offered"] = 2
+                # B-111. The dates the payload is holding back, captured in
+                # the same place and for the same reason as more_times: the
+                # sentence naming them is a claim about the clinic's calendar,
+                # so it is built from the tool result rather than by the model.
+                session["_slot_other_dates"] = (
+                    result.get("other_dates_for_requested_day")
+                    if isinstance(result, dict) else None
+                )
                 session["_slot_presentation_mode"] = (
                     result.get("presentation_mode")
                     if isinstance(result, dict) else None
