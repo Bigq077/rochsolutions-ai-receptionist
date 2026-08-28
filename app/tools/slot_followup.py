@@ -712,6 +712,70 @@ _BARE_HOUR_WORDS = {
 }
 
 
+# A bare hour word is a TIME only when something nearby says so.
+#
+# B-114. "one", "two" and their siblings are pronouns and determiners at least
+# as often as they are clock times, and this module resolves them straight
+# into a slot the caller is then asked to confirm. Deny by default: an
+# unmarked number word falls through to the model, which can re-ask. A wrong
+# hit gets read back as a real appointment on a real date.
+#
+# Strong enough on its own to outrank a leading determiner, because "the one
+# o'clock" is a time and "the one after" is not -- the trailing marker is what
+# separates them.
+_CLOCK_MARKERS_AFTER = (
+    "o'clock", "oclock", "am", "pm", "a.m.", "p.m.",
+    "in the morning", "in the afternoon", "in the evening",
+    "thirty", "fifteen", "forty",
+)
+# Only markers that cannot mean an OPTION NUMBER. "take one" and "book two"
+# are how a caller picks from a numbered readout, so take/book/make are
+# deliberately absent: reading those as times is the same defect wearing a
+# different hat, and the ordinal path already owns them.
+_CLOCK_MARKERS_BEFORE = (
+    "at", "around", "about",
+    # "do you have six", "have you got six", "does six work", "is six free" --
+    # asking whether a time EXISTS is the commonest way a caller reaches for an
+    # unspoken slot, and it carries no other marker.
+    "have", "got", "do", "does", "is", "any",
+)
+# ...and the same question asked the other way round.
+_CLOCK_MARKERS_AFTER_LOOSE = (
+    "free", "available", "work", "works", "suit", "suits", "instead", "ok",
+)
+# Words that turn the number back into a quantity or a pointer even when a
+# leading marker is present -- "at one of them".
+_NOT_A_TIME_AFTER = (
+    "of", "after", "before", "coming", "more", "other", "others",
+    "option", "thing", "things", "week", "weeks", "day", "days",
+    "month", "months", "year", "years", "hour", "hours",
+    "minute", "minutes", "each", "apiece",
+)
+
+
+def _bare_hour_word_is_a_clock_reference(text: str, word: str) -> bool:
+    """True when `word` is used as a time somewhere in `text`.
+
+    Every occurrence is tested, and one is enough: "not the one after -- the
+    one o'clock" names a time in its second half.
+    """
+    t = (text or "").lower()
+    for m in re.finditer(rf"\b{re.escape(word)}\b", t):
+        before = t[:m.start()].split()
+        after = t[m.end():].split()
+        nxt = after[0] if after else ""
+        tail = " ".join(after[:3])
+        if any(tail.startswith(mk) or nxt == mk for mk in _CLOCK_MARKERS_AFTER):
+            return True
+        if nxt in _NOT_A_TIME_AFTER:
+            continue
+        if before and before[-1] in _CLOCK_MARKERS_BEFORE:
+            return True
+        if nxt in _CLOCK_MARKERS_AFTER_LOOSE:
+            return True
+    return False
+
+
 def _candidate_hhmm_from_text(text: str) -> List[str]:
     """Pull possible HH:MM values the caller may have meant."""
     t = (text or "").lower()
@@ -741,10 +805,17 @@ def _candidate_hhmm_from_text(text: str) -> List[str]:
             prev = h12 - 1 if h12 > 1 else 12
             _add_hour_variants(prev, 45)
 
-    # bare hour word "six" / "at six" — only useful if unique in remaining
+    # bare hour word, but only where it is USED as a time. Uniqueness in
+    # `remaining` was the old safety and it is not one: on a three-day sweep
+    # exactly one slot sat at 13:00, so "the one after that, not the one
+    # coming up, the one after" resolved cleanly and confidently to a Friday
+    # the caller had never mentioned (B-114).
     for hour_word, h12 in _BARE_HOUR_WORDS.items():
-        if re.search(rf"\b{hour_word}\b", t):
-            _add_hour_variants(h12, 0)
+        if not re.search(rf"\b{hour_word}\b", t):
+            continue
+        if not _bare_hour_word_is_a_clock_reference(t, hour_word):
+            continue
+        _add_hour_variants(h12, 0)
 
     # de-dupe preserving order
     seen = set()
@@ -757,9 +828,42 @@ def _candidate_hhmm_from_text(text: str) -> List[str]:
 
 
 def resolve_requested_time(
-    text: str, remaining: List[Dict[str, Any]]
+    text: str,
+    remaining: List[Dict[str, Any]],
+    available_days: Any = None,
 ) -> Optional[Dict[str, Any]]:
-    """Match a caller time phrase to exactly one remaining slot, else None."""
+    """Match a caller time phrase to exactly one remaining slot, else None.
+
+    `remaining` spans the WHOLE sweep by design, so a caller who names a time
+    on a day other than the one on the table still reaches it. `available_days`
+    is what keeps that from turning into an answer about a day nobody asked
+    about -- see the day guard at the bottom. It is optional only so the
+    signature stays back-compatible; BOTH production call sites pass it, and
+    test_b114 asserts they still do.
+
+    B-114, CA0f8ffe7b (28 Aug 2026, theorem_v3, Alcester). The caller said
+
+        "um no could you tell me what you have next monday
+         the one after that not the one coming up the one after"
+
+    and was answered "Yes -- one in the afternoon on Friday 4th September is
+    free. Shall I book that in for you?" -- a booking prompt, on a day they had
+    never mentioned, one second after they said "no". They had to say "that's
+    not what i asked".
+
+    Three of the words were "one", every one of them a pronoun. Both of the
+    paths below resolved it, independently:
+
+      the soft-core path matched "one" as a SUBSTRING, which also makes
+        "none of those work", "could someone call me back" and "phone me"
+        each resolve to a one o'clock slot -- and "none of those work" is the
+        single most common thing a caller says to a list of times.
+
+      the hhmm path emitted 01:00/13:00 for any bare hour word anywhere in the
+        utterance. Its stated safety was uniqueness in `remaining`, which is
+        not a safety at all: exactly one slot sat at 13:00, so the wrong
+        answer was the confident one.
+    """
     if not remaining or not (text or "").strip():
         return None
     t = text.lower()
@@ -767,21 +871,74 @@ def resolve_requested_time(
     # Prefer full spoken-label containment (most precise)
     label_hits = [s for s in remaining if s.get("spoken") and s["spoken"].lower() in t]
     if len(label_hits) == 1:
-        return label_hits[0]
+        return _reject_if_caller_named_another_day(
+            label_hits[0], available_days, text,
+        )
     # partial: "half past seven" without "in the evening"
     soft_hits = []
     for s in remaining:
         spoken = (s.get("spoken") or "").lower()
         core = spoken.replace(" in the evening", "").replace(" in the afternoon", "").replace(" in the morning", "")
-        if core and core in t:
-            soft_hits.append(s)
+        if not core:
+            continue
+        # Word-boundary, not containment. "one" sits inside none, phone,
+        # someone, anyone, money and gone; the old test matched every one of
+        # them (B-114).
+        if not re.search(rf"\b{re.escape(core)}\b", t):
+            continue
+        # A core that is a bare number word has to be USED as a time, exactly
+        # as in _candidate_hhmm_from_text. Multi-word cores ("half past
+        # seven") and named cores ("midday") are unambiguous and skip this.
+        if core in _BARE_HOUR_WORDS and not _bare_hour_word_is_a_clock_reference(t, core):
+            continue
+        soft_hits.append(s)
     if len(soft_hits) == 1:
-        return soft_hits[0]
+        return _reject_if_caller_named_another_day(
+            soft_hits[0], available_days, text,
+        )
 
     candidates = _candidate_hhmm_from_text(t)
     time_hits = [s for s in remaining if s.get("time") in candidates]
     if len(time_hits) == 1:
-        return time_hits[0]
+        return _reject_if_caller_named_another_day(
+            time_hits[0], available_days, text,
+        )
+    return None
+
+
+def _reject_if_caller_named_another_day(
+    hit: Dict[str, Any], available_days: Any, text: str,
+) -> Optional[Dict[str, Any]]:
+    """Drop a resolved slot that sits on a day the caller ruled out by naming
+    a different one.
+
+    The whole-sweep scope above is deliberate and stays. This only refuses the
+    case where the caller's own words identify ONE day of the payload and the
+    slot is not on it -- the same signal, and the same helper, B-103 uses to
+    scope a follow-up batch.
+
+    Silent on purpose when nothing was named: `day_named_by_caller` returns
+    None both for "named nothing" and for "named several", and neither is
+    evidence that this slot is wrong.
+
+    Not what saved CA0f8ffe7b -- "next monday" named no day of a payload that
+    held Tuesday, Wednesday and Friday, so this returns None there and the word
+    fix above is what does the work. It closes the sibling shape: an offer
+    spanning three days, a caller naming one of them, and a bare time landing
+    on another.
+    """
+    try:
+        named = day_named_by_caller(available_days, text)
+    except Exception:
+        return hit          # never let a guard be the thing that fails a lookup
+    if not named:
+        return hit
+    if _day_key(hit) == named:
+        return hit
+    logger.info(
+        "[slot_followup] refusing a time on %s -- the caller named %s in the "
+        "same breath (B-114)", _day_key(hit), named,
+    )
     return None
 
 
@@ -2058,7 +2215,9 @@ def try_unspoken_followup_speech(
         return None
 
     # Specific unspoken time first (V5).
-    hit = resolve_requested_time(user_text, remaining)
+    # `days` too: the guard needs the payload's labels to tell whether the
+    # caller named a day (B-114). Both call sites pass it -- see test_b114.
+    hit = resolve_requested_time(user_text, remaining, days)
     if hit is not None:
         return apply_resolved_time_to_session(session, hit)
 
