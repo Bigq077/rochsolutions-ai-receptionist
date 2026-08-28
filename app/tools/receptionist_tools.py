@@ -298,6 +298,7 @@ def _cached_offer_is_exhausted(available_days: Any, spoken_starts: set) -> bool:
 
 def _filter_tuples_by_preference(
     slot_tuples: list, preference: str = "", spoken_starts: Optional[set] = None,
+    out: Optional[Dict[str, Any]] = None,
 ) -> list:
     """
     Filter (start_dt, end_dt) tuples to those matching the caller's stated
@@ -344,12 +345,18 @@ def _filter_tuples_by_preference(
     # dropped. Band-only hints are unaffected. See _has_explicit_clock.
     if not _has_explicit_clock(pref):
         _band = None
+        # Plural, because the only sentence that uses it says the caller has
+        # heard them all. B-117.
+        _band_label = ""
         if "morning" in pref:
             _band = lambda _s: _s.hour < 12                        # noqa: E731
+            _band_label = "mornings"
         elif "afternoon" in pref:
             _band = lambda _s: 13 <= _s.hour < 17                  # noqa: E731
+            _band_label = "afternoons"
         elif "evening" in pref:
             _band = lambda _s: _s.hour >= 17                       # noqa: E731
+            _band_label = "evenings"
         if _band is not None:
             time_filtered = [(s, e) for s, e in filtered if _band(s)]
             if time_filtered:
@@ -372,6 +379,14 @@ def _filter_tuples_by_preference(
                         "its hidden times (B-98)",
                         pref, sorted(str(d) for d in _spent),
                     )
+                    # Hand the decision up rather than letting the readout
+                    # re-derive it. B-117: the sentence that tells the caller
+                    # their band is used up is true exactly when this fired,
+                    # and a second copy of "is the band spent?" is how this
+                    # family keeps regrowing.
+                    if out is not None:
+                        out["band_spent_days"] = {str(d) for d in _spent}
+                        out["band_label"] = _band_label
                 else:
                     filtered = time_filtered
 
@@ -384,6 +399,7 @@ def _filter_tuples_by_preference(
 def _build_days_data(
     slot_tuples: list, max_days: int = 30, preference: str = "",
     spoken_starts: Optional[set] = None,
+    out: Optional[Dict[str, Any]] = None,
 ) -> list:
     """
     Group (start_dt, end_dt) tuples into per-day summaries for the day-first
@@ -418,7 +434,7 @@ def _build_days_data(
         _found_per_day[_fstart.date()] += 1
 
     slot_tuples = _filter_tuples_by_preference(
-        slot_tuples, preference, spoken_starts,
+        slot_tuples, preference, spoken_starts, out=out,
     )
     days_map: "_dd[Any, list]" = _dd(list)
     for start, end in slot_tuples:
@@ -3155,7 +3171,8 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         # selected for variety by _select_presented_tuples.  Passing preference
         # keeps available_days consistent with slot_labels (bug C5-5): a
         # "Thursday afternoon" request no longer yields non-Thursday days.
-        days_data   = _build_days_data(slot_tuples, preference=preference, spoken_starts=_spoken)
+        _band_out: Dict[str, Any] = {}
+        days_data   = _build_days_data(slot_tuples, preference=preference, spoken_starts=_spoken, out=_band_out)
 
         # Drop TODAY at the source — same-day bookings are never offered (min lead
         # = next working day).  Doing it here (not only in the post-return
@@ -3310,6 +3327,11 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                 # slots to one by a band filter read as complete.
                 _fd = {**_fd, "more_times": True}
             _result["first_day"] = _fd
+            # B-117. Only for the day being SPOKEN, and only when B-98 opened
+            # that day: "you have heard all the mornings" is a claim about
+            # this caller and this date, not about the diary.
+            if _fd.get("date") in (_band_out.get("band_spent_days") or set()):
+                _result["band_spent_label"] = _band_out.get("band_label") or ""
             # B-108b, same call (CA1b7b2c58). last_offered_slots and
             # slot_labels were written far above from _select_presented_tuples
             # - ONE slot per day across up to three DIFFERENT days (1, 8 and
