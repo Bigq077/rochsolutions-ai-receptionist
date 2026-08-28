@@ -167,6 +167,33 @@ def _spoken_starts_for(session: Dict[str, Any]) -> set:
         return set()
 
 
+def _presented_indices(session: Dict[str, Any], day: Dict[str, Any], limit: int) -> list:
+    """Which of a day's times to SPEAK -- unheard ones first. See B-116.
+
+    Thin adapter over slot_followup.choose_presented_indices, which owns the
+    rule for both availability executors and for the unspoken follow-up. Never
+    raises: a readout preference must not be the thing that fails a lookup, and
+    the fallback is the chronological slice this replaced.
+    """
+    try:
+        from app.tools.slot_followup import choose_presented_indices
+        return choose_presented_indices(session or {}, day, limit)
+    except Exception:
+        _n = len((day or {}).get("slot_times") or [])
+        return list(range(min(limit, _n)))
+
+
+def _pick_idx(value, indices: list):
+    """Select `indices` from one of a day's parallel slot arrays."""
+    try:
+        from app.tools.slot_followup import pick_by_index
+        return pick_by_index(value, indices)
+    except Exception:
+        if not isinstance(value, list):
+            return value
+        return [value[i] for i in indices if 0 <= i < len(value)]
+
+
 def _days_where_the_band_is_spent(
     day_scoped: list, in_band: list, spoken_starts: set,
 ) -> set:
@@ -3246,11 +3273,16 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
             _fd = days_data[0]
             _n = len(_fd.get("slot_times", []) or [])
             if _n > 3:
+                # WHICH three, not just how many. B-98 opens a band-spent day
+                # to its hidden times precisely because the caller has heard
+                # the ones the band kept -- so a chronological slice hands
+                # those same times straight back. B-116.
+                _idx = _presented_indices(session, _fd, 3)
                 _fd = {
                     **_fd,
-                    "slot_times":        (_fd.get("slot_times") or [])[:3],
-                    "slot_times_spoken": (_fd.get("slot_times_spoken") or [])[:3],
-                    "slots":             (_fd.get("slots") or [])[:3],
+                    "slot_times":        _pick_idx(_fd.get("slot_times"), _idx),
+                    "slot_times_spoken": _pick_idx(_fd.get("slot_times_spoken"), _idx),
+                    "slots":             _pick_idx(_fd.get("slots"), _idx),
                     "more_times":        True,
                 }
             elif _fd.get("times_not_shown"):
@@ -5027,7 +5059,9 @@ _MAX_PRESENTED_TIMES_SINGLE_DAY = 3
 
 
 def _cap_presented_slots(
-    result: Dict[str, Any], max_days: int = _MAX_PRESENTED_DAYS
+    result: Dict[str, Any],
+    session: Optional[Dict[str, Any]] = None,
+    max_days: int = _MAX_PRESENTED_DAYS,
 ) -> Dict[str, Any]:
     """Trim the SPOKEN availability list. Never trim bookable data.
 
@@ -5056,12 +5090,18 @@ def _cap_presented_slots(
         # completeness opener (B-97).
         if int(trimmed.get("times_not_shown") or 0) > 0:
             truncated = True
+        # WHICH times, not just how many -- unheard ones first, so a caller
+        # who asks for more is not handed back what they just heard (B-116).
+        # One index list for all three arrays: they are aligned 1:1, and
+        # slicing them independently against a non-contiguous choice would
+        # speak a label from one slot and book another.
+        _idx = _presented_indices(session or {}, trimmed, per_day)
         for key in ("slot_times", "slot_times_spoken", "slots"):
             value = trimmed.get(key)
             if isinstance(value, list):
                 if len(value) > per_day:
                     truncated = True
-                trimmed[key] = value[:per_day]
+                trimmed[key] = _pick_idx(value, _idx)
         presented.append(trimmed)
 
     if len(days) > max_days:
@@ -5424,7 +5464,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         _out = _cap_presented_slots(_filter_same_day_slots(
             {"available_days": days_data, "total_days": len(days_data), "note": "calendar_not_connected"},
             session,
-        ))
+        ), session)
         _sync_last_offered_to_spoken(session, _out)
         return _out
 
@@ -5459,7 +5499,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         _out = _cap_presented_slots(_filter_same_day_slots(
             {"available_days": days_data, "total_days": len(days_data), "note": "calendar_check_failed_unfiltered"},
             session,
-        ))
+        ), session)
         _sync_last_offered_to_spoken(session, _out)
         return _out
 
@@ -5532,7 +5572,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
                     "requested_date":      _requested_iso,
                     "requested_day_label": _spoken_day_label(_requested_iso) if after_date_str else "",
                     "note":                "requested_day_full_widened",
-                }, session))
+                }, session), session)
                 # same-day filtering can empty a widened window whose only slots
                 # were today; fall through to the honest "nothing" rather than
                 # announcing a miss with no alternative attached.
@@ -5556,7 +5596,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     _out = _cap_presented_slots(_filter_same_day_slots(
         {"available_days": days_data, "total_days": len(days_data)},
         session,
-    ))
+    ), session)
     _sync_last_offered_to_spoken(session, _out)
     return _out
 
