@@ -5333,6 +5333,30 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         except Exception:
             pass
 
+    # Pin the service the caller is actually being shown slots for, so the
+    # booking path can book the SAME service. Stashed HERE, above the
+    # dispatcher, for exactly the reason requested_day_iso is: every reader is
+    # then covered by one line instead of one patch per return site.
+    #
+    # It used to sit ~40 lines below, inside the Google-Calendar body — which
+    # Theorem and Vital Edge never reach, because both return from the
+    # dispatch arms above. So the pin existed and was simply never written on
+    # two of the three live clinics, and book_appointment's reconciliation
+    # (which reads it) could not fire there.
+    #
+    # Found 2026-08-28 with the headless harness, reproduced 3/3: the caller
+    # asks for a sports massage, check_availability is correctly called with
+    # service='sports_massage', and the diary gets deep_tissue_massage. The
+    # service is never read back, so no caller can catch it — the same
+    # can't-hear-it shape as the wrong-surname family.
+    #
+    # _checked_location stays in the Google body deliberately: it is read as a
+    # MODALITY (remote/home_visit), and Theorem's "location" is a physical site
+    # (Alcester/Redditch), so pinning it here would feed the modality guard a
+    # value that is not a modality.
+    if _raw_service:
+        session["_checked_service"] = _raw_service
+
     # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
     if _gate_cid in ("theorem", "theorem_v2", "theorem_v3"):
         _acuity_result = await _check_availability_acuity(args, session)
@@ -5367,12 +5391,15 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     from app.clinic_config import get_clinic
 
     location = (args.get("location") or session.get("selected_location", "")).lower().strip()
-    # Pin the service+modality the caller is actually being shown slots for, so
-    # book_appointment books the SAME service. Without this the model defaulted
-    # to msk_initial_assessment at booking even for a returning patient whose
+    # Pin the modality the caller is being shown slots for, so book_appointment
+    # books the SAME modality. Without this the model defaulted to
+    # msk_initial_assessment at booking even for a returning patient whose
     # availability was checked as msk_treatment_session (P2).
+    #
+    # The SERVICE half of this pin now lives above the dispatcher, so that
+    # Theorem and Vital Edge get it too — see the comment there. Only the
+    # modality is Google-Calendar-shaped and stays here.
     if _raw_service:
-        session["_checked_service"] = _raw_service
         session["_checked_location"] = location
     day_window_days = int(args.get("day_window") or 7)
     # Day/time preference (e.g. "Thursday afternoon") — passed to both
@@ -6443,6 +6470,33 @@ async def _book_appointment_provisional(
     patient_name = (args.get("patient_name") or "").strip()
     phone = (args.get("phone") or "").strip()
     service = args.get("service") or "Deep Tissue Massage"
+
+    # ── Service reconciliation ─────────────────────────────────────────────
+    # The slot the caller picked was generated for the service pinned at
+    # check_availability. Its length and time grid belong to THAT service, so
+    # booking a different one writes an event whose type — and price — do not
+    # match what the caller accepted.
+    #
+    # The Google-Calendar booking path has had this since 2026-07-08, but this
+    # function returns long before it, so Vital Edge never had it. Reproduced
+    # 3/3 on 2026-08-28: "I'd like to book a sports massage" →
+    # check_availability(service='sports_massage') → diary entry
+    # 'deep_tissue_massage'. Susie never says the service aloud, so the caller
+    # cannot catch it and the read-back cannot either — only Jonathan finds
+    # out, from the calendar.
+    #
+    # Only reconcile when the pinned service really exists in clinic.json;
+    # otherwise leave the model's argument alone rather than substituting
+    # something unbookable.
+    _checked_svc = (session.get("_checked_service") or "").strip()
+    if _checked_svc and _checked_svc.lower() != (service or "").lower():
+        if _find_service_def(clinic, _checked_svc):
+            logger.warning(
+                "[book] service reconciled: book service %r → %r "
+                "(matches the availability the caller was shown)",
+                service, _checked_svc,
+            )
+            service = _checked_svc
     # The book_appointment tool schema exposes `followup_note`, NOT `notes` — the
     # prompt tells Susie to put the caller's context there. Reading only `notes`
     # meant it was always empty, so the caller's reason for booking reached
