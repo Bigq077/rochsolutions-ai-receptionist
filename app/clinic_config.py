@@ -28,7 +28,16 @@ def _hours_tuple(start_hour: float, end_hour: float):
 # Format: "+447XXXXXXXXX": "clinic_id"
 # Any unrecognised number falls back to "demo" automatically.
 TWILIO_TO_CLINIC: Dict[str, str] = {
-    "+447366263180": "jv_v1",         # LATENCY-EVAL test line (repurposed Theorem v3 STAGING/dev number — NOT a patient line). latency-eval branch ONLY. theorem_v3 patients use +447380841468; jv_v1 patients use +447367002651 — both unaffected.
+    # LATENCY-EVAL test line (repurposed Theorem v3 STAGING/dev number — NOT a
+    # patient line). latency-eval branch ONLY. theorem_v3 patients use
+    # +447380841468; jv_v1 patients use +447367002651 — both unaffected.
+    #
+    # Repointed 2026-08-28 from jv_v1 to `northgate`, the fourth clinic, which
+    # exists only as app/clinics/northgate/clinic.json. This line IS the Phase 3
+    # gate: a clinic added with no engine change and no branch of its own,
+    # answering a real call. Put it back to "jv_v1" to undo — one word, and the
+    # only thing that changes is which config the same code renders.
+    "+447366263180": "northgate",
     "+447367002651": "jv_v1",         # Joint Venture Physiotherapy (Bolton) — reassigned from Theorem's retired legacy-pipeline line (confirmed retired 2026-06-23)
     # +447426779875 belongs to VITAL EDGE (operator confirmed 2026-07-10). Theorem
     # has no claim on it — Theorem's live lines are +447380841468 (v3) and

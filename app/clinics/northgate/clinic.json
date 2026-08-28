@@ -86,8 +86,8 @@
   },
   "_owner_notify_note": "Priya's mobile — receives an SMS ping when an insurance booking is made so he can follow up to collect pre-auth/cover details.",
   "booking_system": "google_calendar",
-  "_calendar_id_note": "Set to this clinic's OWN Google calendar before the number is pointed here. Sharing a calendar with another tenant is the failure that sounds perfect and lands in someone else's diary — validate_clinic_config refuses it.",
-  "calendar_id": "__SET_BEFORE_GOING_LIVE__",
+  "_calendar_id_note": "Northgate's OWN calendar in the quentinroch10@gmail.com account — the account the latency-eval service is already authorised as, so this clinic needs no separate OAuth (resolve_tokens_key falls back to the legacy key). Deliberately NOT jv_v1's demo calendar: a shared calendar is what validate_clinic_config refuses, and isolation is the thing this clinic exists to demonstrate.",
+  "calendar_id": "abce6807cb23e39c85e993a08578f6834a05175804dce87815603c84feb694eb@group.calendar.google.com",
   "_digest_note": "End-of-day email of the day's calendar bookings so the agency enters them into Carepatron. Set email_to (or env DIGEST_EMAIL_TO) before go-live; sends once daily at hour:minute London. Requires SMTP_* env + google_tokens connected.",
   "digest": {
    "enabled": false

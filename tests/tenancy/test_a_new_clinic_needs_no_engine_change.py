@@ -46,18 +46,21 @@ import app.clinic_config as cc
 REPO = Path(__file__).resolve().parents[2]
 APP = REPO / "app"
 
-# The clinic we invent. Nothing in app/ may ever mention it.
-NEW_ID = "northgate"
+# The clinic we invent. Nothing in app/ may ever mention it, so it is
+# deliberately NOT the id of any real clinic -- `northgate` became real on
+# 2026-08-28, and a fixture that collides with a live clinic silently stops
+# testing what it says it tests.
+NEW_ID = "scratchfield"
 NEW_NUMBER = "+447700900999"          # Ofcom reserved FICTITIOUS range
-NEW_CALENDAR = "northgate-clinic@group.calendar.google.com"
+NEW_CALENDAR = "scratchfield-clinic@group.calendar.google.com"
 
 # The tenant we copy FROM, and every trace of them that must not survive.
 DONOR = "jv_v1"
 DONOR_TRACES = ("Joint Venture", "JVP", "Bolton", "bolton", "jv_v1")
 
 _REWRITES = (
-    ("Joint Venture Physiotherapy", "Northgate Physiotherapy"),
-    ("Joint Venture", "Northgate"),
+    ("Joint Venture Physiotherapy", "Scratchfield Physiotherapy"),
+    ("Joint Venture", "Scratchfield"),
     ("JVP", "NGP"),
     ("Bolton", "Didsbury"),
     ("bolton", "didsbury"),
@@ -111,7 +114,7 @@ def test_it_is_not_quietly_the_demo_clinic(new_clinic):
     """get_clinic falls back to demo for anything it cannot load, silently."""
     clinic = cc.get_clinic(NEW_ID)
     assert clinic["clinic_id"] == NEW_ID
-    assert "Northgate" in (clinic.get("clinic_name") or clinic.get("display_name") or "")
+    assert "Scratchfield" in (clinic.get("clinic_name") or clinic.get("display_name") or "")
     assert clinic.get("display_name") != cc.CLINICS["demo"]["display_name"]
 
 
@@ -141,6 +144,104 @@ def test_no_engine_file_mentions_the_new_clinic(new_clinic):
     )
 
 
+# Legacy ids the engine legitimately branches on: Theorem is Acuity-backed and
+# renders a hardcoded prompt module of its own. It is not an onboarding
+# template and is explicitly out of scope for the config-only path.
+LEGACY_HARDCODED = {"theorem", "theorem_v2", "theorem_v3", "demo"}
+
+# Named, justified exceptions. Each is a documented rollback lever for an
+# existing clinic, not behaviour any NEW clinic depends on — a fifth clinic
+# still needs nothing here. Anything not listed fails, so the exceptions can
+# only ever shrink.
+ALLOWED_COUPLING = {
+    # susie_system_prompt.py:171 — `if clinic_id == "jv_v1"` selects the LEGACY
+    # _build_jv_v1 prompt, and is reached only when prompt_engine is unset. It
+    # is the one-field rollback for the template engine, kept deliberately and
+    # inert today (jv_v1 is template_v1). Delete it when the legacy prompt goes.
+    "jv_v1": ("app/prompts/susie_system_prompt.py",),
+}
+
+
+def _string_literals(path: Path) -> set:
+    """Every string CONSTANT in a module, ignoring comments and docstrings.
+
+    A text search cannot do this job: `jv_v1` and `vital_edge` appear all over
+    app/ in comments recording real incidents ("Across six jv_v1 calls on
+    2026-07-24..."), which is prose, not coupling. What matters is whether the
+    engine BRANCHES on an id -- `if cid == "jv_v1"` -- and that is a string
+    literal in the AST.
+    """
+    import ast
+
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    except SyntaxError:
+        return set()
+
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
+            doc = ast.get_docstring(node, clean=False)
+            if doc is not None:
+                docstrings.add(doc)
+
+    return {n.value for n in ast.walk(tree)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            and n.value not in docstrings}
+
+
+def test_a_real_clinics_id_never_reaches_executable_engine_code():
+    """The invariant behind the whole plan, asserted on the LIVE clinics.
+
+    A clinic that a number routes to must be describable entirely by its
+    clinic.json. The routing table itself is the one sanctioned mention --
+    that is a lookup, not behaviour -- so app/clinic_config.py and the clinic's
+    own directory are excluded and nothing else is.
+
+    If this fails, someone has written `if clinic_id == "..."` into the engine,
+    and clinic #5 will need a code change to behave correctly. Gate on a
+    clinic.json key instead: booking_system, availability_mode, prompt_engine.
+    """
+    ids = {cid for cid in cc.TWILIO_TO_CLINIC.values()} - LEGACY_HARDCODED
+    assert ids, "no non-legacy clinic is mapped — this test would prove nothing"
+
+    offenders = {}
+    for path in APP.rglob("*.py"):
+        rel = path.relative_to(REPO).as_posix()
+        if rel == "app/clinic_config.py" or rel.startswith("app/clinics/"):
+            continue
+        for cid in ids & _string_literals(path):
+            if rel in ALLOWED_COUPLING.get(cid, ()):
+                continue
+            offenders.setdefault(cid, []).append(rel)
+
+    assert not offenders, (
+        "engine code branches on a clinic id:\n" + "\n".join(
+            f"  {cid}: {sorted(set(files))}" for cid, files in offenders.items())
+        + "\n\nGate on a clinic.json key instead of an identity."
+    )
+
+
+def test_the_fourth_clinic_is_reachable_and_isolated():
+    """northgate, the real one, added on 2026-08-28 with no engine change.
+
+    Not the tmp fixture — this is the deployed configuration. It asserts the
+    two things a call cannot tell you: that a number resolves to it, and that
+    what it books into is its own diary and not the clinic it was copied from.
+    """
+    assert cc.clinic_id_from_twilio_to("+447366263180") == "northgate"
+    assert cc.validate_clinic_config("northgate") == []
+
+    from app.tools import receptionist_tools as rt
+    northgate = cc.get_clinic("northgate")
+    mine = rt._resolve_calendar_id(northgate, cc.single_location_template("northgate"))
+    assert "@" in mine
+    for other in ("jv_v1", "vital_edge"):
+        assert mine != (cc.get_clinic(other).get("calendar_id") or ""), (
+            f"northgate books into {other}'s calendar")
+
+
 def test_no_previous_tenant_leaks_into_the_new_clinics_prompt(new_clinic):
     """Copy a tenant, rename them, and NOTHING of the original may survive.
 
@@ -154,7 +255,7 @@ def test_no_previous_tenant_leaks_into_the_new_clinics_prompt(new_clinic):
     parts = build_system_prompt_parts({"clinic_id": NEW_ID})
     prompt = "\n".join(p if isinstance(p, str) else str(p) for p in parts)
 
-    assert "Northgate" in prompt and "Didsbury" in prompt, (
+    assert "Scratchfield" in prompt and "Didsbury" in prompt, (
         "the new clinic's own identity did not reach the model at all")
 
     leaks = {t: prompt.count(t) for t in DONOR_TRACES if t in prompt}
@@ -243,7 +344,7 @@ def test_a_clinic_json_saved_on_windows_still_loads(new_clinic, monkeypatch):
     path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
     monkeypatch.setattr(cc, "_CLINIC_JSON_CACHE", {})
 
-    assert "Northgate" in (cc.get_clinic(NEW_ID).get("clinic_name") or "")
+    assert "Scratchfield" in (cc.get_clinic(NEW_ID).get("clinic_name") or "")
     assert cc.validate_clinic_config(NEW_ID) == []
 
 
