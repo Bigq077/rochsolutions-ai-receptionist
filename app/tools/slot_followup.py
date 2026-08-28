@@ -1535,6 +1535,73 @@ def _is_extra_slots_claim(sentence: str) -> bool:
     return any(_qs != _fs for _qs in _q for _fs in _f)
 
 
+def append_other_dates_offer(text: str, other_dates) -> Tuple[str, str]:
+    """Name the further dates matching the caller's weekday, deterministically.
+
+    B-111. B-109/B-110 put `other_dates_for_requested_day` in the payload and
+    wrote guidance telling the model to name those dates. On CA811ddccb03 the
+    payload carried Tuesday 8th, 15th and 22nd September with 7, 8 and 9 times,
+    and the caller heard "The available slot for Tuesday 1st September is nine
+    in the morning." The formatter never used it, and could not have: its
+    system prompt enumerates its inputs, never mentions this field, and for
+    single_day says to use ONLY first_day.
+
+    The obvious fix is to teach the formatter the field. That is the wrong
+    shape here, and the repo already learned why: 8de7e7d0 REMOVED the "a few
+    others that day" example from that prompt because the model copied it onto
+    a day that had no further times and invented availability. The prompt now
+    says outright that the model must never mention further availability and
+    that "the system adds that sentence itself". So this sentence is built
+    here, from the tool result, in the same place and the same way as the
+    more_times tail.
+
+    Returns `(text, action)` with action "appended" or "unchanged".
+
+    No times are ever spoken for these dates: the payload deliberately carries
+    none (naming a time for a date nobody heard is the B-108b defect). Only
+    dates that reached the payload are named, so this cannot invent one.
+    """
+    if not text or not isinstance(other_dates, list) or not other_dates:
+        return text, "unchanged"
+
+    spoken = [
+        str(d.get("spoken") or "").strip()
+        for d in other_dates
+        if isinstance(d, dict) and str(d.get("spoken") or "").strip()
+    ]
+    if not spoken:
+        return text, "unchanged"
+
+    # Already named by the reply itself: say nothing twice.
+    _low = text.lower()
+    if any(s.lower() in _low for s in spoken):
+        return text, "unchanged"
+
+    # "Tuesday 8th September" -> weekday "Tuesday", day "8th". When every date
+    # shares the weekday (they always do -- the payload filters to the
+    # requested one) the natural sentence names it once.
+    parts = [s.split() for s in spoken]
+    weekdays = {p[0] for p in parts if len(p) >= 2}
+    if len(weekdays) == 1 and all(len(p) >= 2 for p in parts):
+        weekday = parts[0][0]
+        days = [f"the {p[1]}" for p in parts]
+        if len(days) == 1:
+            body = f"another {weekday}, {days[0]}, if that would suit"
+        else:
+            joined = ", ".join(days[:-1]) + f" and {days[-1]}"
+            suit = "either" if len(days) == 2 else "any of those"
+            body = f"other {weekday}s, {joined}, if {suit} would suit"
+    else:
+        joined = (", ".join(spoken[:-1]) + f" and {spoken[-1]}") if len(spoken) > 1 else spoken[0]
+        suit = "that" if len(spoken) == 1 else "any of those"
+        body = f"times on {joined}, if {suit} would suit"
+
+    # No em dash and no ellipsis: TTS pause punctuation is chunker input and
+    # would split this across two synthesis calls.
+    tail = f" I've also got {body}."
+    return text.rstrip() + tail, "appended"
+
+
 def reconcile_extra_slots_claim(
     text: str, more_times: bool, n_offered: int = 2, allow_append: bool = True
 ) -> Tuple[str, str]:
