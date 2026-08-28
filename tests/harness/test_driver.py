@@ -196,22 +196,16 @@ async def test_a_full_booking_arc_writes_exactly_one_diary_entry():
 
 
 @live_llm
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "OPEN DEFECT, reproduced 3/3 on 2026-08-28. The caller asks for a "
-        "sports massage; check_availability is correctly called with "
-        "service='sports_massage'; but nothing latches it - "
-        "session['selected_service'] is READ at receptionist_tools.py:6450 and "
-        "WRITTEN NOWHERE. By book_appointment the model re-derives the service "
-        "from context, where the prompt's deep-tissue framing dominates, and "
-        "writes deep_tissue_massage to the diary. The service is never spoken "
-        "back, so no caller can catch it. Same family as the duration defect "
-        "fixed in 6d7d1b2c: capture the caller's choice in the ENGINE, not the "
-        "model. Un-xfail with that fix."
-    ),
-)
 async def test_the_service_booked_is_the_service_the_caller_asked_for():
+    """F-021, end to end through a real conversation.
+
+    Was xfail and reproduced 3/3 until the two-gap fix (see
+    tests/regression/test_the_service_shown_is_the_service_booked.py, which
+    pins the same thing deterministically and is the one to read first when
+    this breaks). This test is the slower, truer check: it proves the fix
+    survives the actual prompt, where the clinic's deep-tissue framing is what
+    pulled the model off the caller's choice in the first place.
+    """
     now = _now()
     diary = _diary(now)
     script = [
