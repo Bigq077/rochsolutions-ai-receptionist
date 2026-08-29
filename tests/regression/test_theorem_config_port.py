@@ -114,7 +114,33 @@ def test_clinical_screening_is_off_for_theorem(clinic_id):
     assert not screening_enabled(get_clinic(clinic_id))
 
 
-def test_theorem_clinic_dict_has_no_screening_block():
-    """Belt and braces — screening_enabled() only reads .enabled, so a block
-    could be added disabled and then flipped on in a one-word diff."""
-    assert "clinical_screening" not in CLINICS["theorem"]
+def test_theorem_screening_block_is_emergency_only():
+    """Belt and braces, re-aimed 2026-08-29 — same danger, named directly.
+
+    This asserted that no clinical_screening block existed at all, because
+    screening was off by ABSENCE and "a block could be added disabled and then
+    flipped on in a one-word diff".
+
+    A block exists now. Mark agreed to a deterministic emergency response — his
+    prompt already told Susie to say "call 999" and this only makes it fire
+    reliably — on condition it adds no question for someone booking. It does
+    not: no `screens` means nothing can arm.
+
+    Absence has therefore stopped being the mechanism, but the thing it
+    protected has not gone away, so the two keys that would turn triage on are
+    now forbidden BY NAME. That is stricter than the old check, not looser: it
+    also rules out `screens` being added while `enabled` stays off, which the
+    absence check could not distinguish from a legitimate emergency block.
+
+    Still a client decision. Do not "fix" this test — ask Mark.
+    """
+    block = CLINICS["theorem"].get("clinical_screening") or {}
+    assert "enabled" not in block, (
+        "someone enabled proactive screening for Theorem — that is triage, and "
+        "Mark declined it")
+    assert "screens" not in block, (
+        "someone added proactive screens for Theorem — each one is a question "
+        "asked before booking, which is exactly what he said no to")
+    assert (block.get("emergency_red_flags") or {}).get("keywords"), (
+        "the emergency intercept lost its keywords — Theorem would be back to "
+        "relying on the model noticing a caller describing chest pain")

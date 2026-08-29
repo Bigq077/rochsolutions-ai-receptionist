@@ -9323,7 +9323,14 @@ class WebSocketCallHandler:
                         from app.clinic_config import get_clinic as _cs_get_clinic
                         from app.media_streams import clinical_screening as _cs
                         _cs_clinic = _cs_get_clinic(clinic_id)
-                        if _cs.screening_enabled(_cs_clinic):
+                        # Emergency interception is a SEPARATE switch from
+                        # proactive screening: Theorem declined the latter and
+                        # still wants a deterministic 999 response. A clinic
+                        # with emergency keywords and no screens reaches the
+                        # state machine, which can only ever return
+                        # action="emergency" for it — nothing can arm.
+                        if (_cs.screening_enabled(_cs_clinic)
+                                or _cs.emergency_intercept_enabled(_cs_clinic)):
                             # B-87: remember a booking request made in the SAME
                             # utterance that arms a screen. The screening block
                             # below `continue`s, which skips the booking-intent
