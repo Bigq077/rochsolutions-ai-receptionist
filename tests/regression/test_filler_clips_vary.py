@@ -173,26 +173,27 @@ async def test_a_turn_that_never_spoke_does_not_advance_the_rotation(tmp_path):
     assert sent[1] != heard
 
 
-async def test_the_second_clip_is_not_the_first_clip_repeated(tmp_path):
-    """With no dedicated second pool both clips come from one list, 2.5s apart
-    in the SAME turn. That is the tightest possible repeat and the worst one."""
+async def test_only_one_clip_is_ever_sent_in_a_turn(tmp_path):
+    """The 2.5s second clip is gone (2026-08-29).
+
+    It was the one hold producer that never called `decide_hold`, so the
+    arbiter's "one head per turn" was a slogan rather than a property. This
+    test replaces `test_the_second_clip_is_not_the_first_clip_repeated`, which
+    asserted the two clips differed -- a property of behaviour that no longer
+    exists. Waiting well past the old 2.5s escalation must still yield one clip.
+    """
     _write_pool(tmp_path, "filler_checking", 3)
     sent: list[bytes] = []
 
     async def _send(b: bytes) -> None:
         sent.append(b)
 
-    guard = FillerGuard(
-        clip_path=tmp_path / "filler_checking.ulaw",
-        send_audio=_send,
-        second_delay_ms=20,
-    )
+    guard = FillerGuard(clip_path=tmp_path / "filler_checking.ulaw", send_audio=_send)
     await guard.arm({"booking_flow_active": True}, delay_ms=10)
-    await asyncio.sleep(0.12)
+    await asyncio.sleep(0.20)
     guard.cancel()
 
-    assert len(sent) == 2, "primary then secondary should both have fired"
-    assert sent[0] != sent[1]
+    assert len(sent) == 1, f"exactly one clip per turn, got {len(sent)}"
 
 
 async def test_a_pool_of_one_still_speaks(tmp_path):

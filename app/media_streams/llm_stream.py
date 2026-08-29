@@ -6276,7 +6276,11 @@ def join_after_head(chunk: str, head: str) -> str:
     # ("...what's available.The available slots for Tuesday"): 106 stored
     # fragments, and ElevenLabs reads the run-on without a breath. Repaired here
     # so the seam is guaranteed in one place rather than trusted to the model.
-    body = re.sub(r"([\.!?])([A-Z])", r" ", body)
+    # NOTE the backreferences. This passed a bare " " until 2026-08-29, which
+    # deleted the punctuation AND the capital after it: "available.The available
+    # slots" became "available he available slots". The repair was meant to
+    # INSERT the missing space, not to eat the seam it found.
+    body = re.sub(r"([\.!?])([A-Z])", r"\1 \2", body)
 
     if head.rstrip()[-1:] in (",", "—", "-"):
         first = body.split(" ", 1)[0].strip(".,!?").lower()

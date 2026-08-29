@@ -127,7 +127,6 @@ def _guard(sent: list[bytes]) -> FillerGuard:
 
     return FillerGuard(
         clip_path=_AUDIO_CLIPS_DIR / "filler_checking.ulaw",
-        clip_path_2=_AUDIO_CLIPS_DIR / "filler_moment.ulaw",
         send_audio=_send,
     )
 

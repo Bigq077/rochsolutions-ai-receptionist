@@ -150,7 +150,6 @@ async def test_the_guard_flags_the_session_only_once_audio_has_gone_out():
     guard = FillerGuard(
         clip_path=_AUDIO_CLIPS_DIR / "filler_checking.ulaw",
         send_audio=_send,
-        clip_path_2=_AUDIO_CLIPS_DIR / "filler_moment.ulaw",
     )
     session = {"booking_flow_active": True}
 

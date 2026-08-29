@@ -174,10 +174,21 @@ class FillerGuard:
     """
     Filler guard gated on booking_flow_active.
 
-    Plays a primary clip after `delay_ms` if the LLM hasn't responded.
-    If the LLM still hasn't responded `second_delay_ms` after the primary
-    clip finishes, plays a second clip (falls back to the primary clip if
-    no dedicated second clip is configured).
+    Plays ONE clip after `delay_ms` if the LLM hasn't responded, and never a
+    second one.
+
+    A second clip used to follow 2.5s later. It was the only hold producer that
+    never consulted `hold_speech.decide_hold` -- it called note_filler_played,
+    so it TOLD the arbiter it had spoken and every later producer correctly
+    stayed quiet, but its own escalation asked nobody. That made the arbiter's
+    central claim ("one head per turn, stacking unrepresentable") a slogan
+    rather than a property: seen live on CAc46c00705bc1ad81 -- clip at 350ms,
+    clip at 2.5s, then the tool.
+
+    Owner decision 2026-08-29: the recorded filler belongs to the one moment
+    before slots are read out, and two clips inside 2.5 seconds already breach
+    that rule regardless of the arbiter. A genuinely slow turn is still covered
+    twice over -- `with_filler`'s 4s secondary and the speech watchdog.
 
     arm()      — start (or restart) the delay timer.
     cancel()   — stop the timer; no-op if clip already fired.
@@ -188,8 +199,6 @@ class FillerGuard:
         self,
         clip_path: Path,
         send_audio: Callable[[bytes], Awaitable[None]],
-        clip_path_2: "Path | None" = None,
-        second_delay_ms: int = 2500,
     ) -> None:
         # Each path names the FIRST member of a numbered pool — see
         # discover_clip_pool. A pool of one behaves exactly as the single clip
@@ -213,28 +222,13 @@ class FillerGuard:
                 clip_path,
             )
 
-        # Second pool — falls back to the primary pool if not provided or missing
-        self._pool_2: List[bytes] = (
-            [p.read_bytes() for p in discover_clip_pool(clip_path_2)] if clip_path_2 else []
-        )
-        if not self._pool_2:
-            # Reuse the primary pool; a repeated hold phrase beats silence
-            self._pool_2 = self._pool
-            if clip_path_2:
-                logger.info(
-                    "[filler_guard] second clip not found (%s) — will reuse primary",
-                    clip_path_2,
-                )
-
-        self._second_delay_s = second_delay_ms / 1000.0
         self._send_audio = send_audio
         self._task: "asyncio.Task | None" = None
         self._played: bool = False
-        # Which variant spoke last, per pool, for THIS call — the guard is
-        # constructed per WebSocketCallHandler, so the no-repeat rule is scoped
-        # to one caller's ear and does not need resetting between calls.
+        # Which variant spoke last on THIS call — the guard is constructed per
+        # WebSocketCallHandler, so the no-repeat rule is scoped to one caller's
+        # ear and does not need resetting between calls.
         self._last_idx: Optional[int] = None
-        self._last_idx_2: Optional[int] = None
 
     async def arm(
         self,
@@ -331,22 +325,11 @@ class FillerGuard:
         # advancing the rotation for a clip nobody heard would let the next turn
         # play the one the caller last actually heard.
         _idx = next_clip_index(len(self._pool), self._last_idx)
-        if self._pool_2 is self._pool:
-            # No dedicated second pool, so both clips come out of one list. Avoid
-            # the index just chosen rather than the one played on a previous
-            # turn: these two play 2.5s apart in the SAME turn, and the identical
-            # recording twice inside three seconds is the worst version of the
-            # sameness this pool exists to break up.
-            _idx_2 = next_clip_index(len(self._pool_2), _idx)
-        else:
-            _idx_2 = next_clip_index(len(self._pool_2), self._last_idx_2)
 
-        _delay_s        = delay_ms / 1000.0
-        _second_delay_s = self._second_delay_s
-        _clip           = self._pool[_idx]
-        _clip_2         = self._pool_2[_idx_2]
-        _send           = self._send_audio
-        _session        = session
+        _delay_s = delay_ms / 1000.0
+        _clip    = self._pool[_idx]
+        _send    = self._send_audio
+        _session = session
 
         async def _fire() -> None:
             await asyncio.sleep(_delay_s)
@@ -391,16 +374,6 @@ class FillerGuard:
                 delay_ms, _idx + 1, len(self._pool),
             )
             await _send(_clip)
-            # Wait to see if the LLM responds; if not, play second clip.
-            # cancel() will interrupt this sleep when the first TTS chunk arrives.
-            await asyncio.sleep(_second_delay_s)
-            self._last_idx_2 = _idx_2
-            logger.info(
-                "[ms_filler] second clip firing (variant %d/%d, still no LLM "
-                "response after %.1fs)",
-                _idx_2 + 1, len(self._pool_2), _second_delay_s,
-            )
-            await _send(_clip_2)
 
         self._task = asyncio.create_task(_fire(), name="ms_filler_guard")
 

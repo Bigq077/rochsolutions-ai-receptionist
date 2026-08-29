@@ -96,10 +96,11 @@ _SILENCE_100MS: bytes = bytes([0x7F] * 800)
 _MIN_SPEECH_CHARS_PER_SEC: float = 10.0
 # Headroom for audio that legitimately rides on the same counter without
 # placing a sentinel of its own: the FillerGuard hold clips and the 100ms
-# breath gap, all injected via _send_ulaw.  Worst case is both clips of one
-# turn back to back -- filler_checking.ulaw 1.39s + filler_moment.ulaw 1.11s --
-# plus the 0.1s gap = 2.60s.  test_o_impossible_play_duration measures the
-# shipped clips and fails if a longer one is ever added to the pool.
+# breath gap, all injected via _send_ulaw.  Worst case is now ONE clip per turn
+# -- filler_checking.ulaw 1.39s -- plus the 0.1s gap = 1.49s; the headroom is
+# left at its two-clip value deliberately, since shrinking it buys nothing and
+# a longer clip is the thing that would hurt.  test_o_impossible_play_duration
+# measures the shipped clips and fails if a longer one is ever added.
 _PLAY_SECS_HEADROOM: float = 4.0
 # Absolute ceiling on a single chunk's play duration, at `speed` 1.0, applied
 # on top of the proportional bound above and scaled by 1/speed at the call site.
@@ -6048,8 +6049,9 @@ class WebSocketCallHandler:
         # ── Filler clip guard (Change A) ───────────────────────────────────
         # Plays a short pre-synthesised clip on Acuity availability turns only.
         # Run scripts/synthesise_filler.py once to generate the clips.
-        # clip_path_2: if filler_moment.ulaw exists it plays as a second filler
-        # after 2.5s of silence post-primary; otherwise the primary clip repeats.
+        # ONE clip per turn. The 2.5s second clip was removed 2026-08-29: it was
+        # the only hold producer that never asked the arbiter, which made
+        # "one head per turn" a slogan rather than a property. See FillerGuard.
         #
         # Anchored to the repo root, not the process CWD. These were bare
         # relative paths until 2026-08-07, so a worker started from anywhere but
@@ -6059,7 +6061,6 @@ class WebSocketCallHandler:
         # present in git; the directory was missing entirely.
         self._filler = FillerGuard(
             clip_path=_AUDIO_CLIPS_DIR / "filler_checking.ulaw",
-            clip_path_2=_AUDIO_CLIPS_DIR / "filler_moment.ulaw",
             send_audio=self._send_ulaw,
         )
         # Per-turn flag: True once the post-filler silence has been injected,
