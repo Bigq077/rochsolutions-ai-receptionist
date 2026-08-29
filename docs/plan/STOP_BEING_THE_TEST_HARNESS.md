@@ -543,6 +543,12 @@ Held, and worth doing together when the calls are done:
 
 ### Calls owed
 
+- **The hold-speech suite that gates the port** —
+  `docs/plan/CALL_SHEET_HOLD_SPEECH_2026-08-29.md`. Eight calls on
+  `+447366263180` with a stated pass and fail each, the five things being
+  verified (two of which are NOT gated and port regardless), and the verdict
+  that licenses the port. Not started.
+
 - ~~Theorem: *"I've got chest pain"*~~ — **placed 2026-08-29, clean.** The
   emergency intercept works on Mark's live line, and it did not cost a booking
   caller anything. Confirms `71d603c7` end to end.
