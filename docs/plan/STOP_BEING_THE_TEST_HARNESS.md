@@ -469,10 +469,16 @@ automatically, verified by replaying the transcript that produced them.
    and offers to take a message. **Any clinic whose fallback is its own owner
    has this the moment that owner rings their own line.**
 
-   🔧 **Owner action outstanding:** `app/clinics/northgate/clinic.json` has no
-   `transfer_phone`. The guard stops the worst outcome, but a real "put me
-   through" on the demo line still has no clinic number to dial. Only you know
-   what it should be, so it is not invented here.
+   ✅ **Closed 2026-08-29 (`deb0dc76`).** `northgate` now names its own
+   `transfer_phone`, and the owner's decision was that the demo line's target
+   is his own mobile — not a third party, because a real person fielding a call
+   from a demo audience with no brief is a worse outcome than no transfer.
+   That number was already the target via the hardcoded fallback; naming it
+   changes nothing operationally and silences the boot warning.
+
+   ⚠️ **Before the next test call:** a call FROM that number is NOT
+   transferred — the guard refuses to dial the caller back to themselves and
+   Susie takes a message. Exercising the transfer needs a second handset.
 
 ### The harness's own bugs — four, and they rhyme
 
@@ -505,7 +511,7 @@ In the order I would take it:
 
 1. ~~**Phase 4 — the two contained slot fixes.**~~ **Done** — see Phase 4
    above. The engine correctness backlog from this exercise is now empty.
-2. **`northgate.transfer_phone`** — one config line, owner's call.
+2. ~~**`northgate.transfer_phone`**~~ — **done**, `deb0dc76`.
 3. **The held port to the live clinics** — see below. Waiting on a full suite of
    test calls, which is now a command rather than an afternoon.
 4. **Phase 3, the fold.** Blocked on you, not on engineering.
@@ -588,7 +594,7 @@ of 29 Aug, three from the suite and one from the call that verified it.
 
 | branch | tip | note |
 |---|---|---|
-| `latency-eval` | `c7392b4a` | canonical; also serves Northgate on the test line |
+| `latency-eval` | `deb0dc76` | canonical; also serves Northgate on the test line |
 | `jv_v2` | `b1a71242` | live — Joint Venture |
 | `vitaledge-onboarding` | `4330d1b8` | live — Vital Edge |
 | `theorem-onboarding` | `71d603c7` | live — Theorem; **314 behind**, stays separate by decision |
