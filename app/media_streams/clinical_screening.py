@@ -203,7 +203,39 @@ def screening_config(clinic: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def screening_enabled(clinic: Dict[str, Any]) -> bool:
+    """PROACTIVE screening — the safety questions asked before booking."""
     return bool(screening_config(clinic))
+
+
+def emergency_keywords(clinic: Dict[str, Any]) -> List[str]:
+    """Emergency words, read INDEPENDENTLY of proactive screening.
+
+    These are two different things and used to be one switch, which forced a
+    clinic into a choice it should never have faced. Theorem declined clinical
+    triage -- Mark wants the fastest possible booking, and jv_v1's six screens
+    each cost the caller a question. But his prompt ALREADY tells Susie to say
+    "call 999" when someone describes an emergency, and his config carries the
+    wording. What he lacked was a deterministic trigger, because
+    `detect_emergency` read its keywords through `screening_config`, which
+    returns nothing unless `enabled` is set -- and setting `enabled` is what his
+    own test forbids.
+
+    So the intercept now keys on the keywords being CONFIGURED, not on
+    screening being on. A clinic can have one without the other, in either
+    direction, and Theorem's "no screening" pin keeps passing untouched because
+    it never needs `enabled`.
+
+    `emergency_intercept: false` is an explicit opt-out for a clinic that wants
+    the wording available to the model but no deterministic interception.
+    """
+    cs = clinic.get("clinical_screening") or {}
+    if cs.get("emergency_intercept") is False:
+        return []
+    return (cs.get("emergency_red_flags") or {}).get("keywords") or []
+
+
+def emergency_intercept_enabled(clinic: Dict[str, Any]) -> bool:
+    return bool(emergency_keywords(clinic))
 
 
 def _screens(clinic: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -222,8 +254,7 @@ def get_screen(clinic: Dict[str, Any], screen_id: str) -> Optional[Dict[str, Any
 # ─────────────────────────────────────────────────────────────────────────
 def detect_emergency(text: str, clinic: Dict[str, Any]) -> bool:
     """True if the utterance volunteers an emergency red flag (config-driven)."""
-    cs = screening_config(clinic)
-    kws = (cs.get("emergency_red_flags") or {}).get("keywords") or []
+    kws = emergency_keywords(clinic)
     if not kws:
         return False
     t = _norm(text)
@@ -1210,7 +1241,7 @@ def update_screening_state(
     take down the call loop.
     """
     try:
-        if not screening_enabled(clinic):
+        if not (screening_enabled(clinic) or emergency_intercept_enabled(clinic)):
             return {"action": "none", "speak": None}
 
         # STT debris must not advance screening state (see _is_junk_fragment).

@@ -711,6 +711,49 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         },
 
         # Call handling (from Mark)
+        # EMERGENCY INTERCEPT ONLY — and note what is NOT here: no "enabled",
+        # and no "screens". Both absences are load-bearing.
+        #
+        # Mark declined clinical screening: he wants the fastest possible
+        # booking, and jv_v1's six screens each cost the caller a question. That
+        # decision is pinned on theorem-onboarding with "do not fix this test",
+        # and it still passes untouched — screening_enabled() reads `enabled`,
+        # which is deliberately absent, so proactive screening stays OFF.
+        #
+        # What he agreed to on 2026-08-29 is narrower and he had already agreed
+        # to it in substance: his prompt ALREADY tells Susie to say "call 999"
+        # when a caller describes an emergency, and call_handling.emergency_message
+        # is his own wording. The only thing missing was a deterministic trigger,
+        # so whether a caller who volunteers chest pain heard it depended on the
+        # model noticing. It no longer does.
+        #
+        # His condition was "as long as it doesn't add another question to
+        # somebody who wants to book". It cannot: no screens means nothing can
+        # arm, the match is pure keyword comparison on what the caller already
+        # said (no model call, no latency), and a booking utterance returns
+        # action=none. Pinned in test_theorem_emergency_intercept_costs_no_question.
+        "clinical_screening": {
+            "emergency_red_flags": {
+                "_note": (
+                    "Discipline-neutral: cardiac, stroke, breathing, collapse. "
+                    "Same list as jv_v1 and vital_edge. None of it is a "
+                    "question — the keywords only match what a caller "
+                    "volunteers, and the reply is call_handling."
+                    "emergency_message, spoken deterministically."
+                ),
+                "keywords": [
+                    "chest pain", "tight chest", "can't breathe",
+                    "cannot breathe", "struggling to breathe",
+                    "difficulty breathing", "face has dropped", "face dropped",
+                    "one side of my face", "slurred speech",
+                    "can't speak properly", "one side of my body",
+                    "numb down one side", "weak down one side",
+                    "sudden vision loss", "lost my vision", "passed out",
+                    "collapsed", "unconscious", "having a stroke",
+                    "heart attack",
+                ],
+            },
+        },
         "call_handling": {
             "if_cant_help": ["Direct to website", "Take a message", "Offer a call-back", "Escalate to staff"],
             "immediate_defer_to_human_for": ["Emergencies"],
