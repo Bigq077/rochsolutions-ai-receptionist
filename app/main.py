@@ -477,6 +477,28 @@ def _log_deployment_posture() -> None:
         for clinic_id, problems in validate_all_clinics().items():
             for problem in problems:
                 logger.warning("⚠️  CLINIC CONFIG: %s — %s", clinic_id, problem)
+
+        # Environment variables that LOOK like clinic.json keys and are not.
+        # Setting `hold_speech=true` in Render on 2026-08-29 changed nothing and
+        # the call sounded identical, which is indistinguishable from the
+        # feature not working. These are per-CLINIC by design — one service will
+        # host several tenants, and a process-wide switch cannot say "on for the
+        # demo clinic, off for the patient lines" — so the env var is inert
+        # rather than wrong, and silence about it is the actual defect.
+        for key in ("hold_speech", "open_on_bank_holidays", "availability_mode",
+                    "prompt_engine", "calendar_id", "booking_system"):
+            # os.getenv is case-insensitive on Windows, so check both spellings
+            # and report at most once per key.
+            for name in dict.fromkeys((key, key.upper())):
+                if os.getenv(name) is not None:
+                    logger.warning(
+                        "⚠️  %s is set in the ENVIRONMENT and nothing reads it "
+                        "— it is a clinic.json key (operational.%s), per "
+                        "clinic. Set it there and redeploy; remove this var so "
+                        "it does not read as configured.",
+                        name, key,
+                    )
+                    break
     except Exception as e:                                     # noqa: BLE001
         logger.warning("[deploy] posture banner failed: %r", e)
 

@@ -101,6 +101,7 @@
   "slot_break_minutes": 5,
   "days_ahead": 30,
   "_same_day_note": "JV allows same-day booking (onboarding doc Section 6). Today's remaining future slots are offered; the slot generator already excludes past times.",
+  "hold_speech": true,
   "allow_same_day": true,
   "primary_location": "didsbury",
   "working_hours": {

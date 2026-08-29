@@ -56,13 +56,40 @@ def test_a_clinic_that_says_nothing_keeps_todays_behaviour():
         "an audible change nobody signed off.")
 
 
-def test_every_live_clinic_is_still_on_the_old_behaviour():
-    """None of them has opted in yet. Remove a name here only after listening."""
-    for cid in sorted(set(cc.TWILIO_TO_CLINIC.values())):
-        assert cc.get_clinic(cid).get("hold_speech") is not True, (
-            f"{cid} has opted into the arbiter. That is a real change to what "
-            "its callers hear — fine if someone chose it, but this test should "
-            "be updated in the same commit that chooses it.")
+# Clinics that have deliberately opted into the arbiter, and who decided.
+HOLD_SPEECH_OPT_IN = {
+    "northgate": "the demo tenant — no patients, opted in 2026-08-29 so the "
+                 "arbiter can be heard before it is offered to anyone real",
+}
+
+
+def test_no_patient_line_hears_the_arbiter_without_someone_choosing_it():
+    """Opting in is a real change to what a caller hears, so it is recorded.
+
+    northgate is the demo clinic and exists to be experimented on. jv_v1,
+    vital_edge and theorem carry real patients, and each is a separate
+    conversation with a practitioner who has not yet heard it.
+    """
+    unlisted = [
+        cid for cid in sorted(set(cc.TWILIO_TO_CLINIC.values()))
+        if cc.get_clinic(cid).get("hold_speech") is True
+        and cid not in HOLD_SPEECH_OPT_IN
+    ]
+    assert not unlisted, (
+        f"{unlisted} opted into the arbiter with nobody recorded as choosing "
+        "it. If their practitioner heard it and agreed, add them to "
+        "HOLD_SPEECH_OPT_IN with who and when. If this arrived on a copied "
+        "clinic.json, set operational.hold_speech false — the default.")
+
+
+def test_the_demo_clinic_is_actually_on_so_it_can_be_heard():
+    """The opt-in has to reach the resolver, or the listen proves nothing.
+
+    Pinned because the first attempt to listen (2026-08-29) was made before any
+    flag was committed: northgate was still False, so the call ran the legacy
+    path and heard exactly the behaviour it already had.
+    """
+    assert cc.get_clinic("northgate").get("hold_speech") is True
 
 
 def test_the_switch_reads_the_clinic_and_never_raises():
