@@ -6928,10 +6928,33 @@ async def _check_availability_published(
     session["last_offered_slots"] = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented]
     session["slot_labels"] = [format_slot(s) for s in presented]
     session["available_days"] = days_data
-    return _filter_same_day_slots(
+    _out = _cap_presented_slots(_filter_same_day_slots(
         {"available_days": days_data, "total_days": len(days_data)},
         session,
-    )
+    ), session)
+    # The other six producers end here and this one did not, so it spoke every
+    # published day at once and left the offer record holding
+    # _select_presented_tuples' three days while speech named one or two.
+    # last_offered_slots is indexed BY POSITION by _try_slot_selection and
+    # _resolve_slot_iso, so "the second one" reached a date the caller was
+    # never read out — B-108b exactly, through the seventh door.
+    #
+    # Dormant rather than latent as of 2026-08-29: vital_edge moved to
+    # availability_mode "diary" on 8 Aug, and no clinic reads this path today.
+    # It is still the DEFAULT for a provisional clinic (see the dispatch in
+    # _exec_check_availability), so the next one onboarded lands here, and VE's
+    # own clinic.json says switching back is one config key.
+    _sync_last_offered_to_spoken(session, _out)
+    # The sync rebuilds the record from the model-facing days, whose `end` was
+    # dropped a few lines above so the model cannot read a published window as
+    # a session length. Put it back from the published events: nothing reads it
+    # today, but every other reader's record carries start+end, and a record
+    # that quietly differs by path is where the next defect hides.
+    _ends = {s[0].isoformat(): s[1].isoformat() for s in candidates}
+    for _slot in session.get("last_offered_slots") or []:
+        if not _slot.get("end"):
+            _slot["end"] = _ends.get(_slot.get("start"), "")
+    return _out
 
 
 def _uk_when_label(dt) -> str:
