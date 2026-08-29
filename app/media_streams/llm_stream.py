@@ -1886,6 +1886,7 @@ def _book_verdict_deterministic(text: str) -> str:
     and is handed to L2 — it never guesses.
     """
     from app.media_streams.fast_path import _YES_PATTERNS, _NO_PATTERNS
+
     t = " " + (text or "").strip().lower() + " "
     if not t.strip():
         return "no"          # absent reply is not consent
@@ -1937,6 +1938,106 @@ _PHONE_YES_RE = re.compile(
 )
 
 
+#: A bare affirmative TOKEN. Deliberately much stricter than
+#: _PHONE_YES_RE, which matches "use that one" -- and therefore matches
+#: "don't use that one" too. That looseness is safe only because the
+#: negation check runs first, so anything reading an affirmative in the
+#: PRESENCE of a negation needs its own evidence.
+_STRICT_YES = re.compile(
+    r"\b(?:yes|yeah|yep|yup|aye|correct|that\'?s right|that\'?s the one|that\'?s it|it is)\b",
+    re.IGNORECASE,
+)
+
+
+def _NO_PATTERNS_SET():
+    from app.media_streams.fast_path import _NO_PATTERNS
+
+    return _NO_PATTERNS
+
+
+_no_pattern_re_cached = None
+
+
+def _matches_a_no_pattern(padded: str) -> bool:
+    """`_NO_PATTERNS`, matched on WORD boundaries rather than as substrings.
+
+    The set contains the bare token "no", and a plain `in` test finds it
+    inside "a-no-ther", "no-thing", "k-no-w". Live on the adaptive-caller
+    suite: "I haven't got another one, but yes that's right" scored as a
+    refusal because of the word "another".
+
+    Third instance of this exact shape in this codebase -- the screening
+    triggers had it when "know" matched "no". The lesson each time is the
+    same and it is not "add more phrases": a bare negator has to be matched
+    as a WORD.
+
+    Scoped to this function deliberately. `_NO_PATTERNS` is shared with
+    fast_path, whose own callers have their own guards and their own
+    regression tests; widening the fix to the shared set is a separate
+    change with a separate blast radius.
+    """
+    global _no_pattern_re_cached
+    if _no_pattern_re_cached is None:
+        _no_pattern_re_cached = re.compile(
+            r"\b(?:"
+            + "|".join(re.escape(p.strip()) for p in sorted(_NO_PATTERNS_SET()))
+            + r")\b",
+            re.IGNORECASE,
+        )
+    return bool(_no_pattern_re_cached.search(padded))
+
+
+def _retracted_after_yes(padded: str) -> bool:
+    """Did a correction come AFTER the affirmative? PURE.
+
+    Position is the difference between taking an answer back and arriving at
+    one. "Yes, but can I give you a different number" retracts; "I haven't got
+    another one, but yes that's right" does not.
+    """
+    match = _STRICT_YES.search(padded)
+    if not match:
+        # No plain affirmative to place a correction against, so keep the
+        # original behaviour: any correction cue counts.
+        return any(cue in padded for cue in _CORRECTION_CUES)
+    return any(cue in padded[match.end():] for cue in _CORRECTION_CUES)
+
+
+def _qualified_yes(padded: str) -> bool:
+    """A plain YES that survives everything around it. PURE.
+
+    "I don't think I gave you that, but yes, that's my number" -- the negation
+    is about how the number was obtained, and the answer to the question is the
+    yes that follows it.
+
+    POSITION is the whole rule, applied twice:
+
+      * the yes must come AFTER the last negation. "Don't use that one" has no
+        affirmative at all; "yes, but don't use that one" puts the negation last
+        and is a retraction. Both stay refusals.
+      * no correction may come AFTER the yes. `_CORRECTION_CUES` contains
+        "but ", and "but yes" is the pivot INTO agreement rather than away from
+        it -- checking for the cue anywhere in the utterance made every
+        qualified yes a refusal, which is the bug this exists to fix. "Yes but
+        can I give you a different number" puts the correction after the yes and
+        stays a refusal.
+
+    Never returns a verdict on its own: the caller turns this into 'unsure',
+    never 'yes', so a mistake here costs a keypad handoff rather than a wrong
+    number on a real booking.
+    """
+    last_negation = max(
+        (padded.rfind(cue) for cue in _NEGATION_CUES), default=-1
+    )
+    if last_negation < 0:
+        return False
+    tail = padded[last_negation:]
+    match = _STRICT_YES.search(tail)
+    if not match:
+        return False
+    after_yes = tail[match.end():]
+    return not any(cue in after_yes for cue in _CORRECTION_CUES)
+
+
 def _phone_confirm_verdict(text: str) -> str:
     """L1 — 'yes' | 'no' | 'unsure' for the caller-ID confirmation step.
 
@@ -1964,19 +2065,50 @@ def _phone_confirm_verdict(text: str) -> str:
     unsettled reply does. It must NOT be "re-ask the same question" — that is
     the loop above. The keypad is deterministic and its ladder terminates.
     """
-    from app.media_streams.fast_path import _YES_PATTERNS, _NO_PATTERNS
     t = " " + (text or "").strip().lower() + " "
     if not t.strip():
         return "no"                     # an absent reply is not a confirmation
-    if any(c in t for c in _NEGATION_CUES):
-        return "no"
-    if any(p in t for p in _NO_PATTERNS):
-        return "no"
     _is_yes = bool(_PHONE_YES_RE.search(t))
-    if _is_yes and any(c in t for c in _CORRECTION_CUES):
+    _negated = (
+        any(c in t for c in _NEGATION_CUES) or _matches_a_no_pattern(t)
+    )
+    if _negated:
+        # A negation still beats an affirmative -- that ordering is what stops
+        # "don't use that one" being stored as a confirmation and booked on, and
+        # it does not change here.
+        #
+        # But a negation that is not ABOUT the number, sitting in front of a
+        # plain yes, is neither a refusal nor a confirmation. Live on the
+        # adaptive-caller suite (2026-08-29): "I don't think I gave you that,
+        # but yes, that's my number" scored 'no', so phone_confirmed stayed
+        # False, the PHONE STEP OUTSTANDING steer kept rendering, and the model
+        # obediently re-asked the phone question AFTER the caller had already
+        # agreed to the booking -- until the caller said "you've already asked
+        # me that twice". That is the A4 confirmation loop, and detect_defects
+        # counts 144 of them across the obs corpus.
+        #
+        # 'unsure' is the correct verdict and it is NOT a soft 'yes': it can
+        # never satisfy the A1 book gate, and it routes into the unsettled
+        # ladder that terminates in the keypad after two answers. So the
+        # wrong-number risk is untouched while the loop is bounded.
+        #
+        # A retraction stays 'no': "yes but can I give you a different number"
+        # is the caller taking the affirmative back, and the keypad is where
+        # that belongs.
+        if _qualified_yes(t):
+            return "unsure"
+        return "no"
+    if _is_yes and _retracted_after_yes(t):
         # "yes but can I give you a different number" — an affirmative the
         # caller is retracting. Deliberately 'no' (which routes to the keypad),
         # not 'unsure': storing the caller ID here is the wrong-number outcome.
+        #
+        # AFTER the yes, not anywhere in the sentence. "but" is a correction
+        # cue and "but yes" is the pivot INTO agreement, so an unpositioned
+        # check made "I haven't got another one, but yes that's right" a
+        # refusal. _book_verdict_deterministic keeps the unpositioned form on
+        # purpose -- a wrong booking is worse than a re-ask -- and is not
+        # touched here.
         return "no"
     if _is_yes:
         return "yes"
@@ -4230,6 +4362,24 @@ class LLMStream:
                         provisional=_provisional,
                     )
                     if _kind is _WorkKind.NONE:
+                        # The caller is saying goodbye. Nothing is in flight and
+                        # nobody is waiting, so there is no wait to cover: stay
+                        # quiet rather than falling through to a phrase that
+                        # acknowledges one. Checked BEFORE the UNKNOWN_SLOW
+                        # fallback because that fallback is precisely what fired
+                        # here -- "Sorry, still with you -- Take care of
+                        # yourself" after "Alright. I'll ring 111 then. Thanks."
+                        try:
+                            from app.hold_speech import is_closing as _is_closing
+
+                            if _is_closing(_last_user_text(messages or [])):
+                                logger.info(
+                                    "[ms_llm] no hold phrase: the caller is "
+                                    "closing the call, not waiting"
+                                )
+                                return
+                        except Exception:  # pragma: no cover - never break a call
+                            pass
                         # Work unknown. Say something that names none of it --
                         # unless the CALLER told us what this turn is about, in
                         # which case there is something true and specific to

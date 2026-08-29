@@ -8748,6 +8748,29 @@ async def _exec_collect_and_store(args: Dict[str, Any], session: Dict[str, Any])
 async def _exec_transfer_to_human(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     reason = (args.get("reason") or "caller requested").strip()
 
+    # ── Once per call. A transfer is a terminal act, not a retry ────────────
+    # Found by the adaptive-caller suite (2026-08-29, `wants_a_human`): Susie
+    # said "Putting you through to Priya now", the caller said "Cheers,
+    # thanks", and that courtesy triggered a SECOND transfer_to_human. On a
+    # real line that is a second dial leg and a second "call coming through
+    # now" text to the practitioner -- who then waits for a ring that has
+    # already happened.
+    #
+    # Idempotent rather than an error: the leg twilio.py places is driven by
+    # `request_transfer`, which is already set, so the correct outcome for a
+    # repeat call is the same answer with no second side effect. Raising would
+    # turn a harmless duplicate into a failed turn.
+    if session.get("request_transfer"):
+        logger.info(
+            "[transfer] already in flight for this call — not dialling or "
+            "texting again (reason=%r)", reason,
+        )
+        return {
+            "transfer_initiated": True,
+            "reason": session.get("manual_followup_reason") or reason,
+            "already_in_flight": True,
+        }
+
     # Critical: this flag is checked by twilio.py after handle_turn returns
     session["request_transfer"] = True
     session["human_requested"] = True

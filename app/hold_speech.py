@@ -584,6 +584,66 @@ def classify_intent(text, prev_assistant="", *, screen_pending=False):
     return hits
 
 
+#: A sign-off. Anchoring this to the START of the utterance was the first
+#: attempt and it failed in both directions at once: it missed "Alright. I'll
+#: ring 111 then. Thanks." -- the exact call that prompted the fix -- while
+#: matching "Thanks, could you check Thursday for me?", which is a request
+#: with a courtesy on the front and the turn that needs a head most.
+_CLOSING_MARKER = re.compile(
+    r"\b(?:thanks?|thank you|cheers|ta|bye|goodbye|see you|that\'?s all|that\'?ll do|nothing else|i\'?m all set|i\'?ll (?:ring|call|leave it|think about it|give you a (?:ring|call)))\b",
+    re.IGNORECASE,
+)
+
+#: An unambiguous sign-off. Nothing follows one of these.
+_FAREWELL = re.compile(
+    r"\b(?:bye|goodbye|see you|take care|speak soon)\b",
+    re.IGNORECASE,
+)
+
+#: Anything that means the caller still wants something. Its presence beats
+#: any number of pleasantries.
+_STILL_WANTS = re.compile(
+    r"\?"
+    r"|\b(?:can|could|would|will|do) (?:you|i|we)\b"
+    r"|\b(?:check|book|move|cancel|change|reschedul\w*|look|find|have you got|got any)\b"
+    r"|\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b"
+    r"|\b(?:morning|afternoon|evening|next week|tomorrow)\b",
+    re.IGNORECASE,
+)
+
+
+def is_closing(text: str) -> bool:
+    """Is the caller saying goodbye rather than waiting for something? PURE.
+
+    A hold phrase exists to cover a wait. Nobody who has just said "thanks,
+    I'll ring 111 then" is waiting for a lookup, so a head there is the
+    promised-work defect in its purest form -- it was simply unreachable on
+    these turns until heads began firing on them.
+
+    Found by the adaptive-caller suite on the red-flag call, which is the worst
+    possible place for it: the caller had just been told to contact NHS 111 and
+    heard "Sorry, still with you -- Take care of yourself."
+
+    Deny-by-default in the direction that matters: an utterance that still asks
+    for something is NOT closing, however politely it is phrased, so the cost of
+    a miss is a head the caller did not need rather than silence on a turn that
+    wanted one.
+    """
+    utterance = (text or "").strip()
+    if not utterance or len(utterance.split()) > 14:
+        return False
+    if "?" in utterance:
+        return False
+    # An explicit farewell settles it, and has to be checked BEFORE
+    # _STILL_WANTS: "see you Friday" contains a weekday and is a goodbye,
+    # not a request for Friday.
+    if _FAREWELL.search(utterance):
+        return True
+    if _STILL_WANTS.search(utterance):
+        return False
+    return bool(_CLOSING_MARKER.search(utterance))
+
+
 def subject_for(text: str) -> str:
     """The noun a head may name, or "" when nothing is safe to say. PURE.
 
