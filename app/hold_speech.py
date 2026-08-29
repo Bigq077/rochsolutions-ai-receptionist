@@ -658,17 +658,27 @@ INTENT_HEADS = {
 def render_intent_head(intent, *, subject: str = "", index: int = 0) -> str:
     """One head for ``intent``, rotated by ``index``. PURE.
 
-    Falls back to a subject-free member of the same pool when the caller named
-    nothing -- never to an invented subject.
+    The subject-free member of a pool is a FALLBACK, not a rotation partner.
+    Rotating across the whole pool made the caller's own words disappear on the
+    second head of a call: NAMED_DAY is
+    ["Let me see what {subject} looks like -", "Let me see -"], so index 1
+    answered "would you have Saturday" with a bare "Let me see -" even though
+    Saturday was right there. Naming what they asked for is the entire point of
+    a situational head, so the choice is made among the members that CAN carry
+    a subject whenever one is available, and among the rest when none is.
     """
     pool = INTENT_HEADS.get(intent) or []
     if not pool:
         return ""
-    head = pool[index % len(pool)]
+    with_subject = [h for h in pool if "{subject}" in h]
+    without = [h for h in pool if "{subject}" not in h]
+    usable = (with_subject if (subject and with_subject) else without) or pool
+    head = usable[index % len(usable)]
     if "{subject}" in head:
+        # Only reachable when the pool has nothing else -- keep the guard, since
+        # "Let me see what  looks like" is the failure it exists to prevent.
         if not subject:
-            plain = [h for h in pool if "{subject}" not in h]
-            return plain[0] if plain else ""
+            return without[0] if without else ""
         head = head.replace("{subject}", subject)
     return head
 

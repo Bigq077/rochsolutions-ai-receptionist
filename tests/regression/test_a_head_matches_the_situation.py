@@ -213,3 +213,39 @@ def test_slots_being_open_is_not_an_opening_hours_question():
     """A bare \\bopen\\b matched "any other slots open that Wednesday"."""
     hits = classify_intent("do you have any other slots open that wednesday")
     assert Intent.FAQ_HOURS not in hits
+
+
+# ── 8. The subject survives rotation ────────────────────────────────────────
+
+@pytest.mark.parametrize("index", [0, 1, 2, 3])
+def test_the_callers_day_is_not_dropped_on_a_later_head(index):
+    """The subject-free member of a pool is a FALLBACK, not a rotation partner.
+
+    NAMED_DAY is ["Let me see what {subject} looks like -", "Let me see -"], and
+    `index` is the number of heads already spoken this call. Rotating across the
+    whole pool meant the SECOND head of a call answered "would you have
+    Saturday?" with a bare "Let me see -" -- throwing away the one word that
+    makes it situational. Naming what the caller asked for is the entire point.
+    """
+    head = render_intent_head(Intent.NAMED_DAY, subject="Saturday", index=index)
+    assert "Saturday" in head, (
+        f"the caller's day was dropped on head #{index}: {head!r}"
+    )
+
+
+def test_rotation_still_varies_where_a_pool_has_real_variants():
+    """The fix must not freeze pools that genuinely have several phrasings."""
+    from app.hold_speech import HEADS, WorkKind, render_head
+
+    pool = HEADS[WorkKind.DIARY_READ]
+    assert len(pool) > 1
+    rendered = {render_head(WorkKind.DIARY_READ, index=i) for i in range(len(pool))}
+    assert len(rendered) == len(pool), "work heads stopped rotating"
+
+
+def test_a_pool_with_no_subject_free_member_still_never_leaks_a_placeholder():
+    """The guard stays even though the new selection makes it near-unreachable:
+    "Let me see what  looks like" is the failure it exists to prevent."""
+    for intent in INTENT_HEADS:
+        head = render_intent_head(intent, subject="", index=3)
+        assert "{" not in head, f"{intent} leaked a placeholder: {head!r}"
