@@ -1,12 +1,16 @@
 # Stop being the test harness — before the cohort lands
 
-**Status as of 2026-08-29 (evening).** Phase 1 done. Phase 2 done bar the
-adaptive caller. Phase 3 mostly
-done and now blocked on an owner action. Phase 4 not started, both items
-re-confirmed live. Two live-call confirmations banked: the fourth clinic booking
-from config alone, and Theorem's emergency intercept. The hold-speech decision is
-SETTLED — and the measurement that settled it says the filler architecture was
-aimed at the wrong latency source. See Phase 2.
+**Status as of 2026-08-29, late evening.** Phase 1 done. **Phase 2 DONE — all
+three parts.** Phase 3 ready and blocked on an owner action. Phase 4 not started,
+both items re-confirmed live. Two live-call confirmations banked: the fourth
+clinic booking from config alone, and Theorem's emergency intercept. The
+hold-speech decision is SETTLED — and the measurement that settled it says the
+filler architecture was aimed at the wrong latency source. See Phase 2.
+
+The adaptive caller exists and has been run: sixteen personas, 11.8 minutes, no
+phone. **It found three engine defects on its first full run, and a fourth came
+from the live call that verified them.** All four are fixed. See "The adaptive
+caller".
 
 This document is the plan and its running record. It is written to be picked up
 cold: if you have not read anything else, read this.
@@ -41,7 +45,7 @@ all the way through and nothing since has challenged it.
 | Phase | State |
 |---|---|
 | **1 — Headless free-form driver** | ✅ Done. Found a live defect on day one. |
-| **2 — Adaptive caller + harvest the corpus** | ✅ Corpus harvested, detectors re-armed, hold speech settled. Adaptive caller still open. |
+| **2 — Adaptive caller + harvest the corpus** | ✅ **DONE.** Corpus harvested, detectors re-armed, hold speech settled, adaptive caller built and run. |
 | **3 — Collapse the tenancy** | 🟡 New-clinic path proved and live. Fold groundwork done. **The fold itself is blocked on an owner action.** |
 | **4 — Two contained slot fixes** | ❌ Not started. Both re-confirmed live on 29 Aug. |
 
@@ -198,7 +202,8 @@ B-122 opener welded to the payload (71), B-123 subordinate clause spoken as a
 sentence (5), B-124 provisional clinic claimed a write (3). Baseline frozen;
 `--check` exits 0.
 
-**Adaptive caller.** Still not started. It is the one Phase 2 item left.
+**Adaptive caller.** Built and run — see "The adaptive caller" below for what
+it is, how to drive it, and the four defects it produced.
 
 ---
 
@@ -360,6 +365,136 @@ nothing loads them.
 
 ---
 
+### The adaptive caller — built, run, and earning its keep
+
+`tests/harness/caller.py` + `personas.py` + `verdicts.py`, driven by
+`scripts/run_call_suite.py`. Sixteen personas drawn from the obs corpus rather
+than imagined: the intent counts across 4,356 stored caller turns decide where
+the suite spends its calls. **11.8 minutes, 2,592 caller output tokens, no
+Twilio, no phone.**
+
+    python -m scripts.run_call_suite --list
+    ANTHROPIC_API_KEY=... python -m scripts.run_call_suite --out logs/suite
+    ANTHROPIC_API_KEY=... python -m scripts.run_call_suite --only cancel --show
+
+**The rule that keeps it honest: the caller may not decide whether the call
+passed.** It generates the conversation and nothing else; every verdict is a
+pure function of the transcript. A test asserts `verdicts.py` never imports
+anthropic. An LLM that both drives a test and marks it is not a test, and the
+failure is silent — the suite goes green because the caller was in a good mood.
+
+Cost: two model calls per turn. **Zero Twilio cost** — the netfence allows
+`api.anthropic.com` and nothing else, and it covers all four transports the
+engine can reach the world through, including the `requests` that Twilio's SDK
+uses. Across the whole 16-call run exactly one outbound request was blocked
+(gov.uk bank holidays).
+
+### What the suite found
+
+Three engine defects on the first full run, each reproduced from a saved
+transcript without a phone. All three now have verdicts that catch them
+automatically, verified by replaying the transcript that produced them.
+
+1. **A qualified yes read as a refusal — FIXED.** The caller said "I don't think
+   I gave you that, but yes, that's my number" and `_phone_confirm_verdict`
+   scored it `no`. So `phone_confirmed` stayed False, the PHONE STEP OUTSTANDING
+   steer kept rendering, and the model obediently re-asked the phone question
+   AFTER the caller had agreed to the booking — until they said "you've already
+   asked me that twice". **That is the A4 confirmation loop, 144 instances in
+   the obs corpus, reproduced without a phone for the first time.**
+
+   The negation-before-affirmative ordering is a safety property and is
+   unchanged. A negation with a plain YES after it now yields `unsure`, which
+   cannot satisfy the A1 book gate and routes into the keypad ladder.
+
+   Two things fell out that matter more than the fix: `_PHONE_YES_RE` matches
+   "use that one" and therefore "don't use that one"; and `_NO_PATTERNS`
+   contains the bare token "no", matched as a SUBSTRING, so "a-**no**-ther"
+   scored as a refusal. **Third instance of the substring-negator family here** —
+   the screening triggers had it when "know" matched "no".
+
+2. **A hold phrase in front of a goodbye — FIXED.** On the red-flag call the
+   caller said "Alright. I'll ring 111 then. Thanks." and heard "Sorry, still
+   with you — Take care of yourself." `is_closing()` is checked BEFORE the
+   UNKNOWN_SLOW fallback. Deny-by-default in the right direction: "Thanks, could
+   you check Thursday?" keeps its head.
+
+3. **A second transfer — FIXED, verified live.** A courtesy "Cheers, thanks"
+   after "Putting you through to Priya now" opened a whole new turn that called
+   `transfer_to_human` again and repeated the line. Fixed in two halves: the
+   executor is idempotent (no second leg, no second alert), and
+   `transfer_placed` now stops the turn loop entirely once a leg is placed.
+
+   ⚠️ **The harness cannot verify the upstream half.** It drives
+   `LLMStream.run_turn` directly with no `on_transfer` callback, so
+   `_on_transfer_request` never runs there. The verdict is split accordingly: a
+   repeat carrying `already_in_flight` is a NOTE, not a defect, and the note
+   says so in its own text. **Confirmed on a live call instead** — build
+   `12db001d1356`, `transfer_to_human` fired exactly once.
+
+4. **Susie dialled the caller back to themselves — FIXED.** Found by that same
+   verification call (`CAe825216dd5a03ca5`). `northgate` carries no
+   `transfer_phone`, so `TRANSFER_FALLBACK_NUMBER` answered — and the fallback
+   is the owner's number, which was also the number the test call came FROM.
+   The leg rang out (their line was busy on that very call), Twilio reported
+   `no-answer`, and the transfer-miss handler played the voicemail prompt to
+   someone who had just been told they were being put through.
+
+   `resolve_transfer_target` now returns None when the target is the caller,
+   which routes to the existing no-dial-target recovery — keeps them with Susie
+   and offers to take a message. **Any clinic whose fallback is its own owner
+   has this the moment that owner rings their own line.**
+
+   🔧 **Owner action outstanding:** `app/clinics/northgate/clinic.json` has no
+   `transfer_phone`. The guard stops the worst outcome, but a real "put me
+   through" on the demo line still has no clinic number to dial. Only you know
+   what it should be, so it is not invented here.
+
+### The harness's own bugs — four, and they rhyme
+
+Worth its own heading because the pattern matters more than the instances. Every
+one was a FAKE diverging from the real thing, and every one produced a
+convincing false finding:
+
+- `Booking.start` is an ISO string; the verdict read `.hour` off it and silently
+  skipped every real booking. **The test passed** — it built its own lookalike
+  Booking with a datetime.
+- `lookup_patient` was an inert `{"found": False}`, so `cancel`, `reschedule`
+  and `changes_mind_mid_booking` rang about an appointment nothing could see.
+  The engine correctly said so and the suite called all three CLEAN. **Three of
+  sixteen personas were testing nothing.**
+- The seed was behind `hasattr(diary, "seed_booking")` and FakeDiary had no such
+  method, so the guard silently did nothing.
+- The reschedule stub looked for `new_start`; the real schema requires
+  `new_slot_iso`. Every move failed, and the engine honestly reported the failed
+  write — which is the only reason it was not read as an engine defect.
+
+So the fix is not four fixes.
+`test_the_fakes_accept_what_the_real_schemas_require` builds each call from the
+SHIPPED `TOOL_*` schemas, and the ack-filler marker, the Booking shape and the
+seed are each pinned. **A stub that cannot succeed makes its persona vacuous,
+and a vacuous persona reports CLEAN.**
+
+### What is next
+
+In the order I would take it:
+
+1. **Phase 4 — the two contained slot fixes.** The only remaining engine
+   correctness work, and it is small. `_check_availability_published` calls
+   neither `_cap_presented_slots` nor `_sync_last_offered_to_spoken` — the one
+   producer of seven that skips both. **Anchored 2026-08-29 and it is LATENT:**
+   across 47 stored Vital Edge calls the cap is never exceeded (max 3 options
+   offered against a cap of 3), because a published reader only offers what the
+   practitioner put on the calendar. VE is also pending-confirmation, so a
+   mis-offered slot meets a human. Real, but not urgent.
+2. **`northgate.transfer_phone`** — one config line, owner's call.
+3. **The held port to the live clinics** — see below. Waiting on a full suite of
+   test calls, which is now a command rather than an afternoon.
+4. **Phase 3, the fold.** Blocked on you, not on engineering.
+
+Not started and deliberately so: the `last_offered_slots` three-contract
+restructure stays post-webinar.
+
 ### The port to the live clinics — HELD, deliberately
 
 Owner decision 2026-08-29, after two confirming calls on Northgate: **wait for a
@@ -376,6 +511,11 @@ Held, and worth doing together when the calls are done:
   has replayed since the rotation code shipped. Pure audio, no behaviour change,
   and it is the 2026-08-08 "sounds quite robotic" report.
 - **FillerGuard's second clip.** Still live on all three.
+- **The phone-confirm verdict** and **the transfer latch.** Both APPLY to all
+  four branches; the A4 loop they fix is the one `detect_defects` counts 144
+  times across the corpus.
+- **The self-dial guard** in `resolve_transfer_target` — applies wherever a
+  clinic has no `transfer_phone`, which today is Theorem as well as northgate.
 
 ### Calls owed
 
@@ -405,6 +545,8 @@ Held, and worth doing together when the calls are done:
 | `docs/ONBOARD_A_CLINIC.md` | **how to add a clinic.** The three things needed, the keys that decide behaviour, and the mistakes that make no sound. Read before onboarding anyone. |
 | `docs/FOLD_THE_CLINIC_BRANCHES.md` | the fold audit and the cutover runbook, including the correction that a fold is NOT behaviour-neutral |
 | `tests/harness/` | the in-process driver — text in, text out, against the live turn loop. `netfence.py` is what stops it reaching a real calendar. |
+| `tests/harness/caller.py`, `personas.py`, `verdicts.py` | the adaptive caller. The caller generates; the verdicts are pure functions of the transcript and a test forbids them importing anthropic. |
+| `scripts/run_call_suite.py` | drives all sixteen personas. `--list`, `--only <persona>`, `--show`, `--out <dir>`. One command, ~12 minutes, no phone. |
 | `tests/tenancy/` | the Phase 3 gate: a clinic stood up from config alone, and the AST check that `app/` never learns its name |
 | `scripts/port.py` | the interim tourniquet. Throwaway by design; delete it the day the fold is done. |
 | `app/clinic_config.py` → `validate_clinic_config()` | the onboarding checklist as code. Run it before pointing a number at a tenant. |
@@ -416,7 +558,11 @@ live: `test_bank_holidays_are_not_bookable`,
 `test_the_service_shown_is_the_service_booked`,
 `test_hold_speech_is_opt_in_per_clinic`,
 `test_theorem_emergency_intercept_costs_no_question`,
-`test_theorem_declined_clinical_screening`.
+`test_theorem_declined_clinical_screening`,
+`test_the_fakes_accept_what_the_real_schemas_require` (a stub that cannot
+succeed makes its persona vacuous, and a vacuous persona reports CLEAN), and
+`tests/regression/test_the_suite_findings_of_2026_08_29.py` — the four defects
+of 29 Aug, three from the suite and one from the call that verified it.
 
 ---
 
@@ -424,7 +570,7 @@ live: `test_bank_holidays_are_not_bookable`,
 
 | branch | tip | note |
 |---|---|---|
-| `latency-eval` | `58451682` | canonical; also serves Northgate on the test line |
+| `latency-eval` | `12db001d` | canonical; also serves Northgate on the test line |
 | `jv_v2` | `b1a71242` | live — Joint Venture |
 | `vitaledge-onboarding` | `4330d1b8` | live — Vital Edge |
 | `theorem-onboarding` | `71d603c7` | live — Theorem; **314 behind**, stays separate by decision |
