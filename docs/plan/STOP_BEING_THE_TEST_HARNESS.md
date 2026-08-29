@@ -2,7 +2,8 @@
 
 **Status as of 2026-08-29.** Phase 1 done. Phase 2 not started. Phase 3 mostly
 done and now blocked on an owner action. Phase 4 not started, both items
-re-confirmed live.
+re-confirmed live. Two live-call confirmations banked: the fourth clinic booking
+from config alone, and Theorem's emergency intercept.
 
 This document is the plan and its running record. It is written to be picked up
 cold: if you have not read anything else, read this.
@@ -198,10 +199,17 @@ knowingly.
 The `last_offered_slots` three-contract restructure remains **post-webinar**.
 Written down; do not start it.
 
-### Two calls owed
+### Calls owed
 
-- Theorem: say *"I've got chest pain"* — confirms the deterministic path fires
-  ahead of the model on a live deployment.
+- ~~Theorem: *"I've got chest pain"*~~ — **placed 2026-08-29, clean.** The
+  emergency intercept works on Mark's live line, and it did not cost a booking
+  caller anything. Confirms `71d603c7` end to end.
+
+  The log line that distinguishes the deterministic path from the model simply
+  behaving well is `[clinical_screening] EMERGENCY detected`. Worth knowing for
+  the next one: a clean-sounding call is necessary evidence, not sufficient —
+  the model could always have produced the right answer by itself, which is the
+  behaviour this change replaced.
 - Northgate: set `hold_speech: true` and listen. It is the only clinic with no
   patient at risk, and it is the evidence needed before offering the arbiter to
   Marcus or Jonathan.
