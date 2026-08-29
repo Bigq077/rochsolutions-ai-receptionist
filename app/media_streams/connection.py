@@ -12208,9 +12208,53 @@ class WebSocketCallHandler:
                                 ),
                             )
                             self._filler_breath_injected = False
+                            # Is a situational head coming for this utterance?
+                            # If so the clip is the weaker of the two and is
+                            # suppressed -- see FillerGuard.arm gate 4. Computed
+                            # here because this is where the caller's transcript
+                            # is; the head itself is rendered in llm_stream from
+                            # the same pure functions, so the two cannot disagree
+                            # about whether one exists.
+                            #
+                            # Gated on hold_speech: on a clinic with no arbiter
+                            # no head is ever produced, and suppressing the clip
+                            # there would be silence rather than a better phrase.
+                            _situational_head = False
+                            try:
+                                from app.hold_speech import (
+                                    classify_intent as _hs_classify,
+                                    hold_speech_enabled as _hs_enabled,
+                                )
+                                if _hs_enabled(self.session):
+                                    # Read from conversation_history, NOT from
+                                    # last_bot_prompt -- that is truncated at 200
+                                    # chars (B-31), and a screen question is
+                                    # exactly the long sentence it cuts off. The
+                                    # pending_screen flag is the reliable door
+                                    # regardless; this is the second one.
+                                    _prev_bot = ""
+                                    for _m in reversed(
+                                        self.session.get("conversation_history") or []
+                                    ):
+                                        if _m.get("role") == "assistant":
+                                            _prev_bot = _m.get("content") or ""
+                                            break
+                                    _situational_head = bool(_hs_classify(
+                                        utterance,
+                                        _prev_bot,
+                                        screen_pending=bool(
+                                            self.session.get("pending_screen")
+                                        ),
+                                    ))
+                            except Exception:
+                                logger.warning(
+                                    "[ms_filler] head lookahead failed; "
+                                    "leaving the clip armed", exc_info=True,
+                                )
                             await self._filler.arm(
                                 self.session,
                                 expect_lookup=_filler_expect_lookup,
+                                situational_head=_situational_head,
                             )
 
                             # B2 fix: establish a fresh per-turn speech flag and

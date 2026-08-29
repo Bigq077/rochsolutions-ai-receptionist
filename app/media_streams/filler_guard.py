@@ -274,6 +274,7 @@ class FillerGuard:
         session: dict,
         delay_ms: int = 350,
         expect_lookup: bool = True,
+        situational_head: bool = False,
     ) -> None:
         """
         Start the filler timer.
@@ -355,7 +356,30 @@ class FillerGuard:
             )
             return
 
-        # Gate 4: clip must be present.
+        # Gate 4: a situational head is already coming, and it is better.
+        #
+        # The clip is generic by construction -- it is one recording, so it
+        # cannot name the day the caller just asked for. A situational head can,
+        # and lands ~370ms later once ElevenLabs' first byte is counted
+        # (HOLD_HEAD_DELAY_MS 600 + ~120ms TTFB, against the clip's 350ms).
+        #
+        # That gap used to be the whole argument for the clip: the head was
+        # produced at tool detection, ~2.2s in, so something had to cover the
+        # 1.85s before it. Moving the head to the caller's own words moved it to
+        # 600ms, and a third of a second does not buy a second utterance saying
+        # a vaguer version of the same thing.
+        #
+        # Only reachable when the clinic has opted into hold_speech -- the caller
+        # passes False otherwise, because on a clinic with no arbiter no head is
+        # coming and suppressing the clip would be plain silence.
+        if situational_head:
+            logger.info(
+                "[ms_filler] not armed — a situational head is coming, and it "
+                "can name what the caller asked for"
+            )
+            return
+
+        # Gate 5: clip must be present.
         if not self._pool:
             return
 
