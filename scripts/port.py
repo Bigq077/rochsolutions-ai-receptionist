@@ -158,17 +158,34 @@ def port_one(sha: str, branch: str, root: Path, excludes: list,
                        capture_output=True, text=True, encoding="utf-8",
                        errors="replace")
         status = git("status", "--porcelain", cwd=port_tree)
-        unmerged = [ln[3:] for ln in status.splitlines()
-                    if ln[:2] in ("DU", "UD", "UU", "AA", "AU", "UA")]
 
         droppable, blocking = [], []
-        for p in unmerged:
-            if p.startswith("tests/") or any(p.startswith(e) for e in excludes):
-                droppable.append(p)
+        for line in status.splitlines():
+            code, path_ = line[:2], line[3:]
+            if code not in ("DU", "UD", "UU", "AA", "AU", "UA"):
+                continue
+            # ONLY modify/delete is droppable: the file does not exist on the
+            # target at all, which is the ordinary case for canonical-only test
+            # infrastructure. A UU/AA is a real CONTENT conflict — the target
+            # has its own version of the same file — and dropping that silently
+            # discards the change being ported. It did exactly that on
+            # 2026-08-29: both clinic branches already carried
+            # test_bank_holidays_are_not_bookable.py, the update conflicted, and
+            # the tool reported "absent on target" and threw the edit away. The
+            # ported suite then ran NINE tests fewer than the baseline and still
+            # said ok.
+            if code in ("DU", "UD") and (
+                    path_.startswith("tests/")
+                    or any(path_.startswith(e) for e in excludes)):
+                droppable.append(path_)
             else:
-                blocking.append(p)
+                blocking.append(path_)
         if blocking:
-            res.note = "real conflict, needs a human: " + ", ".join(blocking)
+            res.note = (
+                "real conflict, needs a human: " + ", ".join(blocking)
+                + "\n    A path the target DOES have is a CONTENT conflict, "
+                  "not a missing file — resolve it rather than excluding it."
+            )
             return res
         if droppable:
             git("rm", "-f", *droppable, cwd=port_tree)
