@@ -1,6 +1,6 @@
 {
-  "frozen_utc": "2026-08-29T18:00:27.968427+00:00",
-  "calls_scored": 753,
+  "frozen_utc": "2026-08-29T23:36:59.298622+00:00",
+  "calls_scored": 757,
   "detectors": {
     "C1": {
       "what": "agreed one date, booked another",
@@ -61,8 +61,8 @@
     "B-121": {
       "what": "two hold phrases back to back",
       "status": "open",
-      "count": 27,
-      "last_build": "f2cc28dcf7ee",
+      "count": 97,
+      "last_build": "7f0ebd032699",
       "evidence": "CAbc6e6a96270e88d63feb69498d5a8b94"
     },
     "B-122": {

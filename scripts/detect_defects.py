@@ -441,22 +441,98 @@ def d_hold_dead_end(call):
     return None
 
 
+#: "Claims a lookup or a write", shared with app/hold_speech.py so one
+#: definition decides both what a head may promise and what counts as having
+#: already promised it.
+_CLAIMS_WORK = re.compile(
+    r"\b(check|look|find|pull|diary|schedule|availab|book|cancel|move|shift|"
+    r"sort|lock|get)", re.IGNORECASE,
+)
+
+#: A time, a weekday or a numbered option — the work actually arriving. A turn
+#: carrying one of these is the payload, not a phrase standing in front of it.
+_DELIVERS_WORK = re.compile(
+    r"\b\d{1,2}[:.]\d{2}\b|\b\d{1,2}\s?(?:am|pm)\b|o'?clock|"
+    r"\b(?:quarter|half)\s(?:past|to)\b|"
+    r"\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b|"
+    r"\bnumber\s(?:1|2|3|one|two|three)\b", re.IGNORECASE,
+)
+
+
+def _is_an_engine_phrase(text: str) -> bool:
+    """Did the ENGINE say this, rather than the model?
+
+    `_HOLD_PHRASES` is the pre-arbiter list and stops at 2026-08-29. Every
+    phrase the situational-head work shipped after it — "Okay, one sec -",
+    "Right, booking you in -", "In terms of pricing -" — was invisible to this
+    detector, which is why it scanned the build that stacked two of them and
+    reported nothing. `is_hold_head` matches the shipped pools themselves, so
+    the detector now moves with them instead of against a frozen copy.
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    if t.lower() in _HOLD_PHRASES:
+        return True
+    try:
+        from app.hold_speech import is_hold_head
+        return is_hold_head(t)
+    except Exception:
+        return False
+
+
+def _is_a_hold_sentence(text: str) -> bool:
+    """Did this bot turn tell the caller to hold on, without being the answer?
+
+    Wider than `_HOLD_PHRASES` on purpose. That set is the phrases the ENGINE
+    ships, and it cannot see the commonest first half of a stacked pair: the
+    MODEL's own "Got it. Let me check what's available for you as soon as
+    possible", which `keep_pre_slot_speech` preserves and which reads to the
+    caller as exactly the same speech act.
+
+    Three conditions, so an answer is never mistaken for a phrase in front of
+    one: it claims the work, it does not deliver any, and it is short. The
+    length cap is what keeps "I'm afraid I haven't got any morning slots next
+    week — the available times are…" out.
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 90:
+        return False
+    if _DELIVERS_WORK.search(t):
+        return False
+    return bool(_CLAIMS_WORK.search(t))
+
+
 def d_hold_stacked(call):
     """Two hold phrases back to back with no caller turn between them.
 
     hold_speech.py claims stacking is "unrepresentable by construction". It was
-    not: 27 calls contain a run, and the FillerGuard second clip sat outside the
-    arbiter entirely.
+    not: the FillerGuard second clip sat outside the arbiter entirely, and on
+    2026-08-29 (CA7454c983a10dd3db7caee7dba3b06238) the model's own preserved
+    pre-tool sentence stacked with the engine's tool-time phrase 0.8s later.
+
+    THIS DETECTOR DID NOT CATCH THAT CALL. Both halves had to be members of
+    `_HOLD_PHRASES`, so a model-generated first half made the pair invisible —
+    the detector was blind to the exact shape it exists to find, on a build it
+    had already scanned and passed. The first half is now any hold SENTENCE.
+
+    The second half is still required to be an engine phrase, deliberately:
+    that is the one the engine chose to say, so it is the one that should not
+    have been said, and requiring it keeps the detector aimed at our own defect
+    rather than at the model saying two things.
     """
     turns = _turns(call)
     for i in range(len(turns) - 1):
         a, b = turns[i], turns[i + 1]
         if (a.get("role") or "") == "user" or (b.get("role") or "") == "user":
             continue
-        first = (a.get("text") or "").strip().lower()
-        second = (b.get("text") or "").strip().lower()
-        if first in _HOLD_PHRASES and second in _HOLD_PHRASES:
-            return f"{first[:32]!r} then {second[:32]!r}"
+        first = (a.get("text") or "").strip()
+        second = (b.get("text") or "").strip()
+        if not _is_an_engine_phrase(second):
+            continue
+        second = second.lower()
+        if first.lower() in _HOLD_PHRASES or _is_a_hold_sentence(first):
+            return f"{first[:40]!r} then {second[:32]!r}"
     return None
 
 
