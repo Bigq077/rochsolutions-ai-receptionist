@@ -1,8 +1,10 @@
-"""Three defects the adaptive-caller suite found on its first full run.
+"""The defects of 2026-08-29 — three from the adaptive-caller suite, one live.
 
-Each was reproduced without a phone, from a saved transcript, on 2026-08-29 —
-which is the point of the harness. Each is pinned here against the shape that
-produced it rather than the sentence, because the sentences get reworded.
+The first three were reproduced without a phone, from a saved transcript, which
+is the point of the harness. The fourth (section 4) came from the live call that
+verified them: the guard worked, and the call surfaced a second, separate gap
+behind it. Each is pinned against the shape that produced it rather than the
+sentence, because the sentences get reworded.
 """
 from __future__ import annotations
 
@@ -192,3 +194,93 @@ def test_a_transcript_after_the_transfer_does_not_open_a_turn():
         "the transfer guard moved below the transcript dispatch, so a caller's "
         "goodbye opens another turn again"
     )
+
+
+# ── 4. Never dial the caller back to themselves ─────────────────────────
+#
+# Live on 2026-08-29, call CAe825216dd5a03ca5 (northgate). northgate carries no
+# `transfer_phone`, so TRANSFER_FALLBACK_NUMBER answered — and the fallback is
+# the owner's number, which was also the number the test call came FROM. Susie
+# dialled the caller back to themselves; their line was busy on that very call,
+# Twilio reported no-answer, and the transfer-miss handler played the voicemail
+# prompt to someone who had just been told they were being put through.
+#
+# Returning None routes to the no-dial-target recovery instead, which keeps
+# them with Susie and offers to take a message. Any clinic whose fallback is
+# its own owner has this the moment that owner rings their own line.
+
+FALLBACK = "+447700900141"
+
+
+@pytest.fixture
+def transfer_env(monkeypatch):
+    """Pin every input `resolve_transfer_target` reads, and hand back a caller.
+
+    Without this the assertions are ambient: `TRANSFER_DISABLED` left set in a
+    shell, or an empty fallback, both return None for reasons that have nothing
+    to do with the guard, and the test would pass with the guard deleted.
+
+    `get_clinic` is imported inside the function from `app.clinic_config`, so
+    the module attribute is the one that has to be patched — patching a name on
+    `app.routes.realtime` binds nothing.
+    """
+    import app.config as cfg
+
+    monkeypatch.setattr(cfg, "TRANSFER_DISABLED", False)
+    monkeypatch.setattr(cfg, "TRANSFER_FALLBACK_NUMBER", FALLBACK)
+
+    def clinic(**keys):
+        monkeypatch.setattr("app.clinic_config.get_clinic", lambda _cid: dict(keys))
+
+    clinic()  # default: a clinic with no number of its own, as northgate is
+    return clinic
+
+
+def _resolve(caller):
+    from app.routes.realtime import resolve_transfer_target
+
+    return resolve_transfer_target({"clinic_id": "northgate", "twilio_from": caller})
+
+
+def test_the_fallback_is_refused_when_it_is_the_caller(transfer_env):
+    """The live defect: no clinic number, and the fallback is who is calling."""
+    assert _resolve(FALLBACK) is None
+
+
+def test_the_same_fallback_is_still_dialled_for_anyone_else(transfer_env):
+    """The other half of the pair, and the one that gives the first its meaning.
+
+    Same clinic, same fallback, a different caller — so a None above can only
+    be the guard, and the guard cannot have disabled transfers generally.
+    """
+    assert _resolve("+447700900999") == FALLBACK
+
+
+def test_a_withheld_number_does_not_block_the_transfer(transfer_env):
+    """A caller ID can be absent (withheld, or a SIP leg). Unknown is not a
+    match — refusing to dial on no evidence would strand every such caller.
+    """
+    assert _resolve("") == FALLBACK
+    assert _resolve(None) == FALLBACK
+
+
+@pytest.mark.parametrize("configured, caller, dialled", [
+    ("+447700900141", "+447700900141", False),  # E.164 both sides
+    ("07700 900141", "+447700900141", False),   # local vs E.164 — same person
+    ("+44 7700 900141", "+447700900141", False),  # spaced E.164
+    ("+447700900123", "+447700900141", True),   # an actual clinic number
+])
+def test_the_comparison_ignores_formatting(transfer_env, configured, caller, dialled):
+    """A clinic's own `transfer_phone` is typed by whoever onboarded them; the
+    caller ID is always E.164. Comparing the raw strings would miss every real
+    collision, so the test drives the clinic path with the formats that turn up.
+
+    Asserted through `resolve_transfer_target` rather than by re-deriving the
+    rule here: a test that recomputes what it is checking passes when the code
+    it checks is deleted.
+    """
+    transfer_env(transfer_phone=configured)
+    result = _resolve(caller)
+    assert bool(result) is dialled
+    if dialled:
+        assert result == configured, "the clinic's own number was not the one dialled"

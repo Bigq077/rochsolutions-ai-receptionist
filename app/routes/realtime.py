@@ -456,9 +456,46 @@ def resolve_transfer_target(session: Dict[str, Any]) -> Optional[str]:
     except Exception:
         clinic = {}
 
+    def _same_number(a: str, b: str) -> bool:
+        """Two numbers are the same caller if their last nine digits match.
+
+        The target arrives as "+447700900141" or "07700 900141" depending on
+        where it was configured; the caller ID is always E.164.
+        """
+        da = "".join(c for c in (a or "") if c.isdigit())[-9:]
+        db = "".join(c for c in (b or "") if c.isdigit())[-9:]
+        return bool(da) and da == db
+
+    def _usable(target: str) -> Optional[str]:
+        """None when the target is the caller themselves.
+
+        Dialling the caller's own number can never connect -- their line is
+        busy on this very call -- so the leg rings out and Twilio's
+        transfer-miss handler drops them into voicemail, having already been
+        told they were being put through. Returning None instead routes to the
+        no-dial-target recovery, which keeps them with Susie and offers to take
+        a message.
+
+        Live on 2026-08-29, call CAe825216dd5a03ca5: northgate carries no
+        transfer_phone, so the fallback answered -- and the fallback is the
+        owner's number, which was also the number the test call came FROM.
+        Susie dialled the caller back to themselves, got no-answer, and played
+        the voicemail prompt. Any clinic whose fallback is its own owner has
+        this the moment that owner rings their own line and asks for a person.
+        """
+        if target and _same_number(target, session.get("twilio_from") or ""):
+            logger.error(
+                "[realtime] transfer target ***%s IS the caller's own number — "
+                "refusing to dial them back to themselves. clinic_id=%r has no "
+                "usable transfer_phone.",
+                target[-4:], session.get("clinic_id"),
+            )
+            return None
+        return target or None
+
     clinic_target = (clinic.get("transfer_phone") or "").strip()
     if clinic_target:
-        return clinic_target
+        return _usable(clinic_target)
 
     # No clinic number: the catch-all answers. TRANSFER_FALLBACK_NUMBER is a
     # HARDCODED default in app/config.py, not something set per service, so this
@@ -475,7 +512,7 @@ def resolve_transfer_target(session: Dict[str, Any]) -> Optional[str]:
             "being sent to ***%s. Check TWILIO_TO_CLINIC and the clinic config.",
             session.get("clinic_id"), fallback[-4:],
         )
-        return fallback
+        return _usable(fallback)
     return None
 
 
