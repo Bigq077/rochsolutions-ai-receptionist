@@ -146,27 +146,86 @@ def test_the_cache_is_reconciled_with_what_was_spoken():
     assert '_cache_now["slot_labels"] = session.get("slot_labels")' in src
 
 
-def test_the_sync_is_called_on_the_acuity_single_day_path():
-    """The coupling. The other five executors already called this; the Acuity
-    body never did, and Theorem short-circuits to the Acuity executors."""
-    src = inspect.getsource(receptionist_tools._check_availability_acuity)
-    assert "_sync_last_offered_to_spoken(session, _result)" in src, (
-        "the Acuity executor no longer aligns its offer record with the day "
-        "it speaks"
+def test_every_producer_that_writes_the_record_also_aligns_it():
+    """The invariant, across all seven producers rather than the one call site.
+
+    This test used to read the Acuity body for the string
+    "_sync_last_offered_to_spoken(session, _result)", and a second one asserted
+    it sat at indent 12. Both pinned one producer and one layout: a seventh
+    producer could be added, or an existing one could stop aligning, with the
+    file still green — and re-indenting a working body turned it red. A text
+    scan cannot tell coupling from prose (third instance in this repo), and an
+    indent is not behaviour.
+
+    Stated as the property instead: any function that writes the offer record
+    must also align it with what was spoken. Walked over the AST, so a new
+    reader is caught the day it is written.
+
+    `_sync_last_offered_to_spoken` is itself excluded — writing the record is
+    what it exists to do.
+    """
+    import ast
+
+    tree = ast.parse(inspect.getsource(receptionist_tools))
+    offenders = []
+    producers = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name == "_sync_last_offered_to_spoken":
+            continue
+        writes = any(
+            isinstance(n, ast.Subscript)
+            and isinstance(n.value, ast.Name)
+            and n.value.id == "session"
+            and isinstance(n.slice, ast.Constant)
+            and n.slice.value == "last_offered_slots"
+            and isinstance(getattr(n, "ctx", None), ast.Store)
+            for n in ast.walk(node)
+        )
+        if not writes:
+            continue
+        producers.append(node.name)
+        aligns = any(
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "_sync_last_offered_to_spoken"
+            for n in ast.walk(node)
+        )
+        if not aligns:
+            offenders.append(node.name)
+
+    assert not offenders, (
+        f"{offenders} write session['last_offered_slots'] and never align it "
+        f"with what was spoken. The record is indexed BY POSITION by "
+        f"_try_slot_selection and _resolve_slot_iso, so an unaligned record is "
+        f"a route to booking a date the caller never heard (B-108b)."
     )
+    assert producers, "the AST walk found no producers at all — it has rotted"
 
 
-def test_the_sync_is_scoped_to_single_day():
-    """multi_day is deliberately untouched — its seam is older and handled at
-    the resolver. A sync at the executor's top level would change it."""
-    src = inspect.getsource(receptionist_tools._check_availability_acuity)
-    indents = [
-        len(line) - len(line.lstrip())
-        for line in src.splitlines()
-        if "_sync_last_offered_to_spoken(session, _result)" in line
-    ]
-    assert indents == [12], (
-        f"the sync sits at indent {indents}, not inside the single_day block"
+def test_the_producer_count_is_stated_out_loud():
+    """A change to this number is a change worth reading in a diff.
+
+    Not a cap: adding a reader is fine, and the test above is what makes it
+    safe. This says how many there are, so nobody has to count them again from
+    a grep — which is how "the other readers already carry this" was got wrong
+    once before (B-110).
+    """
+    import ast
+
+    tree = ast.parse(inspect.getsource(receptionist_tools))
+    sites = sum(
+        1 for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "_sync_last_offered_to_spoken"
+    )
+    assert sites == 7, (
+        f"{sites} call sites align the offer record, not 7. The seven are: the "
+        f"Acuity single_day path, the generic reader's four returns (no tokens, "
+        f"freebusy failed, the widen branch, the main path), the diary reader "
+        f"and the published reader."
     )
 
 
