@@ -202,6 +202,45 @@ sentence (5), B-124 provisional clinic claimed a write (3). Baseline frozen;
 
 ---
 
+### Phase 3 — the fold, blocked on you
+
+Canonical is ready. Per service, out of hours (full runbook:
+`docs/FOLD_THE_CLINIC_BRANCHES.md`):
+
+1. Set `SMS_ENABLED=true` and `APPOINTMENT_REMINDERS_ENABLED=true` on the
+   service.
+2. Point its Render branch at `latency-eval`.
+3. Check the boot log: `(explicit)` on both switches, the **right calendar**, no
+   `⚠️ CLINIC CONFIG` line.
+4. One real call, and confirm the booking lands in that clinic's own diary.
+
+**Do Vital Edge first** — it has no blocker and proves the procedure.
+
+⚠️ **The fold is not behaviour-neutral.** It hands a clinic ~3,900 lines at once
+(28 commits for JV, 43 for VE). `hold_speech` is gated — and as of 2026-08-29 it
+gates a great deal more than it did: the whole situational-head taxonomy, the
+head pacing and the clip suppression all sit behind it, so a folded clinic still
+sounds exactly as it does today until someone sets `operational.hold_speech`.
+The screening wording, availability phrasing and reason-question scoping are
+**not** gated. Gate them the same way — default to what the clinic runs today —
+or accept the delta knowingly.
+
+Two changes in that branch are NOT behind the flag and reach a folded clinic
+immediately. Both are fixes, but know them before you fold:
+`_ORPHAN_LEAD`'s widened word list (stops "What's available for Saturday." being
+spoken as a sentence) and the deletion of FillerGuard's 2.5s second clip.
+
+### Phase 4 — not started, both re-confirmed live 29 Aug
+
+- **`_check_availability_published` calls neither `_cap_presented_slots` nor
+  `_sync_last_offered_to_spoken`** — the one producer of seven that skips both.
+  A latent defect on Vital Edge.
+- **`test_offer_record_matches_what_was_spoken.py` still pins one call site via
+  `inspect`.** Re-aim it at the invariant across all seven producers.
+
+The `last_offered_slots` three-contract restructure remains **post-webinar**.
+Written down; do not start it.
+
 ### The hold-speech decision — SETTLED, and it grew
 
 The doc asked whether FillerGuard's 2.5s second clip should ask the arbiter.
@@ -320,6 +359,23 @@ nothing loads them.
   deletes from the model must not be spoken by the engine.
 
 ---
+
+### The port to the live clinics — HELD, deliberately
+
+Owner decision 2026-08-29, after two confirming calls on Northgate: **wait for a
+full suite of test calls before any of this reaches a patient line.** Nothing
+below is blocked on engineering.
+
+Held, and worth doing together when the calls are done:
+
+- **`_ORPHAN_LEAD`.** All four branches run `_strip_interim_opener`; only
+  canonical has the guard. JV, Vital Edge and Theorem can speak "While I look
+  that up." to a patient today. Port the WIDENED word list, not the original —
+  the original stopped one word short of the commonest opener in the corpus.
+- **The clip pool.** Five recordings against the one waveform every live clinic
+  has replayed since the rotation code shipped. Pure audio, no behaviour change,
+  and it is the 2026-08-08 "sounds quite robotic" report.
+- **FillerGuard's second clip.** Still live on all three.
 
 ### Calls owed
 
