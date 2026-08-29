@@ -473,6 +473,10 @@ _BARE_ANSWER = _rx(r"^\s*(?:um|uh|er|erm|ah|oh|yeah|yes|yep|no|nope|nah|"
                    r"not really|none|nothing)\b(?:[\s,]|$)")
 _NEGATED = _rx(r"\b(?:no|not|nothing|none|haven'?t|hasn'?t|isn'?t|don'?t|didn'?t)\b")
 
+#: Throat-clearing that carries no answer. Stripped before the bare-answer
+#: test so a request is not mistaken for one -- see classify_intent.
+_LEADING_DISFLUENCY = _rx(r"^(?:(?:um+|uh+|er+|erm+|ah+)[\s,]+)+")
+
 #: A readback or confirm question. The reply to one is a SELECTION, so a diary
 #: head in front of it promises a lookup that is not happening -- the corpus
 #: defect rebuilt in a new place.
@@ -534,8 +538,6 @@ _INTENT_RULES = [
 
     (Intent.EARLIEST, _rx(r"\b(?:soonest|earliest|as soon as possible|asap|"
                           r"next available|first available)\b"), None, None),
-    (Intent.SESSION_LENGTH,
-     _rx(r"\b(?:30|60|90|thirty|sixty|ninety)[\s-]?(?:minute|min)\b"), None, None),
     (Intent.NAMED_DAY, _rx(_DAY), None, None),
     (Intent.NAMED_WEEK, _rx(r"\b(?:next week|this week|following week|week after|"
                             r"next month|tomorrow)\b"), None, None),
@@ -545,6 +547,34 @@ _INTENT_RULES = [
      _NEGATED),
     (Intent.BOOK_NEW, _rx(r"\b(?:book|booking|appointment)\b"), _rx(_WANT),
      _rx(r"\b(?:cancel|reschedul|rebook|move|change)\w*\b")),
+
+    # SESSION_LENGTH is LAST, and it is the only rule whose head promises
+    # more than its trigger asks for unless a corroborator is required.
+    # Measured over the 737-call corpus on 2026-08-30: of its 20 heads, TEN
+    # were followed by a question rather than by times -- "60 minute session
+    # please" answered with "do you have a preference for when you'd like to
+    # come in?". Naming a duration SUPPLIES A PARAMETER; it does not ask
+    # anyone to open a diary, and "Let me see where a sixty-minute session
+    # fits -" says a diary is being opened. So a bare duration now yields
+    # silence, which is the pre-arbiter behaviour, and the head returns only
+    # when the caller actually asks where it fits.
+    #
+    # The blocker is the live case: "do you do 90-minute sessions"
+    # (2026-08-29, CA7454c983a10dd3db7caee7dba3b06238) is a CAPABILITY
+    # question, and the head answered it with "Let me see where a
+    # ninety-minute session fits -" about a length this clinic does not
+    # sell. A head must never assert that something exists. "do you HAVE any
+    # 90 minute slots" is deliberately NOT blocked -- that one is a real
+    # availability question and deserves its head.
+    #
+    # Last in the list so a better-fitting intent takes hits[0]: a caller who
+    # says "can I get a 60 minute on Thursday" wants NAMED_DAY's head, which
+    # names their day.
+    (Intent.SESSION_LENGTH,
+     _rx(r"\b(?:30|60|90|thirty|sixty|ninety)[\s-]?(?:minute|min)\b"),
+     _rx(r"\b(?:fit|fits|available|availability|free|slot|slots|when|"
+         r"earliest|soonest)\b"),
+     _rx(r"\b(?:do|does) (?:you|they) (?:do|offer)\b")),
 ]
 
 
@@ -567,7 +597,18 @@ def classify_intent(text, prev_assistant="", *, screen_pending=False):
         return []
     if screen_pending or _SCREEN_Q.search(prev_assistant or ""):
         return []
-    if _BARE_ANSWER.match(utterance) and len(utterance.split()) <= 4:
+    # A disfluency on the front is not part of the answer, and it must not be
+    # counted as one of the four words either. "uh what about mornings" is a
+    # request, and it was read as a bare answer twice over: "uh" matched the
+    # opener AND padded the utterance to the four-word limit. Live 2026-08-29,
+    # CA7454c983a10dd3db7caee7dba3b06238 -- that turn and "uh the 60-minute
+    # session" both got silence where the caller had asked for something.
+    #
+    # Only true disfluencies are stripped. "oh", "no", "yeah", "well" and "so"
+    # stay in _BARE_ANSWER's own list because each of them CAN be the whole
+    # answer; "um" and "uh" never can.
+    _answer_probe = _LEADING_DISFLUENCY.sub("", utterance)
+    if _BARE_ANSWER.match(_answer_probe) and len(_answer_probe.split()) <= 4:
         return []
     answering = bool(_CONFIRM_Q.search(prev_assistant or ""))
     hits = []

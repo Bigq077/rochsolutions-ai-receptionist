@@ -4599,6 +4599,39 @@ class LLMStream:
                                     "clinic keep_pre_slot_speech "
                                     "(check_availability detected)"
                                 )
+                                # ...and when what was preserved IS a hold
+                                # phrase, say so, because the tool-time
+                                # producer below asks decide_hold with
+                                # head_already_spoken=_hold_head_spoken and
+                                # nothing was setting that latch here.
+                                #
+                                # Live 2026-08-29, CA7454c983a10dd3db7caee7dba3b06238:
+                                #   23:02:25.558  "Got it. Let me check what's
+                                #                  available for you as soon as
+                                #                  possible"   (the model's own)
+                                #   23:02:26.370  "Okay, one sec —"  (ours)
+                                # Two hold phrases 0.8s apart — B-121, the
+                                # detector's own defect, live on the demo line.
+                                #
+                                # Gated on _NAMES_THE_WORK rather than on the
+                                # branch, because this branch also preserves
+                                # EMPATHY ("I'm sorry to hear that — shoulder
+                                # pain can be limiting"), and latching on that
+                                # would suppress a hold phrase the caller
+                                # genuinely needs. The module's own definition
+                                # of "claims a lookup or a write" is the right
+                                # discriminator and it already exists.
+                                _pre_hold = (full_text or "").strip()
+                                if _pre_hold and _NAMES_THE_WORK.search(_pre_hold):
+                                    session["_hold_head_spoken"] = True
+                                    logger.info(
+                                        "[ms_gate5] the preserved pre-tool line IS "
+                                        "a hold phrase (%r) — latching "
+                                        "_hold_head_spoken so the tool-time "
+                                        "producer stands down instead of saying a "
+                                        "second one",
+                                        _pre_hold[:60],
+                                    )
                             else:
                                 session["_pre_slot_cancelled"] = True
                                 logger.info(
@@ -6463,6 +6496,12 @@ _KEEPS_CAPITAL = {
     "september", "october", "november", "december",
     "i", "i'm", "i've", "i'll", "i'd",
 }
+
+
+#: "Claims a lookup or a write." Shared with the head pools so one definition
+#: decides both what a head may promise and whether the model's own pre-tool
+#: sentence already made that promise.
+from app.hold_speech import _NAMES_THE_WORK  # noqa: E402
 
 
 def join_after_head(chunk: str, head: str) -> str:
