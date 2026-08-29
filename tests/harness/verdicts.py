@@ -258,22 +258,49 @@ _TERMINAL_TOOLS = ("transfer_to_human", "cancel_appointment", "book_appointment"
 
 
 def check_no_duplicate_terminal_action(transcript, tool_calls=None, **_):
-    """A terminal action must not fire twice on one call.
+    """A terminal action must not fire twice WITH EFFECT.
 
     Found by eye on the `wants_a_human` call: Susie said "Putting you through to
     Priya now", the caller said "Cheers, thanks", and that courtesy triggered a
-    SECOND transfer_to_human. On a real line that is a double-dial. The same
-    shape on cancel_appointment would be a second deletion.
+    SECOND transfer_to_human. On a real line that is a second dial leg and a
+    second "call coming through now" text to a practitioner who is then waiting
+    for a ring that already happened.
+
+    A repeat whose result says `already_in_flight` is NOT reported: the executor
+    is idempotent now, so it placed no leg and sent no alert. That distinction
+    matters, because the two halves of this defect were fixed separately and
+    conflating them hides which one is still open.
+
+    WHAT THIS CANNOT SEE: the upstream half. Once a leg is actually placed,
+    connection.py stops dispatching transcripts to the LLM at all -- but that
+    guard lives in `_llm_loop`, and this harness drives `LLMStream.run_turn`
+    directly without an `on_transfer` callback, so `_on_transfer_request` never
+    runs here and the latch is never set. A live call is the only way to
+    confirm it.
     """
     if not tool_calls:
         return []
-    names = [getattr(t, "name", "") for t in tool_calls]
     out = []
     for tool in _TERMINAL_TOOLS:
-        n = names.count(tool)
-        if n > 1:
+        fired = [t for t in tool_calls if getattr(t, "name", "") == tool]
+        if len(fired) <= 1:
+            continue
+        with_effect = [
+            t for t in fired
+            if not (getattr(t, "result", None) or {}).get("already_in_flight")
+        ]
+        if len(with_effect) > 1:
             out.append(Finding(
-                "no_duplicate_terminal_action", f"{tool} fired {n} times",
+                "no_duplicate_terminal_action",
+                f"{tool} fired {len(with_effect)} times with effect",
+            ))
+        else:
+            out.append(Finding(
+                "repeated_terminal_turn",
+                f"{tool} was called {len(fired)} times; the repeat was a no-op, "
+                f"but the caller still heard the turn. The upstream guard is in "
+                f"connection.py, which this harness does not drive.",
+                severity="note",
             ))
     return out
 

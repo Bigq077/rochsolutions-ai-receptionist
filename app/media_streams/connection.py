@@ -9501,6 +9501,26 @@ class WebSocketCallHandler:
                             # Fall through to normal LLM dispatch below
                             # (do NOT continue — slot window stays open until
                             # pop() below clears it after LLM fires).
+                    # The caller is talking to a person. Anything they say now
+                    # is for the human on the other leg, and answering it means
+                    # Susie speaking over that conversation -- see
+                    # _on_transfer_request. A courtesy "cheers, thanks" is the
+                    # commonest thing to arrive here.
+                    #
+                    # Placed above the end-of-turn window closes deliberately: a
+                    # transferred call should do no session work at all, and
+                    # test_intro_dtmf_window_expires pins the slot close, the
+                    # intro close and the transcript dispatch as adjacent to one
+                    # another. Anything inserted between them fails it, which is
+                    # the test doing its job -- those three belong together on
+                    # the path every utterance takes.
+                    if self.session.get("transfer_placed"):
+                        logger.info(
+                            "[ms_conn v3] transcript after transfer — not "
+                            "answering: %r", utterance[:80],
+                        )
+                        continue
+
                     # Caller is responding — slot selection window has closed.
                     self.session.pop("v3_awaiting_slot_selection", None)
 
@@ -16355,6 +16375,32 @@ class WebSocketCallHandler:
             await _handle_transfer(self.call_sid, self.session)
         except Exception as exc:
             logger.error("[ms_conn] transfer failed: %r", exc)
+            return
+
+        # ── The call is no longer ours ──────────────────────────────────────
+        # Set only after the leg is actually placed, and deliberately NOT on
+        # either path above: a blocked transfer and a transfer with no dial
+        # target both keep the caller WITH Susie, and the second one has just
+        # asked them a question it needs the answer to.
+        #
+        # Without this the turn loop carries on. Seen on the adaptive-caller
+        # suite (2026-08-29, `wants_a_human`): Susie said "Putting you through
+        # to Priya now", the caller said "Cheers, thanks", and that courtesy
+        # opened a whole new LLM turn which called transfer_to_human a second
+        # time and said the same line again. The tool is idempotent now, so the
+        # second call places no leg and sends no second alert -- but the caller
+        # still HEARD it twice, because only the side effects were latched.
+        #
+        # This is the upstream half. Suppressing the repeated SENTENCE instead
+        # would mean matching one literal of model speech, which has produced a
+        # defect here three times; there is nothing to match if the turn never
+        # runs.
+        self.session["transfer_placed"] = True
+        await save_session(self.call_sid, self.session)
+        logger.info(
+            "[ms_conn] transfer placed — the caller is with a human now; "
+            "no further turns will run on this leg"
+        )
 
     # ========================================================================
     # Pipeline failure: complete collapse handler

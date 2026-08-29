@@ -350,7 +350,8 @@ def test_an_internal_marker_never_reaches_the_transcript():
 # meant the suite's value depended on a human reading sixteen calls.
 
 class _Tool:
-    def __init__(self, name): self.name = name
+    def __init__(self, name, result=None):
+        self.name, self.result = name, result or {}
 
 
 def test_a_terminal_action_firing_twice_is_caught():
@@ -360,6 +361,26 @@ def test_a_terminal_action_firing_twice_is_caught():
     findings = judge("wants_a_human", [("Are you a real person?", "No — I'm Susie.")],
                      tool_calls=[_Tool("transfer_to_human"), _Tool("transfer_to_human")])
     assert any(f.rule == "no_duplicate_terminal_action" for f in findings)
+
+
+def test_a_latched_repeat_is_a_note_not_a_defect():
+    """The two halves of this defect were fixed separately, and conflating them
+    hides which one is still open.
+
+    The executor is idempotent now: a repeat places no leg and sends no second
+    alert, so it is not the defect it was. The caller still hears the turn, and
+    the guard that stops THAT is in connection.py's loop -- which this harness
+    does not drive, since it calls run_turn directly with no on_transfer
+    callback. So it is reported, and reported as unverifiable here.
+    """
+    findings = judge(
+        "wants_a_human", [("put me through", "Putting you through now.")],
+        tool_calls=[_Tool("transfer_to_human"),
+                    _Tool("transfer_to_human", {"already_in_flight": True})],
+    )
+    assert not [f for f in findings if f.rule == "no_duplicate_terminal_action"]
+    note = next(f for f in findings if f.rule == "repeated_terminal_turn")
+    assert note.severity == "note"
 
 
 def test_one_terminal_action_is_fine():

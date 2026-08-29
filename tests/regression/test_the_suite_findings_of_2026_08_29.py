@@ -146,3 +146,49 @@ def test_the_booking_consent_gate_is_untouched(utterance, verdict):
     NameError until it was put back.
     """
     assert _book_verdict_deterministic(utterance) == verdict
+
+
+# ── 3b. The upstream half: no turns once the caller is with a human ─────────
+
+def test_the_latch_is_set_only_where_a_leg_is_actually_placed():
+    """A blocked transfer and a transfer with no dial target both keep the
+    caller WITH Susie — and the no-target path has just asked them a question
+    it needs the answer to. Latching there would strand them in silence, which
+    is the failure that path exists to prevent.
+    """
+    import inspect
+
+    from app.media_streams.connection import WebSocketCallHandler
+
+    source = inspect.getsource(WebSocketCallHandler._on_transfer_request)
+    latch_at = source.index('self.session["transfer_placed"] = True')
+    handle_at = source.index("_handle_transfer(self.call_sid, self.session)")
+    no_target_at = source.index("transfer_unavailable")
+    blocked_at = source.index("transfer blocked")
+
+    assert latch_at > handle_at, "latched before the leg was placed"
+    assert latch_at > no_target_at, "the no-dial-target path must not latch"
+    assert latch_at > blocked_at, "a blocked transfer must not latch"
+
+
+def test_a_transcript_after_the_transfer_does_not_open_a_turn():
+    """`wants_a_human`: Susie said "Putting you through to Priya now", the
+    caller said "Cheers, thanks", and that courtesy opened a whole new LLM turn
+    which called transfer_to_human again and repeated the line.
+
+    Answering it means Susie talking over the human she just handed the caller
+    to. The guard is placed before the turn is dispatched, so there is nothing
+    to suppress downstream — which matters, because suppressing the repeated
+    SENTENCE would mean matching one literal of model speech.
+    """
+    import inspect
+
+    from app.media_streams import connection
+
+    source = inspect.getsource(connection.WebSocketCallHandler)
+    guard_at = source.index('if self.session.get("transfer_placed"):')
+    dispatch_at = source.index('"[ms_conn v3] transcript: %r"')
+    assert guard_at < dispatch_at, (
+        "the transfer guard moved below the transcript dispatch, so a caller's "
+        "goodbye opens another turn again"
+    )
