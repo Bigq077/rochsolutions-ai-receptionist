@@ -214,6 +214,11 @@ def check_booking_was_offered(transcript, diary=None, **_) -> List[Finding]:
     spoken = " ".join(_bot_turns(transcript)).lower()
     out = []
     for booking in diary.bookings:
+        # A seeded booking existed before the call started, so nobody spoke it.
+        # Without this every cancel and reschedule persona reported a defect
+        # against the very appointment it had rung about.
+        if (getattr(booking, "raw_args", None) or {}).get("seeded"):
+            continue
         start = _booking_start(booking)
         if start is None:
             out.append(Finding(
@@ -246,6 +251,147 @@ def check_booking_has_a_name(transcript, diary=None, **_) -> List[Finding]:
     return out
 
 
+
+#: Actions that end something. Doing one twice is not a retry -- it is a second
+#: transfer, a second cancellation, a second booking.
+_TERMINAL_TOOLS = ("transfer_to_human", "cancel_appointment", "book_appointment")
+
+
+def check_no_duplicate_terminal_action(transcript, tool_calls=None, **_):
+    """A terminal action must not fire twice on one call.
+
+    Found by eye on the `wants_a_human` call: Susie said "Putting you through to
+    Priya now", the caller said "Cheers, thanks", and that courtesy triggered a
+    SECOND transfer_to_human. On a real line that is a double-dial. The same
+    shape on cancel_appointment would be a second deletion.
+    """
+    if not tool_calls:
+        return []
+    names = [getattr(t, "name", "") for t in tool_calls]
+    out = []
+    for tool in _TERMINAL_TOOLS:
+        n = names.count(tool)
+        if n > 1:
+            out.append(Finding(
+                "no_duplicate_terminal_action", f"{tool} fired {n} times",
+            ))
+    return out
+
+
+#: Questions whose answer the caller has already given. Re-asking one is the
+#: confirmation loop, not a clarification.
+_ANSWERED_ONCE = (
+    ("phone_confirm", re.compile(
+        r"is that the best number|is that the number the appointment", re.I)),
+    ("book_confirm", re.compile(r"shall i go ahead and book", re.I)),
+)
+
+
+def check_no_reask_after_an_answer(transcript, **_):
+    """A question the caller has ANSWERED must not come back.
+
+    `check_no_repeated_question` needs three occurrences before it fires, and
+    this shape only needs two -- so it went unreported on the `misheard_name`
+    call, where the phone confirmation was re-asked AFTER the caller had said
+    yes to the booking:
+
+        susie : ...is that the best number for the booking?
+        caller: Yeah, that's the one.
+        susie : ...shall I go ahead and book that in?
+        caller: Yes, that's right, please do.
+        susie : ...is that the best number for the booking?   <-- again
+        caller: You've already asked me that twice.
+
+    This is the A4 confirmation-loop family, which detect_defects counts 144
+    times across the obs corpus. Reproducing it without a phone is the point.
+    """
+    out = []
+    for label, rx in _ANSWERED_ONCE:
+        asked_at = [i for i, (_s, heard) in enumerate(transcript)
+                    if heard and rx.search(heard)]
+        if len(asked_at) < 2:
+            continue
+        # Did the caller reply to the first asking? Anything that is not a
+        # refusal counts -- the defect is re-asking a question that got an
+        # answer, whatever the answer was.
+        first = asked_at[0]
+        if first + 1 < len(transcript) and (transcript[first + 1][0] or "").strip():
+            out.append(Finding(
+                "no_reask_after_an_answer",
+                f"{label} asked at turns {[i + 1 for i in asked_at]} despite "
+                f"being answered",
+            ))
+    return out
+
+
+_CLOSING = re.compile(
+    r"\b(?:thanks|thank you|cheers|bye|goodbye|that'?s all|"
+    r"i'?ll ring|i'?ll call)\b", re.IGNORECASE)
+
+_CONTENTLESS_HEAD = re.compile(r"^\s*(?:sorry,\s*)?still with you\b", re.IGNORECASE)
+
+
+def check_no_hold_head_on_a_closing_turn(transcript, **_):
+    """"Still with you" in front of a goodbye is a wait nobody is waiting for.
+
+    Seen on `red_flag_cauda_equina` -- the caller said "Alright. I'll ring 111
+    then. Thanks." and heard "Sorry, still with you -- Take care of yourself".
+    The contentless head is only ever meant for a GENUINE stall, and a caller
+    who is saying goodbye is not stalled. Same family as the 175 stored hold
+    phrases that promised a lookup nobody was doing; it simply was not
+    reachable on these turns until heads began firing on them.
+    """
+    out = []
+    for said, heard in transcript:
+        if not heard or not _CONTENTLESS_HEAD.match(heard.strip()):
+            continue
+        if _CLOSING.search(said or ""):
+            out.append(Finding(
+                "no_hold_head_on_a_closing_turn",
+                f"said {heard.strip()[:40]!r} after the caller said {said[:40]!r}",
+            ))
+    return out
+
+
+def _expect_cancelled(transcript, diary=None, **_):
+    """The appointment the caller rang to cancel must be GONE.
+
+    The outcome that matters, and the one the suite could not see while
+    lookup_patient was an inert {"found": False}: three personas rang about an
+    appointment nothing could find, the engine correctly said so, and the calls
+    were reported clean.
+    """
+    if diary is None:
+        return []
+    left = [b for b in (getattr(diary, "bookings", []) or [])
+            if (getattr(b, "raw_args", None) or {}).get("seeded")]
+    if left:
+        return [Finding(
+            "appointment_was_cancelled",
+            f"caller rang to cancel; {len(left)} seeded booking(s) still stand",
+        )]
+    return []
+
+
+def _expect_moved(transcript, diary=None, **_):
+    """A move is a cancel AND a book. Both halves, or it is a double-booking."""
+    if diary is None:
+        return []
+    bookings = list(getattr(diary, "bookings", []) or [])
+    seeded = [b for b in bookings if (getattr(b, "raw_args", None) or {}).get("seeded")]
+    out = []
+    if seeded and len(bookings) > len(seeded):
+        out.append(Finding(
+            "reschedule_is_not_a_second_booking",
+            "a new appointment was written and the original still stands",
+        ))
+    elif seeded:
+        out.append(Finding(
+            "appointment_was_moved",
+            "caller rang to move an appointment; it is still at its old time",
+        ))
+    return out
+
 UNIVERSAL = [
     check_no_technical_error,
     check_no_banned_sentence,
@@ -255,6 +401,9 @@ UNIVERSAL = [
     check_no_repeated_question,
     check_booking_was_offered,
     check_booking_has_a_name,
+    check_no_duplicate_terminal_action,
+    check_no_reask_after_an_answer,
+    check_no_hold_head_on_a_closing_turn,
 ]
 
 
@@ -312,6 +461,9 @@ EXPECTATIONS = {
     "faq_several": [_expect_no_booking],
     "wants_a_human": [_expect_no_booking],
     "misheard_name": [_expect_surname_correct],
+    "cancel": [_expect_cancelled],
+    "reschedule": [_expect_moved],
+    "changes_mind_mid_booking": [_expect_moved],
 }
 
 

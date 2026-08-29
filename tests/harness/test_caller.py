@@ -343,3 +343,129 @@ def test_an_internal_marker_never_reaches_the_transcript():
         "with a hold head will report a false Gate 5b finding"
     )
     assert ACK_FILLER_MARKER.startswith("\x01")
+
+
+# ── The three defects the first full suite found BY EYE ─────────────────────
+# Each was plainly visible in a transcript and invisible to the judge, which
+# meant the suite's value depended on a human reading sixteen calls.
+
+class _Tool:
+    def __init__(self, name): self.name = name
+
+
+def test_a_terminal_action_firing_twice_is_caught():
+    """`wants_a_human`: Susie said "Putting you through to Priya now", the
+    caller said "Cheers, thanks", and that courtesy triggered a SECOND
+    transfer_to_human. On a real line that is a double-dial."""
+    findings = judge("wants_a_human", [("Are you a real person?", "No — I'm Susie.")],
+                     tool_calls=[_Tool("transfer_to_human"), _Tool("transfer_to_human")])
+    assert any(f.rule == "no_duplicate_terminal_action" for f in findings)
+
+
+def test_one_terminal_action_is_fine():
+    findings = judge("book_bare", [("Book me in", "Done.")],
+                     tool_calls=[_Tool("book_appointment")])
+    assert not [f for f in findings if f.rule == "no_duplicate_terminal_action"]
+
+
+def test_a_question_re_asked_after_it_was_answered_is_caught():
+    """`misheard_name`, and the A4 confirmation-loop family that detect_defects
+    counts 144 times across the corpus. Two occurrences, so the three-strike
+    repeated-question check never saw it."""
+    transcript = [
+        ("Ann Rook.", "Thanks Ann — I've got you on oh seven — is that the best number?"),
+        ("Yeah, that's the one.", "So that's Ann Rook — shall I go ahead and book that in?"),
+        ("Yes, please do.", "I've got you on oh seven — is that the best number for the booking?"),
+        ("You've already asked me that twice.", "Apologies for that."),
+    ]
+    findings = judge("misheard_name", transcript)
+    assert any(f.rule == "no_reask_after_an_answer" for f in findings)
+
+
+def test_asking_once_is_not_a_loop():
+    transcript = [("Ann Rook.", "Is that the best number for the booking?"),
+                  ("Yes.", "Lovely, you're booked in.")]
+    assert not [f for f in judge("book_bare", transcript)
+                if f.rule == "no_reask_after_an_answer"]
+
+
+def test_a_hold_head_on_a_goodbye_is_caught():
+    """`red_flag_cauda_equina`: the caller said "Alright. I'll ring 111 then.
+    Thanks." and heard "Sorry, still with you — Take care of yourself". The
+    contentless head is only for a GENUINE stall, and someone saying goodbye is
+    not stalled."""
+    transcript = [("Alright. I'll ring 111 then. Thanks.",
+                   "Sorry, still with you — Take care of yourself.")]
+    findings = judge("book_bare", transcript)
+    assert any(f.rule == "no_hold_head_on_a_closing_turn" for f in findings)
+
+
+def test_a_hold_head_mid_conversation_is_fine():
+    """The head exists for exactly this: a slow turn the caller is waiting on."""
+    transcript = [("Have you got anything Thursday?",
+                   "Still with you — Thursday the 3rd at six is free.")]
+    assert not [f for f in judge("book_named_day", transcript)
+                if f.rule == "no_hold_head_on_a_closing_turn"]
+
+
+# ── The write flows, which were vacuous until the diary backed them ─────────
+
+def test_a_seeded_booking_is_not_treated_as_one_the_engine_wrote():
+    """It existed before the call, so nobody spoke it. Without this every cancel
+    and reschedule persona reported a defect against the appointment it had
+    rung about."""
+    booking = _Booking(start=datetime(2026, 9, 1, 10, 0))
+    booking.raw_args["seeded"] = True
+    assert not [f for f in judge("cancel", [("Cancel please", "Done.")],
+                                 diary=_Diary([booking]))
+                if f.rule == "booking_was_offered"]
+
+
+def test_a_cancel_that_left_the_appointment_standing_is_caught():
+    booking = _Booking(start=datetime(2026, 9, 1, 10, 0))
+    booking.raw_args["seeded"] = True
+    findings = judge("cancel", [("Cancel please", "It may already have been cancelled.")],
+                     diary=_Diary([booking]))
+    assert any(f.rule == "appointment_was_cancelled" for f in findings)
+
+
+def test_a_successful_cancel_passes():
+    assert not [f for f in judge("cancel", [("Cancel please", "That's all done.")],
+                                 diary=_Diary([]))
+                if f.rule == "appointment_was_cancelled"]
+
+
+def test_a_reschedule_that_wrote_a_second_booking_is_caught():
+    """A move is a cancel AND a book. Writing the new one without removing the
+    old is the double-booking this system has already produced on a real
+    calendar."""
+    seeded = _Booking(start=datetime(2026, 9, 1, 10, 0))
+    seeded.raw_args["seeded"] = True
+    new = _Booking(start=datetime(2026, 9, 3, 18, 0))
+    findings = judge("reschedule", [("Move it please", "Booked.")],
+                     diary=_Diary([seeded, new]))
+    assert any(f.rule == "reschedule_is_not_a_second_booking" for f in findings)
+
+
+def test_the_fake_lookup_reads_the_diary():
+    """It returned {"found": False} unconditionally, so three personas rang
+    about an appointment nothing could see, the engine correctly said so, and
+    the suite called the calls clean. A stub that cannot succeed makes its
+    persona vacuous."""
+    import asyncio
+
+    from tests.harness.fake_clinic import FakeDiary, build_tool_executors
+
+    diary = FakeDiary.weekly(start=datetime(2026, 9, 1, 9, 0), days=7,
+                             times=["09:00", "10:00"])
+    diary.seed_booking("Alan Brookes", "07700 900141", datetime(2026, 9, 4, 10, 0))
+    table = build_tool_executors(diary, [])
+
+    found = asyncio.run(table["lookup_patient"](
+        {"purpose": "cancel", "phone": "+447700900141"}, {}))
+    assert found["found"] is True, found
+
+    asyncio.run(table["cancel_appointment"](
+        {"patient_name": "Alan Brookes", "phone": "+447700900141",
+         "location": "didsbury"}, {}))
+    assert diary.bookings == [], "cancel did not remove the booking"

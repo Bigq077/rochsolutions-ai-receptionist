@@ -136,6 +136,49 @@ class FakeDiary:
 
     # -- writes --------------------------------------------------------------
 
+    @staticmethod
+    def _digits(value: str) -> str:
+        """Compare phone numbers by their last nine digits.
+
+        The caller's number reaches the engine as +447700900141, the seeded
+        booking holds "07700 900141", and the model passes back whatever it
+        heard. Matching on the raw strings finds nothing, which is exactly how
+        three personas came to ring about an appointment nobody could see.
+        """
+        return "".join(c for c in str(value or "") if c.isdigit())[-9:]
+
+    def find_bookings(self, phone: str = "", name: str = "") -> List[Booking]:
+        """Every booking matching this caller. Phone wins; name is the fallback."""
+        wanted_phone = self._digits(phone)
+        wanted_name = (name or "").strip().lower()
+        out = []
+        for booking in self.bookings:
+            if wanted_phone and self._digits(booking.phone) == wanted_phone:
+                out.append(booking)
+            elif wanted_name and wanted_name in (booking.name or "").lower():
+                out.append(booking)
+        return out
+
+    def cancel_booking(self, booking: Booking) -> bool:
+        """Remove it, and give the slot back to availability.
+
+        Returning the slot matters: a cancelled appointment that stays busy
+        means the caller who rings straight back cannot rebook the time they
+        just freed.
+        """
+        if booking not in self.bookings:
+            return False
+        self.bookings.remove(booking)
+        try:
+            dt = datetime.fromisoformat(booking.start.replace("Z", ""))
+        except ValueError:
+            return True
+        day, hhmm = dt.date().isoformat(), dt.strftime("%H:%M")
+        if day in self.slots and hhmm not in self.slots[day]:
+            self.slots[day].append(hhmm)
+            self.slots[day].sort()
+        return True
+
     def seed_booking(self, name: str, phone: str, start: datetime,
                      service: str = "physiotherapy assessment",
                      duration_min: int = 60) -> Booking:
@@ -364,6 +407,10 @@ def build_tool_executors(diary: FakeDiary, calls: List[ToolCall],
 
     async def cancel_appointment(args: Dict[str, Any],
                                  session: Dict[str, Any]) -> Dict[str, Any]:
+        """SUPERSEDED by _cancel_appointment below, which actually removes the
+        booking. Kept only for `diary.cancelled`, which this recorded and which
+        a caller may still read; this one returned success unconditionally, so
+        a call that cancelled nothing reported that it had."""
         diary.cancelled.append((args.get("appointment_id") or "").strip())
         return {"success": True, "cancelled": True}
 
@@ -384,9 +431,9 @@ def build_tool_executors(diary: FakeDiary, calls: List[ToolCall],
     inert_defaults = {
         "lookup_appointment": {"found": False},
         "lookup_recent_appointment": {"found": False},
-        "lookup_patient": {"found": False},
+
         "confirm_appointment_found": {"success": True},
-        "reschedule_appointment": {"success": True},
+
         "get_patient_history": {"found": False},
         "send_followup_sms": {"success": True, "sent": False},
         "transfer_to_human": {"success": True},
@@ -396,6 +443,75 @@ def build_tool_executors(diary: FakeDiary, calls: List[ToolCall],
         "collect_and_store": {"success": True},
         "get_clinic_info": {"success": True},
     }
+    # ── The write flows, backed by the diary ────────────────────────────
+    # These were inert defaults -- lookup_patient returned {"found": False}
+    # unconditionally, so the cancel, reschedule and changed-mind personas
+    # could never find the appointment they had rung about. The engine then
+    # behaved correctly for a caller with no booking, the suite reported the
+    # calls clean, and three of sixteen personas were testing nothing at all.
+    # Same silent-vacuum shape as a hasattr guard over a method that does not
+    # exist.
+
+    async def _lookup_patient(args, session):
+        found = diary.find_bookings(
+            phone=args.get("phone") or session.get("twilio_from") or "",
+            name=args.get("name") or "",
+        )
+        if not found:
+            return {"found": False}
+        booking = found[0]
+        return {
+            "found": True,
+            "appointments": [{
+                "start": booking.start,
+                "end": booking.end,
+                "name": booking.name,
+                "phone": booking.phone,
+                "service": booking.service,
+            }],
+            "patient_name": booking.name,
+        }
+
+    async def _cancel_appointment(args, session):
+        diary.cancelled.append((args.get("appointment_id") or "").strip())
+        found = diary.find_bookings(
+            phone=args.get("phone") or session.get("twilio_from") or "",
+            name=args.get("patient_name") or "",
+        )
+        if not found:
+            return {"success": False, "error": "no matching appointment"}
+        diary.cancel_booking(found[0])
+        return {"success": True, "cancelled": found[0].start}
+
+    async def _reschedule_appointment(args, session):
+        """A move is a cancel and a book, and BOTH halves must land.
+
+        Writing the new one without removing the old is the double-booking this
+        system has already produced on a real calendar.
+        """
+        found = diary.find_bookings(
+            phone=args.get("phone") or session.get("twilio_from") or "",
+            name=args.get("patient_name") or "",
+        )
+        if not found:
+            return {"success": False, "error": "no matching appointment"}
+        old = found[0]
+        new_start = args.get("new_start") or args.get("start") or args.get("new_time")
+        if not new_start:
+            return {"success": False, "error": "no new time given"}
+        diary.cancel_booking(old)
+        moved = Booking(
+            start=str(new_start), end=old.end, name=old.name, phone=old.phone,
+            service=old.service, duration_min=old.duration_min,
+            raw_args=dict(args),
+        )
+        diary.book(moved)
+        return {"success": True, "moved_to": moved.start}
+
+    table["lookup_patient"] = _lookup_patient
+    table["cancel_appointment"] = _cancel_appointment
+    table["reschedule_appointment"] = _reschedule_appointment
+
     for name, payload in inert_defaults.items():
         table[name] = _inert(name, payload)
 
