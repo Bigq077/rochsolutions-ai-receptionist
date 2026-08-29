@@ -107,15 +107,11 @@ _PRIMARY_POOL = [
     "Let me find out what's free…",
 ]
 
-# Plays 2.5s after the primary when the LLM still has not answered. Shorter and
-# lower-key than the primary pool by design: this is a second reassurance, not a
-# second announcement, and re-announcing the lookup makes the wait feel longer.
-_SECONDARY_POOL = [
-    "Just one moment…",
-    "Won't be a second…",
-    "Just bringing that up now…",
-    "Nearly with you…",
-]
+# The second clip was DELETED on 2026-08-29. It played 2.5s after the primary
+# and was the only hold producer that never consulted the arbiter, which made
+# "one head per turn" a slogan rather than a property. Nothing reads
+# filler_moment.ulaw any more; the files on disk are harmless and are left
+# alone rather than deleted, so a rollback of that change does not go silent.
 
 
 def _pool_paths(stem: str, count: int) -> list[Path]:
@@ -129,9 +125,7 @@ def _pool_paths(stem: str, count: int) -> list[Path]:
 
 
 # Flat (text, path) list — the shape the regression tests read.
-CLIPS = list(zip(_PRIMARY_POOL, _pool_paths("filler_checking", len(_PRIMARY_POOL)))) + list(
-    zip(_SECONDARY_POOL, _pool_paths("filler_moment", len(_SECONDARY_POOL)))
-)
+CLIPS = list(zip(_PRIMARY_POOL, _pool_paths("filler_checking", len(_PRIMARY_POOL))))
 
 
 def generate(text: str, output_path: Path, api_key: str) -> None:

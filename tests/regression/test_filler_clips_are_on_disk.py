@@ -29,17 +29,23 @@ import pytest
 from app.media_streams.connection import _AUDIO_CLIPS_DIR
 from app.media_streams.filler_guard import discover_clip_pool
 
-# The first member of each pool. These two must always exist — without them the
-# guard has nothing to play at all. The numbered variants are checked separately
-# below: they are what stops the clip sounding like a recording, but a branch
-# that has not regenerated yet is degraded, not broken.
-CLIPS = ["filler_checking.ulaw", "filler_moment.ulaw"]
+# The first member of the pool. It must always exist — without it the guard has
+# nothing to play at all. The numbered variants are checked separately below:
+# they are what stops the clip sounding like a recording, but a branch that has
+# not regenerated yet is degraded, not broken.
+#
+# filler_moment is GONE from this list as of 2026-08-29. The 2.5s second clip
+# was deleted -- it was the one hold producer that never asked the arbiter --
+# so nothing loads that pool any more. The files are left on disk rather than
+# deleted, so a rollback of that change does not go silent, but they are no
+# longer required to exist or to have variants.
+CLIPS = ["filler_checking.ulaw"]
 
 # Everything actually on disk, variants included, so a malformed variant is
 # caught by the format checks the same way the first member is.
 POOLED = [
     p.name
-    for stem in ("filler_checking", "filler_moment")
+    for stem in ("filler_checking",)
     for p in discover_clip_pool(_AUDIO_CLIPS_DIR / f"{stem}.ulaw")
 ]
 
@@ -58,7 +64,7 @@ def test_each_clip_is_present_and_non_empty(clip):
     assert path.stat().st_size > 0, f"{path} is empty"
 
 
-@pytest.mark.parametrize("stem", ["filler_checking", "filler_moment"])
+@pytest.mark.parametrize("stem", ["filler_checking"])
 def test_each_pool_has_more_than_one_variant(stem):
     """
     A pool of one is a single recording replayed for the life of the service —

@@ -178,10 +178,16 @@ def test_headroom_covers_the_clips_that_actually_ship():
     """A hold clip riding on the counter must not trip the clamp.
 
     FillerGuard injects through _send_ulaw, which places no sentinel, so its
-    bytes are charged to the next chunk that does.  Worst case is one clip from
-    each pool in the same turn, plus the 100 ms breath gap.  Measured off the
-    committed µ-law files, so adding a longer clip fails here rather than on a
-    call.
+    bytes are charged to the next chunk that does.  Worst case is ONE clip plus
+    the 100 ms breath gap -- the 2.5s second clip was deleted on 2026-08-29, so
+    two clips can no longer land in one turn.  Measured off the committed µ-law
+    files, so adding a longer clip fails here rather than on a call.
+
+    The figure went UP even though a clip was removed: the pool was regenerated
+    from one recording to five, and the longest of the five is 1.72s against the
+    original 1.39s.  That is the point of the pool -- a single recording replayed
+    for the life of the service is what made it sound like a machine -- and the
+    headroom covers it with room to spare.
     """
     from app.media_streams.connection import _AUDIO_CLIPS_DIR, _SILENCE_100MS
     from app.media_streams.filler_guard import discover_clip_pool
@@ -191,12 +197,8 @@ def test_headroom_covers_the_clips_that_actually_ship():
         assert pool, f"{name} missing — FillerGuard would disable itself"
         return max(p.stat().st_size for p in pool) / 8000.0
 
-    worst = (
-        longest("filler_checking.ulaw")
-        + longest("filler_moment.ulaw")
-        + len(_SILENCE_100MS) / 8000.0
-    )
-    assert worst == pytest.approx(2.60, abs=0.05)
+    worst = longest("filler_checking.ulaw") + len(_SILENCE_100MS) / 8000.0
+    assert worst == pytest.approx(1.82, abs=0.05)
     assert _PLAY_SECS_HEADROOM > worst
 
 
