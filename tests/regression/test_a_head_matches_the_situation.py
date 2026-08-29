@@ -18,6 +18,7 @@ import pytest
 
 from app.hold_speech import (
     INTENT_HEADS,
+    _NAMES_THE_WORK,
     Intent,
     classify_intent,
     render_intent_head,
@@ -197,7 +198,15 @@ def test_a_price_question_gets_a_topic_head_not_a_diary_one():
     hits = classify_intent("hi i was wondering how much is an appointment")
     assert Intent.FAQ_PRICE in hits
     head = render_intent_head(Intent.FAQ_PRICE)
-    assert head == f"On price {EM}"
+    # The wording is deliberately NOT pinned. It was "On price -" for one live
+    # call and is now "In terms of pricing -", and it will be reworded again;
+    # what must hold is the PROPERTY -- a topic head names the topic, claims no
+    # lookup, and leaves the sentence open for the answer to finish.
+    assert "pric" in head.lower(), head
+    assert head.rstrip().endswith(EM), head
+    assert not _NAMES_THE_WORK.search(head), (
+        f"a price question is answered, not looked up: {head!r}"
+    )
 
 
 def test_availability_language_is_not_a_treatments_question():

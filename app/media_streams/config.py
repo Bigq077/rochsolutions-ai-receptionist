@@ -101,6 +101,25 @@ def _clamped_speed(raw: str, default: float) -> float:
 ELEVENLABS_SPEED       = _clamped_speed(os.getenv("ELEVENLABS_SPEED", ""), 1.0)
 ELEVENLABS_PHONE_SPEED = _clamped_speed(os.getenv("ELEVENLABS_PHONE_SPEED", ""), 0.8)
 
+# ELEVENLABS_HEAD_SPEED applies to the hold head, and to nothing else.
+#
+# A head is a ten-to-forty-character fragment synthesised on its own, seconds
+# before the reply it belongs to. ElevenLabs flash gets no sentence around it,
+# so at the call's default rate it comes out noticeably faster than the rest of
+# Susie -- reported on the first live call to hear one (2026-08-29,
+# CAe9eba9192c50c500c95b7e7a2a187729): "spoke too quickly compared to how Susie
+# speaks". The words were right and the delivery was not.
+#
+# Slower here costs nothing that matters. The head exists to fill a wait that is
+# already happening -- measured p50 time-to-first-audio is 1.9s and that call's
+# first turn was 5.4s -- so a head that takes a quarter-second longer to say is
+# a quarter-second less silence, not a quarter-second of added latency.
+#
+# Not 0.8: the phone-number rate is deliberately careful, an articulation the
+# caller is meant to check digit by digit. A head is ordinary conversation and
+# should sound like it.
+ELEVENLABS_HEAD_SPEED  = _clamped_speed(os.getenv("ELEVENLABS_HEAD_SPEED", ""), 0.88)
+
 # ---------------------------------------------------------------------------
 # AssemblyAI STT constants
 # ---------------------------------------------------------------------------

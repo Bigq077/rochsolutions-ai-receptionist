@@ -622,36 +622,63 @@ def subject_for(text: str) -> str:
 #: verbatim from stored payloads, which is what lets the stripper remove its
 #: duplicate without leaving a hole.
 INTENT_HEADS = {
-    Intent.FAQ_PRICE:        [f"On price {EM_DASH}"],
-    Intent.FAQ_INSURANCE:    [f"On insurance {EM_DASH}"],
-    Intent.FAQ_HOURS:        [f"On our hours {EM_DASH}"],
-    Intent.FAQ_PARKING:      [f"On parking {EM_DASH}"],
-    Intent.FAQ_LOCATION:     [f"On where we are {EM_DASH}"],
-    Intent.FAQ_TREATS:       [f"On what we cover {EM_DASH}"],
-    Intent.FAQ_FIRSTTIME:    [f"For a first visit {EM_DASH}"],
-    Intent.FAQ_PRACTITIONER: [f"On who you'd see {EM_DASH}"],
+    # TOPIC. "On insurance -" was the first attempt and it reads like an index
+    # entry, not a person: heard live on 2026-08-29 and reported as lacking the
+    # human feel. A receptionist does not say "on insurance", she says "in
+    # regards to insurance". The two lead-in families below are what people
+    # actually use on the phone, alternated so a caller who asks two questions
+    # does not hear the same construction twice.
+    Intent.FAQ_PRICE:        [f"In terms of pricing {EM_DASH}",
+                              f"So, on our prices {EM_DASH}"],
+    Intent.FAQ_INSURANCE:    [f"In regards to insurance {EM_DASH}",
+                              f"As for insurance {EM_DASH}"],
+    Intent.FAQ_HOURS:        [f"In terms of our opening hours {EM_DASH}",
+                              f"So, on our hours {EM_DASH}"],
+    Intent.FAQ_PARKING:      [f"In regards to parking {EM_DASH}",
+                              f"As for parking {EM_DASH}"],
+    Intent.FAQ_LOCATION:     [f"In terms of where we are {EM_DASH}",
+                              f"So, on where we're based {EM_DASH}"],
+    Intent.FAQ_TREATS:       [f"In regards to what we treat {EM_DASH}",
+                              f"As for what we cover {EM_DASH}"],
+    Intent.FAQ_FIRSTTIME:    [f"For your first visit {EM_DASH}",
+                              f"So, on your first appointment {EM_DASH}"],
+    Intent.FAQ_PRACTITIONER: [f"In terms of who you'd see {EM_DASH}",
+                              f"As for who you'd be seeing {EM_DASH}"],
 
-    Intent.SYMPTOM:          [f"Sorry to hear that {EM_DASH}"],
-    Intent.CANCEL_REQ:       [f"No problem at all {EM_DASH}"],
-    Intent.RESCHEDULE_REQ:   [f"Let's get that moved {EM_DASH}"],
-    Intent.REPEAT_ASK:       [f"Sorry about that {EM_DASH}"],
-    # "Of course -" would be the natural head for both of these and is banned:
-    # Gate 5b strips "Of course," from model speech, and a phrase the engine
-    # deletes from the model is one the engine must not say itself. The
-    # import-time check catches it, which is how it was found here.
-    Intent.TRANSFER_REQ:     [f"Not a problem {EM_DASH}"],
+    # REGISTER. These were already the model's own words, verbatim from stored
+    # payloads, which is why they needed no rewriting -- they are what a person
+    # says because a person said them.
+    Intent.SYMPTOM:          [f"Sorry to hear that {EM_DASH}",
+                              f"Oh, sorry to hear that {EM_DASH}"],
+    Intent.CANCEL_REQ:       [f"No problem at all {EM_DASH}",
+                              f"Yes, no problem {EM_DASH}"],
+    Intent.RESCHEDULE_REQ:   [f"Let's get that moved for you {EM_DASH}",
+                              f"Yes, let's get that moved {EM_DASH}"],
+    Intent.REPEAT_ASK:       [f"Sorry about that {EM_DASH}",
+                              f"Apologies for that {EM_DASH}"],
+    Intent.TRANSFER_REQ:     [f"Not a problem {EM_DASH}",
+                              f"Yes, not a problem {EM_DASH}"],
 
+    # DIARY. "Let me find you the soonest -" and "where a sixty-minute fits -"
+    # both read as clipped: a person says the noun.
     Intent.NAMED_DAY:        [f"Let me see what {{subject}} looks like {EM_DASH}",
+                              f"Let me have a look at {{subject}} for you {EM_DASH}",
                               f"Let me see {EM_DASH}"],
-    Intent.NAMED_WEEK:       [f"Let me look at {{subject}} {EM_DASH}",
+    Intent.NAMED_WEEK:       [f"Let me look at {{subject}} for you {EM_DASH}",
+                              f"Let me see what {{subject}} looks like {EM_DASH}",
                               f"Let me see {EM_DASH}"],
     Intent.TIME_BAND:        [f"Let me see what I've got in the {{subject}} {EM_DASH}",
+                              f"Let me have a look at the {{subject}}s for you {EM_DASH}",
                               f"Let me see {EM_DASH}"],
-    Intent.SESSION_LENGTH:   [f"Let me see where a {{subject}} fits {EM_DASH}",
+    Intent.SESSION_LENGTH:   [f"Let me see where a {{subject}} session fits {EM_DASH}",
+                              f"Let me look for a {{subject}} for you {EM_DASH}",
                               f"Let me see {EM_DASH}"],
-    Intent.EARLIEST:         [f"Let me find you the soonest {EM_DASH}"],
-    Intent.AVAIL_QUERY:      [f"Let me see {EM_DASH}"],
-    Intent.BOOK_NEW:         [f"Let's get you booked in {EM_DASH}"],
+    Intent.EARLIEST:         [f"Let me find the soonest I've got {EM_DASH}",
+                              f"Let me see what the earliest is {EM_DASH}"],
+    Intent.AVAIL_QUERY:      [f"Let me see what we've got {EM_DASH}",
+                              f"Let me have a look for you {EM_DASH}"],
+    Intent.BOOK_NEW:         [f"Let's get you booked in {EM_DASH}",
+                              f"Yes, let's get that sorted {EM_DASH}"],
 }
 
 
@@ -681,6 +708,43 @@ def render_intent_head(intent, *, subject: str = "", index: int = 0) -> str:
             return without[0] if without else ""
         head = head.replace("{subject}", subject)
     return head
+
+
+def _head_pattern():
+    """Every head, as one regex, with the placeholders opened out.
+
+    Built at import from the pools themselves so it cannot drift from them --
+    a hand-maintained copy of this list is exactly the kind of thing that goes
+    stale the first time a head is reworded.
+    """
+    parts = []
+    for pool in list(INTENT_HEADS.values()) + list(HEADS.values()):
+        for head in pool:
+            literal = re.escape(head)
+            literal = literal.replace(re.escape("{subject}"), r".{1,40}")
+            literal = literal.replace(re.escape("{practitioner}"), r".{1,30}")
+            parts.append(literal)
+    return re.compile(r"^\s*(?:" + "|".join(parts) + r")\s*$", re.IGNORECASE)
+
+
+_HEAD_RE = _head_pattern()
+
+
+def is_hold_head(text: str) -> bool:
+    """Is this chunk a hold head rather than ordinary speech? PURE.
+
+    The TTS layer reads it to pace the head like a person instead of rushing
+    it. A head is a ten-to-forty-character fragment with no sentence around it,
+    and ElevenLabs flash gives it no prosodic context, so at the call's default
+    speed it comes out noticeably faster than everything else. Reported on the
+    first live call that heard one: "spoke too quickly compared to how Susie
+    speaks".
+
+    Matched against the pools rather than by shape ("short and ends in a dash"),
+    because the chunker legitimately emits short dash-terminated fragments of
+    model speech and slowing those would change the whole call's cadence.
+    """
+    return bool(text) and bool(_HEAD_RE.match(text.strip()))
 
 
 #: Susie's own acknowledgement and hold openers, for removal once a head has

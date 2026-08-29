@@ -51,6 +51,7 @@ from .config import (
     ELEVENLABS_STABILITY,
     ELEVENLABS_SIMILARITY_BOOST,
     ELEVENLABS_SPEED,
+    ELEVENLABS_HEAD_SPEED,
     ELEVENLABS_PHONE_SPEED,
     TTS_STREAM_CHUNK_SIZE,
 )
@@ -620,15 +621,37 @@ class TTSStream:
         #
         # `speed` is omitted entirely at 1.0 so a deployment that has not tuned
         # anything sends a request byte-identical to today's.
+        # A hold head is the other exception, and for the opposite reason: not
+        # careful articulation but ordinary pace. It is a short fragment
+        # synthesised alone, so flash has no sentence to pace it against and
+        # rushes it -- see ELEVENLABS_HEAD_SPEED. Decided here, on the final
+        # text, like the phone case; `is_hold_head` matches the head pools
+        # themselves rather than guessing from shape, because the chunker
+        # legitimately emits short dash-terminated fragments of model speech and
+        # slowing those would change the cadence of the whole call.
         _is_phone = _is_spoken_phone_number(text)
-        _speed    = ELEVENLABS_PHONE_SPEED if _is_phone else ELEVENLABS_SPEED
+        _is_head = False
+        if not _is_phone:
+            try:
+                from app.hold_speech import is_hold_head
+
+                _is_head = is_hold_head(text)
+            except Exception:  # pragma: no cover - never break synthesis on this
+                _is_head = False
+        if _is_phone:
+            _speed = ELEVENLABS_PHONE_SPEED
+        elif _is_head:
+            _speed = ELEVENLABS_HEAD_SPEED
+        else:
+            _speed = ELEVENLABS_SPEED
         if abs(_speed - 1.0) > 1e-9 and not _ELEVENLABS_SPEED_UNSUPPORTED:
             body["voice_settings"]["speed"] = _speed
 
         logger.info(
-            "[ms_tts] synthesise_chunk: model=%s len=%d speed=%s phone=%s text=%r",
+            "[ms_tts] synthesise_chunk: model=%s len=%d speed=%s phone=%s "
+            "head=%s text=%r",
             ELEVENLABS_MODEL_ID, len(text),
-            body["voice_settings"].get("speed", "default"), _is_phone,
+            body["voice_settings"].get("speed", "default"), _is_phone, _is_head,
             text[:60],
         )
 
