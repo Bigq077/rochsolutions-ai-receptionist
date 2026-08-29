@@ -41,6 +41,11 @@ REPO = Path(__file__).resolve().parents[2]
 PRODUCERS = (
     REPO / "app" / "media_streams" / "connection.py",
     REPO / "app" / "media_streams" / "llm_stream.py",
+    # filler_guard.py makes no decide_hold call today — it REPORTS rather than
+    # asks (see the test at the bottom). Scanned anyway so that the day someone
+    # routes it through the arbiter, they cannot forget the switch. Leaving it
+    # out is how this pin claimed "every producer" while checking two of three.
+    REPO / "app" / "media_streams" / "filler_guard.py",
 )
 
 
@@ -169,3 +174,37 @@ def test_every_producer_passes_the_switch():
         f"{missing}. Pass legacy=not hold_speech_enabled(session) — otherwise "
         "that producer uses the arbiter on every clinic regardless of whether "
         "its owner has opted in.")
+
+
+# ---------------------------------------------------------------------------
+# The limit of the guarantee, pinned so it is not mistaken for coverage
+# ---------------------------------------------------------------------------
+
+def test_filler_guard_reports_to_the_latch_but_does_not_ask_it():
+    """FillerGuard is a producer the arbiter cannot suppress. Known, not fixed.
+
+    It plays a recorded CLIP rather than TTS, and it calls note_filler_played(),
+    which sets `_hold_head_spoken` — so it TELLS the arbiter it spoke, and every
+    gated producer afterwards correctly stays quiet. What it never does is ASK,
+    so its own 2.5s "second clip" escalation is outside the one-head-per-turn
+    rule entirely.
+
+    Seen live on CAc46c00705bc1ad81 (2026-08-29, northgate, hold_speech on):
+    a clip at 350ms, a second at 2.5s, then the tool. The arbiter did its job —
+    it suppressed the THIRD phrase that legacy would have spoken, because
+    _FILLER_TOOLS["check_availability"] is a real list — but two clips still
+    reached the caller, which is why the change is hard to hear.
+
+    Pinned because hold_speech.py's docstring says stacking is "unrepresentable"
+    by construction. With this producer outside the arbiter, it is representable
+    again, and that gap should be a decision rather than a surprise.
+    """
+    guard = (REPO / "app" / "media_streams" / "filler_guard.py").read_text(
+        encoding="utf-8")
+    assert "decide_hold" not in guard, (
+        "filler_guard now calls the arbiter — good, but this test documents the "
+        "opposite. Update it, and make sure the call passes legacy=.")
+    assert "note_filler_played" in guard, (
+        "filler_guard stopped reporting that it spoke. Every gated producer "
+        "reads _hold_head_spoken, so without this the arbiter will speak ON TOP "
+        "of the clip.")
