@@ -286,6 +286,7 @@ class ConversationDriver:
         on the injected-text path): the confirmed-barge-in inhibit,
         _ack_filler_cancelled, and the consecutive-identical dedup guard.
         """
+        from app.media_streams.config import ACK_FILLER_MARKER
         from app.media_streams.llm_stream import PRE_SLOT_MARKER
 
         cancelled = bool(self.session.get("_pre_slot_cancelled"))
@@ -298,6 +299,14 @@ class ConversationDriver:
                 item = item.get("text")
             if not isinstance(item, str):
                 continue
+
+            # The TTS loop strips this before speaking, so a caller never
+            # hears it. Nothing carried it until the hold-speech arbiter began
+            # routing heads through the ack-filler path, which is why the drain
+            # only knew about PRE_SLOT_MARKER -- and why the first adaptive call
+            # reported "ACK_FILLER" as a Gate 5b violation.
+            if item.startswith(ACK_FILLER_MARKER):
+                item = item[len(ACK_FILLER_MARKER):]
 
             if item.startswith(PRE_SLOT_MARKER):
                 body = item[len(PRE_SLOT_MARKER):]

@@ -297,3 +297,49 @@ def test_the_verdicts_never_call_a_model():
             f"verdicts.py references {forbidden!r} — the judge must stay a pure "
             f"function of the transcript"
         )
+
+
+# ── Regressions from the first live run ─────────────────────────────────────
+
+@pytest.mark.parametrize("hhmm, spoken", [
+    # 09:50 is what the very first adaptive call booked, and Susie read it out
+    # as "ten to ten". A quarters-only implementation called that correct
+    # booking unspoken -- a false positive on the commonest persona in the
+    # suite, which is the fastest way to teach someone to ignore the report.
+    ("09:50", "ten to ten in the morning"),
+    ("10:20", "twenty past ten"),
+    ("18:05", "five past six in the evening"),
+    ("14:30", "half past two"),
+    ("17:45", "quarter to six"),
+    ("09:00", "nine in the morning"),
+])
+def test_a_time_spoken_in_words_counts_as_offered(hhmm, spoken):
+    hour, minute = (int(x) for x in hhmm.split(":"))
+    booking = _Booking(start=datetime(2026, 9, 5, hour, minute))
+    transcript = [("Saturday please", f"There's one at {spoken}."),
+                  ("That one", "You're booked in.")]
+    findings = judge("book_named_day", transcript, diary=_Diary([booking]))
+    assert not [f for f in findings if f.rule == "booking_was_offered"], findings
+
+
+def test_an_internal_marker_never_reaches_the_transcript():
+    """`ACK_FILLER_MARKER` is stripped by the TTS loop before anything is
+    spoken, so a caller never hears it -- but the harness drains the queue
+    itself and has to do the same.
+
+    Nothing carried the marker until the arbiter began routing hold heads
+    through the ack-filler path, so the first adaptive call reported it as a
+    Gate 5b violation: a harness artefact wearing the costume of an engine
+    defect.
+    """
+    import inspect
+
+    from app.media_streams.config import ACK_FILLER_MARKER
+    from tests.harness import driver
+
+    source = inspect.getsource(driver.ConversationDriver)
+    assert "ACK_FILLER_MARKER" in source, (
+        "the queue drain no longer strips the ack-filler marker; every call "
+        "with a hold head will report a false Gate 5b finding"
+    )
+    assert ACK_FILLER_MARKER.startswith("\x01")

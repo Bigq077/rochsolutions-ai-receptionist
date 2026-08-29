@@ -165,6 +165,9 @@ def _booking_start(booking):
         return None
 
 
+#: The minutes Susie actually says, in the words she says them in.
+_MINUTE_WORD = {5: "five", 10: "ten", 20: "twenty", 25: "twenty-five"}
+
 _NUMBER_WORD = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
                 7: "seven", 8: "eight", 9: "nine", 10: "ten", 11: "eleven",
                 12: "twelve"}
@@ -173,20 +176,28 @@ _NUMBER_WORD = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
 def _spoken_forms(start: datetime):
     """Every way the engine might have SAID this time, lower-cased.
 
-    Susie speaks times as words ("half past nine"), so comparing against
-    "09:30" alone would report every correct booking as unspoken.
+    Susie speaks times as words, and NOT only on the quarters: the first
+    adaptive call booked 09:50, which she read out as "ten to ten in the
+    morning". A version of this that handled 0/15/30/45 only reported that
+    correct booking as never spoken -- a false positive on the commonest
+    persona in the suite, which is the fastest way to make a report ignored.
     """
     hour24, hour12, minute = start.hour, start.hour % 12 or 12, start.minute
     forms = {f"{hour24}:{minute:02d}", f"{hour12}:{minute:02d}"}
+    nxt = (hour12 % 12) + 1
     if minute == 0:
         forms.add(_NUMBER_WORD[hour12])
+        forms.add(f"{_NUMBER_WORD[hour12]} o'clock")
     elif minute == 15:
         forms.add(f"quarter past {_NUMBER_WORD[hour12]}")
     elif minute == 30:
         forms.add(f"half past {_NUMBER_WORD[hour12]}")
     elif minute == 45:
-        nxt = (hour12 % 12) + 1
         forms.add(f"quarter to {_NUMBER_WORD[nxt]}")
+    elif minute < 30 and minute in _MINUTE_WORD:
+        forms.add(f"{_MINUTE_WORD[minute]} past {_NUMBER_WORD[hour12]}")
+    elif minute > 30 and (60 - minute) in _MINUTE_WORD:
+        forms.add(f"{_MINUTE_WORD[60 - minute]} to {_NUMBER_WORD[nxt]}")
     return {f for f in forms if f}
 
 
