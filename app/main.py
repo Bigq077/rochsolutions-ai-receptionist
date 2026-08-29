@@ -388,6 +388,7 @@ async def startup():
     # immediately in Render logs rather than at first real booking attempt.
     # ------------------------------------------------------------------ #
     _validate_clinic_config()
+    _log_deployment_posture()
 
     # Start reminder worker whenever Redis is available (Render + local).
     if redis_available:
@@ -429,6 +430,55 @@ async def startup():
     logger.info("=" * 60)
     logger.info("✅ Startup complete - ready to accept requests")
     logger.info("=" * 60)
+
+
+def _log_deployment_posture() -> None:
+    """State, in the first seconds of the log, what this deployment actually IS.
+
+    Once a clinic stops being a branch, the ONLY thing separating a live
+    deployment from a test one is environment: SMS_ENABLED and
+    APPOINTMENT_REMINDERS_ENABLED, both of which default OFF and both of which
+    fail SILENTLY. A live service that came up without them keeps answering
+    calls perfectly and simply never texts anyone, and the only existing signal
+    is a per-send line that appears mid-call, after a text was already owed.
+
+    So this prints the effective posture at boot, says whether each switch was
+    set EXPLICITLY or fell back to its default, and runs the onboarding
+    checklist over every clinic a number can reach. Never raises: a startup
+    banner must not be able to stop a service answering the phone.
+    """
+    try:
+        import os
+        from app.clinic_config import (
+            TWILIO_TO_CLINIC, get_clinic, validate_all_clinics,
+        )
+
+        def _switch(name: str, default: str) -> str:
+            raw = os.getenv(name)
+            value = (raw if raw is not None else default).strip().lower()
+            on = value in ("1", "true", "yes", "on")
+            return f"{name}={'ON' if on else 'OFF'} ({'explicit' if raw is not None else 'DEFAULT'})"
+
+        logger.info(
+            "[deploy] %s | %s",
+            _switch("SMS_ENABLED", "false"),
+            _switch("APPOINTMENT_REMINDERS_ENABLED", "false"),
+        )
+
+        for number, clinic_id in sorted(TWILIO_TO_CLINIC.items()):
+            clinic = get_clinic(clinic_id)
+            logger.info(
+                "[deploy] %s -> %s | booking=%s | calendar=%s",
+                number, clinic_id,
+                clinic.get("booking_system") or "?",
+                str(clinic.get("calendar_id") or "(none)")[:44],
+            )
+
+        for clinic_id, problems in validate_all_clinics().items():
+            for problem in problems:
+                logger.warning("⚠️  CLINIC CONFIG: %s — %s", clinic_id, problem)
+    except Exception as e:                                     # noqa: BLE001
+        logger.warning("[deploy] posture banner failed: %r", e)
 
 
 def _validate_clinic_config() -> None:
