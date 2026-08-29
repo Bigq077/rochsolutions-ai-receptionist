@@ -55,6 +55,7 @@ from .config import (
     MAX_TOOL_ITERATIONS,
     MAX_HISTORY_TURNS,
     LLM_FIRST_CHUNK_TIMEOUT_MS,
+    HOLD_HEAD_DELAY_MS,
     LLM_FILLER_COOLDOWN_SEC,
     LLM_FILLER_SECOND_DELAY_MS,
     FILLER_PHRASES,
@@ -4134,9 +4135,61 @@ class LLMStream:
         # Cannot rely on stream events alone — if Claude takes >5s to send
         # the first event, the in-loop deadline check never fires.
         _filler_task: "asyncio.Task | None" = None
-        if not filler_sent and (time.monotonic() - self._last_filler_at) >= LLM_FILLER_COOLDOWN_SEC:
+
+        # ── The situational head ─────────────────────────────────────────
+        # What the CALLER asked for, read from the transcript. Pure, cheap, and
+        # available NOW -- the tool name is not known for another ~2s, and on
+        # an FAQ turn no tool runs at all.
+        #
+        # This decides two things: the wording, and how long to wait before
+        # saying it. A contentless head can only be justified once the caller
+        # has waited long enough that acknowledging the wait is the honest
+        # thing (3000ms, ~8% of turns). A head derived from the caller's own
+        # words is not a guess about work, so it does not have to earn its
+        # place that way: turn time-to-first-audio is p50 1,938ms across the
+        # corpus, so at 600ms it lands in front of half of all replies rather
+        # than the slow tail.
+        _hs_situational = ""
+        _hs_intent = None
+        try:
+            from app.hold_speech import (
+                classify_intent as _classify_intent,
+                hold_speech_enabled as _hs_enabled,
+                render_intent_head as _render_intent_head,
+                subject_for as _subject_for,
+            )
+            if _hs_enabled(session):
+                _hs_utterance = _last_user_text(messages or [])
+                _hs_hits = _classify_intent(
+                    _hs_utterance,
+                    _last_assistant_text(session),
+                    screen_pending=bool(session.get("pending_screen")),
+                )
+                if _hs_hits:
+                    _hs_intent = _hs_hits[0]
+                    _hs_situational = _render_intent_head(
+                        _hs_intent,
+                        subject=_subject_for(_hs_utterance),
+                        index=len(session.get("used_fillers") or []),
+                    )
+        except Exception:  # pragma: no cover - a head must never break a call
+            logger.warning("[ms_llm] situational head unavailable", exc_info=True)
+            _hs_situational, _hs_intent = "", None
+
+        _hold_delay_s = (
+            HOLD_HEAD_DELAY_MS / 1000.0 if _hs_situational else timeout_sec
+        )
+        # The 8s cross-turn cooldown guards against a cadence of contentless
+        # phrases -- the corpus has one call with 17 of them. A situational head
+        # is not that: it carries the caller's own subject and is joined into
+        # the sentence behind it, so two consecutive turns opening "Sorry to
+        # hear that -" then "On price -" is ordinary receptionist speech, not
+        # stacking. Stacking WITHIN a turn is still unrepresentable, because
+        # _hold_head_spoken is checked by decide_hold either way.
+        _cooled = (time.monotonic() - self._last_filler_at) >= LLM_FILLER_COOLDOWN_SEC
+        if not filler_sent and (_cooled or _hs_situational):
             async def _delayed_filler() -> None:
-                await asyncio.sleep(timeout_sec)
+                await asyncio.sleep(_hold_delay_s)
                 if not got_first_chunk:
                     # Prefix with ACK_FILLER_MARKER so _tts_loop can identify
                     # this chunk and suppress it if a tool-call filler fires
@@ -4177,7 +4230,10 @@ class LLMStream:
                         provisional=_provisional,
                     )
                     if _kind is _WorkKind.NONE:
-                        # Work unknown. Say something that names none of it.
+                        # Work unknown. Say something that names none of it --
+                        # unless the CALLER told us what this turn is about, in
+                        # which case there is something true and specific to
+                        # say and no need to fall back to a contentless one.
                         _kind = _WorkKind.UNKNOWN_SLOW
                     _decision = _decide_hold(
                         legacy=not _hs_on(session),
@@ -4196,6 +4252,20 @@ class LLMStream:
                         heads_used=len(session.get("used_fillers") or []),
                     )
                     _ack_filler_text = _decision.head
+                    # The situational head replaces the arbiter's contentless
+                    # one, and ONLY that one: a head chosen from the work in
+                    # flight is more specific than one chosen from the request,
+                    # and a write already in progress outranks both.
+                    if (
+                        _hs_situational
+                        and _decision.speak
+                        and _decision.kind is _WorkKind.UNKNOWN_SLOW
+                    ):
+                        logger.info(
+                            "[ms_llm] situational head (%s): %r",
+                            getattr(_hs_intent, "value", "?"), _hs_situational,
+                        )
+                        _ack_filler_text = _hs_situational
                     # Producer B of three (CA8cf0aaea). On the phone-confirm
                     # path connection.py has already spoken ~1.8s earlier, and
                     # the tool filler follows ~1.6s later — the caller heard

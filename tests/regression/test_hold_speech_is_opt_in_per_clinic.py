@@ -180,31 +180,58 @@ def test_every_producer_passes_the_switch():
 # The limit of the guarantee, pinned so it is not mistaken for coverage
 # ---------------------------------------------------------------------------
 
-def test_filler_guard_reports_to_the_latch_but_does_not_ask_it():
-    """FillerGuard is a producer the arbiter cannot suppress. Known, not fixed.
+def test_the_clip_reports_that_it_spoke_and_never_speaks_twice():
+    """FillerGuard plays a recorded CLIP, so it cannot ask the arbiter for
+    wording -- but it must not be able to stack either.
 
-    It plays a recorded CLIP rather than TTS, and it calls note_filler_played(),
-    which sets `_hold_head_spoken` — so it TELLS the arbiter it spoke, and every
-    gated producer afterwards correctly stays quiet. What it never does is ASK,
-    so its own 2.5s "second clip" escalation is outside the one-head-per-turn
-    rule entirely.
+    It used to do both halves wrongly. It called note_filler_played(), which
+    sets `_hold_head_spoken`, so it TOLD the arbiter it had spoken and every
+    gated producer afterwards correctly stayed quiet. What it never did was
+    ASK, so its own 2.5s "second clip" escalation sat outside the
+    one-head-per-turn rule entirely. Seen live on CAc46c00705bc1ad81
+    (2026-08-29, northgate, hold_speech on): clip at 350ms, clip at 2.5s, then
+    the tool. hold_speech.py's docstring claims stacking is "unrepresentable by
+    construction", and with that producer outside the arbiter it was
+    representable again.
 
-    Seen live on CAc46c00705bc1ad81 (2026-08-29, northgate, hold_speech on):
-    a clip at 350ms, a second at 2.5s, then the tool. The arbiter did its job —
-    it suppressed the THIRD phrase that legacy would have spoken, because
-    _FILLER_TOOLS["check_availability"] is a real list — but two clips still
-    reached the caller, which is why the change is hard to hear.
+    Resolved 2026-08-29 by deleting the second clip rather than by teaching it
+    to ask: the owner rule is that the recorded filler belongs to the one moment
+    before slots are read out, so two clips in 2.5 seconds breached it
+    independently of the arbiter. One clip cannot stack with itself, so the
+    guarantee is now structural rather than negotiated.
 
-    Pinned because hold_speech.py's docstring says stacking is "unrepresentable"
-    by construction. With this producer outside the arbiter, it is representable
-    again, and that gap should be a decision rather than a surprise.
+    Asserted on the module's SIGNATURE and behaviour, not by scanning its text.
+    The previous version of this test scanned for the string "decide_hold" and
+    was broken by a COMMENT explaining why the call is absent -- a text scan
+    cannot tell coupling from prose.
     """
-    guard = (REPO / "app" / "media_streams" / "filler_guard.py").read_text(
-        encoding="utf-8")
-    assert "decide_hold" not in guard, (
-        "filler_guard now calls the arbiter — good, but this test documents the "
-        "opposite. Update it, and make sure the call passes legacy=.")
-    assert "note_filler_played" in guard, (
-        "filler_guard stopped reporting that it spoke. Every gated producer "
-        "reads _hold_head_spoken, so without this the arbiter will speak ON TOP "
-        "of the clip.")
+    import ast
+    import inspect
+    import textwrap
+
+    from app.media_streams import filler_guard as fg
+
+    # 1. There is no second clip to schedule.
+    params = inspect.signature(fg.FillerGuard.__init__).parameters
+    assert "clip_path_2" not in params, (
+        "the second clip is back; it is the producer that never asked the "
+        "arbiter, which makes one-head-per-turn a slogan again")
+    assert "second_delay_ms" not in params
+
+    # 2. _fire() sends audio exactly once. Counted on the AST so a second
+    #    `await _send(...)` cannot creep back in behind a condition.
+    src = inspect.getsource(fg.FillerGuard.arm)
+    tree = ast.parse(textwrap.dedent(src))
+    sends = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "_send"
+    ]
+    assert len(sends) == 1, f"the clip is sent {len(sends)} times in one turn"
+
+    # 3. It still REPORTS. Every gated producer reads _hold_head_spoken, so
+    #    without this the arbiter speaks on top of the clip.
+    guard_src = inspect.getsource(fg)
+    assert "note_filler_played" in guard_src
+

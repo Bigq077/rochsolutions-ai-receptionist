@@ -464,6 +464,26 @@ STT_SILENCE_TIMEOUT_MS = 1000
 # wait and the 1656ms first-token time can.
 LLM_FIRST_CHUNK_TIMEOUT_MS = 3000
 
+# How long to wait before speaking a SITUATIONAL head -- one chosen from what
+# the caller just asked for rather than from the work in flight.
+#
+# The 3000ms above is the price of a GUESS. A contentless head ("Still with you
+# -") can only be justified once the caller has waited long enough that
+# acknowledging the wait is the honest thing, which is ~8% of turns; speaking it
+# earlier put an empty marker in front of instant replies, and the model opens
+# with the same marker, so the caller heard "Right. Right, what's...".
+#
+# A head built from the caller's own words is not a guess. "On price -" is
+# correct the moment they ask the price, however fast the answer comes, so it
+# does not have to earn its place by waiting. Measured over the 753-call obs
+# corpus, turn time-to-first-audio is p50 1,938ms and p25 1,390ms: at 600ms the
+# head lands in front of most replies rather than only the slow tail, and a turn
+# that answers faster than this cancels the task having said nothing.
+#
+# Do NOT lower this to zero. It is what stops a head on a turn the fast path
+# was going to answer immediately.
+HOLD_HEAD_DELAY_MS = 600
+
 # How long to wait for a TTS chunk to complete before moving to the next
 TTS_CHUNK_TIMEOUT_MS = 3000
 
