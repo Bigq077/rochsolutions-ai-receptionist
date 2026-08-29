@@ -390,6 +390,337 @@ def decide_hold(
     return HoldDecision(True, head=head, kind=kind, reason=str(kind.value))
 
 
+# ── What the CALLER asked for ────────────────────────────────────────────────
+# WorkKind says what the system is doing. It is keyed to five tool names, so it
+# can only speak when a tool runs -- which is why "can I cancel my appointment",
+# a price question, a symptom and "sorry, what?" all got either silence or a
+# generic phrase that lied.
+#
+# Measured on the 753-call corpus (2026-08-29), and this is the finding the
+# whole taxonomy rests on: the wait is NOT the provider. check_availability has
+# a p50 round-trip of 319ms and a p90 of 607ms; lookup_patient 210ms. Turn
+# time-to-first-audio over the same calls is p50 1,938ms, p90 3,171ms. The dead
+# air is the model. EVERY turn has roughly two seconds of it, not just the ones
+# that call a tool, so every turn can be owed a head.
+#
+# The second finding is what makes the wording safe to choose deterministically:
+# the model ALREADY writes the right opener, it just arrives 1.9s late. Stored
+# payloads open with "I'm sorry to hear that -", "No problem at all.", "Let's
+# get that moved for you.", "Got it -", "Thanks Quentin -", "Apologies for that
+# -". So a head is not an invented filler phrase. It is the opener the model was
+# going to say anyway, said earlier, with its duplicate stripped -- which is
+# what makes it part of the sentence rather than a phrase in front of one.
+
+
+class Intent(str, Enum):
+    """What the caller asked for, read from the transcript at STT-final."""
+
+    # Register -- the social turns.
+    SYMPTOM = "symptom"
+    CANCEL_REQ = "cancel_req"
+    RESCHEDULE_REQ = "reschedule_req"
+    REPEAT_ASK = "repeat_ask"
+    TRANSFER_REQ = "transfer_req"
+    # Topic -- FAQ turns, where no tool runs at all.
+    FAQ_PRICE = "faq_price"
+    FAQ_INSURANCE = "faq_insurance"
+    FAQ_HOURS = "faq_hours"
+    FAQ_PARKING = "faq_parking"
+    FAQ_LOCATION = "faq_location"
+    FAQ_TREATS = "faq_treats"
+    FAQ_FIRSTTIME = "faq_firsttime"
+    FAQ_PRACTITIONER = "faq_practitioner"
+    # Diary -- these carry a subject the head can name.
+    EARLIEST = "earliest"
+    SESSION_LENGTH = "session_length"
+    NAMED_DAY = "named_day"
+    NAMED_WEEK = "named_week"
+    TIME_BAND = "time_band"
+    AVAIL_QUERY = "avail_query"
+    BOOK_NEW = "book_new"
+
+
+#: Intents that assert a diary read. Only these are suppressed while the caller
+#: is answering a confirm question -- sympathy and an apology stay correct there.
+_DIARY_INTENTS = frozenset({
+    Intent.NAMED_DAY, Intent.NAMED_WEEK, Intent.TIME_BAND, Intent.SESSION_LENGTH,
+    Intent.EARLIEST, Intent.AVAIL_QUERY, Intent.BOOK_NEW,
+})
+
+_DAY = r"(?:mon|tues|wednes|thurs|fri|satur|sun)day"
+_BAND = r"(?:morning|afternoon|evening|lunchtime)"
+_BODY = (r"(?:knee|ankle|shoulder|hip|back|neck|wrist|elbow|foot|feet|calf|"
+         r"hamstring|sciatic|groin|thigh|spine|arm|leg|hand|glute|quad|achilles)")
+# Injury is often described with no word for pain at all -- "done my ankle",
+# "went over on it", "it gave way". The screening triggers learned the same
+# lesson the hard way (a caller saying "my ankle ... I twisted it" armed no
+# screen): adding more synonyms is the trap, the SHAPE of the matcher is the bug.
+_HURT = (r"(?:pain|painful|injur\w*|sprain\w*|strain\w*|ache|aching|stiff\w*|"
+         r"sore|tension|pulled|tight\w*|hurt\w*|niggl\w*|twist\w*|roll\w*|"
+         r"went over|gave way|done (?:my|in)|popped|locked|swollen|seized)")
+_SERVICE = (r"(?:acupuncture|massage|shockwave|physio\w*|sports|dry.?needl\w*|"
+            r"laser|rehab\w*|pilates|osteo\w*|treatment|therapy|service)")
+_WANT = r"(?:like to|want to|need to|can i|could i|looking to|wanting to|make|get|do)"
+
+
+def _rx(pattern: str):
+    return re.compile(pattern, re.IGNORECASE)
+
+
+# A bare answer is an answer, not a request: there is nothing for a head to
+# stand in front of.
+_BARE_ANSWER = _rx(r"^\s*(?:um|uh|er|erm|ah|oh|yeah|yes|yep|no|nope|nah|"
+                   r"not really|none|nothing)\b(?:[\s,]|$)")
+_NEGATED = _rx(r"\b(?:no|not|nothing|none|haven'?t|hasn'?t|isn'?t|don'?t|didn'?t)\b")
+
+#: A readback or confirm question. The reply to one is a SELECTION, so a diary
+#: head in front of it promises a lookup that is not happening -- the corpus
+#: defect rebuilt in a new place.
+_CONFIRM_Q = _rx(r"\b(?:did you mean|is that (?:right|correct|the right one)|"
+                 r"shall i (?:go ahead|book)|just to confirm|does that work|"
+                 r"is that the best number|which (?:one|of those)|number \d)\b")
+
+#: A clinical screen question, matched against what Susie said LAST. The reply
+#: to one is a red-flag answer, and it is the worst moment in the call to guess:
+#: no head may fire there, whatever else matches.
+_SCREEN_Q = _rx(r"\b(?:swollen|warm or red|numbness|tingl\w*|bladder|bowel|"
+                r"saddle|unexplained weight|night pain|fever|calf|"
+                r"pins and needles|give way|cauda|chest pain|breathless)\b")
+
+#: (intent, trigger, corroborator or None, blocker or None).
+#:
+#: A trigger alone never fires. Deny-by-default throughout: an utterance that
+#: matches nothing gets SILENCE, which is exactly today's behaviour, so the
+#: failure mode of a bad rule is "no change" rather than "confident and wrong".
+#: The corroborators are not decoration -- without them AVAIL_QUERY fired on
+#: "no, nothing like that, it's not swollen, I haven't been on any long
+#: journeys", a DVT screening answer, and FAQ_TREATS swallowed every "do you
+#: have anything on Friday".
+_INTENT_RULES = [
+    (Intent.REPEAT_ASK, _rx(r"\b(?:i said|say that again|repeat that|"
+                            r"didn'?t (?:hear|catch)|that'?s not what i|"
+                            r"you got that wrong)\b"), None, None),
+    (Intent.SYMPTOM, _rx(_HURT), _rx(_BODY), _rx(r"\?\s*$")),
+    (Intent.CANCEL_REQ, _rx(r"\bcancel\w*\b"),
+     _rx(r"\b(?:appointment|booking|it|that|my|session)\b"), None),
+    (Intent.RESCHEDULE_REQ,
+     _rx(r"\b(?:reschedul\w*|rebook\w*|move|change|shift|push)\b"),
+     _rx(r"\b(?:appointment|booking|it|that|my|day|time|date)\b"), None),
+    (Intent.TRANSFER_REQ,
+     _rx(r"\b(?:speak to|talk to|put me through|call me back|ring me)\b"),
+     _rx(r"\b(?:someone|human|person|back|later)\b"), None),
+
+    (Intent.FAQ_PRICE, _rx(r"\b(?:how much|cost\w*|price\w*|fee|charge|expensive)\b"),
+     None, None),
+    (Intent.FAQ_INSURANCE,
+     _rx(r"\b(?:axa|bupa|vitality|insurance|insured|nhs|self.?pay)\b"), None, None),
+    (Intent.FAQ_PARKING, _rx(r"\bpark(?:ing)?\b"), None, None),
+    (Intent.FAQ_LOCATION, _rx(r"\b(?:where are you|whereabouts|address|postcode|"
+                              r"how do i (?:get|find)|which clinic)\b"), None, None),
+    # "opening hours" / "what time do you close" -- never a bare "slots open",
+    # which is what a plain \bopen\b matched.
+    (Intent.FAQ_HOURS, _rx(r"\bopening (?:hours|times)\b|"
+                           r"\bwhat time do you (?:open|close)\b|\bare you open\b|"
+                           r"\bhow late (?:are|do) you\b|\byour hours\b"), None, None),
+    (Intent.FAQ_FIRSTTIME, _rx(r"\b(?:first (?:time|appointment|visit)|never been|"
+                               r"referral|what should i (?:bring|wear))\b"), None, None),
+    (Intent.FAQ_TREATS, _rx(r"\bdo(?:es)? (?:you|they)\b|\bcan you (?:help|treat)\b"),
+     _rx(r"\b(?:do|treat|offer|cover|provide|specialis\w*)\b.{0,30}" + _SERVICE +
+         r"|" + _SERVICE),
+     _rx(r"\b(?:free|available|slot|anything on|any)\b")),
+    (Intent.FAQ_PRACTITIONER, _rx(r"\b(?:who (?:would|will|do) i|"
+                                  r"which (?:physio|therapist)|"
+                                  r"same (?:person|physio))\b"), None, None),
+
+    (Intent.EARLIEST, _rx(r"\b(?:soonest|earliest|as soon as possible|asap|"
+                          r"next available|first available)\b"), None, None),
+    (Intent.SESSION_LENGTH,
+     _rx(r"\b(?:30|60|90|thirty|sixty|ninety)[\s-]?(?:minute|min)\b"), None, None),
+    (Intent.NAMED_DAY, _rx(_DAY), None, None),
+    (Intent.NAMED_WEEK, _rx(r"\b(?:next week|this week|following week|week after|"
+                            r"next month|tomorrow)\b"), None, None),
+    (Intent.TIME_BAND, _rx(_BAND), None, None),
+    (Intent.AVAIL_QUERY, _rx(r"\b(?:anything|any|something|what|what'?s|got)\b"),
+     _rx(r"\b(?:free|available|availability|slot|slots|opening|appointment|times?)\b"),
+     _NEGATED),
+    (Intent.BOOK_NEW, _rx(r"\b(?:book|booking|appointment)\b"), _rx(_WANT),
+     _rx(r"\b(?:cancel|reschedul|rebook|move|change)\w*\b")),
+]
+
+
+def classify_intent(text, prev_assistant="", *, screen_pending=False):
+    """Every intent this utterance corroborates, most specific first. PURE.
+
+    Returns [] for silence -- the pre-arbiter behaviour -- whenever nothing
+    matches, the caller is merely answering, or a clinical screen is in play.
+
+    ``prev_assistant`` is what Susie said last. ``screen_pending`` is the
+    session's own view of whether a screen is armed and unanswered; both are
+    checked because either alone has been wrong. A stored call shows why the
+    session flag is needed as well as the text: "just book me in for Tuesday"
+    was followed not by the diary but by "do you have any numbness around the
+    saddle area" -- a head saying "Let me see what Tuesday looks like" in front
+    of a cauda equina screen is the promised-work defect at its worst.
+    """
+    utterance = (text or "").strip()
+    if not utterance:
+        return []
+    if screen_pending or _SCREEN_Q.search(prev_assistant or ""):
+        return []
+    if _BARE_ANSWER.match(utterance) and len(utterance.split()) <= 4:
+        return []
+    answering = bool(_CONFIRM_Q.search(prev_assistant or ""))
+    hits = []
+    for intent, trigger, corroborator, blocker in _INTENT_RULES:
+        if not trigger.search(utterance):
+            continue
+        if corroborator is not None and not corroborator.search(utterance):
+            continue
+        if blocker is not None and blocker.search(utterance):
+            continue
+        if answering and intent in _DIARY_INTENTS:
+            continue
+        hits.append(intent)
+    return hits
+
+
+def subject_for(text: str) -> str:
+    """The noun a head may name, or "" when nothing is safe to say. PURE.
+
+    Only ever echoes back something the caller actually said. A head must never
+    name a day the caller did not, which is why this returns "" rather than a
+    guess -- ``render_intent_head`` then picks a subject-free member of the pool.
+    """
+    utterance = (text or "").strip()
+    match = re.search(_DAY + r"\s+" + _BAND, utterance, re.IGNORECASE)
+    if match:
+        return match.group(0).lower().capitalize()
+    match = re.search(_DAY, utterance, re.IGNORECASE)
+    if match:
+        return match.group(0).capitalize()
+    match = re.search(r"\b(next week|this week|the week after|following week|tomorrow)\b",
+                      utterance, re.IGNORECASE)
+    if match:
+        return match.group(1).lower()
+    match = re.search(r"\b(" + _BAND + r")s?\b", utterance, re.IGNORECASE)
+    if match:
+        return match.group(1).lower()
+    match = re.search(r"\b(30|60|90|thirty|sixty|ninety)[\s-]?(?:minute|min)\b",
+                      utterance, re.IGNORECASE)
+    if match:
+        spoken = {"30": "thirty", "60": "sixty", "90": "ninety"}
+        return f"{spoken.get(match.group(1), match.group(1))}-minute"
+    return ""
+
+
+#: One head per intent. Every pool that uses ``{subject}`` also carries a
+#: subject-free member, the precedent ``render_head`` already sets for
+#: ``{practitioner}``: a head must never say "Let me see what  looks like".
+#:
+#: The topic heads name the topic and nothing else, so they claim no work and
+#: cannot promise a lookup. The register heads are the model's own words,
+#: verbatim from stored payloads, which is what lets the stripper remove its
+#: duplicate without leaving a hole.
+INTENT_HEADS = {
+    Intent.FAQ_PRICE:        [f"On price {EM_DASH}"],
+    Intent.FAQ_INSURANCE:    [f"On insurance {EM_DASH}"],
+    Intent.FAQ_HOURS:        [f"On our hours {EM_DASH}"],
+    Intent.FAQ_PARKING:      [f"On parking {EM_DASH}"],
+    Intent.FAQ_LOCATION:     [f"On where we are {EM_DASH}"],
+    Intent.FAQ_TREATS:       [f"On what we cover {EM_DASH}"],
+    Intent.FAQ_FIRSTTIME:    [f"For a first visit {EM_DASH}"],
+    Intent.FAQ_PRACTITIONER: [f"On who you'd see {EM_DASH}"],
+
+    Intent.SYMPTOM:          [f"Sorry to hear that {EM_DASH}"],
+    Intent.CANCEL_REQ:       [f"No problem at all {EM_DASH}"],
+    Intent.RESCHEDULE_REQ:   [f"Let's get that moved {EM_DASH}"],
+    Intent.REPEAT_ASK:       [f"Sorry about that {EM_DASH}"],
+    # "Of course -" would be the natural head for both of these and is banned:
+    # Gate 5b strips "Of course," from model speech, and a phrase the engine
+    # deletes from the model is one the engine must not say itself. The
+    # import-time check catches it, which is how it was found here.
+    Intent.TRANSFER_REQ:     [f"Not a problem {EM_DASH}"],
+
+    Intent.NAMED_DAY:        [f"Let me see what {{subject}} looks like {EM_DASH}",
+                              f"Let me see {EM_DASH}"],
+    Intent.NAMED_WEEK:       [f"Let me look at {{subject}} {EM_DASH}",
+                              f"Let me see {EM_DASH}"],
+    Intent.TIME_BAND:        [f"Let me see what I've got in the {{subject}} {EM_DASH}",
+                              f"Let me see {EM_DASH}"],
+    Intent.SESSION_LENGTH:   [f"Let me see where a {{subject}} fits {EM_DASH}",
+                              f"Let me see {EM_DASH}"],
+    Intent.EARLIEST:         [f"Let me find you the soonest {EM_DASH}"],
+    Intent.AVAIL_QUERY:      [f"Let me see {EM_DASH}"],
+    Intent.BOOK_NEW:         [f"Let's get you booked in {EM_DASH}"],
+}
+
+
+def render_intent_head(intent, *, subject: str = "", index: int = 0) -> str:
+    """One head for ``intent``, rotated by ``index``. PURE.
+
+    Falls back to a subject-free member of the same pool when the caller named
+    nothing -- never to an invented subject.
+    """
+    pool = INTENT_HEADS.get(intent) or []
+    if not pool:
+        return ""
+    head = pool[index % len(pool)]
+    if "{subject}" in head:
+        if not subject:
+            plain = [h for h in pool if "{subject}" not in h]
+            return plain[0] if plain else ""
+        head = head.replace("{subject}", subject)
+    return head
+
+
+#: Susie's own acknowledgement and hold openers, for removal once a head has
+#: already performed that speech act.
+#:
+#: An ALLOW-list, and deliberately so. A shape-based version was tried first --
+#: "a short leading clause with no digits or dates is an acknowledgement" -- and
+#: was far worse: on the stored corpus it ate "I've got you on oh three three"
+#: (half a phone number, read out as words, so no digits to see) and "a rolled
+#: ankle like that can be really sore". What is being removed is ONE speech act
+#: the head has already performed, and that is a closed set, because it is our
+#: own prompt that produces it.
+ACK_OPENER_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:right|okay|ok|lovely|great|perfect|brilliant|sure|certainly|absolutely)"
+    r"|(?:of course)|(?:got it)|(?:no problem(?: at all)?)|(?:not to worry)"
+    r"|(?:no worries)|(?:that's (?:fine|no problem|absolutely fine))"
+    r"|(?:i'm sorry to hear (?:that|about that))|(?:sorry to hear (?:that|about that))"
+    r"|(?:(?:my )?apologies(?: for (?:that|the confusion))?)"
+    r"|(?:sorry(?: about (?:that|the confusion))?)"
+    r"|(?:let's get that (?:moved|sorted|changed)(?: for you)?)"
+    r"|(?:(?:just )?(?:one|a) moment(?: while i (?:check|look|find)[^.!?—-]{0,40})?)"
+    r"|(?:let me (?:just )?(?:check|look|see|find)[^.!?—-]{0,40})"
+    r"|(?:just (?:checking|looking)[^.!?—-]{0,40})"
+    r"|(?:right with you)|(?:just getting that for you)"
+    r")\s*(?:[,.!?—-]|$)\s*",
+    re.IGNORECASE,
+)
+
+
+def strip_head_echo(chunk: str, head: str) -> str:
+    """Drop the model's own opener once ``head`` has already said it. PURE.
+
+    The head is chosen to be what the model was going to say anyway, so its
+    opener is the second time the caller hears it. At most ONE clause goes, and
+    only one that matches ``ACK_OPENER_RE``.
+
+    Never returns empty: a reply that is nothing BUT an opener is left alone,
+    because a head with nothing behind it is the dead-end defect this whole
+    change exists to remove.
+    """
+    if not chunk or not head:
+        return chunk
+    match = ACK_OPENER_RE.match(chunk)
+    if not match:
+        return chunk
+    rest = chunk[match.end():].lstrip()
+    return rest or chunk
+
+
 # ── Import-time guarantees ───────────────────────────────────────────────────
 # A bad head must be UNDEPLOYABLE, not merely unspoken. Deterministic hold
 # phrases bypass sanitise_response entirely (see app/filler_phrases.py), which is
@@ -448,5 +779,66 @@ def _self_check() -> None:
             f"any: {head!r}"
         )
 
+
+    # ── The intent heads ─────────────────────────────────────────────────
+    # Same four guarantees as the work heads above, plus the three that only
+    # apply once a head can carry a subject the caller supplied.
+    for intent, pool in INTENT_HEADS.items():
+        assert pool, f"{intent} has no heads"
+
+        # A pool that can name a subject must also be able to say nothing about
+        # one, or a caller who named no day hears "Let me see what  looks like".
+        # Same rule, and the same reason, as {practitioner} in render_head.
+        if any("{subject}" in h for h in pool):
+            assert any("{subject}" not in h for h in pool), (
+                f"{intent} can only render WITH a subject, so a caller who "
+                f"named none gets a head with a hole in it: {pool!r}"
+            )
+            assert "{" not in render_intent_head(intent, subject=""), (
+                f"{intent} leaks a placeholder when the caller named nothing"
+            )
+
+        for head in pool:
+            rendered = head.replace("{subject}", "Tuesday")
+
+            # 1. Open clause: the reply has to be able to complete it.
+            assert rendered.rstrip()[-1:] in _OPEN_CLAUSE, (
+                f"head is a closed sentence, so the reply cannot continue it: "
+                f"{head!r}"
+            )
+            assert ELLIPSIS not in rendered, (
+                f"the ellipsis is the falling contour this work removes: {head!r}"
+            )
+
+            # 2. Survives the gates that police model speech. A hold phrase the
+            #    engine would delete from the model is one the engine should not
+            #    be saying either.
+            for name, rx in _BANNED_SENTENCE_RE:
+                assert not rx.search(rendered), (
+                    f"head {head!r} is deleted by Gate 5b/{name}"
+                )
+
+            # 3. Not a bare discourse marker. "Right -" in front of an instant
+            #    reply failed on live calls in three separate ways and could not
+            #    have been fixed by rewording -- the model opens with the same
+            #    marker, so the caller hears "Right. Right, what's...". Two words
+            #    minimum is what separates a head from a noise.
+            words = rendered.rstrip(" " + "".join(_OPEN_CLAUSE)).split()
+            assert len(words) >= 2, (
+                f"a one-word head is a discourse marker, not a head: {head!r}"
+            )
+
+    # 4. A topic head answers a question; no tool runs on those turns at all.
+    #    So it must not name work, for the same reason UNKNOWN_SLOW must not:
+    #    175 of the 322 stored hold phrases promised a lookup nobody was doing,
+    #    and an FAQ turn is the single largest group of them.
+    for intent, pool in INTENT_HEADS.items():
+        if not intent.value.startswith("faq_"):
+            continue
+        for head in pool:
+            assert not _NAMES_THE_WORK.search(head), (
+                f"a topic head stands in front of an ANSWER, not a lookup, so "
+                f"it must name no work: {head!r}"
+            )
 
 _self_check()
