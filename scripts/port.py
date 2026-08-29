@@ -185,14 +185,28 @@ def port_one(sha: str, branch: str, root: Path, excludes: list,
                  if p.startswith("tests/") and p.endswith(".py")
                  and p not in droppable and (port_tree / p).exists()]
         if tests:
-            for t in tests:                      # the test may be NEW here
+            # Stash whatever the TARGET already had at these paths. The commit's
+            # test file is copied in to prove fail-before, but the target may
+            # carry its OWN older version of the same path -- and blindly
+            # deleting afterwards destroyed it, so the baseline suite then ran
+            # with the file MISSING. That is a baseline that quietly measures
+            # less than the ported run, which is exactly the lie this tool
+            # exists to prevent: on 2026-08-29 it silently dropped 45 of
+            # vitaledge's clinical-screening tests out of its own baseline.
+            stashed: dict = {}
+            for t in tests:
                 dst = base_tree / t
+                stashed[t] = dst.read_bytes() if dst.is_file() else None
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(port_tree / t, dst)
             before, bsum = _pytest(base_tree, tests)
             after, asum = _pytest(port_tree, tests)
-            for t in tests:                      # never let it pollute the baseline
-                (base_tree / t).unlink(missing_ok=True)
+            for t, original in stashed.items():   # restore, do not just delete
+                dst = base_tree / t
+                if original is None:
+                    dst.unlink(missing_ok=True)
+                else:
+                    dst.write_bytes(original)
             res.targeted = "targeted  parent: " + bsum + " | ported: " + asum
             if not before:
                 if not any(p.startswith("app/") for p in _commit_paths(sha)):
