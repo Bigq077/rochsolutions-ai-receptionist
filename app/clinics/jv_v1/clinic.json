@@ -45,7 +45,7 @@
       "sunday":    "Closed"
     },
     "last_appointment": "8:30pm weekday evenings (Friday 7:30pm), 1:30pm Saturday",
-    "bank_holidays":    "TBC — varies by week, confirm with Marcus"
+    "bank_holidays":    "Open as normal on bank holidays - confirmed by the owner 2026-08-29. This line is PROSE and is rendered nowhere; operational.open_on_bank_holidays is the key the slot generator reads."
   },
   "operational": {
     "_note": "Flattened by get_clinic into the legacy clinic contract. working_hours end = last_appointment + slot_minutes so the last slot stays bookable (is_within_working_hours uses start <= t < end).",
@@ -89,6 +89,7 @@
     "slot_break_minutes": 5,
     "days_ahead": 60,
     "_same_day_note": "JV allows same-day booking (onboarding doc Section 6). Today's remaining future slots are offered; the slot generator already excludes past times.",
+    "open_on_bank_holidays": true,
     "allow_same_day": true,
     "primary_location": "bolton",
     "working_hours": {

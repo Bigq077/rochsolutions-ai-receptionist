@@ -59,7 +59,28 @@ from app.tools.receptionist_tools import (
 )
 
 
-DAY = "2026-08-27"
+def _next_thursday() -> str:
+    """A Thursday that is always in the FUTURE, recomputed every run.
+
+    This was the literal "2026-08-27". The availability reader only returns
+    days from today onwards, so the moment that date fell into the past the
+    busy fixtures below stopped landing inside the window at all — a block on
+    27 Aug cannot block a slot on 31 Aug. The tests then passed or failed on
+    whether the day the reader happened to return contained 16:30, which is
+    coincidence, not assertion. On 2026-08-29 that coincidence flipped and two
+    of them went red for a reason unrelated to what they pin.
+
+    It must be a THURSDAY: jv_v1 works 16:30-20:30 that day, which is what
+    produces the 16:30/17:15/18:00... grid asserted throughout this file.
+    """
+    import datetime as _dt
+
+    today = _dt.date.today()
+    ahead = (3 - today.weekday()) % 7 or 7      # 3 = Thursday, never today
+    return (today + _dt.timedelta(days=ahead)).isoformat()
+
+
+DAY = _next_thursday()
 ARGS = {
     "service": "msk_initial_assessment",   # 40 min - what the model actually sent
     "location": "bolton",
