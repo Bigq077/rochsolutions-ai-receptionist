@@ -1,641 +1,1638 @@
 {
-  "_notes": "MARK_REVIEW: Items tagged TBC must be confirmed with Marcus before go-live. Search for 'TBC' to find every gap.",
-  "clinic_id": "jv_v1",
-  "clinic_name": "Joint Venture Physiotherapy",
-  "brand_names": [
-    "Joint Venture Physiotherapy",
-    "Joint Venture Physio",
-    "JV Physiotherapy",
-    "JV Physio"
-  ],
-  "primary_phone": "+44 7367 002651",
-  "contact_email": "Jointventurephysiotherapy@gmail.com",
-  "websites": [
-    "https://jointventurephysiotherapy.co.uk"
-  ],
-  "sms_fees_note": "Assessment: £52 (40 mins), card payments taken.\nCancellations with less than 24hrs notice are charged the full appointment fee.\n\n",
-  "sms_assessment_price": "£52",
-  "sms_assessment_duration": "40",
-  "hours_summary": "evenings Mon–Fri and Saturday mornings",
-  "practitioner": "Marcus",
-  "company_number": "TBC",
-  "locations": [
-    {
-      "location_id": "bolton",
-      "name": "Flexspace Bolton",
-      "address_full": "Flexspace Bolton (Lythgoe House), Manchester Road, Bolton, BL3 2NZ",
-      "postcode": "BL3 2NZ",
-      "access_instructions": "Patients are given an access code for the main entrance. Use the top keypad to enter the code, then take a seat in the waiting area.",
-      "parking": "Free 24/7 on-site parking",
-      "wheelchair_accessible": true,
-      "serves_areas": ["Bolton", "Walkden", "Worsley", "Salford", "Greater Manchester"],
-      "nearest_city": "Bolton (20-25 minutes from Manchester by car)",
-      "road_access": "Manchester Road (A6), Bolton town centre"
-    }
-  ],
-  "opening_hours": {
-    "bolton": {
-      "_note": "Confirmed with Marcus 2026-06-23. Times are OPEN and LAST APPOINTMENT (last appt is bookable). Evenings Mon-Fri, Saturday mornings.",
-      "monday":    { "open": "16:30", "last_appointment": "20:30", "note": "Evening appointments" },
-      "tuesday":   { "open": "17:00", "last_appointment": "20:30", "note": "Evening appointments" },
-      "wednesday": { "open": "17:30", "last_appointment": "20:30", "note": "Evening appointments" },
-      "thursday":  { "open": "16:30", "last_appointment": "20:30", "note": "Evening appointments" },
-      "friday":    { "open": "16:30", "last_appointment": "19:30", "note": "Evening appointments" },
-      "saturday":  { "open": "09:30", "last_appointment": "13:30", "note": "Saturday mornings" },
-      "sunday":    "Closed"
-    },
-    "last_appointment": "8:30pm weekday evenings (Friday 7:30pm), 1:30pm Saturday",
-    "bank_holidays":    "TBC — varies by week, confirm with Marcus"
-  },
-  "operational": {
-    "_note": "Flattened by get_clinic into the legacy clinic contract. working_hours end = last_appointment + slot_minutes so the last slot stays bookable (is_within_working_hours uses start <= t < end).",
-    "timezone": "Europe/London",
-    "sms_name": "Joint Venture Physiotherapy",
-    "sms_appointment_noun": "physiotherapy",
-    "phone": "+44 7367 002651",
-    "transfer_phone": "+447586605462",
-    "_call_overflow_note": "Human-first overflow: an inbound call rings Marcus's own phone (dial_phone) FIRST; he presses 1 to take it, otherwise (no answer / voicemail / any other key) the call falls through to Susie as a full receptionist after ~ring_timeout seconds. Set enabled=true to activate — brief Marcus to press 1 first. `enabled` here is only the DEFAULT, and editing it is NOT instant: get_clinic() reads this file through an mtime-keyed cache, so a change is a commit plus a Render redeploy. The instant switch is the SMS toggle — the clinic texts OFF (or SUSIE OFF / FRONT DESK) to the Susie line to ring the practitioner first, ON to revert, STATUS to read it back. That override lives in Redis, beats this default, and expires at the next London midnight — see app/clinic_call_mode.py. JV-only; no other clinic has this block.",
-    "call_overflow": {
-      "enabled": false,
-      "dial_phone": "+447586605462",
-      "_ring_timeout_note": "Seconds the practitioner's phone rings before the call falls through to Susie. The caller hears ringback, not dead air, but this is time before anyone speaks — 12 is deliberate, do not raise it back to 20.",
-      "ring_timeout": 12,
-      "_whisper_with_caller_note": "Spoken to the practitioner when the caller ID can be paced confidently (UK 0-form, 10-11 digits, not withheld). {caller} is substituted with the spoken number; remove the placeholder to stop announcing callers on this clinic without a deploy. Falls back to whisper_text for withheld or non-UK numbers. Substitution is a literal .replace, so braces other than {caller} are safe.",
-      "whisper_text_with_caller": "Business call, from {caller}. Press 1 to take it, or hang up and Susie will handle it.",
-      "whisper_text": "Business call from your Susie line. Press 1 to take it, or hang up and Susie will handle it.",
-      "greeting": "Hi there, I'm Susie, Joint Venture Physiotherapy's AI receptionist — Marcus isn't free to take your call right now, but I can help. How can I help you today?"
-    },
-    "owner_notification_sms": "+447586605462",
-    "_owner_notify_note": "Marcus's mobile — receives an SMS ping when an insurance booking is made so he can follow up to collect pre-auth/cover details.",
-    "booking_system": "google_calendar",
-    "_calendar_id_note": "latency-eval / DEMO ONLY: repointed to Quentin's 'Susie Demo' Google calendar so demo calls on this branch book into Quentin's calendar, not JV's. google_tokens on the demo service are OAuthed as quentinroch10@gmail.com (owner of this calendar). LIVE JV (on main) still uses jointventurephysiotherapy@gmail.com — DO NOT merge this branch to main. Original: jointventurephysiotherapy@gmail.com.",
-    "calendar_id": "63bc844e0df1b6ef56b5d450a3a338d11d5286d186020d5b6ea43379ab550e57@group.calendar.google.com",
-    "_digest_note": "End-of-day email of the day's calendar bookings so the agency enters them into Carepatron. Set email_to (or env DIGEST_EMAIL_TO) before go-live; sends once daily at hour:minute London. Requires SMTP_* env + google_tokens connected.",
-    "digest": {
-      "enabled": true,
-      "email_to": "",
-      "hour": 21,
-      "minute": 30
-    },
-    "_owner_alerts_note": "Real-time SMS heads-up to Marcus the moment a call books (sent BEFORE the patient confirmation), a booking needs manual entry, or an existing appointment is cancelled/rescheduled. phone falls back to transfer_phone if blank. Transfer/distress callers are already alerted via the transfer_to_human path.",
-    "owner_alerts": {
-      "enabled": true,
-      "phone": "+447586605462",
-      "events": ["booking", "manual_followup", "cancellation", "reschedule"]
-    },
-    "slot_minutes": 40,
-    "_slot_break_note": "Each service is offered at its own length (services[].typical_duration_minutes) plus a 5-min break between appointments. Slots anchor to each day's opening time; the break is spacing only and is never added to the calendar event.",
-    "slot_break_minutes": 5,
-    "days_ahead": 60,
-    "_same_day_note": "JV allows same-day booking (onboarding doc Section 6). Today's remaining future slots are offered; the slot generator already excludes past times.",
-    "allow_same_day": true,
-    "primary_location": "bolton",
-    "working_hours": {
-      "mon": { "open": "16:30", "last_appointment": "20:30" },
-      "tue": { "open": "17:00", "last_appointment": "20:30" },
-      "wed": { "open": "17:30", "last_appointment": "20:30" },
-      "thu": { "open": "16:30", "last_appointment": "20:30" },
-      "fri": { "open": "16:30", "last_appointment": "19:30" },
-      "sat": { "open": "09:30", "last_appointment": "13:30" },
-      "sun": null
-    }
-  },
-  "prompt_engine": "template_v1",
-  "_modality_note": "Deliberately NO modality gate/question (bd68460, 2026-07-07): every appointment defaults to in-clinic; remote is strictly opt-in when the caller explicitly asks. The multi-entry 'modalities' list below is what selects the default-in-clinic MODALITY RULE in clinic_template_prompt._render_modality_rule — do not shrink it to one entry, and do not re-add prompt_mode/modality_session_keys/modality_question (removed 2026-07-19 as dead keys that misled a call review into reporting the missing question as a defect).",
-  "modalities": ["in_clinic", "remote"],
-  "modality_labels": {
-    "in_clinic": "in-clinic at Bolton",
-    "remote": "remote (video/phone)"
-  },
-  "prompt_facts": {
-    "identity_descriptor": "a private physiotherapy clinic based in Bolton",
-    "discipline": "physiotherapy",
-    "_reason_question_note": "Owner decision 2026-08-11: Joint Venture DOES ask what the appointment is for. Setting this key is the whole fix — it turns OFF Gate 5b-r for this clinic (turn_handler._clinic_asks_its_own_reason_question) and turns ON the once-only tightening. Without it the model asked, the gate deleted the sentence, no reason was ever collected, and book_appointment refused every booking on the A2 gate. Do NOT remove without reading that gate.",
-    "reason_question": "What's the appointment for?",
-    "_keep_pre_slot_speech_note": "Job 3c.3 / CAce1457d1: when true, empathy/physio lines streamed before check_availability are NOT dropped by _pre_slot_cancelled. Engine-wide suppress stays on for every other clinic — do not flip this without hearing a live call (caller may hear empathy then the hold clip then slots).",
-    "keep_pre_slot_speech": true,
-    "first_appt_noun": "assessment",
-    "home_visit_area": "Bolton and Greater Manchester",
-    "sole_practitioner": true,
-    "practitioner": "Marcus",
-    "practitioner_credentials": "Masters in Advanced Clinical Practice, HCPC Registered PH104377, CSP member. Former physiotherapist at Hull Kingston Rovers Rugby Club.",
-    "persona_tone": "Warm, confident, Northern British",
-    "persona_descriptor": "a warm, capable Northern British receptionist",
-    "persona_character": "You are warm, confident and genuinely approachable — a natural Northern warmth, nothing corporate, and people feel at ease within a sentence. You answer questions fully and in plain, clear language, then stop; you don't fill the silence with generic closers or booking pushes, and you trust the caller to lead — if they want to book, they'll say so. You're unhurried, attentive and never salesy. The clinic is friendly and great value, but you carry a quiet expertise — callers should feel they've reached somewhere that genuinely knows its craft. You know physiotherapy inside out — MSK and sports injuries, neuro rehab, acupuncture, and home and virtual care — and how each one helps. When a caller isn't sure what they need, you give a confident, specific recommendation and briefly say why, the way the front desk of a clinic that really knows its stuff would — never a vague 'they're all good', and never deferring every question to Marcus.",
-    "pricing_default_line": "Default to the in-clinic assessment fee (£52) for new patients asking 'how much is an appointment'.",
-    "default_price_summary": "An initial MSK assessment is £52 for 40 minutes. Follow-up sessions are £46 for 30 minutes. We are 10 to 20 percent more affordable than other local physiotherapy clinics. Full pricing is on our website.",
-    "tagline": "Your Recovery Is Our Joint Venture",
-    "competitor_positioning": "10-20% more affordable than other local physiotherapy clinics — a genuine differentiator. Reference it when appropriate, never apologise for pricing.",
-    "greeting": "Hi there, I'm Susie, Joint Venture Physiotherapy's AI receptionist — how can I help you today?",
-    "ai_self_response": "Yes, I'm an AI receptionist for Joint Venture Physiotherapy — I can answer questions and book appointments for you.",
-    "clinical_deflection_response": "That's one for Marcus to assess properly at your appointment.",
-    "emergency_response": "If you are experiencing a medical emergency, please hang up and call 999 immediately, or go to your nearest A&E.",
-    "booking_offer": "Would you like to book an assessment so Marcus can take a proper look?",
-    "hours_summary_spoken": "We offer evening appointments Monday to Friday and Saturday morning slots — let me check what's available for you.",
-    "closing_practitioner_line": "You're in good hands with Marcus."
-  },
-  "clinical_depth": "standard",
-  "_clinical_depth_note": "MARK_REVIEW: 'standard' = clinically fluent but NON-diagnostic (proactive red-flag screening + specific service guidance, never names a cause/prognosis). 'deep' = names likely cause, recovery timelines and safe self-care (theorem-v4 style). 'deep' raises clinical-liability exposure on a recorded line and MUST NOT run on a live number until Marcus reviews call behaviour and signs off in writing. Env var JV_CLINICAL_DEPTH overrides this (keep prod on 'standard').",
-  "treatment_guidance": {
-    "_note": "MARK_REVIEW: Non-diagnostic domain knowledge so Susie recommends the RIGHT appointment with genuine, specific insight instead of vague answers or deflecting. Rendered into the prompt by _render_treatment_knowledge. Guides treatment CHOICE only — never diagnoses, never names the cause of a caller's pain, never promises a cure or a set number of sessions.",
-    "how_to_use": "When a caller describes a problem or asks 'what do I need', give a genuinely informed, specific recommendation — name the ONE best-fit service and briefly say why, then let them decide. You may mention a close second if it's a real toss-up. Never say 'they're all good' or defer a treatment-CHOICE question to Marcus — guiding the caller to the right appointment is exactly what you're here for. Keep it warm and unhurried, never a sales pitch. Never diagnose, never state what's causing their pain, and never promise a cure or a number of sessions.",
-    "philosophy": "Every patient starts with an assessment where Marcus takes a full history, examines movement and strength, and agrees a tailored plan — so the first visit is about properly understanding the problem, not a fixed protocol.",
-    "services": [
-      { "name": "Initial Assessment (MSK)", "feel": "A 40-minute one-to-one: full history, a hands-on physical examination of movement, strength and the affected area, then a plan agreed with you.", "best_for": "any new or changed musculoskeletal problem — back, neck, shoulder, hip, knee, foot, sports injuries — especially when the cause isn't already known. The most common first booking and the safe starting point." },
-      { "name": "MSK Treatment Session (follow-up)", "feel": "A focused 30-minute follow-up: hands-on manual therapy and progression of your exercise programme.", "best_for": "returning patients continuing rehab for a problem Marcus has already assessed." },
-      { "name": "Acupuncture", "feel": "Fine sterile needles at specific points to ease pain, reduce muscular tension and support healing; most people find it relaxing.", "best_for": "pain relief and muscular tension as part of a physio plan — offered alongside treatment, not as a standalone." },
-      { "name": "Sports Massage (30 or 60 min)", "feel": "Targeted hands-on soft-tissue work to release tension, improve flexibility and aid recovery.", "best_for": "muscular tightness, training recovery and maintenance for active people — not for undiagnosed pain that should be assessed first." },
-      { "name": "Neurological Physiotherapy — Assessment", "feel": "A 60-minute specialist assessment building a rehab programme for function, movement and balance.", "best_for": "neurological conditions — MS, stroke recovery, Parkinson's, FND, and vestibular/dizziness problems." },
-      { "name": "Home Visit — Assessment & Treatment", "feel": "A 60-minute combined assessment and treatment in your own home.", "best_for": "patients who find travel difficult or prefer to be seen at home, across Bolton and Greater Manchester." }
-    ],
-    "recommendations": [
-      { "need": "A new or changed pain/injury where the cause isn't clear (back, neck, shoulder, hip, knee, foot, sports)", "book": "an Initial Assessment (MSK)", "why": "it's where Marcus works out exactly what's going on and agrees the right plan, so you never have to guess." },
-      { "need": "Continuing treatment for something Marcus has already assessed", "book": "an MSK Treatment Session", "why": "it picks up your existing plan with hands-on treatment and progression." },
-      { "need": "Muscular tightness or training recovery in someone active, with no specific injury to assess", "book": "a Sports Massage (30 or 60 minutes)", "why": "it's targeted soft-tissue work for tension and recovery." },
-      { "need": "A neurological condition — MS, stroke, Parkinson's, FND, balance or dizziness", "book": "a Neurological Physiotherapy assessment", "why": "it's a specialist 60-minute assessment that builds a tailored rehab programme." },
-      { "need": "Can't easily get to the clinic", "book": "a Home Visit", "why": "Marcus brings the assessment and treatment to you across Bolton and Greater Manchester." },
-      { "need": "Interested in acupuncture for pain or tension", "book": "an appointment noting acupuncture interest", "why": "Marcus provides it as part of a treatment plan and will confirm it suits you when he assesses you." }
-    ],
-    "if_unsure": "If the caller is genuinely unsure what they need, recommend an Initial Assessment (MSK) as the sensible first step — it's where the problem is properly assessed and the plan is set — and note their main concern for Marcus.",
-    "safety": "Guide treatment CHOICE only; never diagnose, never name the cause of someone's pain, never give a prognosis and never promise a cure or a number of sessions. If the caller describes anything acute or severe — a major injury or fall, sudden or rapidly worsening symptoms, numbness, weakness, loss of bladder or bowel control, one-sided calf swelling, chest pain, stroke signs, or feeling generally very unwell — do NOT book straight in: run the relevant safety screen, and for a genuine emergency give the emergency response."
-  },
-  "condition_knowledge": {
-    "_note": "MARK_REVIEW: Per-condition clinical fluency, rendered by _render_condition_fluency. Each 'understanding' names the condition's HALLMARK features in spoken style so Susie demonstrates genuine comprehension — never a generic 'that's very common'. All content is educational about the condition in general; Susie never asserts the caller HAS it (clinical_depth=standard). 'pathway' is what Marcus specifically does for it; 'service' is the best-fit booking.",
-    "how_to_use": "When a caller names or describes a condition, find the matching entry and respond with PRECISE understanding: reflect one or two of its hallmark features in your own natural words, and mirror the caller's OWN details back (their sport, their job, how long it's been going on, what it's stopping them doing). Two or three sentences, warm and specific — never recite an entry like a leaflet, never open with a generic 'that's really common' on its own, and never tell the caller what they HAVE ('that kind of problem' / 'pain like that', not 'you have X'). Then give the pathway and offer the best-fit service. If a safety screen matches the presentation, the screen comes first.",
-    "conditions": [
-      { "name": "Mechanical low back pain", "keywords": ["pulled my back", "put my back out", "back spasm", "back went", "lifted something", "back ache", "lower back"], "understanding": "Pain that flares after lifting or an awkward movement, tightens up when you've been still, and eases as you get moving is the classic pattern — and it usually settles well with the right guidance rather than rest.", "pathway": "Marcus assesses movement and strength to find what's driving it, treats hands-on, and gives you a plan so it settles and stays settled.", "service": "Initial Assessment (MSK)" },
-      { "name": "Sciatica / nerve-related leg pain", "keywords": ["sciatica", "sciatic", "pain down my leg", "shooting down", "leg pain from back", "pins and needles in my leg", "trapped nerve"], "understanding": "When pain travels from the back down past the knee — sometimes with pins and needles or numbness — that points to a nerve being irritated, and staying gently on the move usually helps more than bed rest.", "pathway": "Marcus works out where and why the nerve is irritated, settles it down, and builds a graded plan to get you moving confidently again.", "service": "Initial Assessment (MSK)" },
-      { "name": "Spinal stenosis pattern", "keywords": ["stenosis", "legs get heavy when i walk", "have to sit down when walking", "better leaning forward", "better on the trolley"], "understanding": "Legs that get heavy or achy the further you walk, easing when you sit or lean forwards — over a shopping trolley is the giveaway — is a well-recognised pattern in the lower back.", "pathway": "Marcus can assess it properly and build a programme that improves your walking tolerance and keeps you independent.", "service": "Initial Assessment (MSK)" },
-      { "name": "Disc-related back pain", "keywords": ["slipped disc", "herniated disc", "bulging disc", "prolapsed disc", "disc problem"], "understanding": "Disc-related pain is often worse with sitting, bending or coughing, and the encouraging thing most people don't hear is that discs heal and symptoms usually settle well without surgery.", "pathway": "Marcus will assess it, calm the acute phase down, and progress you through a staged rehab plan.", "service": "Initial Assessment (MSK)" },
-      { "name": "Neck strain / stiff neck", "keywords": ["stiff neck", "neck pain", "crick in my neck", "can't turn my head", "woke up with my neck"], "understanding": "Waking up unable to turn one way, or a neck that's seized after a long day at a screen, is usually the joints and muscles guarding — painful, but very treatable.", "pathway": "Marcus frees up the movement hands-on and addresses what set it off, whether that's posture, workload or sleep position.", "service": "Initial Assessment (MSK)" },
-      { "name": "Whiplash", "keywords": ["whiplash", "rear-ended", "rear ended", "neck after car accident", "neck after the crash"], "understanding": "After a jolt like that the stiffness and headaches often don't peak until a day or two later, which catches people out — early, guided movement makes a real difference to how quickly it settles.", "pathway": "Marcus assesses the neck properly, rules out anything that needs further review, and gets you on a graded recovery plan.", "service": "Initial Assessment (MSK)" },
-      { "name": "Cervicogenic headache", "keywords": ["headaches from my neck", "headache starts in my neck", "headache one side", "tension headache", "headaches every day"], "understanding": "Headaches that start at the top of the neck and creep over one side of the head, worse with certain neck positions or long desk days, very often have the neck as the driver.", "pathway": "Marcus assesses whether your neck is the source and treats the joints and muscles involved — many people see their headache frequency drop considerably.", "service": "Initial Assessment (MSK)" },
-      { "name": "Rotator-cuff-related shoulder pain", "keywords": ["rotator cuff", "shoulder impingement", "painful to lift my arm", "shoulder pain reaching", "can't lie on that side", "shoulder pain overhead"], "understanding": "A shoulder that catches in an arc as you lift the arm, hates reaching overhead or behind, and wakes you when you lie on it is the most common shoulder pattern we see — and it responds really well to progressive loading.", "pathway": "Marcus assesses the cuff and shoulder blade control, settles the irritation, and builds the strength back so it stops recurring.", "service": "Initial Assessment (MSK)" },
-      { "name": "Frozen shoulder", "keywords": ["frozen shoulder", "adhesive capsulitis", "shoulder completely stuck", "can't reach behind my back", "shoulder getting stiffer"], "understanding": "A shoulder that's progressively stiffened until reaching behind your back or overhead is nearly impossible — often worse at night — has a recognised course through freezing, frozen and thawing stages, and treatment is matched to the stage you're in.", "pathway": "Marcus identifies the stage and works on pain relief and regaining movement at the right pace — pushing too hard too early is the classic mistake.", "service": "Initial Assessment (MSK)" },
-      { "name": "Tennis elbow", "keywords": ["tennis elbow", "outside of my elbow", "elbow hurts gripping", "elbow hurts lifting the kettle"], "understanding": "Pain on the outside of the elbow that bites when you grip, lift a kettle or use a mouse is a tendon that's been overloaded — you certainly don't need to play tennis to get it.", "pathway": "Marcus settles the tendon and then loads it back up progressively, which is what the evidence shows actually resolves it; shockwave-style quick fixes without the loading tend not to last.", "service": "Initial Assessment (MSK)" },
-      { "name": "Golfer's elbow", "keywords": ["golfer's elbow", "golfers elbow", "inside of my elbow"], "understanding": "Pain on the inside of the elbow with gripping and lifting is the mirror image of tennis elbow — the same tendon-overload story on the other side, with the same good response to graded loading.", "pathway": "Marcus assesses what's overloading it and builds a progressive strengthening plan around your work or sport.", "service": "Initial Assessment (MSK)" },
-      { "name": "Carpal tunnel syndrome", "keywords": ["carpal tunnel", "tingling in my fingers", "numb fingers at night", "shake my hand out", "pins and needles in my hand"], "understanding": "Tingling in the thumb and first couple of fingers, worst at night, that you shake your hand out to relieve is the classic pattern of the median nerve being compressed at the wrist.", "pathway": "Marcus can assess how irritable the nerve is, work on the contributing factors, and advise honestly if it's at the point where a GP referral is the right route.", "service": "Initial Assessment (MSK)" },
-      { "name": "Hip osteoarthritis", "keywords": ["hip arthritis", "hip osteoarthritis", "groin pain", "stiff hip", "hard to put my socks on"], "understanding": "A deep groin ache with a hip that's stiff after sitting — putting socks and shoes on getting awkward is the tell-tale sign — is typically the hip joint itself, and exercise is genuinely the first-line treatment, not just something to try.", "pathway": "Marcus builds a strengthening programme that reduces pain and keeps you active — the evidence for it is excellent, including for people who eventually need a replacement.", "service": "Initial Assessment (MSK)" },
-      { "name": "Gluteal tendinopathy / lateral hip pain", "keywords": ["outside of my hip", "hip hurts lying on it", "trochanteric bursitis", "hip hurts on stairs"], "understanding": "Pain on the outside point of the hip that's worst lying on that side in bed or climbing stairs is usually the gluteal tendons complaining — very common, especially in women in mid-life, and very fixable.", "pathway": "Marcus teaches you the positions that aggravate it, then strengthens the tendons progressively — the combination is what gets results.", "service": "Initial Assessment (MSK)" },
-      { "name": "Patellofemoral / front-of-knee pain", "keywords": ["runner's knee", "runners knee", "front of my knee", "knee hurts on stairs", "knee hurts sitting", "kneecap pain"], "understanding": "An ache around or behind the kneecap that's worse coming DOWN stairs and after long sitting — people call it the cinema sign — is the most common knee complaint in active people, and it's driven by load and control rather than damage.", "pathway": "Marcus looks at how your hip, knee and foot share load, then rebuilds strength and control so the kneecap stops being overloaded.", "service": "Initial Assessment (MSK)" },
-      { "name": "Meniscal / cartilage knee pain", "keywords": ["meniscus", "cartilage in my knee", "knee clicking", "knee locking", "knee swelled the next day", "twisted my knee"], "understanding": "A knee that was twisted, swelled up over the next day, and now clicks, catches or occasionally locks points towards the cartilage — and most of these now do just as well with good rehab as with surgery.", "pathway": "Marcus assesses it properly, settles the swelling, and rebuilds the strength and confidence in the knee — referring on if it genuinely needs a surgical opinion.", "service": "Initial Assessment (MSK)" },
-      { "name": "ACL injury", "keywords": ["acl", "cruciate", "knee gave way", "heard a pop in my knee", "knee gives way"], "understanding": "A pivot or awkward landing, a pop, swelling within hours, and a knee that's since felt untrustworthy is the classic cruciate story — and whether it's managed with rehab alone or surgery plus rehab, the rehab is what determines how well you come back.", "pathway": "Marcus assesses the stability, guides the early phase, and runs the staged strength and return-to-sport work — with an honest steer if a surgical opinion is right for your goals.", "service": "Initial Assessment (MSK)" },
-      { "name": "Knee osteoarthritis", "keywords": ["knee arthritis", "knee osteoarthritis", "knees stiff in the morning", "worn knee", "bone on bone"], "understanding": "Knees that stiffen after rest and grumble on stairs are extremely common, and even where an X-ray says 'wear and tear' — or someone's been told 'bone on bone' — strengthening reliably reduces pain and improves what you can do.", "pathway": "Marcus builds a progressive strength plan around your life and goals; it's the first-line treatment in every major guideline, ahead of injections or surgery.", "service": "Initial Assessment (MSK)" },
-      { "name": "Achilles tendinopathy", "keywords": ["achilles", "back of my heel", "heel cord", "stiff ankle first thing"], "understanding": "An Achilles that's stiff and sore for the first few minutes in the morning, warms up as you move, then aches again after — usually with a tender thickened spot — is a tendon asking for a managed loading programme, not rest.", "pathway": "Marcus calibrates your training load and runs a progressive calf-loading plan — that's what the evidence shows rebuilds the tendon.", "service": "Initial Assessment (MSK)" },
-      { "name": "Plantar fasciitis", "keywords": ["plantar fasciitis", "plantar", "heel pain", "bottom of my foot", "first steps in the morning"], "understanding": "Sharp pain under the heel with the FIRST steps out of bed, easing as you get going then creeping back after a long day on your feet — that first-steps pattern is the hallmark, and it's one of the most treatable foot problems there is.", "pathway": "Marcus works on the calf and foot loading, footwear and training habits together — that combination is what shifts it.", "service": "Initial Assessment (MSK)" },
-      { "name": "Shin splints", "keywords": ["shin splints", "shins hurt when i run", "pain up my shins"], "understanding": "Aching along the inside edge of the shin that builds with running — especially after upping distance, changing shoes or moving to harder ground — is a bone and muscle overload story, and managing the load is the fix.", "pathway": "Marcus looks at your training load, calf strength and running style, and builds a plan that gets you back running without the shins flaring.", "service": "Initial Assessment (MSK)" },
-      { "name": "Ankle sprain", "keywords": ["sprained ankle", "twisted my ankle", "rolled my ankle", "went over on my ankle"], "understanding": "A rolled ankle that swelled and bruised, and now feels wary on uneven ground, is more than a 'walk it off' injury — without proper rehab the ligament heals but the balance and control don't, which is why ankles re-sprain.", "pathway": "Marcus settles it, restores the movement, then rebuilds the strength and balance so it doesn't become a repeat offender.", "service": "Initial Assessment (MSK)" },
-      { "name": "Stroke rehabilitation", "keywords": ["stroke", "had a stroke", "stroke rehab", "after his stroke", "after her stroke"], "understanding": "Recovery after a stroke carries on far longer than people are often told — the brain keeps adapting with the right, repeated practice, so movement, balance and confidence can keep improving well past those early months.", "pathway": "Marcus offers specialist neurological physiotherapy — a full assessment first, then a rehab programme built around the person's own goals, at home or in clinic.", "service": "Neurological Physiotherapy — Initial Assessment" },
-      { "name": "Multiple sclerosis", "keywords": ["multiple sclerosis", "ms physio", "my ms", "have ms"], "understanding": "With MS the picture shifts — fatigue, strength and balance can vary week to week — so the right programme flexes with you rather than fighting you, and exercise is one of the best-evidenced things for staying on top of it.", "pathway": "Marcus provides neurological physiotherapy tailored to how your MS behaves, focusing on strength, balance and energy management.", "service": "Neurological Physiotherapy — Initial Assessment" },
-      { "name": "Parkinson's", "keywords": ["parkinson", "parkinsons", "parkinson's"], "understanding": "With Parkinson's, movement tends to get smaller and quieter over time — and the encouraging evidence is that big-amplitude, effortful practice genuinely pushes back on that, for walking, balance and confidence.", "pathway": "Marcus runs neurological physiotherapy focused on amplitude, balance and the specific things Parkinson's is making harder day to day.", "service": "Neurological Physiotherapy — Initial Assessment" },
-      { "name": "Vestibular / BPPV dizziness", "keywords": ["vertigo", "bppv", "room spins", "dizzy when i roll over", "dizzy when i lie down", "crystals in my ear"], "understanding": "Short, intense bursts of the room spinning when you roll over in bed or look up usually point to the inner ear — BPPV — and the repositioning treatment for it is quick and remarkably effective, often within a session or two.", "pathway": "Marcus assesses vestibular problems and treats BPPV with the appropriate repositioning manoeuvres, plus retraining if your balance system needs it.", "service": "Neurological Physiotherapy — Initial Assessment" },
-      { "name": "Fibromyalgia / persistent widespread pain", "keywords": ["fibromyalgia", "pain everywhere", "chronic pain", "years of pain", "nothing has worked"], "understanding": "When pain has been there for years, moves around, and flares after doing 'too much', the nervous system itself has usually become protective — so the approach that works is gentle, graded and paced, never push-through-the-pain.", "pathway": "Marcus takes a graded, realistic approach — building activity in steps you can sustain, without the boom-and-bust cycle.", "service": "Initial Assessment (MSK)" },
-      { "name": "Post-operative rehabilitation", "keywords": ["knee replacement", "hip replacement", "after my operation", "after surgery", "post-op", "rotator cuff repair", "acl reconstruction"], "understanding": "Recovery after an operation moves in stages — protect and settle, restore movement, rebuild strength, then return to what you love — and being guided through each stage at the right pace is what a good outcome depends on.", "pathway": "Marcus works alongside your surgeon's protocol and takes you through each stage — it helps to bring any letters or guidance from the hospital.", "service": "Initial Assessment (MSK)" },
-      { "name": "Pregnancy-related pelvic girdle pain", "keywords": ["pregnant and my pelvis", "pelvic girdle", "spd", "pubic pain pregnant", "pregnancy back pain"], "understanding": "Pain at the front or back of the pelvis in pregnancy — worst turning in bed, on stairs or standing on one leg to dress — is common but absolutely not something you just have to put up with.", "pathway": "Marcus can assess it and provide safe, effective treatment and strategies through pregnancy.", "service": "Initial Assessment (MSK)" },
-      { "name": "TMJ / jaw pain", "keywords": ["jaw pain", "tmj", "jaw clicking", "jaw clicks", "clenching", "grinding my teeth", "can't open my mouth"], "understanding": "A jaw that clicks, aches around the ear or temple, and feels worse with chewing or in the morning after clenching overnight very often involves the jaw joint and its muscles — and it's frequently tangled up with neck tension too.", "pathway": "Marcus assesses the jaw and neck together, since they so often drive each other, and treats the muscles and joint mechanics involved.", "service": "Initial Assessment (MSK)" },
-      { "name": "Desk-related / RSI arm and neck pain", "keywords": ["rsi", "repetitive strain", "pain from typing", "mouse arm", "desk all day", "laptop all day", "work from home setup", "aching at my desk"], "understanding": "Aching that builds through the working day — forearm or wrist with mouse and keyboard work, or neck and shoulders from long screen hours — is a load-and-posture story: the tissues aren't damaged so much as overloaded in one position for too many hours.", "pathway": "Marcus treats the irritated tissues and, just as importantly, works through your setup, breaks and strength so the working week stops recreating the problem.", "service": "Initial Assessment (MSK)" },
-      { "name": "Migraine with neck involvement", "keywords": ["migraine", "migraines", "aura", "light sensitivity headache"], "understanding": "Migraine is its own neurological condition — often one-sided, throbbing, with sensitivity to light or nausea — and while physio doesn't treat migraine itself, the neck is a common trigger and amplifier, and treating it can reduce how often attacks are set off.", "pathway": "Marcus assesses whether your neck is contributing and treats it if so, working alongside whatever your GP has prescribed — never instead of it.", "service": "Initial Assessment (MSK)" },
-      { "name": "Thoracic / rib pain", "keywords": ["upper back pain", "between my shoulder blades", "rib pain", "pain when i take a deep breath", "mid back"], "understanding": "Pain between the shoulder blades or around the ribs — sometimes catching with a deep breath or a twist — usually comes from the joints where the ribs meet the spine, and it responds well to hands-on treatment and mobility work. Chest pain that comes with breathlessness or exertion is a different matter and gets urgent advice.", "pathway": "Marcus assesses the thoracic spine and rib mechanics and frees up what's stiff, with posture and strength work to keep it moving.", "service": "Initial Assessment (MSK)" },
-      { "name": "Hamstring strain", "keywords": ["hamstring", "pulled my hamstring", "back of my thigh"], "understanding": "A sudden grab or pull in the back of the thigh sprinting or stretching is the classic hamstring strain — and the reason they re-tear so often is that people return when it stops hurting, which is well before the strength has actually come back.", "pathway": "Marcus grades it, rehabs it through progressive strengthening — especially at longer muscle lengths — and tests it properly before you return to sport.", "service": "Initial Assessment (MSK)" },
-      { "name": "Calf strain", "keywords": ["pulled my calf", "calf went", "felt it go in my calf", "calf tear"], "understanding": "A sudden sharp grab in the calf mid-push-off — like being hit from behind — is the typical calf tear story, and it rehabs really well with progressive loading once the early days are managed properly.", "pathway": "Marcus grades the strain and takes you through staged calf loading back to full push-off strength.", "service": "Initial Assessment (MSK)" },
-      { "name": "Groin strain", "keywords": ["groin strain", "pulled my groin", "groin pain playing", "adductor"], "understanding": "Inner-thigh pain that bites with sprinting, twisting or kicking is typically the adductors being overloaded — very common in football and field sports, and one where targeted strengthening has excellent evidence.", "pathway": "Marcus assesses whether it's muscular or something the hip is contributing to, then runs a progressive adductor strengthening plan back to sport.", "service": "Initial Assessment (MSK)" },
-      { "name": "Hypermobility", "keywords": ["hypermobile", "hypermobility", "double jointed", "joints pop out", "ehlers"], "understanding": "When joints move further than they should, the muscles work overtime to provide the control the ligaments aren't — which is why hypermobile people often ache, fatigue and pick up niggles, and why strength and control work, not stretching, is the foundation of feeling better.", "pathway": "Marcus builds a strength-and-control programme matched to how your joints behave, paced to avoid the flare-ups that put people off exercise.", "service": "Initial Assessment (MSK)" },
-      { "name": "Osteoporosis / bone health", "keywords": ["osteoporosis", "osteopenia", "thinning bones", "bone density"], "understanding": "With low bone density the right exercise genuinely matters — progressive resistance and impact work is one of the best-evidenced ways to protect bone and prevent the falls that cause fractures — so the answer is more of the right movement, not wrapping yourself in cotton wool.", "pathway": "Marcus designs safe, progressive strength and balance work suited to your bone health, alongside whatever your GP is managing medically.", "service": "Initial Assessment (MSK)" },
-      { "name": "Adolescent growth-plate pain (Osgood-Schlatter / Sever's)", "keywords": ["osgood", "schlatter", "sever's", "severs", "son's knee", "daughter's knee", "growing pains", "heel pain playing football"], "understanding": "In sporty teenagers, pain just below the kneecap or in the heel that flares with training and eases with rest is classically the growth plates being overloaded during a growth spurt — it's manageable, and it doesn't usually mean stopping sport altogether.", "pathway": "Marcus balances their training load, works on flexibility and strength around the growing area, and keeps them in the sport they love wherever possible.", "service": "Initial Assessment (MSK)" }
-    ]
-  },
-  "clinical_screening": {
-    "_note": "MARK_REVIEW: CONDITIONAL UK MSK red-flag screening — a screen is asked only when the caller's described complaint IS that row's presentation (B-20, owner decision 2026-08-03; was 'proactive', which the model read as a checklist). Consumed by (a) _render_clinical_screening for the prompt and (b) app/media_streams/clinical_screening.py for the deterministic pre-LLM classifier + the book_appointment gate. Screening is safety-positive and non-diagnostic. Wording reviewed by Marcus before go-live.",
-    "enabled": true,
-    "how_to_use": "SAFETY SCREENING runs BEFORE booking WHEN IT APPLIES, and it applies ONLY when the caller's problem matches one of the screens below (CALL STATE flags the active screen as SCREEN REQUIRED). Most callers match no screen at all — for them there is nothing to ask and you go straight to booking. When one DOES match, acknowledge warmly, then ask that screen's question on its own as your single question that turn, and wait. If the answer is clearly no / none of those, reassure briefly ('that's reassuring') and carry on to booking as normal. If they answer yes to any part, do NOT book: give the screen's escalation calmly and offer to help once they've been seen. Ask a given screen only once per call, and never skip a screen that DOES apply in order to reach a booking faster.",
-    "screens": [
-      {
-        "id": "cauda_equina",
-        "label": "Lower back / leg (cauda equina)",
-        "presentation": "lower back, lumbar or leg / sciatica pain",
-        "_trigger_grouping_note": "NOT converted to trigger_all_groups on 2026-08-21, against the plan, and the plan's premise is recorded here as rejected. The proposal was to require a region phrase AND a neuro signal (numb / bladder / weakness / cant walk) before arming. Measured: 13 of those 25 second-group terms ARE the screen question's own answer — the question asks about saddle numbness and bladder or bowel changes. Gating on them turns a screen into a confirmation: it can only fire for a caller who has already volunteered the red flag, and the caller it is FOR is the one with a bad back and early saddle numbness they have not thought to mention. That is F-032 exactly (tests/regression/test_screen_cauda_lay_phrasing.py), a P1 missed-screen fix from Jules's 14-call sweep; the grouping reversed it and turned 29 existing tests red. Evidence did not support the change either: Layer 1 armed cauda on 2 corpus calls, both bare 'my back', both CORRECT under F-032. The real complaint — the bladder question is alarming for a caller who just wants a massage — is a TONE problem, and the fix is the routine-framing preamble, not lost recall. Additive keywords below are kept: they are a pure sensitivity gain.",
-        "trigger_keywords": ["lower back", "low back", "lumbar", "back pain", "back ache", "backache", "my back", "sore back", "bad back", "back is sore", "backs sore", "stiff back", "aching back", "hurt my back", "done my back", "dodgy back", "sore lower back", "put my back out", "back went", "sciatica", "sciatic", "leg pain", "pain down my leg", "down my leg", "slipped disc", "herniated disc", "bulging disc", "trapped nerve", "bladder", "bowel", "saddle", "incontinent", "wet myself", "wetting myself", "numb between my legs", "cant feel my legs", "losing feeling", "lost feeling", "loss of feeling", "legs giving way", "weakness in my legs"],
-        "screen_question": "There's one routine question I ask everyone before booking back pain — do you have any numbness around the saddle area between your legs, or any changes in your bladder or bowel control?",
-        "_reask_note": "The same clinical question WITHOUT its own lead-in, for the one case where it has to be asked twice (see STRANDED SCREEN in clinical_screening.py). Every screen_question opens with its own preamble, which collides with the re-ask lead: 'Sorry — I do need to check one thing before we go on. Before we look at the next step, can I ask...'. Clinical content is identical to screen_question; only the preamble is removed.",
-        "screen_reask_question": "Do you have any numbness around the saddle area between your legs, or any changes in your bladder or bowel control?",
-        "screen_probe_question": "Sorry to press — it's just an important one. Has there been any actual change in your bladder or bowel control, even a small one, or any numbness between your legs when you sit down?",
-        "red_flag_answer_keywords": ["numb", "can't feel", "cannot feel", "no feeling", "bladder", "bowel", "wet myself", "incontinent", "incontinence", "had an accident", "both legs", "saddle", "groin", "genital", "tingling in both", "pins and needles in both", "losing feeling", "lost feeling", "loss of feeling", "cant feel my legs", "legs giving way", "legs give way", "weakness in my legs", "numb in both", "cant control my bladder", "cant control my bowel", "cannot control my bladder", "cannot control my bowel", "trouble controlling my bladder", "trouble controlling my bowel", "losing control of my bladder", "wetting myself"],
-        "_decisive_note": "Volunteered UNPROMPTED, any ONE of these escalates without asking the screen question. The two-signal bar in _red_flag_hits is right for ordinary keywords ('my calf is painful and swollen' is a strain), but nobody mentions losing bladder control while describing a stiff back — and asking that caller to repeat it reads as not having listened. 2026-08-21 call CA4feeeec6f9077d4912eb7d2a7f1d6846: the caller opened with losing feeling in his legs AND trouble controlling his bladder, scored one signal, was asked back whether he had any bladder changes, and abandoned the call.",
-        "decisive_red_flags": ["bladder", "bowel", "incontinent", "incontinence", "wet myself", "saddle", "numb between my legs", "cant control my bladder", "cant control my bowel", "cannot control my bladder", "cannot control my bowel", "trouble controlling my bladder", "trouble controlling my bowel", "losing control of my bladder", "wetting myself"],
-        "escalation": "Those particular symptoms need checking urgently rather than waiting for a physio appointment — please contact NHS 111 now, or go straight to A&E if it's severe. I won't book you in just yet, but do call us back once you've been seen and we'll get you sorted."
-      },
-      {
-        "id": "dvt",
-        "label": "Calf (DVT)",
-        "presentation": "calf pain or swelling",
-        "_trigger_grouping_note": "NOT converted to trigger_all_groups on 2026-08-21, against the plan, for the same reason as cauda_equina and more starkly: 15 of the 16 proposed second-group terms (swollen, warm, red, surgery, flight, bed rest...) are verbatim the screen question's own answer. A calf DVT after a long flight presents as 'my calf has been hurting for a few days' — swelling is often subtle and callers do not volunteer it. Gating on the answer loses precisely that caller. And the over-screening cost here is near zero: 'is it swollen or warm, and have you had surgery or a long journey?' is a question any physio asks a calf presentation. It is not alarming the way the bladder question is. Bare 'calf' arming a DVT screen is the safe direction and stays.",
-        "trigger_keywords": ["calf", "calf pain", "calf swelling", "swollen calf", "leg is swollen", "swollen leg", "back of my leg swollen", "swollen warm", "warm swollen", "swollen red", "red swollen", "swollen hot", "hot swollen", "warm red", "red warm"],
-        "screen_question": "One routine question I ask before booking this in — is the area swollen, warm or red compared with the other side, and have you had any recent surgery, illness, or a long journey sitting still?",
-        "screen_reask_question": "Is the area swollen, warm or red compared with the other side, and have you had any recent surgery, illness, or a long journey sitting still?",
-        "screen_probe_question": "Let me narrow that down — comparing one side with the other right now, is there any visible swelling, or does it feel warmer to the touch?",
-        "red_flag_answer_keywords": ["swollen", "warm", "hot", "red", "surgery", "operation", "flight", "long drive", "long journey", "bed rest", "immobile", "can't walk on it"],
-        "_escalation_note": "MARK_REVIEW: was 'A swollen, warm calf like that should be checked...'. On the 2026-07-24 21:55 call the caller had just said the calf was NOT swollen, and Susie escalated while asserting it was — the caller heard a symptom attributed to them that they had denied. This is the only one of the six screens that asserted a symptom as fact; the other five already use non-asserting deixis ('Those particular symptoms', 'those signs', 'That pattern of stiffness'), so this now matches them. Clinical content is unchanged: urgency, rule out a clot, NHS 111, A&E if severe, do not massage, call back. 2026-07-27 (second pass): that fix removed the SYMPTOM assertion but left the BODY-PART one — 'Calf symptoms like that'. On live call CA7c945058 the caller said 'my LEG's been swollen and warm' and heard 'Calf symptoms like that'. 29e3f9b had just generalised the trigger to the symptom combination so the screen now arms on any limb, making the mismatch routine rather than rare. Escalation opener -> 'Symptoms like that'; screen_question 'is the calf swollen' -> 'is the area swollen'. Clinical content again unchanged. Pinned by tests/regression/test_screen_wording_no_body_part_assertion.py, which also guards the other five.",
-        "escalation": "Symptoms like that need checking urgently to rule out a clot rather than booking a physio or massage — please contact NHS 111 now, or A&E if it's severe, and please don't have it massaged until you've been checked. Call us back once you've been seen."
-      },
-      {
-        "id": "serious_spinal",
-        "label": "Back pain with systemic features",
-        "presentation": "back pain alongside systemic red flags",
-        "trigger_keywords": ["night pain", "pain at night", "can't sleep for the pain", "weight loss", "losing weight", "history of cancer", "had cancer", "fever", "night sweats", "feeling generally unwell"],
-        "screen_question": "One more routine question, and it helps me point you the right way — alongside the pain, have you had any unexplained weight loss, fevers or night sweats, or a history of cancer?",
-        "screen_reask_question": "Alongside the pain, have you had any unexplained weight loss, fevers or night sweats, or a history of cancer?",
-        "screen_probe_question": "Just so I'm clear on that one — have you lost weight without trying to, or had fevers or night sweats that woke you up?",
-        "red_flag_answer_keywords": ["weight loss", "losing weight", "lost weight", "cancer", "fever", "night sweats", "sweating at night", "temperature"],
-        "_decisive_note": "Volunteered UNPROMPTED, any ONE of these escalates without asking the screen question. The two-signal bar in _red_flag_hits is right for ordinary keywords ('my calf is painful and swollen' is a strain), but nobody mentions losing bladder control while describing a stiff back — and asking that caller to repeat it reads as not having listened. 2026-08-21 call CA4feeeec6f9077d4912eb7d2a7f1d6846: the caller opened with losing feeling in his legs AND trouble controlling his bladder, scored one signal, was asked back whether he had any bladder changes, and abandoned the call.",
-        "decisive_red_flags": ["history of cancer", "had cancer"],
-        "escalation": "Because of those signs it's best your GP reviews this before we start physio — please book in with your GP, or contact NHS 111 if you're unsure. Once you've been checked we'll be very happy to help with your rehab."
-      },
-      {
-        "id": "trauma_fracture",
-        "label": "Significant injury (fracture)",
-        "presentation": "an injury following a fall, impact or accident",
-        "_trigger_keywords_note": "The second row was added 2026-07-26 after the sweep: a caller said 'i've done my ankle went over on sunday playing football' and the screen did not arm — the list only covered falls, collisions and audible cracks, not the commonest mechanisms of all (going over on it, rolling, twisting, spraining). All seven mechanism phrasings we tested missed. Phrases are deliberately tight: _phrase_in tolerates 3 filler words, so a loose 'rolled my' matches 'rolled over in my sleep' and a bare 'went over' matches 'went over the details with my gp'. Both were measured as false fires and rejected. Keep new entries specific enough to survive that gap window.",
-        "trigger_keywords": ["fell", "had a fall", "fallen", "i fell off", "came off my bike", "came off his bike", "came off her bike", "car accident", "car crash", "crashed", "collision", "landed badly", "landed on", "bad tackle", "heard a crack", "heard a snap", "can't put weight", "cannot put weight", "can't put any weight", "can't walk on it",
-          "went over on", "gone over on", "turned my ankle", "sprained", "rolled my ankle", "rolled my knee", "rolled my wrist", "twisted my ankle", "twisted my knee", "twisted my wrist", "twisted my shoulder", "done my ankle", "done my knee", "done my wrist", "done my shoulder"],
-        "_trigger_all_groups_note": "B-86, 2026-08-24. The keyword list above is 35 CONTIGUOUS 'VERB my BODYPART' literals. Callers do not talk like that — they say 'rolled IT' having already named the ankle, or 'hurt my ankle' with a verb the list never carried. Replayed over 543 stored jv_v1 calls: 13 described an injury, 11 armed nothing. These groups decompose the bigram into mechanism AND body part, which is why 'it' is a legitimate body-part member — it can only ever fire alongside a mechanism verb. The keyword list above is UNCHANGED and the two forms are OR-ed, so nothing that arms today stops arming: 'came off my bike', 'bad tackle' and 'crashed' have no body part to pair with and survive only as keywords. Measured: trauma arms 1 -> 8, all 7 new arms genuine injuries ('i just twisted it', 'i slipped one time', 'i've hurt my ankle', 'rolled it yesterday at the gym'), 0 arms lost, 0 calls switched screen, no other screen's count moved. Verbs are ACUTE-INJURY ONLY: bare 'hurt' / 'hurting' / 'sore' were tested and REJECTED — they armed on 'my neck's been hurting a bit recently' and 'my left ankle's a little bit sore', which is the B-20 over-screening failure. 'hurt my' as a phrase is in; bare 'hurt' is out. A rolling window over several utterances was also tested and added ZERO arms over a single utterance, so no engine change was made. || THREE THINGS THAT LOOK LIKE EASY WINS AND ARE NOT, all measured: (1) 'it' in the body-part group catches the commonest phrasing of all ('i just twisted it') and is FORBIDDEN — 'it' appears in this screen's own question ('is it too painful to use it'), so the screen could arm off its own question, which makes it a confirmation of a red flag the caller already volunteered rather than a screen. test_a_screen_never_gates_on_its_own_answer.py catches it. (2) bare 'rolled' / 'turned' / 'twisted' / 'went over' false-fire — _phrase_in tolerates 3 filler words, so 'rolled my' reaches into 'i rolled over in MY sleep and my neck is stiff' and 'turned my' into 'i TURNED up late and MY knee was fine'. The verb+object forms ('rolled my ankle', 'turned my ankle') are already in trigger_keywords above, so the group does not need them. (3) replacing trigger_keywords with these groups drops 'came off my bike', 'bad tackle' and 'crashed', which have no body part to pair with. Validated against 7 real corpus injuries, 19 benign/adversarial phrasings and the existing trigger tests: 6 of 7 armed, 0 false fires, 0 existing arms lost. The 7th ('i just twisted it') is unreachable — STT wrote the body part as 'angles'.",
-        "trigger_all_groups": [
-          ["twisted it", "rolled it", "sprained", "fell", "fallen", "tripped", "slipped", "landed", "banged", "knocked", "did my", "done my", "hurt my", "injured"],
-          ["ankle", "foot", "knee", "shin", "calf", "leg", "wrist", "shoulder", "elbow", "hip", "thigh", "hand", "arm", "neck", "back"]],
-        "screen_question": "That sounds like a proper knock — can I quickly check, is it too painful to use it or put your weight through it, and is there any marked swelling, or does it look out of shape at all?",
-        "screen_reask_question": "Is it too painful to use it or put your weight through it, and is there any marked swelling, or does it look out of shape at all?",
-        "screen_probe_question": "Let me ask that a different way — is it too painful to put your full weight through it, or does it look at all out of shape or badly swollen?",
-        "_screen_question_note": "MARK_REVIEW: 'use it OR put weight through it' keeps the question right for BOTH upper and lower limb injuries — a wrist caller was asked the weight-bearing-only version on Call-2 (2026-07-20), which sounded wrong. POLARITY (2026-08-21): the first limb used to read 'are you able to use it or put weight through it', which inverted the screen. classify_screen_answer is single-polarity — an affirmative lead is red_flag and a negative is clear — so 'yes I can walk on it fine' escalated to A&E, and 'no, I can't put any weight on it at all' cleared and booked a possible fracture in for hands-on physio. Every screen question must be phrased so YES means CONCERNING; the other five already were. Pinned by tests/regression/test_a_screen_question_is_phrased_so_yes_means_concerning.py.",
-        "_trigger_grouping_note": "NOT converted to trigger_all_groups on 2026-08-21, deliberately, against the plan. The proposed grouping was mechanism AND severity — which would suppress the exact defect the row above was added to fix: 'i've done my ankle went over on sunday playing football' has a mechanism and no severity word, and a physio WOULD screen that caller for weight-bearing. Chronicity exclusion ('a month ago') was explicitly declined by the owner, so nothing distinguishes a fresh sprain from an old one here. The asymmetry decides it: over-triggering costs one appropriate-sounding question, under-triggering misses a fracture. Revisit only with evidence this screen actually over-fires in practice — it armed ZERO times in the corpus. || 2026-08-24: THIS DECISION STANDS and mechanism-AND-severity is still rejected. The groups added below are NOT that proposal — they are mechanism AND BODY PART, which runs the opposite way: severity NARROWS (a second bar the caller must clear, suppressing arms) whereas body part WIDENS (it decomposes a contiguous bigram the caller never says). This note's own precondition is what licensed the change: it asked for evidence about how often the screen fires, and the measured answer was that it UNDER-fires — 1 arm in 543 calls against 13 injury presentations. Arms went 1 -> 8 with none lost. If you are here because you want to add a severity or chronicity group, the answer above is still no.",
-        "red_flag_answer_keywords": ["can't put weight", "cannot put weight", "can't walk", "cannot walk", "can't put any weight", "cannot put any weight", "can't stand on it", "cannot stand on it", "too painful to", "swollen up", "swelled up", "won't take my weight", "can't use it", "cannot use it", "can't move it", "cannot move it", "can't grip", "cannot grip", "can't really grip", "can't hold anything", "grip anything", "grip has gone", "grip's gone", "out of shape", "deformed", "misshapen", "wrong angle", "swelled straight away", "swollen straight away", "swelled up straight away", "massive swelling", "huge swelling", "heard a crack", "heard a snap", "numb below"],
-        "_decisive_note": "Volunteered UNPROMPTED, any ONE of these escalates without asking the screen question. The two-signal bar in _red_flag_hits is right for ordinary keywords ('my calf is painful and swollen' is a strain), but nobody mentions losing bladder control while describing a stiff back — and asking that caller to repeat it reads as not having listened. 2026-08-21 call CA4feeeec6f9077d4912eb7d2a7f1d6846: the caller opened with losing feeling in his legs AND trouble controlling his bladder, scored one signal, was asked back whether he had any bladder changes, and abandoned the call.",
-        "decisive_red_flags": ["deformed", "misshapen", "out of shape", "wrong angle", "heard a crack", "heard a snap"],
-        "escalation": "With an injury like that it's important to rule out a fracture before we do anything hands-on — please get it looked at today, at A&E or an urgent treatment centre for an X-ray. Once you've been checked and cleared, call us back and Marcus will look after the rehab side."
-      },
-      {
-        "id": "vbi_neck",
-        "label": "Neck with neuro/vascular signs",
-        "presentation": "neck pain together with dizziness, blackouts, double vision, clumsy hands or unsteadiness",
-        "trigger_all_groups": [
-          ["neck", "whiplash"],
-          ["dizzy", "dizziness", "light-headed", "lightheaded", "blackout", "black out", "passed out briefly", "drop attack", "double vision", "clumsy", "dropping things", "unsteady", "off balance", "wobbly"]
-        ],
-        "_trigger_keywords_note": "The residual flat list, OR-ed with the groups above (_screen_triggered, 2026-08-21). vbi_neck is the one screen where the two-signal bar is right — neck pain AND a neuro sign IS the syndrome, and a plain stiff-neck caller should not be asked about blackouts. But the bar also means a caller who leads with the dangerous half is missed: 'I blacked out twice this week and I want to get my neck looked at' arms only because 'neck' happens to be there, and a caller who never says the word arms nothing at all. These six are decisive enough to be worth a screen on their own. Note the groups branch used to RETURN, so a screen carrying both keys silently ignored its keywords; vbi_neck is now the screen that proves it does not.",
-        "trigger_keywords": ["blackout", "black out", "blacked out", "drop attack", "double vision", "seeing double"],
-        "screen_question": "One routine check before I book any neck treatment — do you get dizziness, blackouts or double vision when you move your neck, or any new clumsiness in your hands or unsteadiness when you walk?",
-        "screen_reask_question": "Do you get dizziness, blackouts or double vision when you move your neck, or any new clumsiness in your hands or unsteadiness when you walk?",
-        "screen_probe_question": "Can I just narrow that down — when you actually turn your head, do you get any dizziness, blackouts or double vision at that moment?",
-        "red_flag_answer_keywords": ["blackout", "black out", "double vision", "drop attack", "dropping things", "clumsy", "unsteady", "off balance", "dizzy when i turn", "dizzy when i move", "wobbly when i walk"],
-        "_decisive_note": "Volunteered UNPROMPTED, any ONE of these escalates without asking the screen question. The two-signal bar in _red_flag_hits is right for ordinary keywords ('my calf is painful and swollen' is a strain), but nobody mentions losing bladder control while describing a stiff back — and asking that caller to repeat it reads as not having listened. 2026-08-21 call CA4feeeec6f9077d4912eb7d2a7f1d6846: the caller opened with losing feeling in his legs AND trouble controlling his bladder, scored one signal, was asked back whether he had any bladder changes, and abandoned the call.",
-        "decisive_red_flags": ["blackout", "black out", "double vision", "drop attack"],
-        "escalation": "Those symptoms alongside neck pain need a medical review before any hands-on neck treatment — please see your GP urgently or contact NHS 111 today. Once you've been checked, we'd be glad to help with the rehab side."
-      },
-      {
-        "id": "inflammatory",
-        "label": "Inflammatory joint pattern (advisory — does not block booking)",
-        "presentation": "prolonged morning stiffness or several swollen joints",
-        "block_booking": false,
-        "trigger_keywords": ["stiff in the morning", "stiff in the mornings", "morning stiffness", "stiff for an hour", "stiff for hours", "stiff when i wake", "both hands", "both wrists", "all my joints", "several joints", "multiple joints", "joints swell", "swollen joints", "joints are swollen"],
-        "screen_question": "Can I ask — is the stiffness at its worst first thing in the morning and lasting more than half an hour, and is it in several joints or on both sides?",
-        "screen_reask_question": "Is the stiffness at its worst first thing in the morning and lasting more than half an hour, and is it in several joints or on both sides?",
-        "screen_probe_question": "Just to pin that down — does the stiffness usually last more than half an hour after you get up in the morning?",
-        "red_flag_answer_keywords": ["over an hour", "more than an hour", "an hour or more", "over half an hour", "more than half an hour", "both sides", "both hands", "several joints", "all my joints", "multiple joints", "swollen", "hot joints", "red joints"],
-        "escalation": "That pattern of stiffness is worth your GP looking into alongside physio — it can point to inflammation that a simple blood test picks up. I can still get you booked in with Marcus, and I'd really recommend mentioning it to your GP as well. Shall we find you an appointment?"
-      }
-    ],
-    "emergency_red_flags": {
-      "_note": "Volunteered emergencies — the deterministic classifier returns emergency_response and offers transfer, without waiting for the model.",
-      "keywords": ["chest pain", "tight chest", "can't breathe", "cannot breathe", "struggling to breathe", "difficulty breathing", "face has dropped", "face dropped", "one side of my face", "slurred speech", "can't speak properly", "one side of my body", "numb down one side", "weak down one side", "sudden vision loss", "lost my vision", "passed out", "collapsed", "unconscious", "having a stroke", "heart attack"]
-    }
-  },
-  "faq": [
-    { "q": "Do I need a GP referral?", "a": "No — you can book directly with us without a referral. Just call or book online and we'll get you seen as soon as possible." },
-    { "q": "How do I access the clinic?", "a": "We're at Flexspace Bolton, Lythgoe House, Manchester Road, Bolton, BL3 2NZ. On arrival you'll be given the access code for the main entrance — use the top keypad, then come in and take a seat in the waiting area." },
-    { "q": "Is there parking?", "a": "Yes — there is free 24/7 on-site parking at Flexspace Bolton. No need to worry about finding a space or paying for parking." },
-    { "q": "Do you offer evening or weekend appointments?", "a": "Yes — we offer evening appointments on weekdays and Saturday morning slots. Contact us and we'll find a time that works for you." },
-    { "q": "How much does it cost?", "a": "An initial MSK assessment is £52 for 40 minutes. Follow-up sessions are £46 for 30 minutes. We are 10 to 20 percent more affordable than other local physiotherapy clinics. Full pricing is on our website." },
-    { "q": "Do you accept private health insurance?", "a": "Yes — we accept private healthcare referrals. I can get you booked in now, and Marcus will be in touch to take your insurer details and sort the rest." },
-    { "q": "Can you come to me?", "a": "Yes — we offer home visits across Bolton and the Greater Manchester area. A 60-minute combined assessment and treatment session at your home is £80. Please mention this when booking." },
-    { "q": "Can I have a remote appointment?", "a": "Yes — we offer video and phone consultations for £40 per session. These are available to patients anywhere in the UK or worldwide, and are ideal for follow-ups or if you can't make it in person." },
-    { "q": "What conditions do you treat?", "a": "We treat a wide range of musculoskeletal and neurological conditions — from back pain, neck pain, and sports injuries to multiple sclerosis, stroke rehabilitation, and vestibular conditions. If you're unsure whether we can help, give us a call and Marcus will advise you." },
-    { "q": "Who will I see?", "a": "All appointments are with Marcus, our Clinical Lead. Marcus has a Masters in Advanced Clinical Practice and a background in elite sport, the NHS, and private practice — you're in expert hands." },
-    { "q": "How do I book?", "a": "You can book online at our website, or give us a call and we'll sort it for you. We have evening and Saturday morning slots available." },
-    { "q": "What should I wear?", "a": "Wear comfortable, loose clothing that allows easy access to the area being treated. Marcus will let you know if anything specific is needed for your appointment." },
-    { "q": "Do you offer discounts?", "a": "Yes — we offer discounts for patients under 18 and students. Please mention this when booking." },
-    { "q": "Can I drive after my appointment?", "a": "In most cases yes, but Marcus will advise you depending on what treatment you've had." },
-    { "q": "What is your cancellation policy?", "a": "We require at least 24 hours notice to cancel or rearrange. Cancellations with less than 24 hours notice or no-shows may be charged the full session fee." },
-    { "q": "Should I eat before my appointment?", "a": "No special preparation needed — just eat as you normally would. For acupuncture, avoid a heavy meal immediately beforehand." },
-    { "q": "What happens at my first appointment?", "a": "Marcus will take a full history, assess your movement and strength, and put together a tailored treatment plan — the whole thing takes about 40 minutes for an MSK assessment." }
-  ],
-  "team_and_availability": {
-    "practitioners": [
-      {
-        "name": "Marcus",
-        "surname_note": "TBC — STT variant 'marcus smith' seen; confirm correct surname before go-live",
-        "title": "Clinical Lead & Physiotherapist",
-        "qualifications": "Masters in Advanced Clinical Practice, HCPC Registered (PH104377), CSP member",
-        "background": "Elite sport, private practice, NHS, clinical leadership and education. Former physiotherapist at Hull Kingston Rovers Rugby Club.",
-        "prescribing_qualified": true,
-        "prescribing_scope": "Acupuncture and corticosteroid injections",
-        "locations": ["bolton"],
-        "is_sole_practitioner": true,
-        "days_available": "Monday to Friday evenings, Saturday mornings — exact schedule TBC with Marcus",
-        "notes": "All appointments are with Marcus."
-      }
-    ],
-    "admin_staff": [],
-    "booking_notes": [
-      "Single practitioner — all appointments are with Marcus.",
-      "Appointments available in-clinic (Bolton), remotely (video/phone), and via home visit (Bolton and Greater Manchester).",
-      "Corticosteroid injections are coming soon — not yet bookable."
-    ]
-  },
-  "booking": {
-    "system": "Carepatron",
-    "booking_url": "book.carepatron.com/Joint-Venture-Physiotherapy/Marcus",
-    "booking_window_months": 2,
-    "preferred_handling": "Book directly into Carepatron where possible.",
-    "patient_notes_supported": "TBC — Carepatron supports clinical notes",
-    "sms_confirmation_on_booking": "TBC with Marcus",
-    "same_day_booking": "Yes — same-day booking available (subject to slot availability)",
-    "calendars_by_location": false,
-    "calendars_by_service": "TBC — confirm Carepatron appointment type structure with Marcus",
-    "never_autobook": [
-      "Corticosteroid injections (coming soon — not yet available)",
-      "Insurance referral appointments (if applicable — confirm with Marcus)"
-    ]
-  },
-  "treatment_guidance": {
-    "_note": "Domain knowledge that lets Susie recommend the RIGHT physio service with specific, informed insight instead of vague answers. Rendered by _render_treatment_knowledge. Non-diagnostic: guides treatment CHOICE, never diagnoses or promises a cure.",
-    "how_to_use": "When a caller asks 'which do I need', 'what's the difference', or describes what's bothering them, give a genuinely informed, specific recommendation — suggest the ONE best-fit option and briefly say why, then let them decide. NEVER say 'they're all good', 'they're basically the same', or defer a treatment-choice question to Marcus — helping the caller land on the right treatment is exactly what you're here for. Keep it warm and unhurried, never a sales pitch. Never diagnose, and never promise a cure or a set number of sessions.",
-    "philosophy": "Every plan is tailored. The first visit for a new problem is an assessment where Marcus examines what's going on, explains it in plain terms and agrees the right plan — so the caller never has to self-diagnose. Recommend confidently and specifically, but keep it human.",
-    "services": [
-      {
-        "name": "Initial Assessment (Musculoskeletal)",
-        "feel": "A thorough first appointment: Marcus examines the problem, explains what's going on and agrees a plan — treatment can often begin in the same session.",
-        "best_for": "any new muscle, joint, back or neck problem, injuries, or post-op recovery — and anyone who isn't sure what they need. The safe starting point."
-      },
-      {
-        "name": "Sports Massage",
-        "feel": "Targeted, often firm work focused on the muscle groups you load, with recovery and mobility techniques.",
-        "best_for": "active people — recovery from training, running, cycling, the gym or a sport, easing muscular tightness, and helping prevent injury."
-      },
-      {
-        "name": "Acupuncture",
-        "feel": "Fine needles used alongside or instead of hands-on physio to ease pain and muscular tension.",
-        "best_for": "persistent pain and muscular tension, usually as part of a wider treatment plan Marcus tailors."
-      },
-      {
-        "name": "Neurological Physiotherapy",
-        "feel": "Specialist rehab focused on movement, balance, strength and coordination for conditions affecting the nervous system.",
-        "best_for": "recovery and management after a stroke, or with conditions such as MS or Parkinson's that affect movement. Starts with a neuro initial assessment."
-      },
-      {
-        "name": "Outdoor Sports Rehabilitation",
-        "feel": "Functional, activity-based rehab in an outdoor setting using real-world movements.",
-        "best_for": "returning patients building back towards running, sport or outdoor activity with practical, functional exercises."
-      },
-      {
-        "name": "Virtual Appointment",
-        "feel": "A physio session by video — assessment, advice and a tailored exercise plan.",
-        "best_for": "advice, exercise progression and follow-ups, or anyone who can't get to the clinic but doesn't need hands-on treatment."
-      },
-      {
-        "name": "Home Visit",
-        "feel": "Assessment and treatment in the caller's own home.",
-        "best_for": "people who can't easily travel in — mobility issues, post-op, or the housebound."
-      }
-    ],
-    "recommendations": [
-      { "need": "A new problem, or genuinely unsure what they need", "book": "an Initial Assessment (Musculoskeletal)", "why": "It's where Marcus examines the problem, explains what's happening and agrees the right plan, so the caller never has to self-diagnose." },
-      { "need": "Muscular tightness, recovery from training or a sport, or injury prevention", "book": "a Sports Massage", "why": "It's targeted work on the muscles you load, to aid recovery and keep you moving well." },
-      { "need": "Building back to running, sport or outdoor activity (returning patient)", "book": "Outdoor Sports Rehabilitation", "why": "It's functional, activity-based rehab that rebuilds real-world movement for getting back to the thing you love." },
-      { "need": "A condition affecting the nervous system — after a stroke, or with MS or Parkinson's", "book": "a Neurological Physiotherapy assessment", "why": "It's specialist rehab focused on movement, balance and strength for neurological conditions." },
-      { "need": "Persistent pain or tension and open to needling", "book": "Acupuncture alongside a treatment plan", "why": "It can ease pain and muscular tension and is usually combined with the wider plan Marcus tailors." },
-      { "need": "Can't get to the clinic but doesn't need hands-on treatment", "book": "a Virtual Appointment", "why": "It's the same expert guidance and a tailored exercise plan by video, in their own time." },
-      { "need": "Can't travel in — mobility issues, post-op or housebound", "book": "a Home Visit", "why": "Marcus brings the assessment and treatment to them at home." }
-    ],
-    "if_unsure": "Default to the Initial Assessment (Musculoskeletal) as the safe starting point — it's where Marcus assesses the problem and agrees the plan. This never overrides a caller who names the service they want.",
-    "safety": "Anything acute or severe — sudden severe pain, numbness or loss of function, a recent serious injury, or anything medically unclear — should be assessed, not booked blindly, and a genuine emergency needs urgent medical care, not us. Never diagnose and never promise an outcome or a set number of sessions."
-  },
-  "services": [
-    {
-      "service_id": "msk_initial_assessment",
-      "name": "Initial Assessment (Musculoskeletal)",
-      "typical_duration_minutes": 40,
-      "for_patients": "New",
-      "description": "A thorough physiotherapy assessment of your musculoskeletal condition, leading to an accurate diagnosis and a personalised treatment plan. Marcus will take a full history, carry out a physical examination, and agree next steps with you.",
-      "pre_booking_notes": "Wear comfortable, loose clothing that allows easy access to the area being assessed.",
-      "pricing": {
-        "in_clinic_gbp": 52,
-        "remote_gbp": null,
-        "home_visit_gbp": 80
-      },
-      "available_as": ["in_clinic", "home_visit"]
-    },
-    {
-      "service_id": "msk_treatment_session",
-      "name": "MSK Treatment Session",
-      "typical_duration_minutes": 30,
-      "for_patients": "Returning",
-      "description": "A focused follow-up session to continue your rehabilitation, deliver hands-on manual therapy, and progress your exercise programme. Tailored to your current stage of recovery.",
-      "pre_booking_notes": "Wear comfortable clothing. Bring any relevant scan reports or GP letters if you have them.",
-      "pricing": {
-        "in_clinic_gbp": 46,
-        "remote_gbp": 40,
-        "home_visit_gbp": 80
-      },
-      "available_as": ["in_clinic", "remote", "home_visit"]
-    },
-    {
-      "service_id": "virtual_appointment",
-      "name": "Virtual Appointment",
-      "typical_duration_minutes": 30,
-      "for_patients": "Both",
-      "description": "A video or phone consultation with Marcus — ideal for those outside Bolton and Manchester, or for review appointments that do not require hands-on treatment. Available to patients anywhere in the UK or worldwide.",
-      "pre_booking_notes": "You will receive a video link by email before the appointment. Have a quiet space and, if possible, wear clothing that allows you to show the affected area.",
-      "pricing": {
-        "price_gbp": 40
-      },
-      "available_as": ["remote"]
-    },
-    {
-      "service_id": "acupuncture",
-      "name": "Acupuncture",
-      "typical_duration_minutes": 30,
-      "for_patients": "Both",
-      "description": "Safe, evidence-based treatment using fine sterile needles to relieve pain, reduce tension, improve circulation, and promote healing. Delivered by Marcus, who is qualified to provide acupuncture as part of a comprehensive treatment plan.",
-      "pre_booking_notes": "Wear loose clothing. Avoid heavy meals immediately before the session.",
-      "pricing": {
-        "in_clinic_gbp": 48,
-        "home_visit_gbp": 70,
-        "package": "6 in-clinic sessions for £250"
-      },
-      "available_as": ["in_clinic", "home_visit"]
-    },
-    {
-      "service_id": "sports_massage",
-      "name": "Sports Massage",
-      "typical_duration_minutes_options": [30, 60],
-      "for_patients": "Both",
-      "description": "Specialist hands-on massage techniques to alleviate muscle tension, improve flexibility, support injury recovery, and enhance athletic performance. Tailored to your specific needs — whether you need deep tissue work, relaxation, or recovery support.",
-      "pre_booking_notes": "Wear or bring shorts or a vest if the lower body or back is being treated.",
-      "pricing": {
-        "30min_in_clinic_gbp": 40,
-        "60min_in_clinic_gbp": 55
-      },
-      "available_as": ["in_clinic"]
-    },
-    {
-      "service_id": "neuro_assessment",
-      "name": "Neurological Physiotherapy — Initial Assessment",
-      "typical_duration_minutes": 60,
-      "for_patients": "New",
-      "description": "Specialist physiotherapy for neurological conditions including multiple sclerosis, stroke, functional neurological disorder (FND), and vestibular conditions. Marcus will carry out a comprehensive assessment and develop a tailored rehabilitation programme to improve function, movement, and quality of life.",
-      "pre_booking_notes": "Wear comfortable clothing. Bring any relevant letters from consultants or neurologists if you have them.",
-      "pricing": {
-        "in_clinic_gbp": 80,
-        "remote_gbp": 70,
-        "home_visit_gbp": null,
-        "home_visit_gbp_note": "TBC — Marcus offers neuro as a home visit; confirm the home-visit price with Marcus before go-live. Kept null so Susie defers rather than quoting a wrong/placeholder price."
-      },
-      "available_as": ["in_clinic", "remote", "home_visit"]
-    },
-    {
-      "service_id": "neuro_followup",
-      "name": "Neurological Physiotherapy — Follow-up",
-      "typical_duration_minutes": 60,
-      "for_patients": "Returning",
-      "description": "Follow-up neurological physiotherapy session to continue your rehabilitation programme, reassess progress, and adjust interventions as needed.",
-      "pricing": {
-        "in_clinic_gbp": 65,
-        "remote_gbp": 60,
-        "home_visit_gbp": null,
-        "home_visit_gbp_note": "TBC — Marcus offers neuro as a home visit; confirm the home-visit price with Marcus before go-live. Kept null so Susie defers rather than quoting a wrong/placeholder price."
-      },
-      "available_as": ["in_clinic", "remote", "home_visit"]
-    },
-    {
-      "service_id": "outdoor_sports_rehab",
-      "name": "Outdoor Sports Rehabilitation",
-      "typical_duration_minutes": 45,
-      "for_patients": "Returning",
-      "description": "End-stage rehabilitation for sporting injuries, carried out outdoors with a focus on enhancing performance and safely returning to play. Ideal for athletes who are near full recovery and need sport-specific conditioning before returning to training or competition.",
-      "pre_booking_notes": "Wear appropriate outdoor sportswear and footwear for your sport.",
-      "pricing": {
-        "price_gbp": 55
-      },
-      "available_as": ["outdoor_bolton"]
-    },
-    {
-      "service_id": "home_visit",
-      "name": "Home Visit — Assessment & Treatment",
-      "typical_duration_minutes": 60,
-      "for_patients": "Both",
-      "description": "Full physiotherapy assessment and treatment delivered at your home. Perfect for patients who find it difficult to travel, or those who prefer the convenience of care at home. Available across Bolton and the Manchester region.",
-      "pre_booking_notes": "Ensure there is a clear space where Marcus can work — a firm chair or clear floor area is ideal.",
-      "pricing": {
-        "msk_gbp": 80,
-        "acupuncture_gbp": 70,
-        "travel_surcharge_note": "Travel may apply for locations outside Bolton — confirm with Marcus"
-      },
-      "available_as": ["home_visit_bolton_and_greater_manchester"]
-    },
-    {
-      "service_id": "corticosteroid_injections",
-      "_status": "COMING SOON — do not book; take enquirer name and number for Marcus to follow up when available",
-      "name": "Corticosteroid Injections",
-      "available": false
-    }
-  ],
-  "pricing_and_policies": {
-    "competitor_positioning": "10-20% more affordable than other local physiotherapy clinics with no compromise on quality",
-    "u18_student_discount": "Available on request — mention when booking",
-    "payment_methods": ["card", "cash", "bank_transfer_by_prior_arrangement"],
-    "deposit_required": "TBC with Marcus",
-    "cancellation_policy": "Minimum 24 hours notice required",
-    "late_cancellation_fee": "100% of appointment fee (less than 24 hours notice)",
-    "no_show_fee": "100% of appointment fee",
-    "late_arrival_policy": "If more than 15 minutes late, session may not proceed but full charge may still apply",
-    "returning_patient_definition": "Same condition = returning patient. New or unrelated condition = new assessment recommended.",
-    "chaperone": "Patients may bring a friend or family member to any appointment",
-    "minimum_age": "No minimum age — discounts available for under 18",
-    "gp_referral_required": false,
-    "reports_and_letters": "TBC with Marcus"
-  },
-  "insurance": {
-    "model": "Self-pay with private health insurance accepted",
-    "bupa_accepted": true,
-    "other_insurers_accepted": true,
-    "protocol": "Option B handling: confirm referrals accepted, book the appointment normally, note the insurer NAME only, tell the caller Marcus will be in touch to collect the rest of the insurance details, and pass a followup_note to book_appointment so Marcus is pinged. Never take a pre-auth/membership/policy code by phone; never confirm cover.",
-    "what_ai_should_do": [
-      "Confirm we accept private health insurance referrals — never turn the caller away.",
-      "Book the appointment normally so the slot is secured.",
-      "Note the insurer's NAME only — exactly what the caller said; do NOT add insurers they didn't mention.",
-      "Do NOT ask for or take a pre-authorisation, membership or policy code over the phone, and do NOT say cover is confirmed or 'all good'.",
-      "Tell the caller: 'Okay, that's noted — Marcus will be in touch to collect the rest of your insurance details.'",
-      "When booking, pass a followup_note to book_appointment summarising it, e.g. followup_note='INSURANCE: Aviva — wants to use private insurance; collect pre-auth and confirm cover'. Marcus is pinged automatically."
-    ]
-  },
-  "call_handling": {
-    "transfer_to_human_triggers": [
-      "Caller requests to speak to Marcus directly",
-      "Complex clinical question the AI cannot safely answer",
-      "Caller is distressed or in crisis",
-      "Corticosteroid injection enquiry (coming soon — take details only)",
-      "Three understanding failures or two failed lookups"
-    ],
-    "emergency_message": "If you are experiencing a medical emergency, please hang up and call 999 immediately, or go to your nearest A&E.",
-    "if_cant_answer": "Acknowledge the question, explain Marcus will be in touch, and offer to take the caller's name and number for a callback.",
-    "if_all_slots_full": "Take caller's name, number, and preferred times — offer to add them to the waiting list and confirm Marcus will follow up.",
-    "after_hours": "Take a message with name, number, and reason for calling. Confirm Marcus will call back during the next available business hours.",
-    "who_handles_followups": "Marcus",
-    "ai_must_never_answer": [
-      "Clinical diagnosis",
-      "Whether a specific condition is safe to treat without assessment",
-      "Specific medication advice",
-      "Prognosis or recovery timescales (beyond general guidance)"
-    ]
-  },
-  "brand_and_tone": {
-    "tagline": "Your Recovery Is Our Joint Venture",
-    "care_philosophy": "Personalised expert care for every patient — in-clinic, at home, or online. Flexible appointments, a broad range of treatments, and prices 10-20% below local competitors.",
-    "tone_words": ["Professional", "Approachable", "Affordable"],
-    "ai_persona_name": "Susie",
-    "ai_voice_type": "Warm, confident, Northern British tone",
-    "lead_practitioner": "Marcus",
-    "phrases_never_use": ["cheap", "budget", "basic", "we can't help with that"],
-    "phrases_use_freely": ["personalised", "tailored", "flexible", "affordable", "expert", "recovery", "in your own time", "wherever suits you"]
-  },
-  "stt_variants": {
-    "clinic_name": [
-      "joint venture physio",
-      "joint venture",
-      "JV physio",
-      "JV physiotherapy",
-      "joint vencher physio",
-      "joint venture fizzy-oh"
-    ],
-    "bolton": [
-      "bolten",
-      "boltan",
-      "bol-ton",
-      "bolton greater manchester"
-    ],
-    "marcus": [
-      "markus",
-      "the physio"
-    ],
-    "services": {
-      "acupuncture": ["acupunture", "acu-puncture"],
-      "neurological": ["neurological", "neuro", "nerve condition"],
-      "carepatron": ["care patron", "cair patron"],
-      "msk": ["em ess kay", "musculoskeletal"],
-      "flexspace": ["flex space", "fleck space", "flecks space"]
-    }
-  },
-  "reporting": {
-    "google_sheets_call_summaries": "TBC",
-    "missed_call_tracking": "TBC",
-    "notifications_for_manual_followups": "TBC"
+ "_notes": "MARK_REVIEW: Items tagged TBC must be confirmed with Marcus before go-live. Search for 'TBC' to find every gap.",
+ "clinic_id": "jv_v1",
+ "clinic_name": "Joint Venture Physiotherapy",
+ "brand_names": [
+  "Joint Venture Physiotherapy",
+  "Joint Venture Physio",
+  "JV Physiotherapy",
+  "JV Physio"
+ ],
+ "primary_phone": "+44 7367 002651",
+ "contact_email": "Jointventurephysiotherapy@gmail.com",
+ "websites": [
+  "https://jointventurephysiotherapy.co.uk"
+ ],
+ "sms_fees_note": "Assessment: £52 (40 mins), card payments taken.\nCancellations with less than 24hrs notice are charged the full appointment fee.\n\n",
+ "sms_assessment_price": "£52",
+ "sms_assessment_duration": "40",
+ "hours_summary": "evenings Mon–Fri and Saturday mornings",
+ "practitioner": "Marcus",
+ "company_number": "TBC",
+ "locations": [
+  {
+   "location_id": "bolton",
+   "name": "Flexspace Bolton",
+   "address_full": "Flexspace Bolton (Lythgoe House), Manchester Road, Bolton, BL3 2NZ",
+   "postcode": "BL3 2NZ",
+   "access_instructions": "Patients are given an access code for the main entrance. Use the top keypad to enter the code, then take a seat in the waiting area.",
+   "parking": "Free 24/7 on-site parking",
+   "wheelchair_accessible": true,
+   "serves_areas": [
+    "Bolton",
+    "Walkden",
+    "Worsley",
+    "Salford",
+    "Greater Manchester"
+   ],
+   "nearest_city": "Bolton (20-25 minutes from Manchester by car)",
+   "road_access": "Manchester Road (A6), Bolton town centre"
   }
+ ],
+ "opening_hours": {
+  "bolton": {
+   "_note": "Confirmed with Marcus 2026-06-23. Times are OPEN and LAST APPOINTMENT (last appt is bookable). Evenings Mon-Fri, Saturday mornings.",
+   "monday": {
+    "open": "16:30",
+    "last_appointment": "20:30",
+    "note": "Evening appointments"
+   },
+   "tuesday": {
+    "open": "17:00",
+    "last_appointment": "20:30",
+    "note": "Evening appointments"
+   },
+   "wednesday": {
+    "open": "17:30",
+    "last_appointment": "20:30",
+    "note": "Evening appointments"
+   },
+   "thursday": {
+    "open": "16:30",
+    "last_appointment": "20:30",
+    "note": "Evening appointments"
+   },
+   "friday": {
+    "open": "16:30",
+    "last_appointment": "19:30",
+    "note": "Evening appointments"
+   },
+   "saturday": {
+    "open": "09:30",
+    "last_appointment": "13:30",
+    "note": "Saturday mornings"
+   },
+   "sunday": "Closed"
+  },
+  "last_appointment": "8:30pm weekday evenings (Friday 7:30pm), 1:30pm Saturday",
+  "bank_holidays": "TBC — varies by week, confirm with Marcus"
+ },
+ "operational": {
+  "_note": "Flattened by get_clinic into the legacy clinic contract. working_hours end = last_appointment + slot_minutes so the last slot stays bookable (is_within_working_hours uses start <= t < end).",
+  "timezone": "Europe/London",
+  "sms_name": "Joint Venture Physiotherapy",
+  "sms_appointment_noun": "physiotherapy",
+  "phone": "+44 7367 002651",
+  "transfer_phone": "+447586605462",
+  "_call_overflow_note": "Human-first overflow: an inbound call rings Marcus's own phone (dial_phone) FIRST; he presses 1 to take it, otherwise (no answer / voicemail / any other key) the call falls through to Susie as a full receptionist after ~ring_timeout seconds. Set enabled=true to activate — brief Marcus to press 1 first. `enabled` here is only the DEFAULT, and editing it is NOT instant: get_clinic() reads this file through an mtime-keyed cache, so a change is a commit plus a Render redeploy. The instant switch is the SMS toggle — the clinic texts OFF (or SUSIE OFF / FRONT DESK) to the Susie line to ring the practitioner first, ON to revert, STATUS to read it back. That override lives in Redis, beats this default, and expires at the next London midnight — see app/clinic_call_mode.py. JV-only; no other clinic has this block.",
+  "call_overflow": {
+   "enabled": false,
+   "dial_phone": "+447586605462",
+   "_ring_timeout_note": "Seconds the practitioner's phone rings before the call falls through to Susie. The caller hears ringback, not dead air, but this is time before anyone speaks — 12 is deliberate, do not raise it back to 20.",
+   "ring_timeout": 12,
+   "_whisper_with_caller_note": "Spoken to the practitioner when the caller ID can be paced confidently (UK 0-form, 10-11 digits, not withheld). {caller} is substituted with the spoken number; remove the placeholder to stop announcing callers on this clinic without a deploy. Falls back to whisper_text for withheld or non-UK numbers. Substitution is a literal .replace, so braces other than {caller} are safe.",
+   "whisper_text_with_caller": "Business call, from {caller}. Press 1 to take it, or hang up and Susie will handle it.",
+   "whisper_text": "Business call from your Susie line. Press 1 to take it, or hang up and Susie will handle it.",
+   "greeting": "Hi there, I'm Susie, Joint Venture Physiotherapy's AI receptionist — Marcus isn't free to take your call right now, but I can help. How can I help you today?"
+  },
+  "owner_notification_sms": "+447586605462",
+  "_owner_notify_note": "Marcus's mobile — receives an SMS ping when an insurance booking is made so he can follow up to collect pre-auth/cover details.",
+  "booking_system": "google_calendar",
+  "_calendar_id_note": "JV GO-LIVE calendar = the JV account's own primary calendar, the ONLY one Carepatron syncs both ways. Do not split Susie's calendar from Carepatron's again: on 2026-08-11 that split caused a REAL DOUBLE-BOOKING, because freebusy() queries a single calendar id and Marcus's Carepatron appointments were invisible. Set on canonical 2026-08-29, replacing the 63bc844e... 'Susie Demo' repoint. That repoint existed because eval calls on this branch reached jv_v1; since 1885b86b the test line +447366263180 resolves to `northgate`, which is the demo tenant now, so jv_v1 is no longer reachable here by phone. tests/tenancy pins both halves of that: this value, and that the auto-suite's default number never resolves to a live patient clinic. Access: owned by jointventurephysiotherapy@gmail.com and shared with quentinroch10@gmail.com ('Make changes and see all event details'), which is what google_tokens for clinic_id=jv_v1 is OAuthed as — no re-authorisation needed. Verify with /auth/google/status?clinic_id=jv_v1. NOTE: DEFAULT_CALENDAR_ID in Render does NOTHING while this key has a value — _resolve_calendar_id reads clinic.json first.",
+  "calendar_id": "jointventurephysiotherapy@gmail.com",
+  "_digest_note": "End-of-day email of the day's calendar bookings so the agency enters them into Carepatron. Set email_to (or env DIGEST_EMAIL_TO) before go-live; sends once daily at hour:minute London. Requires SMTP_* env + google_tokens connected.",
+  "digest": {
+   "enabled": true,
+   "email_to": "",
+   "hour": 21,
+   "minute": 30
+  },
+  "_owner_alerts_note": "Real-time SMS heads-up to Marcus the moment a call books (sent BEFORE the patient confirmation), a booking needs manual entry, or an existing appointment is cancelled/rescheduled. phone falls back to transfer_phone if blank. Transfer/distress callers are already alerted via the transfer_to_human path.",
+  "owner_alerts": {
+   "enabled": true,
+   "phone": "+447586605462",
+   "events": [
+    "booking",
+    "manual_followup",
+    "cancellation",
+    "reschedule"
+   ]
+  },
+  "slot_minutes": 40,
+  "_slot_break_note": "Each service is offered at its own length (services[].typical_duration_minutes) plus a 5-min break between appointments. Slots anchor to each day's opening time; the break is spacing only and is never added to the calendar event.",
+  "slot_break_minutes": 5,
+  "days_ahead": 60,
+  "_same_day_note": "JV allows same-day booking (onboarding doc Section 6). Today's remaining future slots are offered; the slot generator already excludes past times.",
+  "allow_same_day": true,
+  "primary_location": "bolton",
+  "working_hours": {
+   "mon": {
+    "open": "16:30",
+    "last_appointment": "20:30"
+   },
+   "tue": {
+    "open": "17:00",
+    "last_appointment": "20:30"
+   },
+   "wed": {
+    "open": "17:30",
+    "last_appointment": "20:30"
+   },
+   "thu": {
+    "open": "16:30",
+    "last_appointment": "20:30"
+   },
+   "fri": {
+    "open": "16:30",
+    "last_appointment": "19:30"
+   },
+   "sat": {
+    "open": "09:30",
+    "last_appointment": "13:30"
+   },
+   "sun": null
+  }
+ },
+ "prompt_engine": "template_v1",
+ "_modality_note": "Deliberately NO modality gate/question (bd68460, 2026-07-07): every appointment defaults to in-clinic; remote is strictly opt-in when the caller explicitly asks. The multi-entry 'modalities' list below is what selects the default-in-clinic MODALITY RULE in clinic_template_prompt._render_modality_rule — do not shrink it to one entry, and do not re-add prompt_mode/modality_session_keys/modality_question (removed 2026-07-19 as dead keys that misled a call review into reporting the missing question as a defect).",
+ "modalities": [
+  "in_clinic",
+  "remote"
+ ],
+ "modality_labels": {
+  "in_clinic": "in-clinic at Bolton",
+  "remote": "remote (video/phone)"
+ },
+ "prompt_facts": {
+  "identity_descriptor": "a private physiotherapy clinic based in Bolton",
+  "discipline": "physiotherapy",
+  "_reason_question_note": "Owner decision 2026-08-11: Joint Venture DOES ask what the appointment is for. Setting this key is the whole fix — it turns OFF Gate 5b-r for this clinic (turn_handler._clinic_asks_its_own_reason_question) and turns ON the once-only tightening. Without it the model asked, the gate deleted the sentence, no reason was ever collected, and book_appointment refused every booking on the A2 gate. Do NOT remove without reading that gate.",
+  "reason_question": "What's the appointment for?",
+  "_keep_pre_slot_speech_note": "Job 3c.3 / CAce1457d1: when true, empathy/physio lines streamed before check_availability are NOT dropped by _pre_slot_cancelled. Engine-wide suppress stays on for every other clinic — do not flip this without hearing a live call (caller may hear empathy then the hold clip then slots).",
+  "keep_pre_slot_speech": true,
+  "first_appt_noun": "assessment",
+  "home_visit_area": "Bolton and Greater Manchester",
+  "sole_practitioner": true,
+  "practitioner": "Marcus",
+  "practitioner_credentials": "Masters in Advanced Clinical Practice, HCPC Registered PH104377, CSP member. Former physiotherapist at Hull Kingston Rovers Rugby Club.",
+  "persona_tone": "Warm, confident, Northern British",
+  "persona_descriptor": "a warm, capable Northern British receptionist",
+  "persona_character": "You are warm, confident and genuinely approachable — a natural Northern warmth, nothing corporate, and people feel at ease within a sentence. You answer questions fully and in plain, clear language, then stop; you don't fill the silence with generic closers or booking pushes, and you trust the caller to lead — if they want to book, they'll say so. You're unhurried, attentive and never salesy. The clinic is friendly and great value, but you carry a quiet expertise — callers should feel they've reached somewhere that genuinely knows its craft. You know physiotherapy inside out — MSK and sports injuries, neuro rehab, acupuncture, and home and virtual care — and how each one helps. When a caller isn't sure what they need, you give a confident, specific recommendation and briefly say why, the way the front desk of a clinic that really knows its stuff would — never a vague 'they're all good', and never deferring every question to Marcus.",
+  "pricing_default_line": "Default to the in-clinic assessment fee (£52) for new patients asking 'how much is an appointment'.",
+  "default_price_summary": "An initial MSK assessment is £52 for 40 minutes. Follow-up sessions are £46 for 30 minutes. We are 10 to 20 percent more affordable than other local physiotherapy clinics. Full pricing is on our website.",
+  "tagline": "Your Recovery Is Our Joint Venture",
+  "competitor_positioning": "10-20% more affordable than other local physiotherapy clinics — a genuine differentiator. Reference it when appropriate, never apologise for pricing.",
+  "greeting": "Hi there, I'm Susie, Joint Venture Physiotherapy's AI receptionist — how can I help you today?",
+  "ai_self_response": "Yes, I'm an AI receptionist for Joint Venture Physiotherapy — I can answer questions and book appointments for you.",
+  "clinical_deflection_response": "That's one for Marcus to assess properly at your appointment.",
+  "emergency_response": "If you are experiencing a medical emergency, please hang up and call 999 immediately, or go to your nearest A&E.",
+  "booking_offer": "Would you like to book an assessment so Marcus can take a proper look?",
+  "hours_summary_spoken": "We offer evening appointments Monday to Friday and Saturday morning slots — let me check what's available for you.",
+  "closing_practitioner_line": "You're in good hands with Marcus."
+ },
+ "clinical_depth": "standard",
+ "_clinical_depth_note": "MARK_REVIEW: 'standard' = clinically fluent but NON-diagnostic (proactive red-flag screening + specific service guidance, never names a cause/prognosis). 'deep' = names likely cause, recovery timelines and safe self-care (theorem-v4 style). 'deep' raises clinical-liability exposure on a recorded line and MUST NOT run on a live number until Marcus reviews call behaviour and signs off in writing. Env var JV_CLINICAL_DEPTH overrides this (keep prod on 'standard').",
+ "treatment_guidance": {
+  "_note": "Domain knowledge that lets Susie recommend the RIGHT physio service with specific, informed insight instead of vague answers. Rendered by _render_treatment_knowledge. Non-diagnostic: guides treatment CHOICE, never diagnoses or promises a cure.",
+  "how_to_use": "When a caller asks 'which do I need', 'what's the difference', or describes what's bothering them, give a genuinely informed, specific recommendation — suggest the ONE best-fit option and briefly say why, then let them decide. NEVER say 'they're all good', 'they're basically the same', or defer a treatment-choice question to Marcus — helping the caller land on the right treatment is exactly what you're here for. Keep it warm and unhurried, never a sales pitch. Never diagnose, and never promise a cure or a set number of sessions.",
+  "philosophy": "Every plan is tailored. The first visit for a new problem is an assessment where Marcus examines what's going on, explains it in plain terms and agrees the right plan — so the caller never has to self-diagnose. Recommend confidently and specifically, but keep it human.",
+  "services": [
+   {
+    "name": "Initial Assessment (Musculoskeletal)",
+    "feel": "A thorough first appointment: Marcus examines the problem, explains what's going on and agrees a plan — treatment can often begin in the same session.",
+    "best_for": "any new muscle, joint, back or neck problem, injuries, or post-op recovery — and anyone who isn't sure what they need. The safe starting point."
+   },
+   {
+    "name": "Sports Massage",
+    "feel": "Targeted, often firm work focused on the muscle groups you load, with recovery and mobility techniques.",
+    "best_for": "active people — recovery from training, running, cycling, the gym or a sport, easing muscular tightness, and helping prevent injury."
+   },
+   {
+    "name": "Acupuncture",
+    "feel": "Fine needles used alongside or instead of hands-on physio to ease pain and muscular tension.",
+    "best_for": "persistent pain and muscular tension, usually as part of a wider treatment plan Marcus tailors."
+   },
+   {
+    "name": "Neurological Physiotherapy",
+    "feel": "Specialist rehab focused on movement, balance, strength and coordination for conditions affecting the nervous system.",
+    "best_for": "recovery and management after a stroke, or with conditions such as MS or Parkinson's that affect movement. Starts with a neuro initial assessment."
+   },
+   {
+    "name": "Outdoor Sports Rehabilitation",
+    "feel": "Functional, activity-based rehab in an outdoor setting using real-world movements.",
+    "best_for": "returning patients building back towards running, sport or outdoor activity with practical, functional exercises."
+   },
+   {
+    "name": "Virtual Appointment",
+    "feel": "A physio session by video — assessment, advice and a tailored exercise plan.",
+    "best_for": "advice, exercise progression and follow-ups, or anyone who can't get to the clinic but doesn't need hands-on treatment."
+   },
+   {
+    "name": "Home Visit",
+    "feel": "Assessment and treatment in the caller's own home.",
+    "best_for": "people who can't easily travel in — mobility issues, post-op, or the housebound."
+   }
+  ],
+  "recommendations": [
+   {
+    "need": "A new problem, or genuinely unsure what they need",
+    "book": "an Initial Assessment (Musculoskeletal)",
+    "why": "It's where Marcus examines the problem, explains what's happening and agrees the right plan, so the caller never has to self-diagnose."
+   },
+   {
+    "need": "Muscular tightness, recovery from training or a sport, or injury prevention",
+    "book": "a Sports Massage",
+    "why": "It's targeted work on the muscles you load, to aid recovery and keep you moving well."
+   },
+   {
+    "need": "Building back to running, sport or outdoor activity (returning patient)",
+    "book": "Outdoor Sports Rehabilitation",
+    "why": "It's functional, activity-based rehab that rebuilds real-world movement for getting back to the thing you love."
+   },
+   {
+    "need": "A condition affecting the nervous system — after a stroke, or with MS or Parkinson's",
+    "book": "a Neurological Physiotherapy assessment",
+    "why": "It's specialist rehab focused on movement, balance and strength for neurological conditions."
+   },
+   {
+    "need": "Persistent pain or tension and open to needling",
+    "book": "Acupuncture alongside a treatment plan",
+    "why": "It can ease pain and muscular tension and is usually combined with the wider plan Marcus tailors."
+   },
+   {
+    "need": "Can't get to the clinic but doesn't need hands-on treatment",
+    "book": "a Virtual Appointment",
+    "why": "It's the same expert guidance and a tailored exercise plan by video, in their own time."
+   },
+   {
+    "need": "Can't travel in — mobility issues, post-op or housebound",
+    "book": "a Home Visit",
+    "why": "Marcus brings the assessment and treatment to them at home."
+   }
+  ],
+  "if_unsure": "Default to the Initial Assessment (Musculoskeletal) as the safe starting point — it's where Marcus assesses the problem and agrees the plan. This never overrides a caller who names the service they want.",
+  "safety": "Anything acute or severe — sudden severe pain, numbness or loss of function, a recent serious injury, or anything medically unclear — should be assessed, not booked blindly, and a genuine emergency needs urgent medical care, not us. Never diagnose and never promise an outcome or a set number of sessions."
+ },
+ "condition_knowledge": {
+  "_note": "MARK_REVIEW: Per-condition clinical fluency, rendered by _render_condition_fluency. Each 'understanding' names the condition's HALLMARK features in spoken style so Susie demonstrates genuine comprehension — never a generic 'that's very common'. All content is educational about the condition in general; Susie never asserts the caller HAS it (clinical_depth=standard). 'pathway' is what Marcus specifically does for it; 'service' is the best-fit booking.",
+  "how_to_use": "When a caller names or describes a condition, find the matching entry and respond with PRECISE understanding: reflect one or two of its hallmark features in your own natural words, and mirror the caller's OWN details back (their sport, their job, how long it's been going on, what it's stopping them doing). Two or three sentences, warm and specific — never recite an entry like a leaflet, never open with a generic 'that's really common' on its own, and never tell the caller what they HAVE ('that kind of problem' / 'pain like that', not 'you have X'). Then give the pathway and offer the best-fit service. If a safety screen matches the presentation, the screen comes first.",
+  "conditions": [
+   {
+    "name": "Mechanical low back pain",
+    "keywords": [
+     "pulled my back",
+     "put my back out",
+     "back spasm",
+     "back went",
+     "lifted something",
+     "back ache",
+     "lower back"
+    ],
+    "understanding": "Pain that flares after lifting or an awkward movement, tightens up when you've been still, and eases as you get moving is the classic pattern — and it usually settles well with the right guidance rather than rest.",
+    "pathway": "Marcus assesses movement and strength to find what's driving it, treats hands-on, and gives you a plan so it settles and stays settled.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Sciatica / nerve-related leg pain",
+    "keywords": [
+     "sciatica",
+     "sciatic",
+     "pain down my leg",
+     "shooting down",
+     "leg pain from back",
+     "pins and needles in my leg",
+     "trapped nerve"
+    ],
+    "understanding": "When pain travels from the back down past the knee — sometimes with pins and needles or numbness — that points to a nerve being irritated, and staying gently on the move usually helps more than bed rest.",
+    "pathway": "Marcus works out where and why the nerve is irritated, settles it down, and builds a graded plan to get you moving confidently again.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Spinal stenosis pattern",
+    "keywords": [
+     "stenosis",
+     "legs get heavy when i walk",
+     "have to sit down when walking",
+     "better leaning forward",
+     "better on the trolley"
+    ],
+    "understanding": "Legs that get heavy or achy the further you walk, easing when you sit or lean forwards — over a shopping trolley is the giveaway — is a well-recognised pattern in the lower back.",
+    "pathway": "Marcus can assess it properly and build a programme that improves your walking tolerance and keeps you independent.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Disc-related back pain",
+    "keywords": [
+     "slipped disc",
+     "herniated disc",
+     "bulging disc",
+     "prolapsed disc",
+     "disc problem"
+    ],
+    "understanding": "Disc-related pain is often worse with sitting, bending or coughing, and the encouraging thing most people don't hear is that discs heal and symptoms usually settle well without surgery.",
+    "pathway": "Marcus will assess it, calm the acute phase down, and progress you through a staged rehab plan.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Neck strain / stiff neck",
+    "keywords": [
+     "stiff neck",
+     "neck pain",
+     "crick in my neck",
+     "can't turn my head",
+     "woke up with my neck"
+    ],
+    "understanding": "Waking up unable to turn one way, or a neck that's seized after a long day at a screen, is usually the joints and muscles guarding — painful, but very treatable.",
+    "pathway": "Marcus frees up the movement hands-on and addresses what set it off, whether that's posture, workload or sleep position.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Whiplash",
+    "keywords": [
+     "whiplash",
+     "rear-ended",
+     "rear ended",
+     "neck after car accident",
+     "neck after the crash"
+    ],
+    "understanding": "After a jolt like that the stiffness and headaches often don't peak until a day or two later, which catches people out — early, guided movement makes a real difference to how quickly it settles.",
+    "pathway": "Marcus assesses the neck properly, rules out anything that needs further review, and gets you on a graded recovery plan.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Cervicogenic headache",
+    "keywords": [
+     "headaches from my neck",
+     "headache starts in my neck",
+     "headache one side",
+     "tension headache",
+     "headaches every day"
+    ],
+    "understanding": "Headaches that start at the top of the neck and creep over one side of the head, worse with certain neck positions or long desk days, very often have the neck as the driver.",
+    "pathway": "Marcus assesses whether your neck is the source and treats the joints and muscles involved — many people see their headache frequency drop considerably.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Rotator-cuff-related shoulder pain",
+    "keywords": [
+     "rotator cuff",
+     "shoulder impingement",
+     "painful to lift my arm",
+     "shoulder pain reaching",
+     "can't lie on that side",
+     "shoulder pain overhead"
+    ],
+    "understanding": "A shoulder that catches in an arc as you lift the arm, hates reaching overhead or behind, and wakes you when you lie on it is the most common shoulder pattern we see — and it responds really well to progressive loading.",
+    "pathway": "Marcus assesses the cuff and shoulder blade control, settles the irritation, and builds the strength back so it stops recurring.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Frozen shoulder",
+    "keywords": [
+     "frozen shoulder",
+     "adhesive capsulitis",
+     "shoulder completely stuck",
+     "can't reach behind my back",
+     "shoulder getting stiffer"
+    ],
+    "understanding": "A shoulder that's progressively stiffened until reaching behind your back or overhead is nearly impossible — often worse at night — has a recognised course through freezing, frozen and thawing stages, and treatment is matched to the stage you're in.",
+    "pathway": "Marcus identifies the stage and works on pain relief and regaining movement at the right pace — pushing too hard too early is the classic mistake.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Tennis elbow",
+    "keywords": [
+     "tennis elbow",
+     "outside of my elbow",
+     "elbow hurts gripping",
+     "elbow hurts lifting the kettle"
+    ],
+    "understanding": "Pain on the outside of the elbow that bites when you grip, lift a kettle or use a mouse is a tendon that's been overloaded — you certainly don't need to play tennis to get it.",
+    "pathway": "Marcus settles the tendon and then loads it back up progressively, which is what the evidence shows actually resolves it; shockwave-style quick fixes without the loading tend not to last.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Golfer's elbow",
+    "keywords": [
+     "golfer's elbow",
+     "golfers elbow",
+     "inside of my elbow"
+    ],
+    "understanding": "Pain on the inside of the elbow with gripping and lifting is the mirror image of tennis elbow — the same tendon-overload story on the other side, with the same good response to graded loading.",
+    "pathway": "Marcus assesses what's overloading it and builds a progressive strengthening plan around your work or sport.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Carpal tunnel syndrome",
+    "keywords": [
+     "carpal tunnel",
+     "tingling in my fingers",
+     "numb fingers at night",
+     "shake my hand out",
+     "pins and needles in my hand"
+    ],
+    "understanding": "Tingling in the thumb and first couple of fingers, worst at night, that you shake your hand out to relieve is the classic pattern of the median nerve being compressed at the wrist.",
+    "pathway": "Marcus can assess how irritable the nerve is, work on the contributing factors, and advise honestly if it's at the point where a GP referral is the right route.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Hip osteoarthritis",
+    "keywords": [
+     "hip arthritis",
+     "hip osteoarthritis",
+     "groin pain",
+     "stiff hip",
+     "hard to put my socks on"
+    ],
+    "understanding": "A deep groin ache with a hip that's stiff after sitting — putting socks and shoes on getting awkward is the tell-tale sign — is typically the hip joint itself, and exercise is genuinely the first-line treatment, not just something to try.",
+    "pathway": "Marcus builds a strengthening programme that reduces pain and keeps you active — the evidence for it is excellent, including for people who eventually need a replacement.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Gluteal tendinopathy / lateral hip pain",
+    "keywords": [
+     "outside of my hip",
+     "hip hurts lying on it",
+     "trochanteric bursitis",
+     "hip hurts on stairs"
+    ],
+    "understanding": "Pain on the outside point of the hip that's worst lying on that side in bed or climbing stairs is usually the gluteal tendons complaining — very common, especially in women in mid-life, and very fixable.",
+    "pathway": "Marcus teaches you the positions that aggravate it, then strengthens the tendons progressively — the combination is what gets results.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Patellofemoral / front-of-knee pain",
+    "keywords": [
+     "runner's knee",
+     "runners knee",
+     "front of my knee",
+     "knee hurts on stairs",
+     "knee hurts sitting",
+     "kneecap pain"
+    ],
+    "understanding": "An ache around or behind the kneecap that's worse coming DOWN stairs and after long sitting — people call it the cinema sign — is the most common knee complaint in active people, and it's driven by load and control rather than damage.",
+    "pathway": "Marcus looks at how your hip, knee and foot share load, then rebuilds strength and control so the kneecap stops being overloaded.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Meniscal / cartilage knee pain",
+    "keywords": [
+     "meniscus",
+     "cartilage in my knee",
+     "knee clicking",
+     "knee locking",
+     "knee swelled the next day",
+     "twisted my knee"
+    ],
+    "understanding": "A knee that was twisted, swelled up over the next day, and now clicks, catches or occasionally locks points towards the cartilage — and most of these now do just as well with good rehab as with surgery.",
+    "pathway": "Marcus assesses it properly, settles the swelling, and rebuilds the strength and confidence in the knee — referring on if it genuinely needs a surgical opinion.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "ACL injury",
+    "keywords": [
+     "acl",
+     "cruciate",
+     "knee gave way",
+     "heard a pop in my knee",
+     "knee gives way"
+    ],
+    "understanding": "A pivot or awkward landing, a pop, swelling within hours, and a knee that's since felt untrustworthy is the classic cruciate story — and whether it's managed with rehab alone or surgery plus rehab, the rehab is what determines how well you come back.",
+    "pathway": "Marcus assesses the stability, guides the early phase, and runs the staged strength and return-to-sport work — with an honest steer if a surgical opinion is right for your goals.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Knee osteoarthritis",
+    "keywords": [
+     "knee arthritis",
+     "knee osteoarthritis",
+     "knees stiff in the morning",
+     "worn knee",
+     "bone on bone"
+    ],
+    "understanding": "Knees that stiffen after rest and grumble on stairs are extremely common, and even where an X-ray says 'wear and tear' — or someone's been told 'bone on bone' — strengthening reliably reduces pain and improves what you can do.",
+    "pathway": "Marcus builds a progressive strength plan around your life and goals; it's the first-line treatment in every major guideline, ahead of injections or surgery.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Achilles tendinopathy",
+    "keywords": [
+     "achilles",
+     "back of my heel",
+     "heel cord",
+     "stiff ankle first thing"
+    ],
+    "understanding": "An Achilles that's stiff and sore for the first few minutes in the morning, warms up as you move, then aches again after — usually with a tender thickened spot — is a tendon asking for a managed loading programme, not rest.",
+    "pathway": "Marcus calibrates your training load and runs a progressive calf-loading plan — that's what the evidence shows rebuilds the tendon.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Plantar fasciitis",
+    "keywords": [
+     "plantar fasciitis",
+     "plantar",
+     "heel pain",
+     "bottom of my foot",
+     "first steps in the morning"
+    ],
+    "understanding": "Sharp pain under the heel with the FIRST steps out of bed, easing as you get going then creeping back after a long day on your feet — that first-steps pattern is the hallmark, and it's one of the most treatable foot problems there is.",
+    "pathway": "Marcus works on the calf and foot loading, footwear and training habits together — that combination is what shifts it.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Shin splints",
+    "keywords": [
+     "shin splints",
+     "shins hurt when i run",
+     "pain up my shins"
+    ],
+    "understanding": "Aching along the inside edge of the shin that builds with running — especially after upping distance, changing shoes or moving to harder ground — is a bone and muscle overload story, and managing the load is the fix.",
+    "pathway": "Marcus looks at your training load, calf strength and running style, and builds a plan that gets you back running without the shins flaring.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Ankle sprain",
+    "keywords": [
+     "sprained ankle",
+     "twisted my ankle",
+     "rolled my ankle",
+     "went over on my ankle"
+    ],
+    "understanding": "A rolled ankle that swelled and bruised, and now feels wary on uneven ground, is more than a 'walk it off' injury — without proper rehab the ligament heals but the balance and control don't, which is why ankles re-sprain.",
+    "pathway": "Marcus settles it, restores the movement, then rebuilds the strength and balance so it doesn't become a repeat offender.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Stroke rehabilitation",
+    "keywords": [
+     "stroke",
+     "had a stroke",
+     "stroke rehab",
+     "after his stroke",
+     "after her stroke"
+    ],
+    "understanding": "Recovery after a stroke carries on far longer than people are often told — the brain keeps adapting with the right, repeated practice, so movement, balance and confidence can keep improving well past those early months.",
+    "pathway": "Marcus offers specialist neurological physiotherapy — a full assessment first, then a rehab programme built around the person's own goals, at home or in clinic.",
+    "service": "Neurological Physiotherapy — Initial Assessment"
+   },
+   {
+    "name": "Multiple sclerosis",
+    "keywords": [
+     "multiple sclerosis",
+     "ms physio",
+     "my ms",
+     "have ms"
+    ],
+    "understanding": "With MS the picture shifts — fatigue, strength and balance can vary week to week — so the right programme flexes with you rather than fighting you, and exercise is one of the best-evidenced things for staying on top of it.",
+    "pathway": "Marcus provides neurological physiotherapy tailored to how your MS behaves, focusing on strength, balance and energy management.",
+    "service": "Neurological Physiotherapy — Initial Assessment"
+   },
+   {
+    "name": "Parkinson's",
+    "keywords": [
+     "parkinson",
+     "parkinsons",
+     "parkinson's"
+    ],
+    "understanding": "With Parkinson's, movement tends to get smaller and quieter over time — and the encouraging evidence is that big-amplitude, effortful practice genuinely pushes back on that, for walking, balance and confidence.",
+    "pathway": "Marcus runs neurological physiotherapy focused on amplitude, balance and the specific things Parkinson's is making harder day to day.",
+    "service": "Neurological Physiotherapy — Initial Assessment"
+   },
+   {
+    "name": "Vestibular / BPPV dizziness",
+    "keywords": [
+     "vertigo",
+     "bppv",
+     "room spins",
+     "dizzy when i roll over",
+     "dizzy when i lie down",
+     "crystals in my ear"
+    ],
+    "understanding": "Short, intense bursts of the room spinning when you roll over in bed or look up usually point to the inner ear — BPPV — and the repositioning treatment for it is quick and remarkably effective, often within a session or two.",
+    "pathway": "Marcus assesses vestibular problems and treats BPPV with the appropriate repositioning manoeuvres, plus retraining if your balance system needs it.",
+    "service": "Neurological Physiotherapy — Initial Assessment"
+   },
+   {
+    "name": "Fibromyalgia / persistent widespread pain",
+    "keywords": [
+     "fibromyalgia",
+     "pain everywhere",
+     "chronic pain",
+     "years of pain",
+     "nothing has worked"
+    ],
+    "understanding": "When pain has been there for years, moves around, and flares after doing 'too much', the nervous system itself has usually become protective — so the approach that works is gentle, graded and paced, never push-through-the-pain.",
+    "pathway": "Marcus takes a graded, realistic approach — building activity in steps you can sustain, without the boom-and-bust cycle.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Post-operative rehabilitation",
+    "keywords": [
+     "knee replacement",
+     "hip replacement",
+     "after my operation",
+     "after surgery",
+     "post-op",
+     "rotator cuff repair",
+     "acl reconstruction"
+    ],
+    "understanding": "Recovery after an operation moves in stages — protect and settle, restore movement, rebuild strength, then return to what you love — and being guided through each stage at the right pace is what a good outcome depends on.",
+    "pathway": "Marcus works alongside your surgeon's protocol and takes you through each stage — it helps to bring any letters or guidance from the hospital.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Pregnancy-related pelvic girdle pain",
+    "keywords": [
+     "pregnant and my pelvis",
+     "pelvic girdle",
+     "spd",
+     "pubic pain pregnant",
+     "pregnancy back pain"
+    ],
+    "understanding": "Pain at the front or back of the pelvis in pregnancy — worst turning in bed, on stairs or standing on one leg to dress — is common but absolutely not something you just have to put up with.",
+    "pathway": "Marcus can assess it and provide safe, effective treatment and strategies through pregnancy.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "TMJ / jaw pain",
+    "keywords": [
+     "jaw pain",
+     "tmj",
+     "jaw clicking",
+     "jaw clicks",
+     "clenching",
+     "grinding my teeth",
+     "can't open my mouth"
+    ],
+    "understanding": "A jaw that clicks, aches around the ear or temple, and feels worse with chewing or in the morning after clenching overnight very often involves the jaw joint and its muscles — and it's frequently tangled up with neck tension too.",
+    "pathway": "Marcus assesses the jaw and neck together, since they so often drive each other, and treats the muscles and joint mechanics involved.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Desk-related / RSI arm and neck pain",
+    "keywords": [
+     "rsi",
+     "repetitive strain",
+     "pain from typing",
+     "mouse arm",
+     "desk all day",
+     "laptop all day",
+     "work from home setup",
+     "aching at my desk"
+    ],
+    "understanding": "Aching that builds through the working day — forearm or wrist with mouse and keyboard work, or neck and shoulders from long screen hours — is a load-and-posture story: the tissues aren't damaged so much as overloaded in one position for too many hours.",
+    "pathway": "Marcus treats the irritated tissues and, just as importantly, works through your setup, breaks and strength so the working week stops recreating the problem.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Migraine with neck involvement",
+    "keywords": [
+     "migraine",
+     "migraines",
+     "aura",
+     "light sensitivity headache"
+    ],
+    "understanding": "Migraine is its own neurological condition — often one-sided, throbbing, with sensitivity to light or nausea — and while physio doesn't treat migraine itself, the neck is a common trigger and amplifier, and treating it can reduce how often attacks are set off.",
+    "pathway": "Marcus assesses whether your neck is contributing and treats it if so, working alongside whatever your GP has prescribed — never instead of it.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Thoracic / rib pain",
+    "keywords": [
+     "upper back pain",
+     "between my shoulder blades",
+     "rib pain",
+     "pain when i take a deep breath",
+     "mid back"
+    ],
+    "understanding": "Pain between the shoulder blades or around the ribs — sometimes catching with a deep breath or a twist — usually comes from the joints where the ribs meet the spine, and it responds well to hands-on treatment and mobility work. Chest pain that comes with breathlessness or exertion is a different matter and gets urgent advice.",
+    "pathway": "Marcus assesses the thoracic spine and rib mechanics and frees up what's stiff, with posture and strength work to keep it moving.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Hamstring strain",
+    "keywords": [
+     "hamstring",
+     "pulled my hamstring",
+     "back of my thigh"
+    ],
+    "understanding": "A sudden grab or pull in the back of the thigh sprinting or stretching is the classic hamstring strain — and the reason they re-tear so often is that people return when it stops hurting, which is well before the strength has actually come back.",
+    "pathway": "Marcus grades it, rehabs it through progressive strengthening — especially at longer muscle lengths — and tests it properly before you return to sport.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Calf strain",
+    "keywords": [
+     "pulled my calf",
+     "calf went",
+     "felt it go in my calf",
+     "calf tear"
+    ],
+    "understanding": "A sudden sharp grab in the calf mid-push-off — like being hit from behind — is the typical calf tear story, and it rehabs really well with progressive loading once the early days are managed properly.",
+    "pathway": "Marcus grades the strain and takes you through staged calf loading back to full push-off strength.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Groin strain",
+    "keywords": [
+     "groin strain",
+     "pulled my groin",
+     "groin pain playing",
+     "adductor"
+    ],
+    "understanding": "Inner-thigh pain that bites with sprinting, twisting or kicking is typically the adductors being overloaded — very common in football and field sports, and one where targeted strengthening has excellent evidence.",
+    "pathway": "Marcus assesses whether it's muscular or something the hip is contributing to, then runs a progressive adductor strengthening plan back to sport.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Hypermobility",
+    "keywords": [
+     "hypermobile",
+     "hypermobility",
+     "double jointed",
+     "joints pop out",
+     "ehlers"
+    ],
+    "understanding": "When joints move further than they should, the muscles work overtime to provide the control the ligaments aren't — which is why hypermobile people often ache, fatigue and pick up niggles, and why strength and control work, not stretching, is the foundation of feeling better.",
+    "pathway": "Marcus builds a strength-and-control programme matched to how your joints behave, paced to avoid the flare-ups that put people off exercise.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Osteoporosis / bone health",
+    "keywords": [
+     "osteoporosis",
+     "osteopenia",
+     "thinning bones",
+     "bone density"
+    ],
+    "understanding": "With low bone density the right exercise genuinely matters — progressive resistance and impact work is one of the best-evidenced ways to protect bone and prevent the falls that cause fractures — so the answer is more of the right movement, not wrapping yourself in cotton wool.",
+    "pathway": "Marcus designs safe, progressive strength and balance work suited to your bone health, alongside whatever your GP is managing medically.",
+    "service": "Initial Assessment (MSK)"
+   },
+   {
+    "name": "Adolescent growth-plate pain (Osgood-Schlatter / Sever's)",
+    "keywords": [
+     "osgood",
+     "schlatter",
+     "sever's",
+     "severs",
+     "son's knee",
+     "daughter's knee",
+     "growing pains",
+     "heel pain playing football"
+    ],
+    "understanding": "In sporty teenagers, pain just below the kneecap or in the heel that flares with training and eases with rest is classically the growth plates being overloaded during a growth spurt — it's manageable, and it doesn't usually mean stopping sport altogether.",
+    "pathway": "Marcus balances their training load, works on flexibility and strength around the growing area, and keeps them in the sport they love wherever possible.",
+    "service": "Initial Assessment (MSK)"
+   }
+  ]
+ },
+ "clinical_screening": {
+  "_note": "MARK_REVIEW: CONDITIONAL UK MSK red-flag screening — a screen is asked only when the caller's described complaint IS that row's presentation (B-20, owner decision 2026-08-03; was 'proactive', which the model read as a checklist). Consumed by (a) _render_clinical_screening for the prompt and (b) app/media_streams/clinical_screening.py for the deterministic pre-LLM classifier + the book_appointment gate. Screening is safety-positive and non-diagnostic. Wording reviewed by Marcus before go-live.",
+  "enabled": true,
+  "how_to_use": "SAFETY SCREENING runs BEFORE booking WHEN IT APPLIES, and it applies ONLY when the caller's problem matches one of the screens below (CALL STATE flags the active screen as SCREEN REQUIRED). Most callers match no screen at all — for them there is nothing to ask and you go straight to booking. When one DOES match, acknowledge warmly, then ask that screen's question on its own as your single question that turn, and wait. If the answer is clearly no / none of those, reassure briefly ('that's reassuring') and carry on to booking as normal. If they answer yes to any part, do NOT book: give the screen's escalation calmly and offer to help once they've been seen. Ask a given screen only once per call, and never skip a screen that DOES apply in order to reach a booking faster.",
+  "screens": [
+   {
+    "id": "cauda_equina",
+    "label": "Lower back / leg (cauda equina)",
+    "presentation": "lower back, lumbar or leg / sciatica pain",
+    "_trigger_grouping_note": "NOT converted to trigger_all_groups on 2026-08-21, against the plan, and the plan's premise is recorded here as rejected. The proposal was to require a region phrase AND a neuro signal (numb / bladder / weakness / cant walk) before arming. Measured: 13 of those 25 second-group terms ARE the screen question's own answer — the question asks about saddle numbness and bladder or bowel changes. Gating on them turns a screen into a confirmation: it can only fire for a caller who has already volunteered the red flag, and the caller it is FOR is the one with a bad back and early saddle numbness they have not thought to mention. That is F-032 exactly (tests/regression/test_screen_cauda_lay_phrasing.py), a P1 missed-screen fix from Jules's 14-call sweep; the grouping reversed it and turned 29 existing tests red. Evidence did not support the change either: Layer 1 armed cauda on 2 corpus calls, both bare 'my back', both CORRECT under F-032. The real complaint — the bladder question is alarming for a caller who just wants a massage — is a TONE problem, and the fix is the routine-framing preamble, not lost recall. Additive keywords below are kept: they are a pure sensitivity gain.",
+    "trigger_keywords": [
+     "lower back",
+     "low back",
+     "lumbar",
+     "back pain",
+     "back ache",
+     "backache",
+     "my back",
+     "sore back",
+     "bad back",
+     "back is sore",
+     "backs sore",
+     "stiff back",
+     "aching back",
+     "hurt my back",
+     "done my back",
+     "dodgy back",
+     "sore lower back",
+     "put my back out",
+     "back went",
+     "sciatica",
+     "sciatic",
+     "leg pain",
+     "pain down my leg",
+     "down my leg",
+     "slipped disc",
+     "herniated disc",
+     "bulging disc",
+     "trapped nerve",
+     "bladder",
+     "bowel",
+     "saddle",
+     "incontinent",
+     "wet myself",
+     "wetting myself",
+     "numb between my legs",
+     "cant feel my legs",
+     "losing feeling",
+     "lost feeling",
+     "loss of feeling",
+     "legs giving way",
+     "weakness in my legs"
+    ],
+    "screen_question": "There's one routine question I ask everyone before booking back pain — do you have any numbness around the saddle area between your legs, or any changes in your bladder or bowel control?",
+    "_reask_note": "The same clinical question WITHOUT its own lead-in, for the one case where it has to be asked twice (see STRANDED SCREEN in clinical_screening.py). Every screen_question opens with its own preamble, which collides with the re-ask lead: 'Sorry — I do need to check one thing before we go on. Before we look at the next step, can I ask...'. Clinical content is identical to screen_question; only the preamble is removed.",
+    "screen_reask_question": "Do you have any numbness around the saddle area between your legs, or any changes in your bladder or bowel control?",
+    "screen_probe_question": "Sorry to press — it's just an important one. Has there been any actual change in your bladder or bowel control, even a small one, or any numbness between your legs when you sit down?",
+    "red_flag_answer_keywords": [
+     "numb",
+     "can't feel",
+     "cannot feel",
+     "no feeling",
+     "bladder",
+     "bowel",
+     "wet myself",
+     "incontinent",
+     "incontinence",
+     "had an accident",
+     "both legs",
+     "saddle",
+     "groin",
+     "genital",
+     "tingling in both",
+     "pins and needles in both",
+     "losing feeling",
+     "lost feeling",
+     "loss of feeling",
+     "cant feel my legs",
+     "legs giving way",
+     "legs give way",
+     "weakness in my legs",
+     "numb in both",
+     "cant control my bladder",
+     "cant control my bowel",
+     "cannot control my bladder",
+     "cannot control my bowel",
+     "trouble controlling my bladder",
+     "trouble controlling my bowel",
+     "losing control of my bladder",
+     "wetting myself"
+    ],
+    "_decisive_note": "Volunteered UNPROMPTED, any ONE of these escalates without asking the screen question. The two-signal bar in _red_flag_hits is right for ordinary keywords ('my calf is painful and swollen' is a strain), but nobody mentions losing bladder control while describing a stiff back — and asking that caller to repeat it reads as not having listened. 2026-08-21 call CA4feeeec6f9077d4912eb7d2a7f1d6846: the caller opened with losing feeling in his legs AND trouble controlling his bladder, scored one signal, was asked back whether he had any bladder changes, and abandoned the call.",
+    "decisive_red_flags": [
+     "bladder",
+     "bowel",
+     "incontinent",
+     "incontinence",
+     "wet myself",
+     "saddle",
+     "numb between my legs",
+     "cant control my bladder",
+     "cant control my bowel",
+     "cannot control my bladder",
+     "cannot control my bowel",
+     "trouble controlling my bladder",
+     "trouble controlling my bowel",
+     "losing control of my bladder",
+     "wetting myself"
+    ],
+    "escalation": "Those particular symptoms need checking urgently rather than waiting for a physio appointment — please contact NHS 111 now, or go straight to A&E if it's severe. I won't book you in just yet, but do call us back once you've been seen and we'll get you sorted."
+   },
+   {
+    "id": "dvt",
+    "label": "Calf (DVT)",
+    "presentation": "calf pain or swelling",
+    "_trigger_grouping_note": "NOT converted to trigger_all_groups on 2026-08-21, against the plan, for the same reason as cauda_equina and more starkly: 15 of the 16 proposed second-group terms (swollen, warm, red, surgery, flight, bed rest...) are verbatim the screen question's own answer. A calf DVT after a long flight presents as 'my calf has been hurting for a few days' — swelling is often subtle and callers do not volunteer it. Gating on the answer loses precisely that caller. And the over-screening cost here is near zero: 'is it swollen or warm, and have you had surgery or a long journey?' is a question any physio asks a calf presentation. It is not alarming the way the bladder question is. Bare 'calf' arming a DVT screen is the safe direction and stays.",
+    "trigger_keywords": [
+     "calf",
+     "calf pain",
+     "calf swelling",
+     "swollen calf",
+     "leg is swollen",
+     "swollen leg",
+     "back of my leg swollen",
+     "swollen warm",
+     "warm swollen",
+     "swollen red",
+     "red swollen",
+     "swollen hot",
+     "hot swollen",
+     "warm red",
+     "red warm"
+    ],
+    "screen_question": "One routine question I ask before booking this in — is the area swollen, warm or red compared with the other side, and have you had any recent surgery, illness, or a long journey sitting still?",
+    "screen_reask_question": "Is the area swollen, warm or red compared with the other side, and have you had any recent surgery, illness, or a long journey sitting still?",
+    "screen_probe_question": "Let me narrow that down — comparing one side with the other right now, is there any visible swelling, or does it feel warmer to the touch?",
+    "red_flag_answer_keywords": [
+     "swollen",
+     "warm",
+     "hot",
+     "red",
+     "surgery",
+     "operation",
+     "flight",
+     "long drive",
+     "long journey",
+     "bed rest",
+     "immobile",
+     "can't walk on it"
+    ],
+    "_escalation_note": "MARK_REVIEW: was 'A swollen, warm calf like that should be checked...'. On the 2026-07-24 21:55 call the caller had just said the calf was NOT swollen, and Susie escalated while asserting it was — the caller heard a symptom attributed to them that they had denied. This is the only one of the six screens that asserted a symptom as fact; the other five already use non-asserting deixis ('Those particular symptoms', 'those signs', 'That pattern of stiffness'), so this now matches them. Clinical content is unchanged: urgency, rule out a clot, NHS 111, A&E if severe, do not massage, call back. 2026-07-27 (second pass): that fix removed the SYMPTOM assertion but left the BODY-PART one — 'Calf symptoms like that'. On live call CA7c945058 the caller said 'my LEG's been swollen and warm' and heard 'Calf symptoms like that'. 29e3f9b had just generalised the trigger to the symptom combination so the screen now arms on any limb, making the mismatch routine rather than rare. Escalation opener -> 'Symptoms like that'; screen_question 'is the calf swollen' -> 'is the area swollen'. Clinical content again unchanged. Pinned by tests/regression/test_screen_wording_no_body_part_assertion.py, which also guards the other five.",
+    "escalation": "Symptoms like that need checking urgently to rule out a clot rather than booking a physio or massage — please contact NHS 111 now, or A&E if it's severe, and please don't have it massaged until you've been checked. Call us back once you've been seen."
+   },
+   {
+    "id": "serious_spinal",
+    "label": "Back pain with systemic features",
+    "presentation": "back pain alongside systemic red flags",
+    "trigger_keywords": [
+     "night pain",
+     "pain at night",
+     "can't sleep for the pain",
+     "weight loss",
+     "losing weight",
+     "history of cancer",
+     "had cancer",
+     "fever",
+     "night sweats",
+     "feeling generally unwell"
+    ],
+    "screen_question": "One more routine question, and it helps me point you the right way — alongside the pain, have you had any unexplained weight loss, fevers or night sweats, or a history of cancer?",
+    "screen_reask_question": "Alongside the pain, have you had any unexplained weight loss, fevers or night sweats, or a history of cancer?",
+    "screen_probe_question": "Just so I'm clear on that one — have you lost weight without trying to, or had fevers or night sweats that woke you up?",
+    "red_flag_answer_keywords": [
+     "weight loss",
+     "losing weight",
+     "lost weight",
+     "cancer",
+     "fever",
+     "night sweats",
+     "sweating at night",
+     "temperature"
+    ],
+    "_decisive_note": "Volunteered UNPROMPTED, any ONE of these escalates without asking the screen question. The two-signal bar in _red_flag_hits is right for ordinary keywords ('my calf is painful and swollen' is a strain), but nobody mentions losing bladder control while describing a stiff back — and asking that caller to repeat it reads as not having listened. 2026-08-21 call CA4feeeec6f9077d4912eb7d2a7f1d6846: the caller opened with losing feeling in his legs AND trouble controlling his bladder, scored one signal, was asked back whether he had any bladder changes, and abandoned the call.",
+    "decisive_red_flags": [
+     "history of cancer",
+     "had cancer"
+    ],
+    "escalation": "Because of those signs it's best your GP reviews this before we start physio — please book in with your GP, or contact NHS 111 if you're unsure. Once you've been checked we'll be very happy to help with your rehab."
+   },
+   {
+    "id": "trauma_fracture",
+    "label": "Significant injury (fracture)",
+    "presentation": "an injury following a fall, impact or accident",
+    "_trigger_keywords_note": "The second row was added 2026-07-26 after the sweep: a caller said 'i've done my ankle went over on sunday playing football' and the screen did not arm — the list only covered falls, collisions and audible cracks, not the commonest mechanisms of all (going over on it, rolling, twisting, spraining). All seven mechanism phrasings we tested missed. Phrases are deliberately tight: _phrase_in tolerates 3 filler words, so a loose 'rolled my' matches 'rolled over in my sleep' and a bare 'went over' matches 'went over the details with my gp'. Both were measured as false fires and rejected. Keep new entries specific enough to survive that gap window.",
+    "trigger_keywords": [
+     "fell",
+     "had a fall",
+     "fallen",
+     "i fell off",
+     "came off my bike",
+     "came off his bike",
+     "came off her bike",
+     "car accident",
+     "car crash",
+     "crashed",
+     "collision",
+     "landed badly",
+     "landed on",
+     "bad tackle",
+     "heard a crack",
+     "heard a snap",
+     "can't put weight",
+     "cannot put weight",
+     "can't put any weight",
+     "can't walk on it",
+     "went over on",
+     "gone over on",
+     "turned my ankle",
+     "sprained",
+     "rolled my ankle",
+     "rolled my knee",
+     "rolled my wrist",
+     "twisted my ankle",
+     "twisted my knee",
+     "twisted my wrist",
+     "twisted my shoulder",
+     "done my ankle",
+     "done my knee",
+     "done my wrist",
+     "done my shoulder"
+    ],
+    "_trigger_all_groups_note": "B-86, 2026-08-24. The keyword list above is 35 CONTIGUOUS 'VERB my BODYPART' literals. Callers do not talk like that — they say 'rolled IT' having already named the ankle, or 'hurt my ankle' with a verb the list never carried. Replayed over 543 stored jv_v1 calls: 13 described an injury, 11 armed nothing. These groups decompose the bigram into mechanism AND body part, which is why 'it' is a legitimate body-part member — it can only ever fire alongside a mechanism verb. The keyword list above is UNCHANGED and the two forms are OR-ed, so nothing that arms today stops arming: 'came off my bike', 'bad tackle' and 'crashed' have no body part to pair with and survive only as keywords. Measured: trauma arms 1 -> 8, all 7 new arms genuine injuries ('i just twisted it', 'i slipped one time', 'i've hurt my ankle', 'rolled it yesterday at the gym'), 0 arms lost, 0 calls switched screen, no other screen's count moved. Verbs are ACUTE-INJURY ONLY: bare 'hurt' / 'hurting' / 'sore' were tested and REJECTED — they armed on 'my neck's been hurting a bit recently' and 'my left ankle's a little bit sore', which is the B-20 over-screening failure. 'hurt my' as a phrase is in; bare 'hurt' is out. A rolling window over several utterances was also tested and added ZERO arms over a single utterance, so no engine change was made. || THREE THINGS THAT LOOK LIKE EASY WINS AND ARE NOT, all measured: (1) 'it' in the body-part group catches the commonest phrasing of all ('i just twisted it') and is FORBIDDEN — 'it' appears in this screen's own question ('is it too painful to use it'), so the screen could arm off its own question, which makes it a confirmation of a red flag the caller already volunteered rather than a screen. test_a_screen_never_gates_on_its_own_answer.py catches it. (2) bare 'rolled' / 'turned' / 'twisted' / 'went over' false-fire — _phrase_in tolerates 3 filler words, so 'rolled my' reaches into 'i rolled over in MY sleep and my neck is stiff' and 'turned my' into 'i TURNED up late and MY knee was fine'. The verb+object forms ('rolled my ankle', 'turned my ankle') are already in trigger_keywords above, so the group does not need them. (3) replacing trigger_keywords with these groups drops 'came off my bike', 'bad tackle' and 'crashed', which have no body part to pair with. Validated against 7 real corpus injuries, 19 benign/adversarial phrasings and the existing trigger tests: 6 of 7 armed, 0 false fires, 0 existing arms lost. The 7th ('i just twisted it') is unreachable — STT wrote the body part as 'angles'.",
+    "trigger_all_groups": [
+     [
+      "twisted it",
+      "rolled it",
+      "sprained",
+      "fell",
+      "fallen",
+      "tripped",
+      "slipped",
+      "landed",
+      "banged",
+      "knocked",
+      "did my",
+      "done my",
+      "hurt my",
+      "injured"
+     ],
+     [
+      "ankle",
+      "foot",
+      "knee",
+      "shin",
+      "calf",
+      "leg",
+      "wrist",
+      "shoulder",
+      "elbow",
+      "hip",
+      "thigh",
+      "hand",
+      "arm",
+      "neck",
+      "back"
+     ]
+    ],
+    "screen_question": "That sounds like a proper knock — can I quickly check, is it too painful to use it or put your weight through it, and is there any marked swelling, or does it look out of shape at all?",
+    "screen_reask_question": "Is it too painful to use it or put your weight through it, and is there any marked swelling, or does it look out of shape at all?",
+    "screen_probe_question": "Let me ask that a different way — is it too painful to put your full weight through it, or does it look at all out of shape or badly swollen?",
+    "_screen_question_note": "MARK_REVIEW: 'use it OR put weight through it' keeps the question right for BOTH upper and lower limb injuries — a wrist caller was asked the weight-bearing-only version on Call-2 (2026-07-20), which sounded wrong. POLARITY (2026-08-21): the first limb used to read 'are you able to use it or put weight through it', which inverted the screen. classify_screen_answer is single-polarity — an affirmative lead is red_flag and a negative is clear — so 'yes I can walk on it fine' escalated to A&E, and 'no, I can't put any weight on it at all' cleared and booked a possible fracture in for hands-on physio. Every screen question must be phrased so YES means CONCERNING; the other five already were. Pinned by tests/regression/test_a_screen_question_is_phrased_so_yes_means_concerning.py.",
+    "_trigger_grouping_note": "NOT converted to trigger_all_groups on 2026-08-21, deliberately, against the plan. The proposed grouping was mechanism AND severity — which would suppress the exact defect the row above was added to fix: 'i've done my ankle went over on sunday playing football' has a mechanism and no severity word, and a physio WOULD screen that caller for weight-bearing. Chronicity exclusion ('a month ago') was explicitly declined by the owner, so nothing distinguishes a fresh sprain from an old one here. The asymmetry decides it: over-triggering costs one appropriate-sounding question, under-triggering misses a fracture. Revisit only with evidence this screen actually over-fires in practice — it armed ZERO times in the corpus. || 2026-08-24: THIS DECISION STANDS and mechanism-AND-severity is still rejected. The groups added below are NOT that proposal — they are mechanism AND BODY PART, which runs the opposite way: severity NARROWS (a second bar the caller must clear, suppressing arms) whereas body part WIDENS (it decomposes a contiguous bigram the caller never says). This note's own precondition is what licensed the change: it asked for evidence about how often the screen fires, and the measured answer was that it UNDER-fires — 1 arm in 543 calls against 13 injury presentations. Arms went 1 -> 8 with none lost. If you are here because you want to add a severity or chronicity group, the answer above is still no.",
+    "red_flag_answer_keywords": [
+     "can't put weight",
+     "cannot put weight",
+     "can't walk",
+     "cannot walk",
+     "can't put any weight",
+     "cannot put any weight",
+     "can't stand on it",
+     "cannot stand on it",
+     "too painful to",
+     "swollen up",
+     "swelled up",
+     "won't take my weight",
+     "can't use it",
+     "cannot use it",
+     "can't move it",
+     "cannot move it",
+     "can't grip",
+     "cannot grip",
+     "can't really grip",
+     "can't hold anything",
+     "grip anything",
+     "grip has gone",
+     "grip's gone",
+     "out of shape",
+     "deformed",
+     "misshapen",
+     "wrong angle",
+     "swelled straight away",
+     "swollen straight away",
+     "swelled up straight away",
+     "massive swelling",
+     "huge swelling",
+     "heard a crack",
+     "heard a snap",
+     "numb below"
+    ],
+    "_decisive_note": "Volunteered UNPROMPTED, any ONE of these escalates without asking the screen question. The two-signal bar in _red_flag_hits is right for ordinary keywords ('my calf is painful and swollen' is a strain), but nobody mentions losing bladder control while describing a stiff back — and asking that caller to repeat it reads as not having listened. 2026-08-21 call CA4feeeec6f9077d4912eb7d2a7f1d6846: the caller opened with losing feeling in his legs AND trouble controlling his bladder, scored one signal, was asked back whether he had any bladder changes, and abandoned the call.",
+    "decisive_red_flags": [
+     "deformed",
+     "misshapen",
+     "out of shape",
+     "wrong angle",
+     "heard a crack",
+     "heard a snap"
+    ],
+    "escalation": "With an injury like that it's important to rule out a fracture before we do anything hands-on — please get it looked at today, at A&E or an urgent treatment centre for an X-ray. Once you've been checked and cleared, call us back and Marcus will look after the rehab side."
+   },
+   {
+    "id": "vbi_neck",
+    "label": "Neck with neuro/vascular signs",
+    "presentation": "neck pain together with dizziness, blackouts, double vision, clumsy hands or unsteadiness",
+    "trigger_all_groups": [
+     [
+      "neck",
+      "whiplash"
+     ],
+     [
+      "dizzy",
+      "dizziness",
+      "light-headed",
+      "lightheaded",
+      "blackout",
+      "black out",
+      "passed out briefly",
+      "drop attack",
+      "double vision",
+      "clumsy",
+      "dropping things",
+      "unsteady",
+      "off balance",
+      "wobbly"
+     ]
+    ],
+    "_trigger_keywords_note": "The residual flat list, OR-ed with the groups above (_screen_triggered, 2026-08-21). vbi_neck is the one screen where the two-signal bar is right — neck pain AND a neuro sign IS the syndrome, and a plain stiff-neck caller should not be asked about blackouts. But the bar also means a caller who leads with the dangerous half is missed: 'I blacked out twice this week and I want to get my neck looked at' arms only because 'neck' happens to be there, and a caller who never says the word arms nothing at all. These six are decisive enough to be worth a screen on their own. Note the groups branch used to RETURN, so a screen carrying both keys silently ignored its keywords; vbi_neck is now the screen that proves it does not.",
+    "trigger_keywords": [
+     "blackout",
+     "black out",
+     "blacked out",
+     "drop attack",
+     "double vision",
+     "seeing double"
+    ],
+    "screen_question": "One routine check before I book any neck treatment — do you get dizziness, blackouts or double vision when you move your neck, or any new clumsiness in your hands or unsteadiness when you walk?",
+    "screen_reask_question": "Do you get dizziness, blackouts or double vision when you move your neck, or any new clumsiness in your hands or unsteadiness when you walk?",
+    "screen_probe_question": "Can I just narrow that down — when you actually turn your head, do you get any dizziness, blackouts or double vision at that moment?",
+    "red_flag_answer_keywords": [
+     "blackout",
+     "black out",
+     "double vision",
+     "drop attack",
+     "dropping things",
+     "clumsy",
+     "unsteady",
+     "off balance",
+     "dizzy when i turn",
+     "dizzy when i move",
+     "wobbly when i walk"
+    ],
+    "_decisive_note": "Volunteered UNPROMPTED, any ONE of these escalates without asking the screen question. The two-signal bar in _red_flag_hits is right for ordinary keywords ('my calf is painful and swollen' is a strain), but nobody mentions losing bladder control while describing a stiff back — and asking that caller to repeat it reads as not having listened. 2026-08-21 call CA4feeeec6f9077d4912eb7d2a7f1d6846: the caller opened with losing feeling in his legs AND trouble controlling his bladder, scored one signal, was asked back whether he had any bladder changes, and abandoned the call.",
+    "decisive_red_flags": [
+     "blackout",
+     "black out",
+     "double vision",
+     "drop attack"
+    ],
+    "escalation": "Those symptoms alongside neck pain need a medical review before any hands-on neck treatment — please see your GP urgently or contact NHS 111 today. Once you've been checked, we'd be glad to help with the rehab side."
+   },
+   {
+    "id": "inflammatory",
+    "label": "Inflammatory joint pattern (advisory — does not block booking)",
+    "presentation": "prolonged morning stiffness or several swollen joints",
+    "block_booking": false,
+    "trigger_keywords": [
+     "stiff in the morning",
+     "stiff in the mornings",
+     "morning stiffness",
+     "stiff for an hour",
+     "stiff for hours",
+     "stiff when i wake",
+     "both hands",
+     "both wrists",
+     "all my joints",
+     "several joints",
+     "multiple joints",
+     "joints swell",
+     "swollen joints",
+     "joints are swollen"
+    ],
+    "screen_question": "Can I ask — is the stiffness at its worst first thing in the morning and lasting more than half an hour, and is it in several joints or on both sides?",
+    "screen_reask_question": "Is the stiffness at its worst first thing in the morning and lasting more than half an hour, and is it in several joints or on both sides?",
+    "screen_probe_question": "Just to pin that down — does the stiffness usually last more than half an hour after you get up in the morning?",
+    "red_flag_answer_keywords": [
+     "over an hour",
+     "more than an hour",
+     "an hour or more",
+     "over half an hour",
+     "more than half an hour",
+     "both sides",
+     "both hands",
+     "several joints",
+     "all my joints",
+     "multiple joints",
+     "swollen",
+     "hot joints",
+     "red joints"
+    ],
+    "escalation": "That pattern of stiffness is worth your GP looking into alongside physio — it can point to inflammation that a simple blood test picks up. I can still get you booked in with Marcus, and I'd really recommend mentioning it to your GP as well. Shall we find you an appointment?"
+   }
+  ],
+  "emergency_red_flags": {
+   "_note": "Volunteered emergencies — the deterministic classifier returns emergency_response and offers transfer, without waiting for the model.",
+   "keywords": [
+    "chest pain",
+    "tight chest",
+    "can't breathe",
+    "cannot breathe",
+    "struggling to breathe",
+    "difficulty breathing",
+    "face has dropped",
+    "face dropped",
+    "one side of my face",
+    "slurred speech",
+    "can't speak properly",
+    "one side of my body",
+    "numb down one side",
+    "weak down one side",
+    "sudden vision loss",
+    "lost my vision",
+    "passed out",
+    "collapsed",
+    "unconscious",
+    "having a stroke",
+    "heart attack"
+   ]
+  }
+ },
+ "faq": [
+  {
+   "q": "Do I need a GP referral?",
+   "a": "No — you can book directly with us without a referral. Just call or book online and we'll get you seen as soon as possible."
+  },
+  {
+   "q": "How do I access the clinic?",
+   "a": "We're at Flexspace Bolton, Lythgoe House, Manchester Road, Bolton, BL3 2NZ. On arrival you'll be given the access code for the main entrance — use the top keypad, then come in and take a seat in the waiting area."
+  },
+  {
+   "q": "Is there parking?",
+   "a": "Yes — there is free 24/7 on-site parking at Flexspace Bolton. No need to worry about finding a space or paying for parking."
+  },
+  {
+   "q": "Do you offer evening or weekend appointments?",
+   "a": "Yes — we offer evening appointments on weekdays and Saturday morning slots. Contact us and we'll find a time that works for you."
+  },
+  {
+   "q": "How much does it cost?",
+   "a": "An initial MSK assessment is £52 for 40 minutes. Follow-up sessions are £46 for 30 minutes. We are 10 to 20 percent more affordable than other local physiotherapy clinics. Full pricing is on our website."
+  },
+  {
+   "q": "Do you accept private health insurance?",
+   "a": "Yes — we accept private healthcare referrals. I can get you booked in now, and Marcus will be in touch to take your insurer details and sort the rest."
+  },
+  {
+   "q": "Can you come to me?",
+   "a": "Yes — we offer home visits across Bolton and the Greater Manchester area. A 60-minute combined assessment and treatment session at your home is £80. Please mention this when booking."
+  },
+  {
+   "q": "Can I have a remote appointment?",
+   "a": "Yes — we offer video and phone consultations for £40 per session. These are available to patients anywhere in the UK or worldwide, and are ideal for follow-ups or if you can't make it in person."
+  },
+  {
+   "q": "What conditions do you treat?",
+   "a": "We treat a wide range of musculoskeletal and neurological conditions — from back pain, neck pain, and sports injuries to multiple sclerosis, stroke rehabilitation, and vestibular conditions. If you're unsure whether we can help, give us a call and Marcus will advise you."
+  },
+  {
+   "q": "Who will I see?",
+   "a": "All appointments are with Marcus, our Clinical Lead. Marcus has a Masters in Advanced Clinical Practice and a background in elite sport, the NHS, and private practice — you're in expert hands."
+  },
+  {
+   "q": "How do I book?",
+   "a": "You can book online at our website, or give us a call and we'll sort it for you. We have evening and Saturday morning slots available."
+  },
+  {
+   "q": "What should I wear?",
+   "a": "Wear comfortable, loose clothing that allows easy access to the area being treated. Marcus will let you know if anything specific is needed for your appointment."
+  },
+  {
+   "q": "Do you offer discounts?",
+   "a": "Yes — we offer discounts for patients under 18 and students. Please mention this when booking."
+  },
+  {
+   "q": "Can I drive after my appointment?",
+   "a": "In most cases yes, but Marcus will advise you depending on what treatment you've had."
+  },
+  {
+   "q": "What is your cancellation policy?",
+   "a": "We require at least 24 hours notice to cancel or rearrange. Cancellations with less than 24 hours notice or no-shows may be charged the full session fee."
+  },
+  {
+   "q": "Should I eat before my appointment?",
+   "a": "No special preparation needed — just eat as you normally would. For acupuncture, avoid a heavy meal immediately beforehand."
+  },
+  {
+   "q": "What happens at my first appointment?",
+   "a": "Marcus will take a full history, assess your movement and strength, and put together a tailored treatment plan — the whole thing takes about 40 minutes for an MSK assessment."
+  }
+ ],
+ "team_and_availability": {
+  "practitioners": [
+   {
+    "name": "Marcus",
+    "surname_note": "TBC — STT variant 'marcus smith' seen; confirm correct surname before go-live",
+    "title": "Clinical Lead & Physiotherapist",
+    "qualifications": "Masters in Advanced Clinical Practice, HCPC Registered (PH104377), CSP member",
+    "background": "Elite sport, private practice, NHS, clinical leadership and education. Former physiotherapist at Hull Kingston Rovers Rugby Club.",
+    "prescribing_qualified": true,
+    "prescribing_scope": "Acupuncture and corticosteroid injections",
+    "locations": [
+     "bolton"
+    ],
+    "is_sole_practitioner": true,
+    "days_available": "Monday to Friday evenings, Saturday mornings — exact schedule TBC with Marcus",
+    "notes": "All appointments are with Marcus."
+   }
+  ],
+  "admin_staff": [],
+  "booking_notes": [
+   "Single practitioner — all appointments are with Marcus.",
+   "Appointments available in-clinic (Bolton), remotely (video/phone), and via home visit (Bolton and Greater Manchester).",
+   "Corticosteroid injections are coming soon — not yet bookable."
+  ]
+ },
+ "booking": {
+  "system": "Carepatron",
+  "booking_url": "book.carepatron.com/Joint-Venture-Physiotherapy/Marcus",
+  "booking_window_months": 2,
+  "preferred_handling": "Book directly into Carepatron where possible.",
+  "patient_notes_supported": "TBC — Carepatron supports clinical notes",
+  "sms_confirmation_on_booking": "TBC with Marcus",
+  "same_day_booking": "Yes — same-day booking available (subject to slot availability)",
+  "calendars_by_location": false,
+  "calendars_by_service": "TBC — confirm Carepatron appointment type structure with Marcus",
+  "never_autobook": [
+   "Corticosteroid injections (coming soon — not yet available)",
+   "Insurance referral appointments (if applicable — confirm with Marcus)"
+  ]
+ },
+ "services": [
+  {
+   "service_id": "msk_initial_assessment",
+   "name": "Initial Assessment (Musculoskeletal)",
+   "typical_duration_minutes": 40,
+   "for_patients": "New",
+   "description": "A thorough physiotherapy assessment of your musculoskeletal condition, leading to an accurate diagnosis and a personalised treatment plan. Marcus will take a full history, carry out a physical examination, and agree next steps with you.",
+   "pre_booking_notes": "Wear comfortable, loose clothing that allows easy access to the area being assessed.",
+   "pricing": {
+    "in_clinic_gbp": 52,
+    "remote_gbp": null,
+    "home_visit_gbp": 80
+   },
+   "available_as": [
+    "in_clinic",
+    "home_visit"
+   ]
+  },
+  {
+   "service_id": "msk_treatment_session",
+   "name": "MSK Treatment Session",
+   "typical_duration_minutes": 30,
+   "for_patients": "Returning",
+   "description": "A focused follow-up session to continue your rehabilitation, deliver hands-on manual therapy, and progress your exercise programme. Tailored to your current stage of recovery.",
+   "pre_booking_notes": "Wear comfortable clothing. Bring any relevant scan reports or GP letters if you have them.",
+   "pricing": {
+    "in_clinic_gbp": 46,
+    "remote_gbp": 40,
+    "home_visit_gbp": 80
+   },
+   "available_as": [
+    "in_clinic",
+    "remote",
+    "home_visit"
+   ]
+  },
+  {
+   "service_id": "virtual_appointment",
+   "name": "Virtual Appointment",
+   "typical_duration_minutes": 30,
+   "for_patients": "Both",
+   "description": "A video or phone consultation with Marcus — ideal for those outside Bolton and Manchester, or for review appointments that do not require hands-on treatment. Available to patients anywhere in the UK or worldwide.",
+   "pre_booking_notes": "You will receive a video link by email before the appointment. Have a quiet space and, if possible, wear clothing that allows you to show the affected area.",
+   "pricing": {
+    "price_gbp": 40
+   },
+   "available_as": [
+    "remote"
+   ]
+  },
+  {
+   "service_id": "acupuncture",
+   "name": "Acupuncture",
+   "typical_duration_minutes": 30,
+   "for_patients": "Both",
+   "description": "Safe, evidence-based treatment using fine sterile needles to relieve pain, reduce tension, improve circulation, and promote healing. Delivered by Marcus, who is qualified to provide acupuncture as part of a comprehensive treatment plan.",
+   "pre_booking_notes": "Wear loose clothing. Avoid heavy meals immediately before the session.",
+   "pricing": {
+    "in_clinic_gbp": 48,
+    "home_visit_gbp": 70,
+    "package": "6 in-clinic sessions for £250"
+   },
+   "available_as": [
+    "in_clinic",
+    "home_visit"
+   ]
+  },
+  {
+   "service_id": "sports_massage",
+   "name": "Sports Massage",
+   "typical_duration_minutes_options": [
+    30,
+    60
+   ],
+   "for_patients": "Both",
+   "description": "Specialist hands-on massage techniques to alleviate muscle tension, improve flexibility, support injury recovery, and enhance athletic performance. Tailored to your specific needs — whether you need deep tissue work, relaxation, or recovery support.",
+   "pre_booking_notes": "Wear or bring shorts or a vest if the lower body or back is being treated.",
+   "pricing": {
+    "30min_in_clinic_gbp": 40,
+    "60min_in_clinic_gbp": 55
+   },
+   "available_as": [
+    "in_clinic"
+   ]
+  },
+  {
+   "service_id": "neuro_assessment",
+   "name": "Neurological Physiotherapy — Initial Assessment",
+   "typical_duration_minutes": 60,
+   "for_patients": "New",
+   "description": "Specialist physiotherapy for neurological conditions including multiple sclerosis, stroke, functional neurological disorder (FND), and vestibular conditions. Marcus will carry out a comprehensive assessment and develop a tailored rehabilitation programme to improve function, movement, and quality of life.",
+   "pre_booking_notes": "Wear comfortable clothing. Bring any relevant letters from consultants or neurologists if you have them.",
+   "pricing": {
+    "in_clinic_gbp": 80,
+    "remote_gbp": 70,
+    "home_visit_gbp": null,
+    "home_visit_gbp_note": "TBC — Marcus offers neuro as a home visit; confirm the home-visit price with Marcus before go-live. Kept null so Susie defers rather than quoting a wrong/placeholder price."
+   },
+   "available_as": [
+    "in_clinic",
+    "remote",
+    "home_visit"
+   ]
+  },
+  {
+   "service_id": "neuro_followup",
+   "name": "Neurological Physiotherapy — Follow-up",
+   "typical_duration_minutes": 60,
+   "for_patients": "Returning",
+   "description": "Follow-up neurological physiotherapy session to continue your rehabilitation programme, reassess progress, and adjust interventions as needed.",
+   "pricing": {
+    "in_clinic_gbp": 65,
+    "remote_gbp": 60,
+    "home_visit_gbp": null,
+    "home_visit_gbp_note": "TBC — Marcus offers neuro as a home visit; confirm the home-visit price with Marcus before go-live. Kept null so Susie defers rather than quoting a wrong/placeholder price."
+   },
+   "available_as": [
+    "in_clinic",
+    "remote",
+    "home_visit"
+   ]
+  },
+  {
+   "service_id": "outdoor_sports_rehab",
+   "name": "Outdoor Sports Rehabilitation",
+   "typical_duration_minutes": 45,
+   "for_patients": "Returning",
+   "description": "End-stage rehabilitation for sporting injuries, carried out outdoors with a focus on enhancing performance and safely returning to play. Ideal for athletes who are near full recovery and need sport-specific conditioning before returning to training or competition.",
+   "pre_booking_notes": "Wear appropriate outdoor sportswear and footwear for your sport.",
+   "pricing": {
+    "price_gbp": 55
+   },
+   "available_as": [
+    "outdoor_bolton"
+   ]
+  },
+  {
+   "service_id": "home_visit",
+   "name": "Home Visit — Assessment & Treatment",
+   "typical_duration_minutes": 60,
+   "for_patients": "Both",
+   "description": "Full physiotherapy assessment and treatment delivered at your home. Perfect for patients who find it difficult to travel, or those who prefer the convenience of care at home. Available across Bolton and the Manchester region.",
+   "pre_booking_notes": "Ensure there is a clear space where Marcus can work — a firm chair or clear floor area is ideal.",
+   "pricing": {
+    "msk_gbp": 80,
+    "acupuncture_gbp": 70,
+    "travel_surcharge_note": "Travel may apply for locations outside Bolton — confirm with Marcus"
+   },
+   "available_as": [
+    "home_visit_bolton_and_greater_manchester"
+   ]
+  },
+  {
+   "service_id": "corticosteroid_injections",
+   "_status": "COMING SOON — do not book; take enquirer name and number for Marcus to follow up when available",
+   "name": "Corticosteroid Injections",
+   "available": false
+  }
+ ],
+ "pricing_and_policies": {
+  "competitor_positioning": "10-20% more affordable than other local physiotherapy clinics with no compromise on quality",
+  "u18_student_discount": "Available on request — mention when booking",
+  "payment_methods": [
+   "card",
+   "cash",
+   "bank_transfer_by_prior_arrangement"
+  ],
+  "deposit_required": "TBC with Marcus",
+  "cancellation_policy": "Minimum 24 hours notice required",
+  "late_cancellation_fee": "100% of appointment fee (less than 24 hours notice)",
+  "no_show_fee": "100% of appointment fee",
+  "late_arrival_policy": "If more than 15 minutes late, session may not proceed but full charge may still apply",
+  "returning_patient_definition": "Same condition = returning patient. New or unrelated condition = new assessment recommended.",
+  "chaperone": "Patients may bring a friend or family member to any appointment",
+  "minimum_age": "No minimum age — discounts available for under 18",
+  "gp_referral_required": false,
+  "reports_and_letters": "TBC with Marcus"
+ },
+ "insurance": {
+  "model": "Self-pay with private health insurance accepted",
+  "bupa_accepted": true,
+  "other_insurers_accepted": true,
+  "protocol": "Option B handling: confirm referrals accepted, book the appointment normally, note the insurer NAME only, tell the caller Marcus will be in touch to collect the rest of the insurance details, and pass a followup_note to book_appointment so Marcus is pinged. Never take a pre-auth/membership/policy code by phone; never confirm cover.",
+  "what_ai_should_do": [
+   "Confirm we accept private health insurance referrals — never turn the caller away.",
+   "Book the appointment normally so the slot is secured.",
+   "Note the insurer's NAME only — exactly what the caller said; do NOT add insurers they didn't mention.",
+   "Do NOT ask for or take a pre-authorisation, membership or policy code over the phone, and do NOT say cover is confirmed or 'all good'.",
+   "Tell the caller: 'Okay, that's noted — Marcus will be in touch to collect the rest of your insurance details.'",
+   "When booking, pass a followup_note to book_appointment summarising it, e.g. followup_note='INSURANCE: Aviva — wants to use private insurance; collect pre-auth and confirm cover'. Marcus is pinged automatically."
+  ]
+ },
+ "call_handling": {
+  "transfer_to_human_triggers": [
+   "Caller requests to speak to Marcus directly",
+   "Complex clinical question the AI cannot safely answer",
+   "Caller is distressed or in crisis",
+   "Corticosteroid injection enquiry (coming soon — take details only)",
+   "Three understanding failures or two failed lookups"
+  ],
+  "emergency_message": "If you are experiencing a medical emergency, please hang up and call 999 immediately, or go to your nearest A&E.",
+  "if_cant_answer": "Acknowledge the question, explain Marcus will be in touch, and offer to take the caller's name and number for a callback.",
+  "if_all_slots_full": "Take caller's name, number, and preferred times — offer to add them to the waiting list and confirm Marcus will follow up.",
+  "after_hours": "Take a message with name, number, and reason for calling. Confirm Marcus will call back during the next available business hours.",
+  "who_handles_followups": "Marcus",
+  "ai_must_never_answer": [
+   "Clinical diagnosis",
+   "Whether a specific condition is safe to treat without assessment",
+   "Specific medication advice",
+   "Prognosis or recovery timescales (beyond general guidance)"
+  ]
+ },
+ "brand_and_tone": {
+  "tagline": "Your Recovery Is Our Joint Venture",
+  "care_philosophy": "Personalised expert care for every patient — in-clinic, at home, or online. Flexible appointments, a broad range of treatments, and prices 10-20% below local competitors.",
+  "tone_words": [
+   "Professional",
+   "Approachable",
+   "Affordable"
+  ],
+  "ai_persona_name": "Susie",
+  "ai_voice_type": "Warm, confident, Northern British tone",
+  "lead_practitioner": "Marcus",
+  "phrases_never_use": [
+   "cheap",
+   "budget",
+   "basic",
+   "we can't help with that"
+  ],
+  "phrases_use_freely": [
+   "personalised",
+   "tailored",
+   "flexible",
+   "affordable",
+   "expert",
+   "recovery",
+   "in your own time",
+   "wherever suits you"
+  ]
+ },
+ "stt_variants": {
+  "clinic_name": [
+   "joint venture physio",
+   "joint venture",
+   "JV physio",
+   "JV physiotherapy",
+   "joint vencher physio",
+   "joint venture fizzy-oh"
+  ],
+  "bolton": [
+   "bolten",
+   "boltan",
+   "bol-ton",
+   "bolton greater manchester"
+  ],
+  "marcus": [
+   "markus",
+   "the physio"
+  ],
+  "services": {
+   "acupuncture": [
+    "acupunture",
+    "acu-puncture"
+   ],
+   "neurological": [
+    "neurological",
+    "neuro",
+    "nerve condition"
+   ],
+   "carepatron": [
+    "care patron",
+    "cair patron"
+   ],
+   "msk": [
+    "em ess kay",
+    "musculoskeletal"
+   ],
+   "flexspace": [
+    "flex space",
+    "fleck space",
+    "flecks space"
+   ]
+  }
+ },
+ "reporting": {
+  "google_sheets_call_summaries": "TBC",
+  "missed_call_tracking": "TBC",
+  "notifications_for_manual_followups": "TBC"
+ }
 }

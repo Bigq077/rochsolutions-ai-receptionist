@@ -407,3 +407,59 @@ def test_no_two_live_clinics_share_a_calendar():
             by_calendar.setdefault(cal, []).append(cid)
     shared = {c: ids for c, ids in by_calendar.items() if len(ids) > 1}
     assert not shared, f"clinics sharing a calendar: {shared}"
+
+
+# ---------------------------------------------------------------------------
+# Live diaries must not be reachable from the test tooling
+# ---------------------------------------------------------------------------
+
+# Clinics whose calendar is a real practitioner's working diary. A booking
+# written here is a real appointment in someone's day.
+LIVE_PATIENT_CLINICS = frozenset({"jv_v1", "vital_edge",
+                                  "theorem", "theorem_v2", "theorem_v3"})
+
+
+def test_joint_venture_books_into_its_own_diary_not_the_demo_calendar():
+    """Canonical carried a DEMO repoint for jv_v1 until 2026-08-29.
+
+    That repoint existed because eval calls on this branch reached jv_v1. Since
+    the test line moved to `northgate` they do not, so the demo pointer had
+    become the hazard rather than the guard: folding JV's service onto this
+    branch would have sent every real booking to a demo calendar.
+
+    Pinned as a VALUE because the failure is silent — the call sounds perfect,
+    the confirmation is correct, and the appointment is in the wrong calendar.
+    The 2026-08-11 double-booking came from exactly this class of mistake.
+    """
+    calendar = (cc.get_clinic("jv_v1").get("calendar_id") or "").strip()
+    assert calendar == "jointventurephysiotherapy@gmail.com", (
+        f"jv_v1 books into {calendar!r}. It must be the JV account's own "
+        "calendar — the only one Carepatron syncs both ways. A demo repoint "
+        "here means live bookings land in a throwaway calendar; a secondary "
+        "calendar means Susie cannot see Carepatron's appointments and will "
+        "double-book, which already happened once.")
+
+
+def test_the_auto_suites_default_number_never_reaches_a_live_diary():
+    """The 118 auto scenarios book. Whatever they dial must not be a live clinic.
+
+    `tests/auto/config.py` chooses the clinic by dialling a number and letting
+    the service resolve it, so a stale constant there is enough to write real
+    appointments into a practitioner's day. That has happened: the default was
+    once Theorem's live number and resolved to `vital_edge`.
+
+    It is worth asserting rather than commenting because the two halves live in
+    different files — the number in tests/auto, the mapping in clinic_config —
+    and each looks harmless on its own.
+    """
+    from tests.auto.config import SUSIE_NUMBER
+
+    resolved = cc.clinic_id_from_twilio_to(SUSIE_NUMBER)
+    assert resolved not in LIVE_PATIENT_CLINICS, (
+        f"the auto suite dials {SUSIE_NUMBER}, which resolves to {resolved!r} "
+        "— a clinic whose calendar is a real practitioner's diary. Point it at "
+        "the demo tenant, or the next booking scenario writes into someone's "
+        "working day.")
+    assert resolved != "demo", (
+        f"{SUSIE_NUMBER} resolves to the demo FALLBACK, which means it is "
+        "mapped to nothing. The suite would test the wrong clinic entirely.")

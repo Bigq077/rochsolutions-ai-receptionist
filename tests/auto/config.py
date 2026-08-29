@@ -22,12 +22,19 @@ from pathlib import Path
 # reach a real practitioner's calendar. Default it to the demo line instead, and
 # make it env-overridable so a run can be pointed at another clinic deliberately
 # rather than by inheriting a stale constant.
-SUSIE_NUMBER = os.getenv("SUSIE_NUMBER", "+447366263180")  # demo line -> jv_v1
+#
+# 2026-08-29: this line now resolves to `northgate`, the demo tenant, NOT jv_v1.
+# That matters more than it used to — canonical's jv_v1 now carries Joint
+# Venture's REAL calendar rather than a demo repoint, so a suite pointed at it
+# would book into a live practitioner's diary. tests/tenancy asserts this
+# default never resolves to a live patient clinic; override SUSIE_NUMBER only
+# with your eyes open.
+SUSIE_NUMBER = os.getenv("SUSIE_NUMBER", "+447366263180")  # demo line -> northgate
 
 # Clinic identity the greeting assertions check. Was hardcoded to "theorem
 # health" in two scenarios, which failed on every other clinic and looked like a
 # Susie bug rather than a pinned test.
-EXPECTED_CLINIC_NAME = os.getenv("EXPECTED_CLINIC_NAME", "joint venture")
+EXPECTED_CLINIC_NAME = os.getenv("EXPECTED_CLINIC_NAME", "northgate")
 # Names that must NOT appear — another clinic's identity leaking into a greeting
 # is a real defect, so this stays an assertion, just not a Theorem-only one.
 FOREIGN_CLINIC_TERMS = [
