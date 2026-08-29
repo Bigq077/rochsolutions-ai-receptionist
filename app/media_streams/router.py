@@ -146,9 +146,21 @@ def _abs_ms_url(request: Request, path: str) -> str:
     return f"{domain}{path}"
 
 
-async def _cache_call_ids(call_sid: str, caller_number: str, to_number: str) -> None:
+async def _cache_call_ids(
+    call_sid: str,
+    caller_number: str,
+    to_number: str,
+    forwarded_from: str = "",
+) -> None:
     """Cache From/To keyed by CallSid so the WebSocket handler can resolve them on
-    the 'start' event (Twilio does not forward them reliably through the socket)."""
+    the 'start' event (Twilio does not forward them reliably through the socket).
+
+    ``forwarded_from`` is Twilio's ForwardedFrom — set only when the call reached
+    us via a diversion. It is cached because it is the ONLY positive evidence
+    the socket side has that a call was forwarded, and the caller-ID guard in
+    connection.py needs it to tell a diverted call from a direct dial. Absent on
+    an ordinary call, which is exactly the signal.
+    """
     if not call_sid:
         return
     try:
@@ -164,9 +176,11 @@ async def _cache_call_ids(call_sid: str, caller_number: str, to_number: str) -> 
                     "[ms_router] to_number EMPTY — ms_to not cached call_sid=%s",
                     call_sid,
                 )
+            if forwarded_from:
+                await _redis.setex(f"ms_fwd:{call_sid}", 300, forwarded_from)
             logger.info(
-                "[ms_router] cached call_sid=%s from=%s to=%s",
-                call_sid, caller_number, to_number,
+                "[ms_router] cached call_sid=%s from=%s to=%s forwarded_from=%s",
+                call_sid, caller_number, to_number, forwarded_from or "(none)",
             )
     except Exception as _exc:
         logger.warning("[ms_router] Redis cache failed: %r", _exc)
@@ -331,7 +345,10 @@ async def ms_incoming(request: Request) -> Response:
             form.get("ForwardedFrom", "") or "(none)",
             form.get("CallerName", "") or "(none)",
         )
-        await _cache_call_ids(call_sid, caller_number, to_number)
+        await _cache_call_ids(
+            call_sid, caller_number, to_number,
+            form.get("ForwardedFrom", "") or form.get("forwardedfrom", ""),
+        )
 
         # ── Human-first overflow ────────────────────────────────────────────
         # If this clinic enables call_overflow, ring the practitioner's own
@@ -555,7 +572,10 @@ async def ms_after_dial(request: Request) -> Response:
 
     caller_number = form.get("From", "") or form.get("from", "")
     to_number     = form.get("To",   "") or form.get("to",   "")
-    await _cache_call_ids(call_sid, caller_number, to_number)
+    await _cache_call_ids(
+        call_sid, caller_number, to_number,
+        form.get("ForwardedFrom", "") or form.get("forwardedfrom", ""),
+    )
     logger.info(
         "[ms_router] after-dial: not accepted (status=%s) — Susie overflow call_sid=%s",
         dial_status, call_sid,

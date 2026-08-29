@@ -2430,6 +2430,35 @@ def _is_clinic_own_number(num: str, clinic: dict) -> bool:
     return False
 
 
+def _suppress_forwarded_caller_id(
+    twilio_from: str, clinic: dict, forwarded_from: str
+) -> bool:
+    """True when this caller-ID is a FORWARDING ARTEFACT and must be discarded.
+
+    Two conditions, and the second one is what this function exists for:
+
+      * the caller-ID is one of the clinic's own numbers, and
+      * Twilio says the call reached us via a diversion (ForwardedFrom).
+
+    Matching the clinic's own number was the whole test until 2026-08-29, and
+    it cannot tell a diverted call from the owner ringing their own line. On
+    CA7454c983a10dd3db7caee7dba3b06238 it told a caller "I can't see a phone
+    number on this call" and made them key in eleven digits, and — because
+    blanking clears session["twilio_from"] — it silently disarmed the self-dial
+    transfer guard, which then handed back the caller's own number to dial.
+
+    Requiring positive evidence of a diversion is the fix. The failure it
+    reopens is stated at the call site and logged there every time it could
+    apply: a carrier that rewrites From with no diversion header is
+    indistinguishable from a direct dial.
+    """
+    if not twilio_from:
+        return False
+    if not _is_clinic_own_number(twilio_from, clinic):
+        return False
+    return bool((forwarded_from or "").strip())
+
+
 # ---------------------------------------------------------------------------
 # Greeting (built at call start from clinic_config.json)
 # ---------------------------------------------------------------------------
@@ -7749,6 +7778,24 @@ class WebSocketCallHandler:
             except Exception as _exc:
                 logger.warning("[ms_conn] Redis caller lookup failed: %r", _exc)
 
+        # Twilio's ForwardedFrom, cached by the /ms/incoming handler. Present
+        # ONLY when the call reached us via a diversion, which is the single
+        # piece of positive evidence the socket side has that a call was
+        # forwarded. Read separately from the block above because that one only
+        # runs when From or To is missing, and this is needed on every call.
+        forwarded_from = ""
+        if self.call_sid:
+            try:
+                from .session import _get_redis
+                _redis = _get_redis()
+                if _redis:
+                    _fwd = await _redis.get(f"ms_fwd:{self.call_sid}")
+                    if _fwd:
+                        forwarded_from = _fwd.decode() if isinstance(_fwd, bytes) else _fwd
+                        await _redis.delete(f"ms_fwd:{self.call_sid}")
+            except Exception as _exc:
+                logger.warning("[ms_conn] ForwardedFrom lookup failed: %r", _exc)
+
         initial: Dict[str, Any] = {}
 
         # Direct-WS test mode: the call_runner sends a fake accountSid that
@@ -7805,15 +7852,48 @@ class WebSocketCallHandler:
                     get_clinic as _get_clinic_cli,
                 )
                 _cli_clinic = _get_clinic_cli(_cid_from_to(twilio_to)) or {}
-                if _is_clinic_own_number(twilio_from, _cli_clinic):
-                    logger.warning(
-                        "[ms_conn] FORWARDED-CALL caller-ID detected: From=%s is this "
-                        "clinic's own number — ignoring it as caller-ID and collecting "
-                        "the patient's number on the keypad instead.",
-                        twilio_from,
-                    )
-                    initial["forwarded_cli_suppressed"] = twilio_from
-                    twilio_from = ""
+                _cli_own = _is_clinic_own_number(twilio_from, _cli_clinic)
+                if _cli_own:
+                    if _suppress_forwarded_caller_id(
+                        twilio_from, _cli_clinic, forwarded_from
+                    ):
+                        logger.warning(
+                            "[ms_conn] FORWARDED-CALL caller-ID detected: From=%s is "
+                            "this clinic's own number and ForwardedFrom=%s says the "
+                            "call was diverted — ignoring it as caller-ID and "
+                            "collecting the patient's number on the keypad instead.",
+                            twilio_from, forwarded_from,
+                        )
+                        initial["forwarded_cli_suppressed"] = twilio_from
+                        twilio_from = ""
+                    else:
+                        # No diversion: this is somebody ringing the clinic from a
+                        # phone the clinic also owns. On a demo or test line that
+                        # is the ordinary case — the owner IS the caller — and
+                        # blanking it told them "I can't see a phone number on this
+                        # call" and made them key in eleven digits (live
+                        # 2026-08-29, CA7454c983a10dd3db7caee7dba3b06238, after
+                        # northgate was given a transfer_phone). It also cleared
+                        # session["twilio_from"], which is what the self-dial
+                        # transfer guard reads, so that guard silently handed back
+                        # the caller's own number to dial.
+                        #
+                        # KNOWN RESIDUAL, stated rather than hidden: a carrier that
+                        # rewrites From to the forwarding number and sends NO
+                        # diversion header is indistinguishable from this case, and
+                        # such a call now keeps a caller-ID that is the
+                        # practitioner's. That is the collision the guard exists to
+                        # prevent, so it is logged at WARNING every time rather
+                        # than passing silently — if this line appears on a clinic
+                        # that forwards its line, the guard needs a second signal.
+                        logger.warning(
+                            "[ms_conn] caller-ID %s is one of this clinic's own "
+                            "numbers but ForwardedFrom is absent — treating it as a "
+                            "DIRECT dial and keeping it. If this clinic forwards "
+                            "its line, check whether the carrier sends a diversion "
+                            "header.",
+                            twilio_from,
+                        )
             except Exception as _cli_exc:
                 logger.warning("[ms_conn] caller-ID guard check failed: %r", _cli_exc)
 
