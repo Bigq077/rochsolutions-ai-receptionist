@@ -151,6 +151,36 @@
     "payment_arrangement_note": "Payment is arranged in advance — Jonathan will sort that out with you directly when he confirms your appointment. Nothing is taken on this call.",
     "home_visit_note": "Home visits are something Jonathan can often do — usually doable if you're local to Kingston. Don't promise it outright. Take it as a normal booking and note it's a home-visit request; Jonathan confirms whether he can come to you when he's in touch. Do NOT ask for the caller's address or postcode — Jonathan sorts the location out on the callback."
   },
+  "clinical_screening": {
+    "_note": "EMERGENCY INTERCEPT ONLY. `screens` is deliberately ABSENT, and that absence is the whole design: with no screens the prompt renderer emits nothing (clinic_template_prompt._render_clinical_screening returns '' when screens is empty) and update_screening_state can never arm one, so this block adds a deterministic emergency response and changes NOTHING else about the call. Vital Edge is a massage clinic - tension, stiffness, recovery - so physio-style red-flag triage (cauda equina and the rest) would be both clinically mismatched and a conversion killer, and UK practice is that massage contraindications are taken at the appointment on an intake form by the therapist, not by a receptionist on the phone. What is NOT the therapist's job is a volunteered emergency mid-booking: before this, detect_emergency() could never return True here, so 'I'm having chest pain' rested entirely on the model's judgement. Now it does not.",
+    "enabled": true,
+    "emergency_red_flags": {
+      "_note": "Discipline-neutral by design - cardiac, stroke, breathing, collapse. Same list as jv_v1: none of it is physiotherapy-specific, and none of it is a screening QUESTION. Susie never asks about any of this; the keywords only match what a caller volunteers, and the reply is the clinic's own emergency_response spoken deterministically, never generated.",
+      "keywords": [
+        "chest pain",
+        "tight chest",
+        "can't breathe",
+        "cannot breathe",
+        "struggling to breathe",
+        "difficulty breathing",
+        "face has dropped",
+        "face dropped",
+        "one side of my face",
+        "slurred speech",
+        "can't speak properly",
+        "one side of my body",
+        "numb down one side",
+        "weak down one side",
+        "sudden vision loss",
+        "lost my vision",
+        "passed out",
+        "collapsed",
+        "unconscious",
+        "having a stroke",
+        "heart attack"
+      ]
+    }
+  },
   "faq": [
     {
       "q": "When are you open / what are your hours?",
