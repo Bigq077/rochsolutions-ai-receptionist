@@ -168,8 +168,19 @@ def test_the_opt_ins_actually_get_bank_holiday_slots():
 
 
 def test_a_clinic_that_has_not_decided_stays_closed():
-    """northgate has no practitioner to ask — it must stay on the safe default."""
-    assert cc.get_clinic("northgate").get("open_on_bank_holidays") is False
+    """A clinic.json that says nothing about bank holidays must resolve CLOSED.
+
+    Tests the mapper rather than a named clinic on purpose. This asserted
+    `northgate` at first, which exists only on canonical — so on a clinic
+    branch get_clinic() fell back to demo, returned None instead of False, and
+    the port stopped. Naming a clinic here measures whichever branch you happen
+    to be on; the contract is what actually needs pinning, and it holds
+    everywhere.
+    """
+    resolved = cc._map_json_to_clinic_contract({"operational": {}})
+    assert resolved["open_on_bank_holidays"] is False, (
+        "a clinic that has not been asked must default to closed — the two "
+        "mistakes are not symmetric, and a locked door is the worse one")
 
 
 # ---------------------------------------------------------------------------
