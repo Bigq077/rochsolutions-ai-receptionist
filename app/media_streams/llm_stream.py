@@ -6254,7 +6254,15 @@ _INTERIM_DUPE_RE = re.compile(
 
 # Subordinating conjunctions. A phrase stripped from in front of one of these
 # leaves a clause that cannot stand as a sentence.
-_ORPHAN_LEAD = re.compile(r"^(?:while|whilst|as\s+I|so\s+I|until)\b", re.I)
+# The complement words too, not just the adverbial ones. "Let me check
+# what's available for Saturday" loses its verb when the opener goes,
+# leaving "What's available for Saturday." -- which reads as a statement,
+# is a fragment, and was spoken. The same defect as the "While I look that
+# up." wreckage these were added for; the list simply stopped one word short.
+_ORPHAN_LEAD = re.compile(
+    r"^(?:while|whilst|as\s+I|so\s+I|until|what|whether|which|how|when|where|if)\b",
+    re.I,
+)
 
 
 def _strip_interim_opener(text: str) -> str:
