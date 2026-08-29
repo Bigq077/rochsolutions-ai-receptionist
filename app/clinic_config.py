@@ -711,44 +711,6 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         },
 
         # Call handling (from Mark)
-        # EMERGENCY INTERCEPT ONLY. `screens` is deliberately absent: with no
-        # screens the deterministic layer can never arm one, so this adds a
-        # scripted 999 response and changes nothing else about a Theorem call.
-        # theorem_v2/v3 inherit it via the deepcopy below.
-        #
-        # Theorem already had emergency wording — call_handling.emergency_message
-        # here, and one line in the hardcoded theorem_v3 prompt telling the model
-        # to say it. What it did not have was a deterministic TRIGGER, so whether
-        # a caller volunteering chest pain heard it depended on the model
-        # noticing. Vital Edge was in exactly that state until baad8ab3; this is
-        # the same gap on Mark's line, and it should not have taken being asked.
-        #
-        # No proactive screening: that is a clinical-policy decision for the
-        # clinic, and Theorem has not asked for one.
-        "clinical_screening": {
-            "enabled": True,
-            "emergency_red_flags": {
-                "_note": (
-                    "Discipline-neutral: cardiac, stroke, breathing, collapse. "
-                    "Same list as jv_v1 and vital_edge. None of it is a QUESTION "
-                    "— Susie never asks about any of this. The keywords only "
-                    "match what a caller volunteers, and the reply is "
-                    "call_handling.emergency_message, spoken deterministically "
-                    "rather than generated."
-                ),
-                "keywords": [
-                    "chest pain", "tight chest", "can't breathe",
-                    "cannot breathe", "struggling to breathe",
-                    "difficulty breathing", "face has dropped", "face dropped",
-                    "one side of my face", "slurred speech",
-                    "can't speak properly", "one side of my body",
-                    "numb down one side", "weak down one side",
-                    "sudden vision loss", "lost my vision", "passed out",
-                    "collapsed", "unconscious", "having a stroke",
-                    "heart attack",
-                ],
-            },
-        },
         "call_handling": {
             "if_cant_help": ["Direct to website", "Take a message", "Offer a call-back", "Escalate to staff"],
             "immediate_defer_to_human_for": ["Emergencies"],

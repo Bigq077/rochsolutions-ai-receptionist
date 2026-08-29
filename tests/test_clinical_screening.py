@@ -36,11 +36,6 @@ def jv():
 
 
 @pytest.fixture()
-def th():
-    return get_clinic("theorem_v3")
-
-
-@pytest.fixture()
 def ve():
     return get_clinic("vital_edge")
 
@@ -83,41 +78,6 @@ class TestScreeningClassifier:
         r = cs.update_screening_state({}, ve, "i'm having chest pain")
         assert r["action"] == "emergency"
         assert "999" in (r["speak"] or "")
-
-    def test_a_volunteered_emergency_is_intercepted_on_theorem(self, th):
-        """Mark's line, added 2026-08-29 — and it should not have needed asking.
-
-        Theorem always had the WORDING (call_handling.emergency_message, plus a
-        line in its hardcoded prompt telling the model to say it). What it had
-        no version of was a deterministic TRIGGER, so whether a caller who
-        volunteered chest pain heard it depended on the model noticing. Vital
-        Edge was in that exact state until baad8ab3; this is the same gap on the
-        other clinic, found only because the owner asked why Theorem kept being
-        left out.
-        """
-        r = cs.update_screening_state({}, th, "i'm having chest pain")
-        assert r["action"] == "emergency"
-        assert "999" in (r["speak"] or "")
-
-    @pytest.mark.parametrize("clinic_id", ["theorem", "theorem_v2", "theorem_v3"])
-    def test_theorem_intercepts_emergencies_and_screens_nothing(self, clinic_id):
-        """v2 and v3 are deepcopies of theorem, so all three must carry it.
-
-        The second assertion is the load-bearing one: Theorem has NOT asked for
-        proactive screening, and adding a screen here would start asking its
-        callers MSK safety questions on a line that has never done so.
-        """
-        clinic = get_clinic(clinic_id)
-        assert cs.screening_enabled(clinic)
-        assert cs._screens(clinic) == []
-        assert cs.detect_emergency("i think its a heart attack", clinic)
-        assert not cs.detect_emergency("my lower back is killing me", clinic)
-
-    def test_a_normal_theorem_enquiry_arms_nothing(self, th):
-        for utterance in ("my lower back is killing me",
-                          "can i book an appointment",
-                          "how much is an assessment"):
-            assert cs.update_screening_state({}, th, utterance)["action"] == "none"
 
     def test_lower_back_arms_cauda_screen(self, jv):
         """Arming now SPEAKS the screen question deterministically (baec415)
