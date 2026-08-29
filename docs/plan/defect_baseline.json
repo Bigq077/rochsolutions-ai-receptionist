@@ -1,0 +1,90 @@
+{
+  "frozen_utc": "2026-08-29T18:00:27.968427+00:00",
+  "calls_scored": 753,
+  "detectors": {
+    "C1": {
+      "what": "agreed one date, booked another",
+      "status": "open",
+      "count": 1,
+      "last_build": "ce45ea8",
+      "evidence": "CA5c4fb14fb555756f3f64952ad945788d"
+    },
+    "A1": {
+      "what": "model reasoning spoken aloud",
+      "status": "open",
+      "count": 8,
+      "last_build": "c4b5b0c54dbd",
+      "evidence": "CA76bc921fe665dbf01a75317913c87e01"
+    },
+    "A2": {
+      "what": "day-name does not match date",
+      "status": "open",
+      "count": 13,
+      "last_build": "c4b5b0c54dbd",
+      "evidence": "CAfe6a41626d0b69eb27f7869e0152c8ff"
+    },
+    "A3": {
+      "what": "spoke one name, stored another",
+      "status": "open",
+      "count": 3,
+      "last_build": "c4b5b0c54dbd",
+      "evidence": "CA325372e5d833bd2a8c38de9f7b7167b7"
+    },
+    "A4": {
+      "what": "confirmation loop",
+      "status": "open",
+      "count": 144,
+      "last_build": "c4b5b0c54dbd",
+      "evidence": "CAa4942bcea465e89b9b45d9a3b9d9a03b"
+    },
+    "B1": {
+      "what": "wrong clinical screen for the complaint",
+      "status": "open",
+      "count": 69,
+      "last_build": "c4b5b0c54dbd",
+      "evidence": "CAdd3373ad0bc4404401b470c7c3dadb93"
+    },
+    "B2": {
+      "what": "screening fires after confirmation",
+      "status": "open",
+      "count": 1,
+      "last_build": "b405017",
+      "evidence": "CA61d1c0c38ac4ef0fe2c1271a1ac1e9c0"
+    },
+    "B-120": {
+      "what": "a hold phrase was the last thing said",
+      "status": "open",
+      "count": 17,
+      "last_build": "7cfc8425df34",
+      "evidence": "CAc776e1218dcc2845ddff7f070f03b176"
+    },
+    "B-121": {
+      "what": "two hold phrases back to back",
+      "status": "open",
+      "count": 27,
+      "last_build": "f2cc28dcf7ee",
+      "evidence": "CAbc6e6a96270e88d63feb69498d5a8b94"
+    },
+    "B-122": {
+      "what": "opener welded to the payload, spoken without a breath",
+      "status": "open",
+      "count": 71,
+      "last_build": "4c21557e12f4",
+      "evidence": "CA7efc2c8c37f4cb8efb3a38d7b246f9bc"
+    },
+    "B-123": {
+      "what": "a subordinate clause spoken as a sentence",
+      "status": "open",
+      "count": 5,
+      "last_build": "4e40dd821027",
+      "evidence": "CAac066043e6223f3165303c94c3246e7b"
+    },
+    "B-124": {
+      "what": "pending-confirmation clinic claimed the booking was done",
+      "status": "open",
+      "count": 3,
+      "last_build": "c2dc040ebd60",
+      "evidence": "CAbc6e6a96270e88d63feb69498d5a8b94"
+    }
+  }
+}
