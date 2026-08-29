@@ -165,15 +165,21 @@ screening port; Vital Edge did not. Among the fixes VE is missing:
 That is a live patient line running an older safety layer. It is separable from
 the fold and worth doing on its own merits.
 
-### It would also change what live callers hear
+### It would also change what live callers hear — RESOLVED for hold speech
 
-`app/hold_speech.py` exists **only on canonical** and has **no flag** — it is
-unconditional. It replaces six independent hold-phrase producers with one
-arbiter, which is an improvement, but it is recent, unvalidated on a live
-clinic, and it changes what a caller hears while waiting. Four commits:
-`feat(hold)` x3 and `fix(hold)` x1.
+`app/hold_speech.py` existed **only on canonical** with **no flag** — it was
+unconditional, so a fold would have changed what callers hear while waiting,
+immediately and unchosen.
 
-The owner has asked that this specifically NOT reach the clinic branches.
+**Gated in `9287bb1e`.** It reads `operational.hold_speech`, defaulting FALSE,
+and OFF is the pre-arbiter behaviour verbatim — not silence, not a tidied
+version. No clinic has opted in, so the fold is now audibly neutral on this
+axis. Turning it on afterwards is one key per clinic, after someone has
+listened to it on the demo line.
+
+This is the pattern for the rest of the caller-audible inheritance: default to
+what the clinic runs today, opt in deliberately. It is not yet done for the
+other items in the list above.
 
 ### What follows
 
