@@ -1,10 +1,12 @@
 # Stop being the test harness — before the cohort lands
 
-**Status as of 2026-08-29.** Phase 1 done. Phase 2 not started. Phase 3 mostly
+**Status as of 2026-08-29 (evening).** Phase 1 done. Phase 2 done bar the
+adaptive caller. Phase 3 mostly
 done and now blocked on an owner action. Phase 4 not started, both items
 re-confirmed live. Two live-call confirmations banked: the fourth clinic booking
-from config alone, and Theorem's emergency intercept. **One open engineering
-decision — see "The hold-speech decision".**
+from config alone, and Theorem's emergency intercept. The hold-speech decision is
+SETTLED — and the measurement that settled it says the filler architecture was
+aimed at the wrong latency source. See Phase 2.
 
 This document is the plan and its running record. It is written to be picked up
 cold: if you have not read anything else, read this.
@@ -39,7 +41,7 @@ all the way through and nothing since has challenged it.
 | Phase | State |
 |---|---|
 | **1 — Headless free-form driver** | ✅ Done. Found a live defect on day one. |
-| **2 — Adaptive caller + harvest the corpus** | ❌ Not started. All three parts open. |
+| **2 — Adaptive caller + harvest the corpus** | ✅ Corpus harvested, detectors re-armed, hold speech settled. Adaptive caller still open. |
 | **3 — Collapse the tenancy** | 🟡 New-clinic path proved and live. Fold groundwork done. **The fold itself is blocked on an owner action.** |
 | **4 — Two contained slot fixes** | ❌ Not started. Both re-confirmed live on 29 Aug. |
 
@@ -171,108 +173,139 @@ every trace of them, render the prompt: 107,985 characters, **zero leakage**.
 
 ## What is left
 
-### Phase 2 — not started. The cheapest value left.
+### Phase 2 — DONE, 2026-08-29. Branch `feat/situational-hold-speech`.
 
-- **Adaptive caller.** Replace the fixed script with an LLM caller given a
-  persona and a goal. The engine does not ask the same questions in the same
-  order twice, so a fixed list cannot track it. Do not re-order the scripts a
-  third time.
-- **Mine the obs corpus.** `app/obs/to_scenario.py` and `regress.py` both work,
-  both are unit-tested, **neither has ever been used**.
-  `tests/auto/scenarios/regressions/` is still **empty**. This is free coverage
-  on the floor.
-- **Re-arm `scripts/detect_defects.py`.** Still **7 detectors**, untouched since
-  31 Jul; defects have run to B-119.
+All three parts landed, plus the hold-speech decision they were meant to settle.
 
-### Phase 3 — the fold, blocked on you
+**Mine the obs corpus.** `scripts/harvest_regressions.py` is the driver
+`to_scenario.py` was missing — it takes one call_sid, and the corpus has 320
+calls judged 2 or worse. Dedups by failure signature, caps per signature: **60
+scenarios across 32 distinct signatures**, zero PII, checked twice (generator
+and again over the committed files). `tests/auto/scenarios/regressions/` is no
+longer empty and `app/obs/regress.py` runs in the ordinary suite.
 
-Canonical is ready. Per service, out of hours (full runbook:
-`docs/FOLD_THE_CLINIC_BRANCHES.md`):
+> ⚠️ **Know what a green run there means.** `regress.py` re-checks a STORED
+> transcript; it does not re-drive the engine. It catches a banned phrase coming
+> back into a fixture. It cannot tell you a fix worked, and because a scenario
+> embeds a historical call with its defects intact, an assertion can only pin
+> something that was already true of it. `tests/harness/` re-drives the turn
+> loop; `scripts/replay_situational_heads.py` measures a change across the
+> corpus. Those are the instruments.
 
-1. Set `SMS_ENABLED=true` and `APPOINTMENT_REMINDERS_ENABLED=true` on the
-   service.
-2. Point its Render branch at `latency-eval`.
-3. Check the boot log: `(explicit)` on both switches, the **right calendar**, no
-   `⚠️ CLINIC CONFIG` line.
-4. One real call, and confirm the booking lands in that clinic's own diary.
+**Re-arm `detect_defects.py`.** Five new detectors, each with a real SID:
+B-120 dead-end hold phrase (17), B-121 two hold phrases back to back (27),
+B-122 opener welded to the payload (71), B-123 subordinate clause spoken as a
+sentence (5), B-124 provisional clinic claimed a write (3). Baseline frozen;
+`--check` exits 0.
 
-**Do Vital Edge first** — it has no blocker and proves the procedure.
+**Adaptive caller.** Still not started. It is the one Phase 2 item left.
 
-⚠️ **The fold is not behaviour-neutral.** It hands a clinic ~3,900 lines at once
-(28 commits for JV, 43 for VE). `hold_speech` is gated; the screening wording,
-availability phrasing and reason-question scoping are **not**. Gate them the
-same way — default to what the clinic runs today — or accept the delta
-knowingly.
+---
 
-### Phase 4 — not started, both re-confirmed live 29 Aug
+### The hold-speech decision — SETTLED, and it grew
 
-- **`_check_availability_published` calls neither `_cap_presented_slots` nor
-  `_sync_last_offered_to_spoken`** — the one producer of seven that skips both.
-  A latent defect on Vital Edge.
-- **`test_offer_record_matches_what_was_spoken.py` still pins one call site via
-  `inspect`.** Re-aim it at the invariant across all seven producers.
+The doc asked whether FillerGuard's 2.5s second clip should ask the arbiter.
+The owner's answer was to **delete it**: the standing rule is that the recorded
+filler belongs to the one moment before slots are read out, so two clips in 2.5
+seconds breached it independently of the arbiter. One clip cannot stack with
+itself, so "one head per turn" is now structural rather than negotiated.
 
-The `last_offered_slots` three-contract restructure remains **post-webinar**.
-Written down; do not start it.
+Then the question got much bigger, and the reason is a measurement that changes
+how the whole subsystem should be read.
 
-### The hold-speech decision — OPEN, and the one piece of engineering judgement left
+> 🔍 **The dead air is the model, not the providers.** Measured over the 753-call
+> corpus: `check_availability` p50 **319ms** / p90 607ms; `lookup_patient` p50
+> 210ms; `book_appointment` p50 362ms. Turn time-to-first-audio over the same
+> calls is p50 **1,938ms**, p75 2,519ms, p90 3,171ms.
+>
+> The entire filler architecture was aimed at the provider round-trip.
+> `with_filler`'s 4-second secondary escalation is guarding a p90 of 607ms and
+> can almost never have fired. **Every turn has ~2s of dead air, not just tool
+> turns** — which is why a price question, a cancel request and a symptom got
+> either silence or a phrase that lied: `WorkKind` is keyed to five tool names,
+> so the arbiter could only speak when a tool ran.
 
-**The problem.** Two things speak to a caller while they wait, and only one
-asks permission:
+The second finding is what made deterministic wording safe: **the model already
+writes the right opener, it just arrives 1.9s late.** Stored payloads open with
+"I'm sorry to hear that —", "No problem at all.", "Let's get that moved for
+you.", "Got it —", "Apologies for that —". So a head is not an invented filler
+phrase. It is the opener the model was going to say anyway, said earlier, with
+its duplicate stripped — which is what makes it part of the sentence rather than
+a phrase in front of one.
 
-| | plays | timing | asks the arbiter? |
-|---|---|---|---|
-| `filler_guard.py` | a recorded clip | 350ms, then again at 2.5s | **no** — it only *reports* |
-| `hold_speech.py` | TTS phrases, 4 producers | when a tool runs | it *is* the arbiter |
+`app/hold_speech.py` gained `Intent` (20 situations), `classify_intent`,
+`subject_for`, `INTENT_HEADS`, `render_intent_head` and `strip_head_echo`, all
+pure. Wired into `_delayed_filler`, gated on `hold_speech`, so only `northgate`
+is affected.
 
-FillerGuard calls `note_filler_played()`, which sets `_hold_head_spoken`. So it
-**tells** the arbiter it spoke, and every gated producer afterwards correctly
-stays quiet — but its own 2.5s escalation never consults the one-head-per-turn
-rule, because it never calls `decide_hold` at all.
+Measured by `python -m scripts.replay_situational_heads` over all 733
+transcripts:
 
-Seen live on `CAc46c00705bc1ad81` (northgate, `hold_speech` ON): clip at 350ms,
-clip at 2.5s, then the tool. The arbiter DID work — it suppressed the third
-phrase legacy would have added, since `_FILLER_TOOLS["check_availability"]` is
-a real list. ON meant two phrases; OFF would have meant three.
-
-`hold_speech.py` claims stacking is "unrepresentable" by construction. That is
-now false and should either become true or stop being claimed.
-
-**Why the listen could not settle it.** The arbiter's evidence base is 354 hold
-phrases across 98 calls, one call with 17, 175 of 322 promising a lookup that
-never happened. That is a distribution, not a moment: on any single
-well-behaved call the difference is one suppressed phrase, inaudible by design.
-**A corpus-level fix cannot be ear-tested.** More calls will not help.
-
-**Options:**
-
-| | pros | cons |
+| | before | after |
 |---|---|---|
-| **A. Leave it, correct the docstring** | zero risk; the escalation predates the arbiter and covers genuinely slow turns | the guarantee stays weaker than it claims; the difference stays unevaluable; the stacking the corpus flagged still ships |
-| **B. Make the second clip ASK — gated, so OFF keeps today's behaviour** | one head per turn becomes true; cheap, since `arm(session)` already takes the session; makes a listen finally mean something | >2.5s turns lose reassurance and gain silence, which is a known call-killer; a fourth file joins the switch's surface |
-| **C. Move the escalation into the arbiter entirely** | one owner, work-aware wording, keeps slow-turn coverage | biggest change; arguably reinvents "two heads" under a nicer name |
+| hold phrases / heads | 601 | 1255 |
+| calls containing at least one | 172 | 607 |
+| that CLAIM a lookup or a write | 379 (63%) | 751 (60%) |
+| **dead ends — nothing behind them** | **47 (7.8%)** | **30 (2.4%)** |
+| model's duplicate opener removed | — | 496 |
+| turns left silent (unchanged) | — | 3101 |
 
-**Recommendation: B, and evaluate by REPLAY rather than by ear.**
+The totals are **not** an improvement claim: a legacy phrase was an extra
+utterance, a head is the opening clause of the reply itself. The dead-end rate
+is the like-for-like number.
 
-B because the asymmetry favours it — the arbiter's whole claim is one decision,
-one latch, stacking unrepresentable, and a producer that reports but never asks
-makes that a slogan. The silence risk is bounded: the watchdog still exists, and
-if 2.5s proves too long the arbiter can allow a second head past a longer
-threshold. That is a tuning decision inside one module, which is where it
-belongs.
+**Timing.** `HOLD_HEAD_DELAY_MS = 600`, not the 3000ms the contentless head
+waits for. 3000ms is the price of a *guess* — an empty marker has to earn its
+place by the caller having waited. "On price —" is correct the moment they ask
+the price, so it does not.
 
-Then measure it: `app/obs/regress.py` and `to_scenario.py` both work, are
-unit-tested, and have **never been run**. Replay the 742-call corpus and count
-hold phrases per call, before and after. Objective, free, and the same Phase 2
-work that would reduce calling for everything else.
+**The clip as pre-head is built but OFF.** `audio_clips/CLIPS.json` declares
+each clip's wording and whether it ends open. The shipped clip is CLOSED and a
+test pins it. Flipping the flag without recutting the audio makes the caller
+hear "Let me just check that for you…" *and* "Let me see what Saturday looks
+like —" — the exact double-phrase defect. **The recut needs the live paid
+ElevenLabs voice** (a free key returns 402 and `synthesise_filler` falls back to
+a different voice — that is how a wrong-voice clip shipped once). `audio_clips/`
+still holds a pool of ONE, so do it as a batch.
 
-**Do not** leave it as A and call the arbiter done — that ships a guarantee that
-is not one, with no way to tell whether it helped.
+### Defects found on the way
 
-**Separate question for the owner:** the standing rule is "the recorded filler
-belongs only where slots are about to be read out". Two clips in 2.5 seconds may
-already breach that, independently of any of this. If the second clip should not
-exist on that turn at all, B stops being a trade-off and becomes a straight fix.
+| | |
+|---|---|
+| **`join_after_head` deleted the full stop AND the capital after it** — `re.sub(r"([\.!?])([A-Z])", r" ", body)` passes a bare space, so both groups are discarded. "available.The available slots" → "available he available slots" | fixed, `6812a1c3` |
+| **`_ORPHAN_LEAD` stopped one word short.** It guards against an opener strip leaving a dangling clause and listed only the adverbial words, so the commonest opener in the corpus — "Let me check what's available for…" — fell through and was spoken as "What's available for Saturday." | fixed, `580be4cb` |
+| **FillerGuard's second clip never asked the arbiter** | deleted, `6812a1c3` |
+
+> ⚠️ **`_ORPHAN_LEAD` is canonical-only; `_strip_interim_opener` is on all four
+> branches.** So the three live clinics run that strip with **no guard at all**
+> and can speak "While I look that up." today. A commit message in this branch
+> says the guard is shared — that is wrong, and the truth is worse. This is a
+> port worth making.
+
+### Traps this added to the list
+
+- **A text scan cannot tell coupling from prose** — third instance.
+  `test_filler_guard_reports_to_the_latch_but_does_not_ask_it` scanned
+  `filler_guard.py` for the string `decide_hold` and was broken by a *comment*
+  explaining why the call is absent. Replaced with a signature check and an AST
+  count.
+- **A detector that fires on healthy calls is worse than none.** B-123's first
+  version accepted any terminator and matched 103 calls, every one an ordinary
+  question ("What's the appointment for?"). A dangling clause ends in a full
+  stop. Requiring that took it to 5, the real figure.
+- **A shape-based stripper ate a phone number.** "A short leading clause with no
+  digits is an acknowledgement" removed "I've got you on oh three three" — the
+  digits were spelled as words. What is being stripped is one speech act *we*
+  generate, so it is a closed set: use an allow-list.
+- **`load_dotenv()` inside `main()` is too late.** `app.config` reads
+  `DATABASE_URL` at import and `app.obs.store` reads it from there, so the first
+  harvest wrote nothing and reported success — the same failure mode as the
+  empty directory it was written to fix.
+- **The import-time self-check earns its keep.** It rejected "Of course —" as a
+  head: Gate 5b strips "Of course," from model speech, and a phrase the engine
+  deletes from the model must not be spoken by the engine.
+
+---
 
 ### Calls owed
 
