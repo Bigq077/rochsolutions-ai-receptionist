@@ -4150,11 +4150,13 @@ class LLMStream:
                         note_filler_played as _note_filler,
                         should_play_filler as _should_filler,
                     )
+                    from app.filler_phrases import confirm_write_filler
                     from app.hold_speech import (
                         WorkKind as _WorkKind,
                         clinic_facts as _clinic_facts,
                         confirm_write_kind as _confirm_write_kind,
                         decide_hold as _decide_hold,
+                        hold_speech_enabled as _hs_on,
                         render_head as _render_head,
                     )
                     # This fires before the LLM has emitted anything, so with one
@@ -4178,6 +4180,14 @@ class LLMStream:
                         # Work unknown. Say something that names none of it.
                         _kind = _WorkKind.UNKNOWN_SLOW
                     _decision = _decide_hold(
+                        legacy=not _hs_on(session),
+                        session=session,
+                        # FM-25: the pre-arbiter site tried confirm_write_filler
+                        # first and only fell back to a neutral phrase, so a
+                        # "no"/ambiguous reply never became a booking claim.
+                        legacy_override=confirm_write_filler(
+                            session, _book_reply_is_affirmative(messages)
+                        ) or "",
                         kind=_kind,
                         head_already_spoken=bool(
                             session.get("_hold_head_spoken")
@@ -5550,10 +5560,14 @@ class LLMStream:
                         from app.hold_speech import (
                             clinic_facts as _hs_facts,
                             decide_hold as _hs_decide,
+                            hold_speech_enabled as _hs_on,
                             work_for_tool as _hs_work,
                         )
+                        _hs_legacy = not _hs_on(session)
                         _hs_prov, _hs_prac = _hs_facts(session)
                         _hs_decision = _hs_decide(
+                            legacy=_hs_legacy,
+                            session=session,
                             kind=_hs_work(tool_name, provisional=_hs_prov),
                             head_already_spoken=bool(
                                 session.get("_hold_head_spoken")
@@ -5564,8 +5578,12 @@ class LLMStream:
                         # A single-item list: with_filler still owns the
                         # concurrency, the 4s escalation and the shielding —
                         # all of it tested — but no longer owns the choice.
+                        # Legacy took the per-TOOL list and handed the whole
+                        # thing to with_filler, which owns the escalation. The
+                        # arbiter narrows it to one chosen head instead.
                         _filler_list = (
-                            [_hs_decision.head] if _hs_decision.speak else None
+                            _FILLER_TOOLS.get(tool_name) if _hs_legacy
+                            else ([_hs_decision.head] if _hs_decision.speak else None)
                         )
                         if _filler_list and tts_text_queue is not None:
                             async def _tts_fn(text: str, _q=tts_text_queue) -> None:

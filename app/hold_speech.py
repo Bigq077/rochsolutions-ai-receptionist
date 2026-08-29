@@ -261,6 +261,31 @@ def clinic_facts(session) -> "tuple[bool, str]":
         return (False, "")
 
 
+def hold_speech_enabled(session) -> bool:
+    """Does THIS clinic route its hold phrases through the arbiter?
+
+    Defaults to FALSE, which is the pre-arbiter behaviour every live clinic
+    runs today. That default is what makes folding a clinic branch onto
+    canonical audibly neutral: the arbiter is canonical-only work, it changes
+    what a caller hears while waiting, and it has not yet been heard on a
+    patient line. A clinic opts in with `operational.hold_speech: true` once
+    someone has listened to it — one key, no code, no branch.
+
+    The OFF path is not silence and not an approximation: each producer falls
+    back to exactly the code it ran before cbde450e. A third behaviour that no
+    clinic has ever run would be worse than either of the two real ones.
+
+    Never raises, and fails to False — the safe side is the behaviour that is
+    already live.
+    """
+    try:
+        from app.clinic_config import get_clinic
+
+        return bool((get_clinic(session.get("clinic_id")) or {}).get("hold_speech"))
+    except Exception:  # pragma: no cover - defensive; live call path
+        return False
+
+
 @dataclass(frozen=True)
 class HoldDecision:
     """What to do while the caller waits. ``speak=False`` means stay silent."""
@@ -299,6 +324,26 @@ def render_head(kind: WorkKind, *, practitioner: str = "", index: int = 0) -> st
     return head
 
 
+def legacy_head(session, *, override: str = "") -> str:
+    """The phrase a producer would have spoken BEFORE the arbiter existed.
+
+    Sites A and B (`connection.py`) both did `random.choice(FILLER_PHRASES)`.
+    Site C additionally tried `confirm_write_filler` first, which it passes in
+    as ``override``. Reproduced here rather than at four call sites so the two
+    largest files in the repo gain one argument each instead of a second branch
+    in the middle of the turn loop.
+    """
+    if override:
+        return override
+    import random
+
+    # config.py, not filler_phrases.py — this is the list the pre-arbiter
+    # producers actually drew from (connection.py imported it from there).
+    from app.media_streams.config import FILLER_PHRASES
+
+    return random.choice(FILLER_PHRASES) if FILLER_PHRASES else ""
+
+
 def decide_hold(
     *,
     kind: WorkKind,
@@ -306,6 +351,9 @@ def decide_hold(
     caller_is_waiting: bool = True,
     practitioner: str = "",
     heads_used: int = 0,
+    legacy: bool = False,
+    legacy_override: str = "",
+    session=None,
 ) -> HoldDecision:
     """Whether to speak a hold phrase, and which one. PURE.
 
@@ -318,6 +366,17 @@ def decide_hold(
     output. A turn that answers immediately needs no hold phrase, and 175 of the
     stored ones were spoken on exactly such turns.
     """
+    # A clinic that has not opted in gets the behaviour it runs today: speak,
+    # every time, with no cross-producer latch and no reasoning about the work.
+    # That is the pre-arbiter answer, and it is deliberately NOT an improved
+    # version of it -- the point of the switch is that folding a clinic branch
+    # onto canonical changes nothing a caller hears until someone chooses it.
+    if legacy:
+        head = legacy_head(session, override=legacy_override)
+        if not head:
+            return HoldDecision(False, kind=kind, reason="legacy: no phrase")
+        return HoldDecision(True, head=head, kind=kind, reason="legacy")
+
     if head_already_spoken:
         return HoldDecision(False, kind=kind, reason="one head per turn")
     if not caller_is_waiting:

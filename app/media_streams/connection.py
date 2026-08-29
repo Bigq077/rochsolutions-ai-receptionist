@@ -9803,9 +9803,12 @@ class WebSocketCallHandler:
                                     WorkKind as _WorkKind,
                                     clinic_facts as _hs_facts,
                                     decide_hold as _hs_decide,
+                                    hold_speech_enabled as _hs_on,
                                 )
                                 _hs_prov, _hs_prac = _hs_facts(self.session)
                                 _hs_d = _hs_decide(
+                                    legacy=not _hs_on(self.session),
+                                    session=self.session,
                                     kind=_WorkKind.PATIENT_LOOKUP,
                                     head_already_spoken=bool(
                                         self.session.get("_hold_head_spoken")
@@ -13333,11 +13336,14 @@ class WebSocketCallHandler:
                                 from app.hold_speech import (
                                     WorkKind as _WorkKind,
                                     decide_hold as _hs_decide,
+                                    hold_speech_enabled as _hs_on,
                                 )
                                 from app.filler_phrases import (
                                     note_filler_played as _note_filler,
                                 )
                                 _hs_bridge = _hs_decide(
+                                    legacy=not _hs_on(self.session),
+                                    session=self.session,
                                     kind=_WorkKind.UNKNOWN_SLOW,
                                     head_already_spoken=bool(
                                         self.session.get("_hold_head_spoken")

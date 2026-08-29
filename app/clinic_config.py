@@ -1531,6 +1531,12 @@ def _map_json_to_clinic_contract(loaded: Dict[str, Any]) -> Dict[str, Any]:
     # the model ("TBC — varies by week"). This one is read by the slot
     # generator and decides what can actually be booked.
     clinic["open_on_bank_holidays"] = bool(op.get("open_on_bank_holidays", False))
+    # Route hold phrases through app/hold_speech.py rather than each
+    # producer choosing its own. Canonical-only work so far, and it changes
+    # what a caller hears while waiting, so it defaults OFF: a clinic branch
+    # folded onto canonical keeps the hold behaviour it runs today until
+    # someone has listened to the new one and opted in.
+    clinic["hold_speech"] = bool(op.get("hold_speech", False))
     clinic["slot_minutes"] = slot_minutes
     # Slot-offering increment (spacing between offered start times). An EXPLICIT
     # override only — e.g. 60 to force hourly starts. When unset it stays None so
