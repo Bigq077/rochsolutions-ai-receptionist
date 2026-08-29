@@ -1,9 +1,9 @@
 # Stop being the test harness — before the cohort lands
 
 **Status as of 2026-08-29, late evening.** Phase 1 done. **Phase 2 DONE — all
-three parts.** Phase 3 ready and blocked on an owner action. Phase 4 not started,
-both items re-confirmed live. Two live-call confirmations banked: the fourth
-clinic booking from config alone, and Theorem's emergency intercept. The
+three parts. Phase 4 DONE.** Phase 3 ready and blocked on an owner action.
+Two live-call confirmations banked: the fourth clinic booking from config
+alone, and Theorem's emergency intercept. The
 hold-speech decision is SETTLED — and the measurement that settled it says the
 filler architecture was aimed at the wrong latency source. See Phase 2.
 
@@ -47,7 +47,7 @@ all the way through and nothing since has challenged it.
 | **1 — Headless free-form driver** | ✅ Done. Found a live defect on day one. |
 | **2 — Adaptive caller + harvest the corpus** | ✅ **DONE.** Corpus harvested, detectors re-armed, hold speech settled, adaptive caller built and run. |
 | **3 — Collapse the tenancy** | 🟡 New-clinic path proved and live. Fold groundwork done. **The fold itself is blocked on an owner action.** |
-| **4 — Two contained slot fixes** | ❌ Not started. Both re-confirmed live on 29 Aug. |
+| **4 — Two contained slot fixes** | ✅ **DONE.** Both landed; the first was mis-scoped here and is corrected below. |
 
 ---
 
@@ -235,13 +235,37 @@ immediately. Both are fixes, but know them before you fold:
 `_ORPHAN_LEAD`'s widened word list (stops "What's available for Saturday." being
 spoken as a sentence) and the deletion of FillerGuard's 2.5s second clip.
 
-### Phase 4 — not started, both re-confirmed live 29 Aug
+### Phase 4 — DONE, 2026-08-29. `4dfd5ecf`, `c7392b4a`
 
-- **`_check_availability_published` calls neither `_cap_presented_slots` nor
-  `_sync_last_offered_to_spoken`** — the one producer of seven that skips both.
-  A latent defect on Vital Edge.
-- **`test_offer_record_matches_what_was_spoken.py` still pins one call site via
-  `inspect`.** Re-aim it at the invariant across all seven producers.
+Both items, and the first one was mis-scoped in this document.
+
+- **The published reader now runs the same ladder as the other six** —
+  `_cap_presented_slots(_filter_same_day_slots(…))` then
+  `_sync_last_offered_to_spoken`. It was returning every published day at once
+  and leaving the offer record holding three days while speech named two. That
+  record is indexed BY POSITION, so **"the third one" resolved to a date the
+  caller was never read out** — B-108b through the seventh door, and the
+  ordinal test fails before the fix, so it was a real route rather than a
+  cosmetic mismatch.
+
+  ⚠️ **This row said "a latent defect on Vital Edge". It is DORMANT, not
+  latent, and not on Vital Edge.** VE moved to `availability_mode: "diary"` on
+  8 Aug and its own `clinic.json` says the published mode must not be restored,
+  so no clinic reads that path today. It stays worth fixing because
+  **`published` is the DEFAULT for a provisional clinic** — the dispatch falls
+  through to it whenever `availability_mode` is unset — so the next provisional
+  clinic onboarded lands there, and VE's documented fallback is one config key.
+
+  Known gap, named rather than half-wired: `_name_the_other_matching_dates`
+  (B-110) is still absent from that reader. It needs `_pref_weekdays`, which
+  the reader does not compute — it filters on a preference string only.
+
+- **`test_offer_record_matches_what_was_spoken.py` is re-aimed at the
+  property.** The two `inspect` tests read the Acuity body for a string and
+  asserted its indentation was 12. Now: an AST walk requiring that every
+  function writing `session["last_offered_slots"]` also calls the aligner, plus
+  a second test stating the producer count out loud (seven, named) so nobody
+  counts them from a grep again — which is how B-110 was got wrong.
 
 The `last_offered_slots` three-contract restructure remains **post-webinar**.
 Written down; do not start it.
@@ -479,14 +503,8 @@ and a vacuous persona reports CLEAN.**
 
 In the order I would take it:
 
-1. **Phase 4 — the two contained slot fixes.** The only remaining engine
-   correctness work, and it is small. `_check_availability_published` calls
-   neither `_cap_presented_slots` nor `_sync_last_offered_to_spoken` — the one
-   producer of seven that skips both. **Anchored 2026-08-29 and it is LATENT:**
-   across 47 stored Vital Edge calls the cap is never exceeded (max 3 options
-   offered against a cap of 3), because a published reader only offers what the
-   practitioner put on the calendar. VE is also pending-confirmation, so a
-   mis-offered slot meets a human. Real, but not urgent.
+1. ~~**Phase 4 — the two contained slot fixes.**~~ **Done** — see Phase 4
+   above. The engine correctness backlog from this exercise is now empty.
 2. **`northgate.transfer_phone`** — one config line, owner's call.
 3. **The held port to the live clinics** — see below. Waiting on a full suite of
    test calls, which is now a command rather than an afternoon.
@@ -570,7 +588,7 @@ of 29 Aug, three from the suite and one from the call that verified it.
 
 | branch | tip | note |
 |---|---|---|
-| `latency-eval` | `12db001d` | canonical; also serves Northgate on the test line |
+| `latency-eval` | `c7392b4a` | canonical; also serves Northgate on the test line |
 | `jv_v2` | `b1a71242` | live — Joint Venture |
 | `vitaledge-onboarding` | `4330d1b8` | live — Vital Edge |
 | `theorem-onboarding` | `71d603c7` | live — Theorem; **314 behind**, stays separate by decision |
