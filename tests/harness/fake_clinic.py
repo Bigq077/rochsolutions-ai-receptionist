@@ -136,6 +136,26 @@ class FakeDiary:
 
     # -- writes --------------------------------------------------------------
 
+    def seed_booking(self, name: str, phone: str, start: datetime,
+                     service: str = "physiotherapy assessment",
+                     duration_min: int = 60) -> Booking:
+        """An appointment that already existed when the call started.
+
+        You cannot cancel or move what was never booked, so the personas that
+        ring to do either need one of these. It goes through `book()` rather
+        than straight onto the list, so the slot is taken out of availability
+        exactly as a real prior booking would be -- otherwise Susie can offer
+        the caller the very slot they are ringing to cancel.
+        """
+        booking = Booking(
+            start=start.isoformat(),
+            end=(start + timedelta(minutes=duration_min)).isoformat(),
+            name=name, phone=phone, service=service,
+            duration_min=duration_min, raw_args={"seeded": True},
+        )
+        self.book(booking)
+        return booking
+
     def book(self, booking: Booking) -> None:
         self.bookings.append(booking)
         try:
