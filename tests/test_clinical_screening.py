@@ -44,9 +44,40 @@ def ve():
 # Layer 1 — deterministic classifier
 # ─────────────────────────────────────────────────────────────────────────
 class TestScreeningClassifier:
-    def test_enabled_for_jv_not_ve(self, jv, ve):
+    def test_jv_screens_and_ve_only_intercepts_emergencies(self, jv, ve):
+        """Vital Edge turned screening ON in 2026-08-29, for emergencies ONLY.
+
+        It is a MASSAGE clinic — tension, stiffness, recovery — so physio-style
+        red-flag triage is clinically mismatched and commercially damaging, and
+        UK practice takes massage contraindications at the appointment on an
+        intake form. What it does need is a deterministic answer when a caller
+        volunteers chest pain mid-booking, which before this rested entirely on
+        the model.
+
+        The load-bearing half is the SECOND assertion: enabled with ZERO
+        screens. Add a screen to vital_edge's config and Susie starts asking a
+        massage caller MSK safety questions, so that stays pinned.
+        """
         assert cs.screening_enabled(jv)
-        assert not cs.screening_enabled(ve)
+        assert cs.screening_enabled(ve)
+        assert len(cs._screens(jv)) > 0
+        assert cs._screens(ve) == [], (
+            "vital_edge has gained proactive screens. It is a massage clinic "
+            "and its block is emergency-intercept-only by design — see the "
+            "_note in its clinic.json before changing this."
+        )
+
+    def test_a_massage_enquiry_arms_nothing_on_vital_edge(self, ve):
+        """The behaviour the empty `screens` list buys, asserted end to end."""
+        for utterance in ("my shoulder is really tight",
+                          "my lower back has been stiff for weeks",
+                          "i'd like a sports massage please"):
+            assert cs.update_screening_state({}, ve, utterance)["action"] == "none"
+
+    def test_a_volunteered_emergency_is_intercepted_on_vital_edge(self, ve):
+        r = cs.update_screening_state({}, ve, "i'm having chest pain")
+        assert r["action"] == "emergency"
+        assert "999" in (r["speak"] or "")
 
     def test_lower_back_arms_cauda_screen(self, jv):
         """Arming now SPEAKS the screen question deterministically (baec415)
@@ -432,8 +463,19 @@ class TestBookingBackstop:
         assert booking_blocked_reason({}, jv) is None
         assert booking_blocked_reason({"screens_completed": ["cauda_equina"]}, jv) is None
 
-    def test_disabled_clinic_not_blocked(self, ve):
-        assert booking_blocked_reason({"pending_screen": "cauda_equina"}, ve) is None
+    def test_disabled_clinic_not_blocked(self):
+        """A clinic with no screening config must never be blocked from booking.
+
+        Used to use `ve` as the stand-in for "a disabled clinic". vital_edge
+        enabled screening (emergencies only) on 2026-08-29 and this test went
+        red for a reason that had nothing to do with the invariant — the
+        clinic-pinned-fixture trap. Built from a literal instead, so it tests
+        the rule rather than whichever real clinic happens to be off today.
+        """
+        disabled = {"clinic_id": "no_screening_configured"}
+        assert not cs.screening_enabled(disabled)
+        assert booking_blocked_reason(
+            {"pending_screen": "cauda_equina"}, disabled) is None
 
 
 # ─────────────────────────────────────────────────────────────────────────
