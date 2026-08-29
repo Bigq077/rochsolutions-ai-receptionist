@@ -37,12 +37,51 @@ yet regenerated its clips gets.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 from pathlib import Path
 from typing import Awaitable, Callable, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+#: What each clip says, from audio_clips/CLIPS.json.
+#:
+#: The clip is AUDIO, so nothing downstream can read its words -- and two things
+#: need them: join_after_head, to make the reply continue the clause rather than
+#: restart after it, and the duplicate-opener strip, so the model does not say
+#: the same sentence 1-2s later. Until now the wording was a string literal in
+#: the middle of _fire(), which meant recutting the audio and updating the text
+#: were two separate acts of remembering.
+#:
+#: ``open_clause`` is the field that matters. A CLOSED clip ends in the ellipsis
+#: -- a falling contour and a pause, which IS the canned-filler sound -- so it
+#: has to be the only hold speech in its turn. An OPEN clip is an unfinished
+#: clause the situational head completes, and only then may both speak.
+_MANIFEST_PATH = Path(__file__).resolve().parents[2] / "audio_clips" / "CLIPS.json"
+
+_DEFAULT_CLIP = {"text": "Let me just check that for you\u2026", "open_clause": False}
+
+
+def clip_manifest(stem: str = "filler_checking") -> dict:
+    """What this clip says and whether it ends open. Never raises.
+
+    Falls back to the shipped CLOSED wording, which is the safe side: a clip
+    wrongly treated as closed costs one suppressed head, while a clip wrongly
+    treated as open makes the caller hear two ways of saying the same thing.
+    """
+    try:
+        data = json.loads(_MANIFEST_PATH.read_text(encoding="utf-8"))
+        entry = (data.get("clips") or {}).get(stem)
+        if isinstance(entry, dict) and entry.get("text"):
+            return {
+                "text": str(entry["text"]),
+                "open_clause": bool(entry.get("open_clause")),
+            }
+    except Exception:  # pragma: no cover - defensive; live call path
+        logger.warning("[ms_filler] clip manifest unreadable; assuming closed")
+    return dict(_DEFAULT_CLIP)
 
 
 def expect_slot_presentation(
@@ -362,11 +401,20 @@ class FillerGuard:
                 # this to strip the duplicate. The text ends closed, like the
                 # clip's own falling contour, so the reply is not decapitalised
                 # to continue a sentence the audio already finished.
+                _manifest = clip_manifest()
                 note_filler_played(
                     _session,
                     is_write=False,
-                    text="Let me just check that for you…",
+                    text=_manifest["text"],
                 )
+                if _manifest["open_clause"]:
+                    # An OPEN clip is a pre-head: it has said "Let me just
+                    # check -" and the situational head completes it with the
+                    # caller's own subject. Clearing the latch is what lets that
+                    # second half speak; note_filler_played sets it because a
+                    # CLOSED clip must be the last word on the turn.
+                    _session["_hold_head_spoken"] = False
+                    _session["_clip_is_open_head"] = True
             except Exception:  # pragma: no cover - never break the clip on this
                 logger.warning("[ms_filler] could not register in filler cooldown")
             logger.info(

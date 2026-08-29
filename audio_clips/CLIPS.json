@@ -1,0 +1,40 @@
+{
+  "_readme": [
+    "What each recorded hold clip SAYS, and whether it ends open.",
+    "",
+    "The clip is audio, so nothing downstream can read its words. Two things",
+    "need them: join_after_head, to make the model's reply continue the clause",
+    "rather than restart after it, and the duplicate-opener strip, so the model",
+    "does not say the same sentence 1-2s later.",
+    "",
+    "open_clause is the important field. A CLOSED clip ends in a full stop or",
+    "the ellipsis -- ElevenLabs renders that as a falling contour plus a pause,",
+    "which is the canned-filler sound -- and it must be the ONLY hold speech in",
+    "its turn, or the caller hears two ways of saying the same thing. An OPEN",
+    "clip is an unfinished clause the situational head continues:",
+    "",
+    "    [clip 350ms] 'Let me just check -'",
+    "    [head  600ms] '... what Saturday looks like -'",
+    "    [reply]       'half past nine in the morning is free.'",
+    "",
+    "So open_clause=false means the clip latches _hold_head_spoken and nothing",
+    "else speaks; open_clause=true means it records its wording for the join but",
+    "leaves the latch clear so the head may follow.",
+    "",
+    "THE SHIPPED CLIP IS CLOSED. Changing this flag without recutting the audio",
+    "makes the caller hear 'Let me just check that for you...' followed by 'Let",
+    "me see what Saturday looks like -', which is the exact double-phrase defect",
+    "the arbiter exists to remove. Recut first, then flip it.",
+    "",
+    "Recutting needs the LIVE ElevenLabs voice. It is a paid Voice Library",
+    "voice: a free key returns 402 and synthesise_filler falls back to a",
+    "different voice, which is how a clip in the wrong person's voice shipped",
+    "once already. Run scripts/synthesise_filler.py with the live key."
+  ],
+  "clips": {
+    "filler_checking": {
+      "text": "Let me just check that for you…",
+      "open_clause": false
+    }
+  }
+}
