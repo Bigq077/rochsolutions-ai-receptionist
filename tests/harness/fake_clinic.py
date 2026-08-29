@@ -496,7 +496,13 @@ def build_tool_executors(diary: FakeDiary, calls: List[ToolCall],
         if not found:
             return {"success": False, "error": "no matching appointment"}
         old = found[0]
-        new_start = args.get("new_start") or args.get("start") or args.get("new_time")
+        # `new_slot_iso` is what the REAL schema requires. The first version of
+        # this stub guessed new_start/start/new_time, so every reschedule
+        # returned "no new time given" and the engine honestly told the caller
+        # the move had failed -- a harness bug wearing the costume of an engine
+        # one. test_the_fakes_accept_what_the_real_schemas_require now pins it.
+        new_start = (args.get("new_slot_iso") or args.get("new_start")
+                     or args.get("start") or args.get("new_time"))
         if not new_start:
             return {"success": False, "error": "no new time given"}
         diary.cancel_booking(old)

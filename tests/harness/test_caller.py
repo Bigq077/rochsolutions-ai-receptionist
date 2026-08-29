@@ -469,3 +469,54 @@ def test_the_fake_lookup_reads_the_diary():
         {"patient_name": "Alan Brookes", "phone": "+447700900141",
          "location": "didsbury"}, {}))
     assert diary.bookings == [], "cancel did not remove the booking"
+
+
+def test_the_fakes_accept_what_the_real_schemas_require():
+    """A stub that does not speak the real tool's argument names is a stub that
+    always fails.
+
+    `reschedule_appointment` requires `new_slot_iso`; the first version of the
+    fake looked for `new_start`, so every move returned "no new time given" and
+    the engine correctly told the caller it had failed. The call looked like an
+    engine defect and was a harness one.
+
+    Checked against the shipped schemas rather than a copy of them, so a rename
+    in receptionist_tools fails here instead of on a call.
+    """
+    import asyncio
+
+    from app.tools import receptionist_tools as rt
+    from tests.harness.fake_clinic import FakeDiary, build_tool_executors
+
+    diary = FakeDiary.weekly(start=datetime(2026, 9, 1, 9, 0), days=7,
+                             times=["09:00", "10:00"])
+    diary.seed_booking("Alan Brookes", "07700 900141", datetime(2026, 9, 4, 10, 0))
+    table = build_tool_executors(diary, [])
+
+    # The shipped schemas are module-level TOOL_* dicts.
+    schemas = {
+        obj["name"]: obj["input_schema"]
+        for obj in vars(rt).values()
+        if isinstance(obj, dict) and "input_schema" in obj and "name" in obj
+    }
+
+    for tool in ("lookup_patient", "cancel_appointment", "reschedule_appointment"):
+        schema = schemas.get(tool)
+        assert schema, f"no shipped schema for {tool}"
+        args = {}
+        for field in schema.get("required", []):
+            if field == "new_slot_iso":
+                args[field] = datetime(2026, 9, 5, 9, 0).isoformat()
+            elif field == "duration_minutes":
+                args[field] = 60
+            elif field == "phone":
+                args[field] = "+447700900141"
+            elif field in ("patient_name", "name"):
+                args[field] = "Alan Brookes"
+            else:
+                args[field] = "didsbury"
+        result = asyncio.run(table[tool](args, {}))
+        assert isinstance(result, dict), tool
+        assert result.get("error") != "no new time given", (
+            f"{tool} did not understand its own required arguments: {args}"
+        )
