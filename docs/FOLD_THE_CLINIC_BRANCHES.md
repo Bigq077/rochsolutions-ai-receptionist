@@ -132,3 +132,61 @@ and needs the per-clinic Google token cut-over
 (`/auth/google/start?clinic_id=<id>`) finished first, because a shared Redis
 with a legacy global token key is one authorisation away from writing one
 practice's bookings into another's calendar.
+
+---
+
+## ⚠️ Correction: the fold is NOT behaviour-neutral
+
+The section above measures what the BRANCHES have that canonical lacks, and
+concludes the fold costs two env vars. That is true and it is not the whole
+picture. Canonical is ~200 commits ahead, so folding also hands a live clinic
+every one of those changes at once:
+
+| | inherits |
+|---|---|
+| `jv_v2` | 28 app/ commits — **3,891 insertions, 163 deletions** |
+| `vitaledge-onboarding` | 43 app/ commits — **3,839 insertions, 224 deletions** |
+
+A superset is not automatically safe. Two consequences point in opposite
+directions, and both are real.
+
+### It is how Vital Edge gets clinical safety work it does not have
+
+`app/media_streams/clinical_screening.py` is **1,426 lines on canonical and on
+jv_v2, and 1,117 on vitaledge-onboarding** — 309 lines short. JV took the
+screening port; Vital Edge did not. Among the fixes VE is missing:
+
+- the fracture screen was asked backwards
+- a caller who DENIED a red flag was graded "unclear"
+- "I don't know" cleared a clinical red-flag screen
+- an injury described in ordinary words armed no screen
+- a safety screen could sit pending for the rest of the call
+
+That is a live patient line running an older safety layer. It is separable from
+the fold and worth doing on its own merits.
+
+### It would also change what live callers hear
+
+`app/hold_speech.py` exists **only on canonical** and has **no flag** — it is
+unconditional. It replaces six independent hold-phrase producers with one
+arbiter, which is an improvement, but it is recent, unvalidated on a live
+clinic, and it changes what a caller hears while waiting. Four commits:
+`feat(hold)` x3 and `fix(hold)` x1.
+
+The owner has asked that this specifically NOT reach the clinic branches.
+
+### What follows
+
+Fold ≠ "repoint and go". Either:
+
+1. **Make the fold behaviour-neutral by construction** — put the canonical-only
+   caller-audible work (hold speech first) behind a clinic.json or env flag
+   defaulting to today's live behaviour, so folding changes nothing audible and
+   each change is then switched on deliberately, per clinic, with a real call.
+   This is the option that scales to eighteen clinics.
+
+2. **Port the safety work the old way** and defer the fold. Correct, and it is
+   the 199-commit treadmill this plan exists to end.
+
+Recommended: (1), with the Vital Edge screening gap handled first and on its own,
+because it is a live clinical gap and should not wait for a tenancy decision.
