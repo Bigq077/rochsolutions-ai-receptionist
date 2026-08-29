@@ -259,14 +259,28 @@ waits for. 3000ms is the price of a *guess* — an empty marker has to earn its
 place by the caller having waited. "On price —" is correct the moment they ask
 the price, so it does not.
 
-**The clip as pre-head is built but OFF.** `audio_clips/CLIPS.json` declares
-each clip's wording and whether it ends open. The shipped clip is CLOSED and a
-test pins it. Flipping the flag without recutting the audio makes the caller
-hear "Let me just check that for you…" *and* "Let me see what Saturday looks
-like —" — the exact double-phrase defect. **The recut needs the live paid
-ElevenLabs voice** (a free key returns 402 and `synthesise_filler` falls back to
-a different voice — that is how a wrong-voice clip shipped once). `audio_clips/`
-still holds a pool of ONE, so do it as a batch.
+**The clip now stands down instead of chaining.** The pre-head design was chosen
+when the head was produced at tool detection (~2.2s), leaving 1.85s only the
+recording could cover. Reading the head from the caller's words moved it to
+**600ms**, so the clip's lead is ~370ms — and chaining would give "Let me just
+check —" then "Let me see what Saturday looks like —", two *let me* clauses a
+third of a second apart. So on a turn with a situational head the clip is
+suppressed; on a turn without one it still fires, which is what it is for.
+Gated on `hold_speech`: on a clinic with no arbiter, suppressing the clip is
+silence, not a better phrase.
+
+**The clip pool is cut — five recordings, not one.** `audio_clips/` held a
+single `filler_checking.ulaw` despite the rotation machinery shipping weeks
+earlier, so every hold moment on every clinic was the identical waveform, to the
+byte. That is the owner report of 2026-08-08 — *"latency is great but it sounds
+quite robotic"*. Variant 1 is byte-identical and was skipped, so the phrase a
+caller hears most often is unchanged. `test_each_pool_has_more_than_one_variant`
+had been red since it was written and is now green.
+
+`audio_clips/CLIPS.json` records each clip's wording and whether it ends open;
+the shipped clip is CLOSED and a test pins it. The second clip (`filler_moment`)
+is deleted — its files stay on disk so a rollback does not go silent, but
+nothing loads them.
 
 ### Defects found on the way
 
