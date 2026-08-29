@@ -50,7 +50,7 @@
       "sunday": "Closed"
     },
     "last_appointment": "Varies — determined by published slots",
-    "bank_holidays": "TBC — verify in real time with Jonathan"
+    "bank_holidays": "Open as normal on bank holidays - confirmed by the owner 2026-08-29. This line is PROSE and is rendered nowhere; operational.open_on_bank_holidays is the key the slot generator reads."
   },
   "operational": {
     "_note": "Flattened by get_clinic into the legacy clinic contract. booking_system google_calendar_provisional drives the calendar-read + provisional-write + notify path. working_hours is intentionally all-closed — availability comes from the published calendar, not generated.",
@@ -94,6 +94,7 @@
     "_days_ahead_note": "Owner requirement 8 Aug 2026: bookable from tomorrow out to roughly two/two-and-a-half weeks. Hard ceiling enforced in both availability readers.",
     "days_ahead": 17,
     "_same_day_note": "FALSE since 8 Aug 2026. Was true for the published model, where a same-day slot could only exist if Jonathan had published it. Under 'diary' a same-day gap is merely a time he has not filled yet, and he confirms every booking by hand — so he cannot be held to today.",
+    "open_on_bank_holidays": true,
     "allow_same_day": false,
     "primary_location": "kingston",
     "_working_hours_note": "Envelope only — NOT published slots, and NOT a claim about when he works. Jonathan publishes nothing and keeps using his diary exactly as he did; these bounds only say when Susie may PROPOSE, and everything in the diary (client work AND padel AND personal entries) is subtracted from them. last_appointment is the last START time, so 18:00 means a 60-minute session finishes at 19:00. Owner, 8 Aug 2026: essentially every day, 9am-7pm. Susie must still never quote these as opening hours.",
@@ -104,7 +105,7 @@
       "thu": { "open": "09:00", "last_appointment": "18:00" },
       "fri": { "open": "09:00", "last_appointment": "18:00" },
       "sat": { "open": "09:00", "last_appointment": "18:00" },
-      "sun": { "open": "09:00", "last_appointment": "18:00" }
+      "sun": null
     }
   },
   "prompt_engine": "template_v1",

@@ -355,17 +355,13 @@ def test_a_clinic_json_saved_on_windows_still_loads(new_clinic, monkeypatch):
 # Live config problems the checklist finds that are NOT ours to fix silently.
 # Each needs an owner decision about a real clinic, so it is recorded here
 # rather than either changing a live clinic on a guess or weakening the check.
-KNOWN_OPEN = {
-    "vital_edge": [
-        # opening_hours.kingston.sunday says "Closed" while
-        # operational.working_hours.sun is 09:00-18:00. Both are live:
-        # _check_availability_diary reads working_hours and hands it to the
-        # slot generator, and opening_hours is what Susie reads out. Because
-        # the diary reader treats an empty day as FREE, an unworked Sunday
-        # looks wide open. Needs the practitioner to say whether he works
-        # Sundays -- guessing either way changes a live clinic's bookable week.
-        "sunday",
-    ],
+KNOWN_OPEN: dict = {
+    # Empty, and that is the point: vital_edge's Sunday disagreement was the
+    # only entry, and it is resolved (2026-08-29 — Jonathan does not work
+    # Sundays, so operational.working_hours.sun is null and both hours
+    # blocks agree). test_the_known_open_problems_are_still_real is what
+    # forced this to be cleared rather than left to rot: it failed the
+    # moment the exemption stopped describing something real.
 }
 
 

@@ -114,37 +114,62 @@ async def test_the_opt_in_returns_an_empty_set_not_none():
                       frozenset)
 
 
-def test_every_generated_clinic_on_this_branch_is_closed_by_default():
-    """The clinics that were exposed — resolved from disk, not hardcoded.
+# Clinics whose owner has SAID they work bank holidays. Opting in is a real
+# clinical/commercial fact about a named practitioner, so it is recorded here
+# with who confirmed it and when — not left as a bare `true` in a config file
+# that the next clinic will be cloned from.
+BANK_HOLIDAY_OPT_IN = {
+    "jv_v1": "Marcus — confirmed by the owner 2026-08-29",
+    "vital_edge": "Jonathan — confirmed by the owner 2026-08-29",
+}
 
-    Naming jv_v1 / vital_edge / northgate here would measure whichever of them
-    happens to exist on the branch under test: `northgate` lives only on
-    canonical, and on a clinic branch get_clinic() would fall back to DEMO and
-    quietly assert nothing. That is the clinic-pinned-test trap, and this file
-    has to survive being ported to three branches.
+
+def test_no_clinic_works_bank_holidays_without_someone_having_said_so():
+    """A clinic may open on bank holidays — but only on purpose.
+
+    The danger is not the two clinics that opted in, it is the fifth clinic.
+    Onboarding is a COPY: clone jv_v1 for a new tenant and you inherit
+    `open_on_bank_holidays: true` along with everything else, and that clinic
+    starts taking bank-holiday bookings without anyone having asked its
+    practitioner. Same shape as the calendar_id trap — a value that is correct
+    for the donor and wrong for the copy, and silent either way.
+
+    So the assertion is not "everyone is closed", it is "anyone open is on this
+    list". Adding a clinic here should mean someone actually asked them.
     """
-    checked = []
+    unconfirmed = []
     for path in sorted((REPO / "app" / "clinics").glob("*/clinic.json")):
         cid = path.parent.name
-        # Must be a clinic that genuinely LOADS from json: get_clinic always
-        # injects clinic_id, even on the demo fallback, so the returned id
-        # cannot tell you whether the file parsed. app/clinics/demo/clinic.json
-        # is Python source with a .json extension and resolves to the legacy
-        # CLINICS dict, which never goes through the mapper and so has no such
-        # key at all — falsy, hence closed, but not the contract under test.
-        if cc._load_clinic_json(cid) is None:
+        if cc._load_clinic_json(cid) is None or cid in cc.CLINICS:
             continue
         clinic = cc.get_clinic(cid)
-        if cid in cc.CLINICS:
-            continue                      # legacy dict wins over the file
         if not (clinic.get("booking_system") or "").startswith("google_calendar"):
-            continue                      # Acuity clinics generate no slots here
-        checked.append(cid)
-        assert clinic.get("open_on_bank_holidays") is False, (
-            f"{cid} opts into bank holidays — deliberate? If so this test "
-            "needs to know about it; if not, it will book someone onto one.")
+            continue
+        if clinic.get("open_on_bank_holidays") and cid not in BANK_HOLIDAY_OPT_IN:
+            unconfirmed.append(cid)
 
-    assert checked, "no google_calendar clinic found — this would prove nothing"
+    assert not unconfirmed, (
+        f"{unconfirmed} open on bank holidays with nobody recorded as having "
+        "said so. If their practitioner confirmed it, add them to "
+        "BANK_HOLIDAY_OPT_IN with who and when. If this came along with a "
+        "copied clinic.json, set operational.open_on_bank_holidays false — the "
+        "default — until someone asks them.")
+
+
+def test_the_opt_ins_actually_get_bank_holiday_slots():
+    """The other half: an opt-in that does not reach the generator is a lie."""
+    import asyncio
+
+    for cid in BANK_HOLIDAY_OPT_IN:
+        closed = asyncio.run(rt._closed_dates_for(cc.get_clinic(cid)))
+        assert AUGUST_BANK_HOLIDAY not in closed, (
+            f"{cid} is recorded as working bank holidays but the generator "
+            "still blocks them")
+
+
+def test_a_clinic_that_has_not_decided_stays_closed():
+    """northgate has no practitioner to ask — it must stay on the safe default."""
+    assert cc.get_clinic("northgate").get("open_on_bank_holidays") is False
 
 
 # ---------------------------------------------------------------------------
