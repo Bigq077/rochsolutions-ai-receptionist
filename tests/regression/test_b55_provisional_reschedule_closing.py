@@ -155,7 +155,21 @@ UNCHANGED_CLINIC_PROMPTS = {
     # byte-identical across this change (they render neither template block).
     # Only the two template_v1 clinics move - jv_v1 here, vital_edge
     # deliberately unpinned. Recomputed on THIS branch; do not copy across.
-    "jv_v1": "8f4f8eb0c44033eb",
+    #
+    # Re-pinned 2026-08-30 (O-1, ported from latency-eval 2d72f87a): the booking
+    # sequence gained rung "1c. SESSION LENGTH", ordering the length question
+    # BEFORE the timing question. The question is not new -- it rendered as a
+    # free-floating "DURATION QUESTION FOR <SERVICE>" fact with no position in
+    # the ladder, so the only thing that ever forced it was the tool-time
+    # `duration_choice_gate`, i.e. after the caller had already answered a
+    # timing question. Owner-reported by ear from the demo line, and verified
+    # there on a live call before this port.
+    #
+    # Gated on `_spine_has_duration_choice(clinic)`, a predicate over the
+    # services catalogue -- so jv_v1 moves (Sports Massage 30/60) and demo,
+    # theorem and theorem_v3 do not. HASH RECOMPUTED ON THIS BRANCH: canonical's
+    # value for the same commit is d4fb03b5e5b56c7e, which is NOT valid here.
+    "jv_v1": "6c304fe4952d23a1",
     "theorem": "8565be9a48a7a9aa",
     "theorem_v3": "761036c8d0da91ed",
 }
