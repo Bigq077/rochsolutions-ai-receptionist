@@ -59,16 +59,25 @@ live_llm = pytest.mark.skipif(
 
 # ── Which clinic does THIS branch have with a choice of lengths? ────────────
 
-def _a_clinic_with_a_length_choice():
-    """(clinic_id, service_dict) for a clinic this branch ships, or skip.
+def _clinics_with_a_length_choice() -> list:
+    """EVERY (clinic_id, service) on this branch with a choice of lengths.
 
     Discovered, never listed. A hardcoded id is the trap this repo keeps paying
     for: `northgate` is the demo line's clinic and no patient branch has it, and
     `get_clinic` on an unknown id does not raise — it returns a shape whose
     `services` is a list of strings, and the failure surfaces as an
     AttributeError deep inside a renderer.
+
+    ALL of them, not the first. The first version took whichever sorted first
+    and, on `vitaledge-onboarding`, that is `jv_v1` — so the file would have
+    verified the wrong clinic's config on Vital Edge's engine and reported it as
+    covering that branch. Every branch still ships every clinic directory (a
+    legacy of the shared repo) while serving exactly one, and nothing in the
+    tree reliably says which. Testing all of them removes the question instead
+    of guessing at it, and costs one model run each.
     """
     root = pathlib.Path(__file__).resolve().parents[2] / "app" / "clinics"
+    found = []
     for d in sorted(root.iterdir()):
         try:
             cfg = json.loads((d / "clinic.json").read_text(encoding="utf-8"))
@@ -82,11 +91,12 @@ def _a_clinic_with_a_length_choice():
             continue
         for svc in clinic.get("services") or []:
             if isinstance(svc, dict) and svc.get("typical_duration_minutes_options"):
-                return d.name, svc
-    pytest.skip(
-        "this branch ships no template_v1 clinic with a multi-length service, "
-        "so O-1 and the CA86c320ef guarantee are both N-A here"
-    )
+                found.append((d.name, svc))
+                break
+    return found
+
+
+CHOICE_CLINICS = _clinics_with_a_length_choice()
 
 
 LENGTH_Q = re.compile(
@@ -150,8 +160,7 @@ class _Caller:
         return "yes"
 
 
-async def _run_one():
-    clinic_id, svc = _a_clinic_with_a_length_choice()
+async def _run_one(clinic_id: str, svc: dict):
     opts = sorted(int(o) for o in svc["typical_duration_minutes_options"])
     longest = opts[-1]
 
@@ -186,10 +195,26 @@ async def _run_one():
     }
 
 
-@pytest.fixture(scope="module")
-def call_result():
+@pytest.fixture(
+    scope="module",
+    params=[c[0] for c in CHOICE_CLINICS] or [None],
+    ids=[c[0] for c in CHOICE_CLINICS] or ["no-multi-length-clinic"],
+)
+def call_result(request):
+    """One live call per multi-length clinic this branch ships.
+
+    An empty roster yields a single skipping case rather than zero cases: a
+    parametrize over [] makes the whole file vanish silently, which reads as
+    green and is how a branch could quietly have no coverage at all.
+    """
+    if request.param is None:
+        pytest.skip(
+            "this branch ships no template_v1 clinic with a multi-length "
+            "service, so O-1 and the CA86c320ef guarantee are both N-A here"
+        )
     import asyncio
-    return asyncio.run(_run_one())
+    svc = next(s for cid, s in CHOICE_CLINICS if cid == request.param)
+    return asyncio.run(_run_one(request.param, svc))
 
 
 # ── 1. O-1: the length question comes first ────────────────────────────────
