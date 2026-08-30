@@ -2389,6 +2389,59 @@ def offer_day_hides_times(session: Dict[str, Any]) -> bool:
     return False
 
 
+#: Session key: the offer the exhaustion sentence has already been said about.
+EXHAUSTION_SAID_KEY = "_exhaustion_sentence_said_for"
+
+
+def exhaustion_offer_signature(session: Dict[str, Any]) -> str:
+    """What "that day" and "those times" refer to right now. PURE.
+
+    The DATE alone is not enough. A caller who is told a day is finished, then
+    gets a real lookup that puts new times on that same date, is entitled to
+    hear the sentence again if the new offer is also complete -- that is a new
+    fact, not a repeat. The offer's own slots are what changed, so they are
+    what the signature is built from.
+
+    Returns "" when the session cannot answer, which reads as "no previous
+    claim" and therefore never suppresses.
+    """
+    try:
+        offered = session.get("last_offered_slots") or []
+        if not isinstance(offered, list) or not offered:
+            return ""
+        starts = sorted(
+            str((o or {}).get("start") or "") for o in offered if isinstance(o, dict)
+        )
+        starts = [s for s in starts if s]
+        if not starts:
+            return ""
+        return "|".join(starts)
+    except Exception:
+        return ""
+
+
+def exhaustion_sentence_already_said(session: Dict[str, Any]) -> bool:
+    """Has Susie already made this exact completeness claim about this offer?
+
+    Fails OPEN -- an unreadable session reports False and the sentence is
+    spoken. That is the right direction: the sentence is TRUE (it has already
+    passed exhaustion_claim_is_supported), so the cost of a wrong False is one
+    repetition, while a wrong True would swallow a correct answer the first
+    time the caller asks.
+    """
+    sig = exhaustion_offer_signature(session)
+    if not sig:
+        return False
+    return session.get(EXHAUSTION_SAID_KEY) == sig
+
+
+def note_exhaustion_sentence_said(session: Dict[str, Any]) -> None:
+    """Record that it has been said, against the offer it was said about."""
+    sig = exhaustion_offer_signature(session)
+    if sig:
+        session[EXHAUSTION_SAID_KEY] = sig
+
+
 def exhaustion_claim_is_supported(session: Dict[str, Any]) -> bool:
     """May Susie say "I don't have any further times on that day"?
 
@@ -2484,6 +2537,17 @@ def try_unspoken_followup_speech(
                     "through to a real lookup."
                 )
                 return None
+            if exhaustion_sentence_already_said(session):
+                # Said once about this same offer already. The caller has asked
+                # again, so repeating it word for word answers nothing -- fall
+                # through and let a real lookup happen instead.
+                logger.info(
+                    "[slot_followup] the exhaustion sentence has already been "
+                    "said about this offer -- not repeating it verbatim; "
+                    "falling through to a real lookup"
+                )
+                return None
+            note_exhaustion_sentence_said(session)
             return format_next_batch_speech([], False)
         return None
 
@@ -2524,6 +2588,14 @@ def try_unspoken_followup_speech(
                     "through to a real lookup."
                 )
                 return None
+            if exhaustion_sentence_already_said(session):
+                logger.info(
+                    "[slot_followup] the exhaustion sentence has already been "
+                    "said about this offer -- not repeating it verbatim; "
+                    "falling through to a real lookup"
+                )
+                return None
+            note_exhaustion_sentence_said(session)
             return format_next_batch_speech([], False)
         return apply_next_batch_to_session(session, batch, more)
 
