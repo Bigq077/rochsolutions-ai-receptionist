@@ -1,7 +1,10 @@
 # Stop being the test harness — before the cohort lands
 
-**Status as of 2026-08-29, late evening.** Phase 1 done. **Phase 2 DONE — all
+**Status as of 2026-08-30, early morning.** Phase 1 done. **Phase 2 DONE — all
 three parts. Phase 4 DONE.** Phase 3 ready and blocked on an owner action.
+**The two ungated items are PORTED and live on all three patient lines**, and
+the four findings of the 2026-08-30 demo call are fixed on canonical — see
+"The 2026-08-30 call" and "The port — DONE" below.
 Two live-call confirmations banked: the fourth clinic booking from config
 alone, and Theorem's emergency intercept. The
 hold-speech decision is SETTLED — and the measurement that settled it says the
@@ -512,34 +515,122 @@ In the order I would take it:
 1. ~~**Phase 4 — the two contained slot fixes.**~~ **Done** — see Phase 4
    above. The engine correctness backlog from this exercise is now empty.
 2. ~~**`northgate.transfer_phone`**~~ — **done**, `deb0dc76`.
-3. **The held port to the live clinics** — see below. Waiting on a full suite of
-   test calls, which is now a command rather than an afternoon.
-4. **Phase 3, the fold.** Blocked on you, not on engineering.
+3. ~~**The held port to the live clinics**~~ — the **two ungated items are
+   done**, 2026-08-30. See "The port — DONE" below for what landed and what is
+   still held.
+4. ~~**The four findings of the 2026-08-30 demo call.**~~ **Done** on canonical
+   — see below. Findings 2's fix APPLIES to the live branches and is the next
+   thing in this queue, once someone places a call on the demo line to hear it.
+5. **Phase 3, the fold.** Blocked on you, not on engineering.
 
 Not started and deliberately so: the `last_offered_slots` three-contract
 restructure stays post-webinar.
 
-### The port to the live clinics — HELD, deliberately
+### The port — the two ungated items are DONE, 2026-08-30
 
-Owner decision 2026-08-29, after two confirming calls on Northgate: **wait for a
-full suite of test calls before any of this reaches a patient line.** Nothing
-below is blocked on engineering.
+Owner decision 2026-08-29 held everything gated on `hold_speech` until a suite
+of test calls. The two items that are **not** gated — they reach a patient line
+whether or not anyone ever sets the flag — were released on the owner's
+go-ahead and are live on all three patient branches.
 
-Held, and worth doing together when the calls are done:
+| branch | commits |
+|---|---|
+| `vitaledge-onboarding` | `6ece8afd`, `3d2486ee` |
+| `jv_v2` | `cb2683d2`, `945e371c` |
+| `theorem-onboarding` | `d692e943`, `1afa95d2` |
 
-- **`_ORPHAN_LEAD`.** All four branches run `_strip_interim_opener`; only
-  canonical has the guard. JV, Vital Edge and Theorem can speak "While I look
-  that up." to a patient today. Port the WIDENED word list, not the original —
-  the original stopped one word short of the commonest opener in the corpus.
-- **The clip pool.** Five recordings against the one waveform every live clinic
-  has replayed since the rotation code shipped. Pure audio, no behaviour change,
-  and it is the 2026-08-08 "sounds quite robotic" report.
+- ✅ **`_ORPHAN_LEAD`, widened.** Reproduced on each branch before the fix:
+  "Bear with me while I look that up. Thursday at ten is free." was spoken as
+  *"While I look that up. Thursday at ten is free."*
+
+  ⚠️ **It does not port as a straight copy, and the reason is worth keeping.**
+  On canonical the stripper is reached ONLY through `join_after_head`, which
+  returns the original chunk when the strip leaves nothing. The live branches
+  call `_strip_interim_opener` DIRECTLY at two sites with no such fallback, so
+  the guard — which may legitimately consume the whole chunk — would have
+  turned "Let me check. When would you like to come in?" into silence. The
+  fallback ported with it as `... or chunk`, and an AST test fails if a third
+  call site is ever added without one.
+
+- ✅ **The clip pool.** The four new recordings, byte-identical variant 1
+  skipped. Pure audio: the rotation code was already on all three branches with
+  nothing to draw from. One consequence in code — the play-duration bound moves
+  2.60s → 2.93s, because the longest of the five is 1.72s against the
+  original's 1.39s. `_PLAY_SECS_HEADROOM` is 4.0s. All three occurrences of that
+  number moved together.
+
+Each branch: two clean sequential baseline runs of the full suite, then one
+after. **Exactly one test changed state on each, and it went GREEN** —
+`test_each_pool_has_more_than_one_variant[filler_checking]`, red since it was
+written. VE 120→119, JV 110→109, Theorem 115→114.
+
+Still HELD, and still waiting on the calls:
+
 - **FillerGuard's second clip.** Still live on all three.
 - **The phone-confirm verdict** and **the transfer latch.** Both APPLY to all
   four branches; the A4 loop they fix is the one `detect_defects` counts 144
   times across the corpus.
 - **The self-dial guard** in `resolve_transfer_target` — applies wherever a
   clinic has no `transfer_phone`, which today is Theorem as well as northgate.
+
+### The 2026-08-30 call — four findings, all fixed on canonical
+
+The call that licensed the port. All four of the 29 Aug fixes held on build
+`9e8d22bcc8fa`, with a log line for each; criterion 1 of the call sheet (zero
+stacked pairs) passed, having been the one that failed. Two bonuses: the
+booking wrote `duration_minutes: 60` and the diary agreed, and the slot
+follow-up opened hidden times instead of one slot per day.
+
+What it surfaced that was new — canonical `f936624c`, `a560f5dc`, `e1ebcf9a`,
+`5ab3fcc5`, full suite 123 → 123, **identical failing set**, 22 new tests.
+
+1. **After a numbered readout, no diary head could ever fire again.**
+   `_CONFIRM_Q` listed `\bnumber \d\b` to catch a confirm question, and a slot
+   readout always says "Number 1, ... Number 2, ...", so from the first offer
+   onwards every turn read as answering one. 244 suppressions in the corpus,
+   186 from that token.
+
+   **Deleting it would have been wrong**: I read the 186 and most are genuine
+   selections that should stay silent. It was a PROXY for a question the engine
+   already answers on data — B-90's "is this utterance one of the labels just
+   offered?" — so `classify_intent` now takes that verdict as `slot_selection`,
+   the same shape as `screen_pending`. That rule had THREE definitions and now
+   has one (`utterance_is_slot_selection`): the inline B-90 site, a
+   hand-written mirror in B-90's own test, and this proxy.
+
+2. **The same sentence twice, six seconds apart.** The deterministic
+   exhaustion sentence — "I don't have any further times on that day" — is a
+   completeness claim about one offer, so it carries its information once and
+   nothing at all the second time. Now earned once per OFFER (not per day: a
+   real lookup that puts new times on the same date is a new fact). The second
+   ask falls through to a real lookup, which asserts nothing.
+
+   ⚠️ **This one APPLIES to all four branches** and is the next port.
+
+3. **The session length was asked twice**, two minutes after the caller
+   answered. The engine half was right throughout — `_service_duration_choice`
+   latched and the booking was written at a real 60 minutes. The model simply
+   had no way to see it. It now rides in CALL STATE's `already known (do NOT
+   re-ask)` list, in BOTH template producers. Deliberately not a suppression
+   rule: "suppression cannot beat an instruction", third instance.
+
+4. **My own latch read text Gate 5 may delete.** The pre-tool hold latch is set
+   from `full_text`, the raw tokens. At 23:59:19 it latched on "Just a moment
+   while I check what's available." — a sentence `_BANNED_SENTENCE_RE` had
+   removed one line earlier. Harmless there; the general case is the tool-time
+   producer standing down for speech nobody heard. **Revoked rather than
+   predicted**, at the end of the streaming call, and the revocation asks
+   `_spoken_this_turn` (post-Gate-5) the same question the latch asked
+   `full_text`. `_any_tts_emitted` is NOT that question — the gate can delete
+   the hold sentence while another sentence of the same reply survives.
+
+**Three existing tests were re-aimed, and all three were text scans.** That is
+now instances four, five and six of the recorded trap, and the shape has
+changed: these did not fail to tell coupling from prose, they failed to tell
+coupling from an EXTRACTION and a revocation from a reset. Each was replaced
+with an AST or structural check and each was verified still to catch the defect
+it was written for — the arbiter one by injecting an unconditional latch reset
+and watching it name the line number.
 
 ### Calls owed
 
@@ -596,14 +687,19 @@ of 29 Aug, three from the suite and one from the call that verified it.
 
 ---
 
-## Branch state, 2026-08-29
+## Branch state, 2026-08-30
 
 | branch | tip | note |
 |---|---|---|
-| `latency-eval` | `deb0dc76` | canonical; also serves Northgate on the test line |
-| `jv_v2` | `b1a71242` | live — Joint Venture |
-| `vitaledge-onboarding` | `4330d1b8` | live — Vital Edge |
-| `theorem-onboarding` | `71d603c7` | live — Theorem; **314 behind**, stays separate by decision |
+| `latency-eval` | `5ab3fcc5` | canonical; also serves Northgate on the test line. Carries the four findings of the 2026-08-30 call. |
+| `jv_v2` | `945e371c` | live — Joint Venture; has the orphan guard and the clip pool |
+| `vitaledge-onboarding` | `3d2486ee` | live — Vital Edge; same two |
+| `theorem-onboarding` | `1afa95d2` | live — Theorem; same two. Stays separate by decision. |
+
+All three patient branches were pushed on 2026-08-30 after a full-suite
+baseline diff each; Render auto-deploys, so the next call on each line runs it.
+The build SHA is only visible in the Render log — `[build_info] running build
+<sha>` at call cleanup — so that is the deploy proof, not `/health`.
 
 ### Smaller things noticed and deliberately not acted on
 
