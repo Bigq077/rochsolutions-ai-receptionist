@@ -652,6 +652,49 @@ with an AST or structural check and each was verified still to catch the defect
 it was written for — the arbiter one by injecting an unconditional latch reset
 and watching it name the line number.
 
+### B-125 — "the earliest I have is" was not the earliest
+
+Found by the verification call itself, `CA7182593819eac0a8e87a22928f137eb7`,
+2026-08-30 07:32. Fixed on canonical, `0ea44018`.
+
+    07:31:58  tool -> Tuesday 1st September, slot_times 08:00 09:05 11:15
+                      12:20 13:25 14:30 15:35 16:40
+    07:31:59  Susie: "Tuesday 1st September - Number 1, eight in the morning..."
+    07:32:15  caller: "uh actually what's the soonest that you've got"
+    07:32:18  check_availability BLOCKED - slots already retrieved this turn
+    07:32:20  Susie: "The EARLIEST I have is Tuesday 1st September -
+                      Number 1, five past nine in the morning."
+
+Eight in the morning was bookable and had been read out twenty seconds before.
+
+**09:05 is not the defect.** Offering the day's unspoken remainder is the
+follow-up path working. The SUPERLATIVE on it is the defect — the B-92/B-97
+family, a ranking claim the payload does not support.
+
+The read-back guard saw it and correctly declined to act (`read-back time NOT
+in the offer and not safely correctable`) because from its point of view this
+is a new offer rather than a bad read-back. That warning has been this shape's
+only trace.
+
+The clause is stripped, not the sentence — the sentence carries the readout, so
+banning it would trade a false ranking for silence.
+
+> ⚠️ **Sized at 25, and I could not tell how many were WRONG.** The pattern
+> occurs 25 times across 25 of 760 stored calls, on `jv_v1`, `vital_edge` and
+> `theorem_v3` alike — so all three live clinics say it. Most look like the
+> first slot of a fresh lookup, which is TRUE, and the guard is conditional so
+> those keep their sentence. **How many of the 25 were false cannot be
+> determined from obs**: it stores what was SAID and not the tool payload, so
+> there is nothing to check the ranking against. The one confirmed false case
+> is the one above, and its signature is a SECOND readout on a day already
+> offered — which is also the only shape the demo call produced.
+>
+> That is the honest limit of the evidence. It is a reason to want a detector
+> that runs at speech time, not a reason to assume the other 24 were fine.
+
+**Theorem: APPLIES**, along with findings 2 and 3. Three items now owed to the
+patient lines, all held for a demo-line call first.
+
 ### Calls owed
 
 - **The hold-speech suite that gates the port** —
