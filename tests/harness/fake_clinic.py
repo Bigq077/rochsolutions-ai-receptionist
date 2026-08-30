@@ -258,13 +258,37 @@ def build_tool_executors(diary: FakeDiary, calls: List[ToolCall],
             return {"token": "fake", "migrated": True}
 
         with ExitStack() as stack:
-            stack.enter_context(
-                patch.object(rt, "_check_availability_diary", _reader))
-            stack.enter_context(
-                patch.object(rt, "_check_availability_published", _reader))
-            stack.enter_context(
-                patch.object(rt, "_check_availability_acuity",
-                             lambda a, s: _reader(a, s)))
+            # Patch only the readers THIS branch actually has.
+            #
+            # `patch.object` raises AttributeError on a missing attribute, and
+            # the reader set is branch-specific: `_check_availability_diary` is
+            # the Vital Edge diary reader (ad6be197) and exists on latency-eval
+            # and vitaledge-onboarding but NOT on jv_v2 or theorem-onboarding.
+            # An unconditional list makes the harness unusable on exactly the
+            # branches it most needs to run on -- which it was until
+            # 2026-08-31, and is part of why it stayed canonical-only.
+            _patched = 0
+            for _name in ("_check_availability_diary",
+                          "_check_availability_published"):
+                if hasattr(rt, _name):
+                    stack.enter_context(patch.object(rt, _name, _reader))
+                    _patched += 1
+            if hasattr(rt, "_check_availability_acuity"):
+                stack.enter_context(
+                    patch.object(rt, "_check_availability_acuity",
+                                 lambda a, s: _reader(a, s)))
+                _patched += 1
+            if not _patched:
+                # Loud, not lenient. With no reader faked the REAL one runs and
+                # reaches a live calendar. The netfence would block it, but a
+                # harness that silently stops faking the diary is how
+                # tests/auto once wrote 60 real appointments.
+                raise RuntimeError(
+                    "no availability reader could be faked on this branch — "
+                    "receptionist_tools has none of _check_availability_diary "
+                    "/ _published / _acuity. Refusing to run rather than let "
+                    "the real reader reach a live calendar."
+                )
             stack.enter_context(patch.object(rt, "_get_tokens", _tokens))
             stack.enter_context(patch.object(gcal, "freebusy", _no_busy))
             return await real_executors["check_availability"](args, session)

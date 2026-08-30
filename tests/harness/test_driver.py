@@ -94,6 +94,55 @@ async def test_the_fence_is_removed_when_the_call_ends():
     assert not isinstance(exc.value, EgressBlocked)
 
 
+def test_the_fake_reader_patching_is_guarded_per_branch():
+    """The harness must install where the availability readers differ.
+
+    `build_tool_executors` patched `_check_availability_diary`,
+    `_check_availability_published` and `_check_availability_acuity`
+    unconditionally, and `patch.object` raises AttributeError on a missing
+    attribute. The reader set is branch-specific: `_check_availability_diary` is
+    the Vital Edge diary reader (ad6be197) and does not exist on jv_v2 or
+    theorem-onboarding, so the harness could not run on the branches it most
+    needed to — part of why it stayed canonical-only, which is how a flow change
+    reached two live patient lines verified only on a third.
+
+    Asserted on the source rather than by deleting the attribute: removing it
+    here breaks canonical's own dispatcher, which references the name directly,
+    and that is NOT the state of a branch that never had it. The behavioural
+    proof is that the harness now runs on jv_v2 at all.
+    """
+    import inspect
+
+    from tests.harness import fake_clinic
+
+    src = inspect.getsource(fake_clinic.build_tool_executors)
+    for reader in ("_check_availability_diary", "_check_availability_published",
+                   "_check_availability_acuity"):
+        assert f'hasattr(rt, "{reader}")' in src or "hasattr(rt, _name)" in src, (
+            f"{reader} is patched unconditionally — the harness will raise "
+            f"AttributeError on any branch without it"
+        )
+
+
+def test_a_branch_with_no_fakeable_reader_refuses_to_run():
+    """Loud, not lenient.
+
+    With no reader faked the REAL one runs and reaches a live calendar. The
+    netfence would block it, but a harness that silently stops faking the diary
+    is how tests/auto once wrote 60 real appointments — so the setup raises
+    rather than proceeding.
+    """
+    import inspect
+
+    from tests.harness import fake_clinic
+
+    src = inspect.getsource(fake_clinic.build_tool_executors)
+    assert "if not _patched:" in src and "RuntimeError" in src, (
+        "the no-reader case no longer fails loudly — a harness that stops "
+        "faking the diary must refuse to run, not run against production"
+    )
+
+
 async def test_the_availability_payload_has_the_real_shape():
     """The fake reader must emit what the real readers emit.
 
