@@ -277,6 +277,44 @@ def _norm_offer_label(value: Any) -> str:
         return ""
 
 
+def offered_slot_labels(session: Any) -> set:
+    """Every slot label currently on the table, normalised. PURE.
+
+    Both halves matter and neither is redundant: ``slot_labels`` is what was
+    read out, ``v3_dtmf_slot_map`` is what a keypress will inject. A caller can
+    answer either way in the same breath.
+    """
+    try:
+        _src = list((session or {}).get("slot_labels") or []) + list(
+            ((session or {}).get("v3_dtmf_slot_map") or {}).values()
+        )
+    except Exception:
+        return set()
+    return {_norm_offer_label(_l) for _l in _src} - {""}
+
+
+def utterance_is_slot_selection(utterance: Any, session: Any) -> bool:
+    r"""Is this utterance the caller PICKING one of the slots just offered? PURE.
+
+    Containment, not equality: a caller wraps a choice in words the offer did
+    not have ("I'll take two in the afternoon"). The bias is deliberate --
+    reading a selection as a preference sets a filter that silently deletes
+    slots (B-90), while reading a preference as a selection merely fails to set
+    one.
+
+    Extracted 2026-08-30 so it has ONE definition. It had three: this rule
+    inline at the B-90 capture site, a `_is_pick` copy inside
+    test_choosing_a_slot_is_not_a_time_preference.py that mirrored it by hand,
+    and -- worst -- a `\bnumber \d\b` PROXY for it in hold_speech._CONFIRM_Q
+    that fired on the readout rather than on the answer, and so suppressed
+    every diary head for the rest of the call.
+    """
+    _u = _norm_offer_label(utterance)
+    if not _u:
+        return False
+    return any(f" {_lbl} " in f" {_u} " for _lbl in offered_slot_labels(session))
+
+
 def _partial_is_own_speech(partial: Any, spoken: Any) -> bool:
     """True when the partial that started a barge-in is Susie's own audio.
 
@@ -11809,24 +11847,16 @@ class WebSocketCallHandler:
                             # is a map value) and the spoken form ("ten in the
                             # morning") with one test, because both are the same
                             # string the offer was read out with.
-                            _offered_now = {
-                                _norm_offer_label(_l)
-                                for _l in (
-                                    list(self.session.get("slot_labels") or [])
-                                    + list(
-                                        (self.session.get("v3_dtmf_slot_map") or {}).values()
-                                    )
-                                )
-                            } - {""}
-                            # Containment, not equality: a caller wraps a choice
-                            # in words the offer did not have ("I'll take two in
-                            # the afternoon"). The bias is deliberate — treating
-                            # a preference as a selection merely fails to set a
-                            # filter, while the reverse is the defect above.
-                            _utt_norm = _norm_offer_label(utterance)
-                            _is_slot_pick = bool(_utt_norm) and any(
-                                f" {_lbl} " in f" {_utt_norm} "
-                                for _lbl in _offered_now
+                            #
+                            # The rule itself now lives in
+                            # `utterance_is_slot_selection` at module scope, so
+                            # the hold-speech head classifier can ask the same
+                            # question instead of guessing it from the wording
+                            # of the previous sentence -- which is what
+                            # `\bnumber \d\b` in _CONFIRM_Q was doing, and it
+                            # matched the READOUT, not the answer.
+                            _is_slot_pick = utterance_is_slot_selection(
+                                utterance, self.session
                             )
                             if _is_slot_pick:
                                 logger.info(

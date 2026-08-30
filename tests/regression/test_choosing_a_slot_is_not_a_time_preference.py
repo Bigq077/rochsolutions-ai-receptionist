@@ -46,7 +46,11 @@ from __future__ import annotations
 
 import pytest
 
-from app.media_streams.connection import _norm_offer_label
+from app.media_streams.connection import (
+    _norm_offer_label,
+    offered_slot_labels,
+    utterance_is_slot_selection,
+)
 
 
 OFFER = ["ten in the morning", "two in the afternoon"]
@@ -57,10 +61,16 @@ def _offered():
 
 
 def _is_pick(utterance: str) -> bool:
-    """Mirrors the engine: containment, so a choice wrapped in extra words
-    ("I'll take two in the afternoon") still counts as a selection."""
-    u = _norm_offer_label(utterance)
-    return bool(u) and any(f" {lbl} " in f" {u} " for lbl in _offered())
+    """The engine's own rule, called directly.
+
+    This used to MIRROR it -- containment re-implemented here by hand -- and
+    said so. A mirror agrees with itself for as long as nobody edits both
+    copies, which is exactly the failure this file exists to catch elsewhere.
+    `utterance_is_slot_selection` was given a name on 2026-08-30 so the
+    hold-speech head classifier could ask the same question; taking the mirror
+    out is the other half of that.
+    """
+    return utterance_is_slot_selection(utterance, {"slot_labels": list(OFFER)})
 
 
 # ---------------------------------------------------------------------------
@@ -127,29 +137,58 @@ def test_normaliser_strips_filler_not_content():
 # Wiring
 # ---------------------------------------------------------------------------
 def test_the_capture_site_consults_the_current_offer():
+    """The preference capture must ask whether this was a SELECTION first.
+
+    This was a text scan over an 8000-byte window of connection.py, looking for
+    the literals `slot_labels` and `v3_dtmf_slot_map` near the capture log
+    line. It broke on 2026-08-30 when the rule was extracted to
+    `utterance_is_slot_selection` -- the literals moved to module scope and the
+    window stopped containing them, while the wiring got BETTER rather than
+    worse. Fourth instance in this codebase of a text scan failing to tell
+    coupling from something that is not coupling.
+
+    Asserted structurally instead: the capture site CALLS the shared
+    predicate, and the shared predicate reads both sources.
+    """
+    import ast
     import inspect
 
     from app.media_streams import connection as c
 
     src = inspect.getsource(c)
-    # Anchor on the LOG CALL, not the bare phrase — this file's own comment
-    # quotes that phrase, and src.index() would find the comment first. The
-    # test then measures a window above the wrong line and passes or fails for
-    # reasons unrelated to the wiring.
     i = src.index('"[ms_conn v3] time_of_day_preference captured: %s"')
-    # Widened 3000 -> 8000 on 26 Aug 2026 (B-91/B-92). The window is a proxy
-    # for "in the same block", and the block grew when the question gate and
-    # its evidence landed above the log call. The anchors below are what this
-    # test is actually about; the byte count is an implementation detail of
-    # the test, and a too-small one fails for a reason unrelated to wiring.
     window = src[i - 8000:i]
     assert "_is_slot_pick" in window, (
         "the preference capture does not check whether the utterance was a "
         "selection from the offer just read out"
     )
-    assert "slot_labels" in window and "v3_dtmf_slot_map" in window, (
-        "both the spoken labels and the keypad map must be consulted — the "
-        "keypad injects a map value, the caller speaks a slot_label"
+    assert "utterance_is_slot_selection" in window, (
+        "the capture site no longer calls the shared selection predicate — it "
+        "has grown its own copy of the rule, which is how the two sides drift"
+    )
+
+    # ...and the predicate consults BOTH sources. The keypad injects a map
+    # value; the caller speaks a slot_label. Reading one is half a guard.
+    reader = inspect.getsource(offered_slot_labels)
+    assert "slot_labels" in reader and "v3_dtmf_slot_map" in reader, reader
+
+    # One reader of the offer, not a family. The claim is narrow and exact:
+    # exactly one module-level function may read BOTH label sources, because
+    # that pair IS the definition of "what is on the table" and two readers of
+    # it drift. `_is_slot_selection_candidate` is deliberately not caught here
+    # -- it answers a much looser routing question ("does this carry any slot
+    # signal at all?") and never consults the offer.
+    tree = ast.parse(src)
+    readers = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        body = ast.get_source_segment(src, node) or ""
+        if "slot_labels" in body and "v3_dtmf_slot_map" in body:
+            readers.append(node.name)
+    assert readers == ["offered_slot_labels"], (
+        "more than one function reads the offered-label pair: %s -- that pair "
+        "is what 'on the table' MEANS, and two readers of it drift" % readers
     )
 
 

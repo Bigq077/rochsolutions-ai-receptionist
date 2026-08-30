@@ -480,9 +480,24 @@ _LEADING_DISFLUENCY = _rx(r"^(?:(?:um+|uh+|er+|erm+|ah+)[\s,]+)+")
 #: A readback or confirm question. The reply to one is a SELECTION, so a diary
 #: head in front of it promises a lookup that is not happening -- the corpus
 #: defect rebuilt in a new place.
+#:
+#: `number <digit>` USED TO BE IN THIS LIST and is deliberately gone. It was
+#: reaching for "the caller is choosing from the options" and it matched the
+#: wrong sentence to get there: a slot readout always says "Number 1, ...
+#: Number 2, ...", so from the readout onwards every later turn looked like an
+#: answer to a confirm question and every diary intent was dropped for the
+#: rest of the call. 244 suppressions across the corpus, 186 of them from that
+#: one token, and on the demo call of 2026-08-30 it silenced "um what do you
+#: have next tuesday" and "actually what's the soonest you've got".
+#:
+#: Deleting it outright would have been wrong too -- most of the 186 ARE
+#: selections and should stay silent. The answer is that the engine already
+#: decides this on DATA (B-90: is the utterance one of the labels just
+#: offered?), so `classify_intent` now takes that verdict as `slot_selection`
+#: instead of inferring a worse version of it from the previous sentence.
 _CONFIRM_Q = _rx(r"\b(?:did you mean|is that (?:right|correct|the right one)|"
                  r"shall i (?:go ahead|book)|just to confirm|does that work|"
-                 r"is that the best number|which (?:one|of those)|number \d)\b")
+                 r"is that the best number|which (?:one|of those))\b")
 
 #: A clinical screen question, matched against what Susie said LAST. The reply
 #: to one is a red-flag answer, and it is the worst moment in the call to guess:
@@ -578,7 +593,13 @@ _INTENT_RULES = [
 ]
 
 
-def classify_intent(text, prev_assistant="", *, screen_pending=False):
+def classify_intent(
+    text,
+    prev_assistant="",
+    *,
+    screen_pending=False,
+    slot_selection=False,
+):
     """Every intent this utterance corroborates, most specific first. PURE.
 
     Returns [] for silence -- the pre-arbiter behaviour -- whenever nothing
@@ -586,7 +607,12 @@ def classify_intent(text, prev_assistant="", *, screen_pending=False):
 
     ``prev_assistant`` is what Susie said last. ``screen_pending`` is the
     session's own view of whether a screen is armed and unanswered; both are
-    checked because either alone has been wrong. A stored call shows why the
+    checked because either alone has been wrong. ``slot_selection`` is the
+    engine's B-90 verdict -- is THIS utterance one of the slot labels just
+    read out? -- and it is a fact about the caller's own words rather than an
+    inference from Susie's, which is why it replaced the `number <digit>`
+    proxy that used to sit in `_CONFIRM_Q`. A caller picking a slot is not
+    waiting for a lookup; a caller asking something new in the same window is. A stored call shows why the
     session flag is needed as well as the text: "just book me in for Tuesday"
     was followed not by the diary but by "do you have any numbness around the
     saddle area" -- a head saying "Let me see what Tuesday looks like" in front
@@ -610,7 +636,13 @@ def classify_intent(text, prev_assistant="", *, screen_pending=False):
     _answer_probe = _LEADING_DISFLUENCY.sub("", utterance)
     if _BARE_ANSWER.match(_answer_probe) and len(_answer_probe.split()) <= 4:
         return []
-    answering = bool(_CONFIRM_Q.search(prev_assistant or ""))
+    # Either route means the caller is answering rather than asking: an
+    # explicit confirm question from Susie, or -- the case the readout proxy
+    # was reaching for and getting wrong -- this utterance being one of the
+    # slot labels just offered.
+    answering = bool(slot_selection) or bool(
+        _CONFIRM_Q.search(prev_assistant or "")
+    )
     hits = []
     for intent, trigger, corroborator, blocker in _INTENT_RULES:
         if not trigger.search(utterance):

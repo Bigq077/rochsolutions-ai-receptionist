@@ -4295,10 +4295,28 @@ class LLMStream:
             )
             if _hs_enabled(session):
                 _hs_utterance = _last_user_text(messages or [])
+                # B-90's verdict, asked directly instead of inferred from
+                # Susie's previous sentence. A slot readout says "Number 1,
+                # ... Number 2, ...", and `_CONFIRM_Q` used to match that
+                # READOUT -- so from the first offer onwards every diary
+                # head in the call was suppressed, including the two turns
+                # on the 2026-08-30 demo call that most needed one.
+                # Deferred import: connection imports this module lazily in
+                # the other direction, so neither edge exists at module
+                # scope. Never allowed to break a call -- a head is a
+                # nicety and the pre-arbiter behaviour is silence.
+                try:
+                    from .connection import (
+                        utterance_is_slot_selection as _is_pick,
+                    )
+                    _hs_picking = _is_pick(_hs_utterance, session)
+                except Exception:  # pragma: no cover - defensive
+                    _hs_picking = False
                 _hs_hits = _classify_intent(
                     _hs_utterance,
                     _last_assistant_text(session),
                     screen_pending=bool(session.get("pending_screen")),
+                    slot_selection=_hs_picking,
                 )
                 if _hs_hits:
                     _hs_intent = _hs_hits[0]
