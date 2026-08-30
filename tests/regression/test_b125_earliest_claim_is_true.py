@@ -40,8 +40,10 @@ from __future__ import annotations
 import pytest
 
 from app.media_streams.turn_handler import (
+    _EARLIEST_CLAIM_POST_RE,
     _EARLIEST_CLAIM_RE,
     _earliest_claim_is_supported,
+    _names_an_earliest_claim,
     sanitise_response,
 )
 
@@ -182,3 +184,106 @@ def test_it_does_not_fire_on_ordinary_speech(innocent):
     """Over-firing here deletes a clause from a correct sentence, so the pattern
     has to want a superlative AND a copula introducing a value."""
     assert sanitise_response(innocent, _session()) == innocent
+
+
+# ═══ B-125b — the same claim, the other way round ═══════════════════════════
+#
+# `CA4fff84ae5013b517fda72b914d83e01c` (2026-08-30 10:11, build 42fb5f703b8e) —
+# the call placed to VERIFY B-125. The guard fired correctly on the first ask:
+#
+#   10:11:31  [ms_gate5] removed an unsupported EARLIEST claim ...
+#
+# The caller asked again, and heard:
+#
+#   10:11:48  "Five past nine on Tuesday the 1st of September — that's the
+#              earliest I've got. Does that work for you?"
+#
+# Straight through. Eight in the morning was still bookable and had been read
+# out thirty seconds earlier.
+#
+# ── The lesson, and it is not the one already on the list ──────────────────
+#
+# `test_the_family_of_phrasings_is_caught` above pins six wordings and calls
+# them a family. All six are superlative-then-value. It was written to honour
+# "never match one literal of model speech" and it DID widen past the literal —
+# it just never left the one syntactic frame, and six variants of a single
+# shape read exactly like coverage.
+#
+#   A SHAPE IS NOT A FAMILY. Vary the STRUCTURE, not just the vocabulary.
+#
+# The trailing form is the more dangerous of the two, which makes missing it
+# worse: a leading claim arrives in front of a numbered list the caller can
+# weigh for themselves, while this one is a bare closing assertion with "Does
+# that work for you?" attached.
+
+LIVE_CLAIM_POST = (
+    "Five past nine on Tuesday the 1st of September — that's the earliest "
+    "I've got. Does that work for you?"
+)
+
+
+def test_the_second_live_sentence_loses_its_ranking():
+    """The one that went through on the verification call."""
+    out = sanitise_response(LIVE_CLAIM_POST, _session())
+    assert "earliest" not in out.lower(), out
+    assert out == (
+        "Five past nine on Tuesday the 1st of September. Does that work for you?"
+    ), out
+
+
+def test_the_trailing_form_keeps_its_sentence_boundary():
+    """Deleting a trailing claim outright welds the value onto what follows —
+    "Five past nine on Tuesday Does that work for you?" — so it is replaced by
+    a full stop rather than removed. The question after it must survive intact."""
+    out = sanitise_response(LIVE_CLAIM_POST, _session())
+    assert out.count(".") == 1, out
+    assert out.endswith("Does that work for you?"), out
+
+
+@pytest.mark.parametrize("claim", [
+    # value first, claim after — the frame B-125 missed entirely
+    "Five past nine on Tuesday 1st September — that's the earliest I've got.",
+    "Five past nine on Tuesday 1st September, which is the soonest we have.",
+    "Five past nine on Tuesday 1st September — that is the first available.",
+    "Five past nine on Tuesday 1st September. That's the soonest.",
+    "Five past nine on Tuesday 1st September — it's the earliest slot we can do.",
+    "Five past nine on Tuesday 1st September, and that would be the very first.",
+])
+def test_the_trailing_frame_is_caught_too(claim):
+    assert _EARLIEST_CLAIM_POST_RE.search(claim), claim
+    assert _names_an_earliest_claim(claim), claim
+    assert not _earliest_claim_is_supported(claim, _session())
+    assert "earliest" not in sanitise_response(claim, _session()).lower()
+    assert "soonest" not in sanitise_response(claim, _session()).lower()
+
+
+def test_a_true_trailing_claim_survives():
+    """Conditional in both frames, not just the leading one."""
+    true_post = (
+        "Eight in the morning on Tuesday 1st September — that's the earliest "
+        "I've got. Does that work?"
+    )
+    assert _earliest_claim_is_supported(true_post, _session())
+    assert sanitise_response(true_post, _session()) == true_post
+
+
+def test_both_frames_go_through_one_predicate():
+    """`_names_an_earliest_claim` is what stops the next reader checking one and
+    forgetting the other — which is the whole of B-125b."""
+    assert _names_an_earliest_claim(LIVE_CLAIM)
+    assert _names_an_earliest_claim(LIVE_CLAIM_POST)
+    assert not _names_an_earliest_claim(
+        "Tuesday 1st September — Number 1, eight in the morning."
+    )
+
+
+@pytest.mark.parametrize("innocent", [
+    "That's the earliest appointment you've had with us.",
+    "Is that the earliest you can manage?",
+    "Your appointment is at eight in the morning.",
+])
+def test_the_trailing_pattern_does_not_eat_ordinary_speech(innocent):
+    """It fires on a ranking of what the CLINIC has. A caller's own sentence and
+    a question about the past are neither."""
+    out = sanitise_response(innocent, _session())
+    assert out == innocent, out
