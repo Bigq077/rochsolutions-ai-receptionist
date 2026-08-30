@@ -4242,6 +4242,9 @@ class LLMStream:
         got_first_chunk      = False
         _first_tts_emitted   = False  # tracks whether first TTS chunk has been sent
         _any_tts_emitted     = False  # True if ANY sanitised chunk actually reached the queue
+        # True when the pre-tool hold latch below was set from full_text,
+        # which Gate 5 has not run on yet. Per-iteration, like full_text.
+        _latched_on_ungated_text = False
 
         # Reset ack-filler state for this turn.  _ack_filler_active is set True
         # by _delayed_filler() below when FILLER_PHRASE is queued; with_filler()
@@ -4624,6 +4627,17 @@ class LLMStream:
                                 _pre_hold = (full_text or "").strip()
                                 if _pre_hold and _NAMES_THE_WORK.search(_pre_hold):
                                     session["_hold_head_spoken"] = True
+                                    # full_text is PRE-Gate-5. The sentence
+                                    # this latched on may still be deleted
+                                    # as a banned phrase, in which case
+                                    # nothing was spoken and standing the
+                                    # tool-time producer down buys silence.
+                                    # Revoked at the end of this call if
+                                    # nothing survived -- see the check
+                                    # after the flush. Only OUR latch is
+                                    # revocable; another producer's records
+                                    # audio that has already gone out.
+                                    _latched_on_ungated_text = True
                                     logger.info(
                                         "[ms_gate5] the preserved pre-tool line IS "
                                         "a hold phrase (%r) — latching "
@@ -4730,6 +4744,45 @@ class LLMStream:
                         self._timing.stamp("t2")
                     await tts_text_queue.put(PRE_SLOT_MARKER + final_chunk)
                     _any_tts_emitted = True
+
+            # ── The pre-tool hold latch, re-checked against what survived ──
+            # It was set off `full_text`, which is what the model GENERATED.
+            # Gate 5 runs per chunk between there and the queue and deletes
+            # banned sentences outright, so the phrase the latch trusted may
+            # never have been spoken. If nothing at all reached the queue
+            # this iteration, the caller heard no hold phrase, and leaving
+            # the latch set would make the tool-time producer stand down for
+            # speech that does not exist -- silence across the whole tool
+            # round trip.
+            #
+            # Revoked here rather than predicted at latch time: predicting
+            # means knowing what Gate 5 will do to text still in the
+            # chunker's buffer. This needs no prediction, and it is in time
+            # -- the tool-time producer runs in _streaming_tool_loop after
+            # this call returns.
+            #
+            # `_any_tts_emitted` is NOT the right test: Gate 5 can delete the
+            # hold sentence while some other sentence of the same reply
+            # survives, and then something was spoken but no hold phrase was.
+            # `_spoken_this_turn` is the post-Gate-5 record of what the caller
+            # actually heard, so ask it the same question the latch asked
+            # full_text -- does this still claim a lookup or a write?
+            if _latched_on_ungated_text:
+                _spoken_after_gate = (
+                    session.get("_spoken_this_turn") or ""
+                ).strip()
+                if not (
+                    _spoken_after_gate
+                    and _NAMES_THE_WORK.search(_spoken_after_gate)
+                ):
+                    session["_hold_head_spoken"] = False
+                    logger.info(
+                        "[ms_gate5] pre-tool hold latch REVOKED — the phrase it "
+                        "latched on did not survive Gate 5 (spoken=%r), so no "
+                        "hold phrase reached the caller and the tool-time "
+                        "producer must not stand down",
+                        _spoken_after_gate[:60],
+                    )
 
             # ── GATE 5: per-turn reasoning drop count ─────────────────────
             _g5_drops = int(session.pop("_gate5_reasoning_drops", 0) or 0)

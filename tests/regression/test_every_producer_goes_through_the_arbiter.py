@@ -57,18 +57,90 @@ class TestNoProducerPicksItsOwnPhrase:
 
 
 class TestTheLatchIsResetAtTheCallerTurnBoundary:
-    def test_the_reset_is_not_inside_run_turn(self):
+    def test_llm_stream_never_clears_a_latch_it_did_not_set(self):
         """Ordering bug this guards against.
 
         The phone-confirm producer speaks BEFORE run_turn is reached. While the
         reset lived inside run_turn it cleared that producer's latch, and the ack
-        filler spoke on top of it — the stack returns. The reset belongs at the
-        dispatch boundary, where a caller turn actually begins.
+        filler spoke on top of it — the stack returns. The turn-boundary reset
+        belongs at the dispatch boundary, where a caller turn actually begins,
+        and `test_the_reset_sits_with_the_new_turn_stamp` pins it there.
+
+        This used to be a whole-module scan for `"_hold_head_spoken"] = False`.
+        It broke on 2026-08-30 on a change that is not a turn-boundary reset at
+        all: the pre-tool hold latch is set from `full_text`, which Gate 5 has
+        not run on, so when the gate deletes that sentence the latch has to be
+        REVOKED or the tool-time producer stands down for speech the caller
+        never heard. A string scan cannot tell a revocation from a reset.
+
+        The distinction that matters is ownership, so that is what is asserted:
+        anything clearing the latch here must be guarded by
+        `_latched_on_ungated_text`, the per-iteration flag meaning "this
+        function set it, from ungated text". Another producer's latch records
+        audio that has already gone out and must never be cleared from here.
+        """
+        import ast
+
+        src = _src(llm_stream)
+        tree = ast.parse(src)
+
+        def _clears_latch(node) -> bool:
+            if not isinstance(node, ast.Assign):
+                return False
+            if not (isinstance(node.value, ast.Constant)
+                    and node.value.value is False):
+                return False
+            for tgt in node.targets:
+                if (isinstance(tgt, ast.Subscript)
+                        and isinstance(tgt.slice, ast.Constant)
+                        and tgt.slice.value == "_hold_head_spoken"):
+                    return True
+            return False
+
+        # Every clear that sits inside an `if` mentioning the ownership flag.
+        owned = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            guard = ast.dump(node.test)
+            if "_latched_on_ungated_text" not in guard:
+                continue
+            for child in ast.walk(node):
+                if _clears_latch(child):
+                    owned.add(child.lineno)
+
+        unguarded = sorted(
+            n.lineno for n in ast.walk(tree)
+            if _clears_latch(n) and n.lineno not in owned
+        )
+        assert not unguarded, (
+            "llm_stream.py clears _hold_head_spoken unguarded at line(s) "
+            f"{unguarded} — that can clear a latch set by a producer which has "
+            "already spoken to the caller (the phone-confirm producer runs "
+            "before run_turn), and the stack returns. A clear here must be "
+            "guarded by _latched_on_ungated_text."
+        )
+
+    def test_the_revocation_is_conditional_on_what_survived_the_gate(self):
+        """And the guard must be more than a flag: it has to ask whether a hold
+        phrase actually reached the caller.
+
+        `_any_tts_emitted` is not that question — Gate 5 can delete the hold
+        sentence while another sentence of the same reply survives. The
+        post-Gate-5 record is `_spoken_this_turn`, and the thing asked of it is
+        `_NAMES_THE_WORK`, the same predicate the latch asked of full_text.
         """
         src = _src(llm_stream)
-        assert '"_hold_head_spoken"] = False' not in src, (
-            "resetting the latch inside run_turn is too late — see the "
-            "phone-confirm producer, which speaks before run_turn"
+        i = src.find("pre-tool hold latch REVOKED")
+        assert i != -1, "the revocation is gone — see finding 4 of 2026-08-30"
+        window = src[max(0, i - 1200):i]
+        assert "_spoken_this_turn" in window, (
+            "the revocation is not reading what was actually SPOKEN"
+        )
+        assert "_NAMES_THE_WORK" in window, (
+            "the revocation does not ask whether what survived still claims "
+            "the work — so a reply that lost only its hold sentence keeps a "
+            "latch nothing earned"
         )
 
     def test_the_reset_sits_with_the_new_turn_stamp(self):
