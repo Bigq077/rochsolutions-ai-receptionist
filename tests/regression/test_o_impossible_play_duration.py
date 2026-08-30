@@ -182,6 +182,13 @@ def test_headroom_covers_the_clips_that_actually_ship():
     each pool in the same turn, plus the 100 ms breath gap.  Measured off the
     committed µ-law files, so adding a longer clip fails here rather than on a
     call.
+
+    The figure moved 2.60 -> 2.93 on 2026-08-30, when filler_checking was
+    regenerated from one recording into a pool of five: the longest of the
+    five is 1.72s against the original 1.39s.  That is the pool doing its job
+    -- a single recording replayed for the life of the service is what made
+    the hold sound like a machine -- and _PLAY_SECS_HEADROOM (4.0s) still
+    covers it with a second to spare.
     """
     from app.media_streams.connection import _AUDIO_CLIPS_DIR, _SILENCE_100MS
     from app.media_streams.filler_guard import discover_clip_pool
@@ -196,14 +203,14 @@ def test_headroom_covers_the_clips_that_actually_ship():
         + longest("filler_moment.ulaw")
         + len(_SILENCE_100MS) / 8000.0
     )
-    assert worst == pytest.approx(2.60, abs=0.05)
+    assert worst == pytest.approx(2.93, abs=0.05)
     assert _PLAY_SECS_HEADROOM > worst
 
 
 def test_a_short_chunk_carrying_both_clips_is_never_clamped():
     """The shortest real chunk, with the whole filler budget charged to it."""
     short = "Right with you…"
-    real_secs = len(short) / SLOWEST_REAL_CHARS_PER_SEC + 2.60
+    real_secs = len(short) / SLOWEST_REAL_CHARS_PER_SEC + 2.93
     assert _clamp_play_secs(real_secs, short) == real_secs
 
 
@@ -235,7 +242,7 @@ def test_the_bound_sits_between_the_failure_and_the_slowest_real_speech():
     from app.media_streams.connection import _MAX_CHUNK_PLAY_SECS
     for speed in (1.0, 0.8, 0.7, 1.2):
         for chars in range(5, CORPUS_MAX_CHUNK_CHARS + 1, 5):
-            real = chars / (SLOWEST_REAL_CHARS_PER_SEC * speed) + 2.60
+            real = chars / (SLOWEST_REAL_CHARS_PER_SEC * speed) + 2.93
             bound = min(
                 chars / (_MIN_SPEECH_CHARS_PER_SEC * speed) + _PLAY_SECS_HEADROOM,
                 _MAX_CHUNK_PLAY_SECS / speed,
