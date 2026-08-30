@@ -598,6 +598,26 @@ What it surfaced that was new — canonical `f936624c`, `a560f5dc`, `e1ebcf9a`,
    has one (`utterance_is_slot_selection`): the inline B-90 site, a
    hand-written mirror in B-90's own test, and this proxy.
 
+   **Measured, not argued.** `scripts/replay_situational_heads` over the same
+   758-call corpus, run on `origin/latency-eval` and on the fix the same
+   morning:
+
+   | | before | after |
+   |---|---|---|
+   | heads | 1280 | **1466** |
+   | calls containing at least one | 609 | 611 |
+   | that claim a lookup or a write | 777 (60.7%) | 882 (60.2%) |
+   | **dead ends — nothing behind them** | **30 (2.3%)** | **31 (2.1%)** |
+   | turns left silent | 3116 | 2930 |
+
+   **+186 heads**, against the 186 suppressions the analysis attributed to
+   `number N` — the fix reached the population it was aimed at and no other.
+   The dead-end RATE, which is the like-for-like number, went DOWN. One extra
+   dead end in absolute terms against 186 more heads.
+
+   `scripts/detect_defects --check` still exits 0, the frozen baseline is
+   unchanged, and the newest build still shows no occurrences.
+
 2. **The same sentence twice, six seconds apart.** The deterministic
    exhaustion sentence — "I don't have any further times on that day" — is a
    completeness claim about one offer, so it carries its information once and
