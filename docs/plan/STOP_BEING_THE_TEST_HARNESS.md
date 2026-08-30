@@ -280,6 +280,70 @@ every trace of them, render the prompt: 107,985 characters, **zero leakage**.
 
 ## The traps — what cost time, so it does not cost it again
 
+### 🔴 The harness ran the engine with its pre-dispatch safeguards removed
+
+**The most important thing found on 30 Aug, and it is about the tool this whole
+plan is built on.** Fixed in `0e9ad6c5`.
+
+`run_turn` is not a whole turn. connection.py's transcript handler runs
+`capture_duration_choice` and `capture_under_age` against the raw utterance
+BEFORE dispatch. `ConversationDriver._pre_turn` mirrored only the verbal phone
+confirm, so **every harness run since Phase 1 reported the model unaided.**
+
+Wrong in both directions:
+
+- **It manufactures defects.** A probe of the CA86c320ef guarantee — the caller
+  says *"the ninety minute one please"* and the diary must not say 60 —
+  reported WRONG twice in four runs, on `vital_edge`, hours after O-1 had been
+  pushed to two patient branches. It read as a live P1 in a flow change already
+  on live clinics. It is not a defect: with no capture,
+  `_resolve_duration_minutes` has nothing to prefer and the model's argument
+  wins by default — the failure the capture exists to prevent, reproduced by
+  omitting the capture. The same probe after the fix: **captured=90 on 4 of 4,
+  every booking 90 minutes, zero WRONG.**
+- **It hides real ones, which is worse.** `capture_under_age` is the only
+  under-age enforcement on the template clinics. Without it a run shows an
+  under-age caller sailing through, and a test written against that output pins
+  the wrong behaviour as correct.
+
+**The rule this leaves behind: read `_pre_turn` before trusting any harness
+result.** Anything it does not mirror is missing from every run, and a missing
+safeguard does not present as "missing" — it presents as the ENGINE failing.
+`tests/harness/test_pre_dispatch_captures.py` now derives the capture list from
+connection.py's source and fails when one is added and not mirrored, because a
+hand-kept list has to be remembered by whoever adds the next one and that is
+precisely the step that was missed.
+
+⚠️ **And the reverse is worth stating.** `tests/harness/` is canonical-only. It
+does not exist on `jv_v2`, `vitaledge-onboarding` or `theorem-onboarding`, so
+**none of the three patient lines has any free-form behavioural coverage at
+all.** Nothing landed on 30 Aug changes that.
+
+### The owner's record of a call was built from what the model generated
+
+`750a23d1`. `_append_history` kept the RAW generation in `session["turns"]`,
+which `actionable_summary` renders into the summary LLM's context. So a
+sentence Gate 5 corrected or deleted on the way out was still reported to the
+owner as spoken. On CA8e688605 that was a time the caller was never offered; the
+Gate 5f case is worse — a "you're booked in for Thursday" that the caller never
+heard was reported as though it had been.
+
+`text` is now what was spoken; the raw moves to a `raw` key. **The trap is the
+consumer that still needs the raw:** connection.py's Gate 5g name recovery. It
+read `turns[...]["text"]` back when that WAS the raw generation, and swapping
+the key alone would have disarmed it silently — the caller asked their name
+until they hang up (CA041352eb, four times). `test_name_survives_the_cta_holdback`
+does NOT cover it: it passes the raw text straight to `_v3_try_persist_name` and
+never exercises the round trip through `session["turns"]`.
+
+Recorded, not fixed: on the media-streams path `session["turns"]` carries **no
+caller lines at all** — `_format_turns` labels a turn "Patient" from
+`turn["user"]`, which only `twilio.py`'s legacy flow and `brain.py`'s FlowEngine
+write, and neither is the live path. So the summary LLM sees one side of every
+conversation. `call_summary` is unaffected — its fields come from `collected`
+and session keys, not the transcript.
+
+
 ### The recorded post-port baselines were WRONG — measure, do not inherit
 
 The 11:00 handover said **VE 119, JV 109, Theorem 114**. Measured on 30 Aug,
