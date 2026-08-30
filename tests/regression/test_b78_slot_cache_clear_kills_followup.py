@@ -174,32 +174,56 @@ def test_followup_is_dead_when_the_cache_was_wiped():
 
 
 def test_walking_the_whole_day_reaches_every_time_then_stops():
-    """Three asks must surface all five times and then say so honestly.
+    """Two asks must surface all five times, and the third says so honestly.
 
-    The day has 5 slots and batches are 2, so: offered 2, then 2, then 1.
+    The day has 5 slots, 2 are already spoken and batches are 2, so: offered 2,
+    then 1. The loop ran three times until 2026-08-30, which meant its own last
+    iteration consumed the exhaustion sentence and `final` below was really the
+    caller's FOURTH ask -- slack in the fixture, and it hid which ask the
+    sentence belongs to. Every assertion is otherwise unchanged.
     """
     from app.tools.slot_followup import try_unspoken_followup_speech
 
     session = _session_mid_slot_choice()
     heard = list(SPOKEN[:2])
+    final = None
 
-    for _ in range(3):
+    # Ask until the answer stops being an offer. The count is deliberately not
+    # asserted: it is a function of the batch size, and pinning it made the
+    # loop overshoot into the exhaustion sentence and then re-ask it, which is
+    # how `final` below silently became the caller's FOURTH ask rather than the
+    # first one on an exhausted day. The bound is a safety net, not a contract.
+    for _ in range(6):
         speech = try_unspoken_followup_speech(
             session, "have you got anything else that day"
         )
         if speech is None:
+            break
+        if "further times" in speech.lower():
+            final = speech
             break
         heard += [s for s in SPOKEN if s.lower() in speech.lower() and s not in heard]
 
     assert set(heard) == set(SPOKEN), f"never offered: {set(SPOKEN) - set(heard)}"
 
     # Day exhausted → says so deterministically, never claims a count.
-    final = try_unspoken_followup_speech(
-        session, "have you got anything else that day"
-    )
     assert final is not None
     assert "further times" in final.lower()
     assert "different day" in final.lower()
+
+    # ...once. Finding 2 of the demo call of 2026-08-30: this exact sentence
+    # was produced twice, six seconds apart, with the caller saying something
+    # new in between. It is a completeness claim about one offer, so it carries
+    # its information the first time and nothing at all the second. Asked
+    # again, the path declines and the turn falls through to a real lookup --
+    # which is what a caller still pressing for times is asking for, and which
+    # asserts nothing.
+    again = try_unspoken_followup_speech(
+        session, "anything else at all"
+    )
+    assert again is None, (
+        f"the identical sentence came back a second time: {again!r}"
+    )
 
 
 def test_no_false_more_claim_on_the_last_batch():
