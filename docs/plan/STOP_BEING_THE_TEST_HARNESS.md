@@ -10,6 +10,7 @@ canonical and verified across FOUR demo-line calls.
 > "**HANDOVER — the state at 2026-08-30 11:00**" immediately below. It says
 > what is done, what is owed to the patient lines and approved to go, and the
 > two things the owner asked for by ear that are not yet built.
+
 Two live-call confirmations banked: the fourth clinic booking from config
 alone, and Theorem's emergency intercept. The
 hold-speech decision is SETTLED — and the measurement that settled it says the
@@ -33,7 +34,7 @@ Written to be picked up in a fresh session with no other context.
 
 | branch | tip | note |
 |---|---|---|
-| `latency-eval` | `61d65180` | canonical + the Northgate demo line (**+447366263180**) |
+| `latency-eval` | `6c2f96cb` | canonical + the Northgate demo line (**+447366263180**). Last verified build on the line was `61d651804c20`; everything after it is documentation. |
 | `jv_v2` | `945e371c` | live — Joint Venture |
 | `vitaledge-onboarding` | `3d2486ee` | live — Vital Edge |
 | `theorem-onboarding` | `1afa95d2` | live — Theorem |
