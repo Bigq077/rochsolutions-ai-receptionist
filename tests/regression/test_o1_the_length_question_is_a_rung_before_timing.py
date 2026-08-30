@@ -52,10 +52,51 @@ from app.prompts.clinic_template_prompt import (
 )
 
 
-# The template_v1 clinics that sell a service with a choice of lengths.
-# northgate is the demo line (Sports Massage 30/60), jv_v1 is live (30/60),
-# vital_edge is live (Sports Massage AND Deep Tissue, both 60/90).
-CHOICE_CLINICS = ["northgate", "jv_v1", "vital_edge"]
+def _choice_clinics() -> list:
+    """Every template_v1 clinic on THIS branch that sells a multi-length service.
+
+    DISCOVERED, NOT LISTED. The first draft hardcoded
+    ["northgate", "jv_v1", "vital_edge"] — canonical's roster. `northgate` is
+    the demo line's clinic and no patient branch ships it, so the file went red
+    on the very first port with six failures that looked like a broken rung and
+    were a broken test. That is the third time this exact trap has been paid for
+    in two days, so this file does not name a clinic at all.
+
+    An empty result would make every parametrized test below vacuously green,
+    which is worse than red — `test_this_branch_has_at_least_one_choice_clinic`
+    exists to make that loud.
+    """
+    import json
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[2] / "app" / "clinics"
+    found = []
+    for d in sorted(root.iterdir()):
+        try:
+            cfg = json.loads((d / "clinic.json").read_text(encoding="utf-8"))
+        except Exception:
+            continue  # `demo/` is not valid JSON on every branch
+        if cfg.get("prompt_engine") != "template_v1":
+            continue
+        try:
+            if _spine_has_duration_choice(get_clinic(d.name)):
+                found.append(d.name)
+        except Exception:
+            continue
+    return found
+
+
+CHOICE_CLINICS = _choice_clinics()
+
+
+def test_this_branch_has_at_least_one_choice_clinic():
+    """Guards the discovery above. With an empty list every parametrized test
+    in this file would pass by running zero cases."""
+    assert CHOICE_CLINICS, (
+        "no template_v1 clinic on this branch sells a multi-length service, so "
+        "nothing below is being exercised — if that is genuinely true for this "
+        "branch, O-1 is N-A here and this file should not have been ported"
+    )
 
 
 #: Rung 2 is not spelled the same everywhere: a multi-modality clinic renders
@@ -230,13 +271,23 @@ def test_the_tool_time_gate_is_untouched():
     """
     from app.tools.receptionist_tools import duration_choice_gate
 
-    clinic = get_clinic("northgate")
+    clinic_id = CHOICE_CLINICS[0]
+    clinic = get_clinic(clinic_id)
+    # The service and one of its own lengths, read off the catalogue — the
+    # names differ per branch and so do the options (30/60 vs 60/90).
+    svc = next(
+        s for s in clinic["services"]
+        if isinstance(s, dict) and s.get("typical_duration_minutes_options")
+    )
+    name = svc["name"]
+    a_valid_length = int(svc["typical_duration_minutes_options"][0])
+
     session: dict = {}
-    blocked = duration_choice_gate(clinic, "Sports Massage", session)
+    blocked = duration_choice_gate(clinic, name, session)
     assert blocked and blocked.get("error") == "duration_choice_required", blocked
     assert session.get("_duration_gate_fired") is True
 
     # ...and it still lets a captured choice straight through.
     assert duration_choice_gate(
-        clinic, "Sports Massage", {"_service_duration_choice": 60}
+        clinic, name, {"_service_duration_choice": a_valid_length}
     ) is None
