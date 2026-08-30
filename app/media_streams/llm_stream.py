@@ -4644,6 +4644,27 @@ class LLMStream:
                                 # discriminator and it already exists.
                                 _pre_hold = (full_text or "").strip()
                                 if _pre_hold and _NAMES_THE_WORK.search(_pre_hold):
+                                    # Whose latch is this? The revocation below
+                                    # says of itself "Only OUR latch is
+                                    # revocable; another producer's records audio
+                                    # that has already gone out" -- but nothing
+                                    # enforced that, because the flag was set
+                                    # without ever looking at the prior value.
+                                    #
+                                    # When a situational head has ALREADY spoken
+                                    # this turn (600ms, well before these tokens)
+                                    # the latch is the head producer's and the
+                                    # audio is already on the wire. Claiming it
+                                    # here makes it revocable, and once the
+                                    # duplicate model line is suppressed the
+                                    # revocation sees no hold phrase in
+                                    # `_spoken_this_turn`, clears a latch it does
+                                    # not own, and the tool-time producer speaks
+                                    # a second phrase after all -- the same
+                                    # defect from a different producer.
+                                    _already_latched = bool(
+                                        session.get("_hold_head_spoken")
+                                    )
                                     session["_hold_head_spoken"] = True
                                     # full_text is PRE-Gate-5. The sentence
                                     # this latched on may still be deleted
@@ -4655,15 +4676,24 @@ class LLMStream:
                                     # after the flush. Only OUR latch is
                                     # revocable; another producer's records
                                     # audio that has already gone out.
-                                    _latched_on_ungated_text = True
-                                    logger.info(
-                                        "[ms_gate5] the preserved pre-tool line IS "
-                                        "a hold phrase (%r) — latching "
-                                        "_hold_head_spoken so the tool-time "
-                                        "producer stands down instead of saying a "
-                                        "second one",
-                                        _pre_hold[:60],
-                                    )
+                                    _latched_on_ungated_text = not _already_latched
+                                    if _already_latched:
+                                        logger.info(
+                                            "[ms_gate5] the preserved pre-tool line "
+                                            "IS a hold phrase (%r) but a head had "
+                                            "already spoken — the latch is not ours "
+                                            "and stays NON-revocable",
+                                            _pre_hold[:60],
+                                        )
+                                    else:
+                                        logger.info(
+                                            "[ms_gate5] the preserved pre-tool line IS "
+                                            "a hold phrase (%r) — latching "
+                                            "_hold_head_spoken so the tool-time "
+                                            "producer stands down instead of saying a "
+                                            "second one",
+                                            _pre_hold[:60],
+                                        )
                             else:
                                 session["_pre_slot_cancelled"] = True
                                 logger.info(
@@ -4712,7 +4742,14 @@ class LLMStream:
                                         "_hold_head_spoken"
                                     ):
                                         chunk = join_after_head(
-                                            chunk, _head or "…"
+                                            chunk, _head or "…",
+                                            suppress_pure_duplicate=(
+                                                _may_suppress_pure_dupe(
+                                                    session,
+                                                    _head,
+                                                    _latched_on_ungated_text,
+                                                )
+                                            ),
                                         )
                                         if chunk:
                                             logger.debug(
@@ -4750,6 +4787,11 @@ class LLMStream:
                     final_chunk = join_after_head(
                         final_chunk,
                         session.get("_hold_head_text", "") or "…",
+                        suppress_pure_duplicate=_may_suppress_pure_dupe(
+                            session,
+                            session.get("_hold_head_text", ""),
+                            _latched_on_ungated_text,
+                        ),
                     )
                     _first_tts_emitted = True
                 # GATE 5: sanitise flush chunk before TTS
@@ -6575,7 +6617,44 @@ _KEEPS_CAPITAL = {
 from app.hold_speech import _NAMES_THE_WORK  # noqa: E402
 
 
-def join_after_head(chunk: str, head: str) -> str:
+def _may_suppress_pure_dupe(
+    session: dict, head: str, latched_on_ungated_text: bool
+) -> bool:
+    """May an all-opener chunk be dropped rather than spoken again? PURE.
+
+    Two conditions, and BOTH are about not suppressing a sentence on the
+    strength of speech that does not exist.
+
+    1. ``head`` must be real. The call sites pass ``_head or "…"`` into
+       ``join_after_head`` so the seam logic always has something to work with,
+       but a placeholder is not evidence that a hold phrase was spoken -- it is
+       evidence that we do not know what the caller heard. Suppressing against
+       it would delete a sentence to make room for nothing.
+
+    2. The latch must not have been set by THIS turn's own model text. The flush
+       path runs after the ``content_block_start`` for the tool call, so by then
+       the preserved pre-tool line may itself have latched ``_hold_head_spoken``
+       -- and joining that sentence against a latch it set moments earlier
+       suppresses it against ITSELF. That is not hypothetical: it is what
+       `test_a_hold_phrase_that_survives_gate_5_still_latches` caught when this
+       suppression was first written unconditionally, and it revoked the latch
+       and re-opened B-121 in the model-first direction while closing it in the
+       head-first one.
+
+    ``interim_played`` is deliberately NOT enough on its own here. The fast-path
+    interim does not record its wording in ``_hold_head_text``, so it fails
+    condition 1 and keeps the original fail-safe -- the conservative direction.
+    """
+    if not (head or "").strip():
+        return False
+    if latched_on_ungated_text:
+        return False
+    return bool(session.get("_hold_head_spoken"))
+
+
+def join_after_head(
+    chunk: str, head: str, *, suppress_pure_duplicate: bool = False
+) -> str:
     """Make ``chunk`` read as the continuation of the hold phrase ``head``.
 
     Pure. The perceptual half of the hold-speech work: a head that ends in a
@@ -6596,6 +6675,11 @@ def join_after_head(chunk: str, head: str) -> str:
 
     ``head`` is what the caller HEARD, not what is about to be synthesised, so an
     empty head means no hold phrase played and the chunk is returned untouched.
+
+    ``suppress_pure_duplicate`` decides what happens when the chunk turns out to
+    be NOTHING BUT the opener — see the branch below. It is opt-in because only a
+    caller that can guarantee the turn still produces audio can afford it, and
+    the default keeps the original fail-safe for everyone else.
     """
     if not chunk:
         return chunk
@@ -6604,10 +6688,35 @@ def join_after_head(chunk: str, head: str) -> str:
 
     body = _strip_interim_opener(chunk).lstrip()
     if not body:
-        # The reply was NOTHING BUT the opener. Stripping it would leave the turn
-        # with no audio at all — a dead-end filler, which is the exact defect
-        # this whole change exists to remove. Saying the phrase twice is a much
-        # smaller fault than saying nothing, so the original stands.
+        # The chunk was NOTHING BUT the opener — the head already said this.
+        #
+        # The original fail-safe returned the chunk unchanged, priced as "saying
+        # the phrase twice is a much smaller fault than saying nothing". That
+        # trade is real but it is not the trade on offer at every call site, and
+        # taking it unconditionally is B-121 in the direction nobody checked:
+        # the owner heard it on the demo line on 2026-08-30,
+        # CAd1bc6681b69e48fc8527449d65a03a23 —
+        #
+        #   10:26:01.403  head:  'Let me see what Tuesday looks like —'
+        #   10:26:03.084  model: "Let me check what's available on Tuesday for
+        #                         you."   <- 1.68s later, said again
+        #
+        # `_strip_interim_opener` had already reduced that sentence to "". The
+        # machinery saw the duplicate correctly; this branch put it back.
+        #
+        # Note the premise the fail-safe rests on is FALSE here. This function is
+        # only ever called when `interim_played or _hold_head_spoken` — that is,
+        # when the caller has already heard a hold phrase — so suppressing this
+        # chunk cannot leave the turn with "no audio at all". The head IS the
+        # audio. The only genuinely bad case left is the model promising a lookup
+        # and then making no tool call, and `_one_streaming_call` already rescues
+        # that at end of stream ("no TTS emitted this turn"), with a real
+        # sentence rather than a repetition of the phrase just spoken.
+        #
+        # Still opt-in rather than the new default: the rescue is what makes it
+        # safe, and only a caller sitting above the rescue can promise it.
+        if suppress_pure_duplicate:
+            return ""
         return chunk
 
     # One space at a sentence boundary. The model welds its opener to the payload
