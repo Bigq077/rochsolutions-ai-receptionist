@@ -4278,7 +4278,13 @@ class LLMStream:
                                 if not _first_tts_emitted:
                                     _first_tts_emitted = True
                                     if interim_played:
-                                        chunk = _strip_interim_opener(chunk)
+                                        # `or chunk` is canonical's rule, not a
+                                        # local invention: if the strip (or the
+                                        # _ORPHAN_LEAD guard behind it) consumes
+                                        # the whole chunk, the original stands.
+                                        # Saying the opener twice is a far smaller
+                                        # fault than saying nothing at all.
+                                        chunk = _strip_interim_opener(chunk) or chunk
                                         if chunk:
                                             logger.debug(
                                                 "[ms_llm] interim stripped; first chunk: %r",
@@ -4310,7 +4316,10 @@ class LLMStream:
             if final_chunk:
                 if not _first_tts_emitted and interim_played:
                     # Entire response was a single short flush — strip interim opener
-                    final_chunk = _strip_interim_opener(final_chunk)
+                    # See the note at the streaming site: an empty result means
+                    # the reply was nothing but the opener, and this is the whole
+                    # reply, so dropping it would leave the turn silent.
+                    final_chunk = _strip_interim_opener(final_chunk) or final_chunk
                     _first_tts_emitted = True
                 # GATE 5: sanitise flush chunk before TTS
                 final_chunk = sanitise_response(final_chunk, session)
@@ -6039,6 +6048,19 @@ _INTERIM_DUPE_RE = re.compile(
 )
 
 
+# Subordinating conjunctions. A phrase stripped from in front of one of these
+# leaves a clause that cannot stand as a sentence.
+# The complement words too, not just the adverbial ones. "Let me check
+# what's available for Saturday" loses its verb when the opener goes,
+# leaving "What's available for Saturday." -- which reads as a statement,
+# is a fragment, and was spoken. The same defect as the "While I look that
+# up." wreckage these were added for; the list simply stopped one word short.
+_ORPHAN_LEAD = re.compile(
+    r"^(?:while|whilst|as\s+I|so\s+I|until|what|whether|which|how|when|where|if)\b",
+    re.I,
+)
+
+
 def _strip_interim_opener(text: str) -> str:
     """
     Remove a known interim phrase from the start of an LLM first chunk to
@@ -6048,6 +6070,14 @@ def _strip_interim_opener(text: str) -> str:
     15 words (catches paraphrases like "Let me just check what we have…").
     """
     stripped = _INTERIM_DUPE_RE.sub("", text).lstrip()
+    if stripped != text and _ORPHAN_LEAD.match(stripped):
+        # The opener was the HEAD of a subordinate clause, not a sentence of its
+        # own: "Bear with me while I look that up." Removing the phrase leaves
+        # "While I look that up." — a dangling clause Susie then says out loud.
+        # Six of those reached callers on 21-22 Aug. Gate 5b deletes the whole
+        # sentence for exactly this reason; this ran first and left the wreckage.
+        _end = re.search(r"[.!?]\s*", stripped)
+        stripped = stripped[_end.end():].lstrip() if _end else ""
     if stripped != text:
         # Capitalise after stripping if needed
         if stripped:
