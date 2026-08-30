@@ -3016,6 +3016,15 @@ def _b7_call_state(session: Dict[str, Any], clinic: Dict[str, Any], tk: Dict[str
     pt = collected.get("patient_type") or session.get("new_or_returning")
     if pt:
         known.append(f"patient_type={pt}")
+    # The session length the caller already chose. Latched by
+    # capture_duration_choice BEFORE the turn is dispatched, never overwritten,
+    # and authoritative for both the slot grid and the booked event -- so by the
+    # time the model sees this the question is settled, whatever the model's own
+    # reading of the conversation. Without this line it was asked twice on the
+    # 2026-08-30 demo call, two minutes after the caller answered it.
+    _dur_choice = session.get("_service_duration_choice")
+    if _dur_choice:
+        known.append(f"session_length={_dur_choice} minutes (caller chose this)")
 
     confirmed = session.get(confirmed_flag, False)
     value = (session.get(value_key) or "").lower().strip()
