@@ -1741,6 +1741,77 @@ _EARLIEST_CLAIM_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: The SAME claim with the value first: "Five past nine on Tuesday - that's the
+#: earliest I've got."
+#:
+#: B-125b, CA4fff84ae5013b517fda72b914d83e01c 10:11:48, on the call placed to
+#: verify B-125. The leading form was caught on that call's first ask and this
+#: one went straight through on the second.
+#:
+#: It is the more dangerous of the two. A leading claim arrives in front of a
+#: numbered list the caller can weigh for themselves; this one is a bare closing
+#: assertion with "Does that work for you?" attached to it.
+#:
+#: Kept as a separate pattern rather than one clever alternation: the two need
+#: different substitutions. A leading claim is deleted, a trailing one is
+#: replaced by a full stop, or the value it followed loses its terminator and
+#: welds onto the next sentence.
+_EARLIEST_CLAIM_POST_RE = re.compile(
+    r"\s*[\u2014\u2013-]?\s*"
+    r"(?:and\s+|but\s+)?"
+    r"(?:that|this|it|which)(?:\'s|\s+is|\s+would\s+be)\s+"
+    r"the\s+(?:earliest|soonest|first\s+available|next\s+available|very\s+first)"
+    r"(?:\s+(?:one|slot|time|appointment|opening))?"
+    r"(?:\s+(?:I|we)\s*(?:\'ve\s+got|have\s+got|have|can\s+do|can\s+offer))?"
+    # The claim must END its clause. Without this the pattern swallows the
+    # head of a relative clause -- "That's the earliest appointment YOU'VE HAD
+    # with us" is about the caller's history, not about what the diary holds,
+    # and stripping it leaves ".you've had with us." A ranking of our own
+    # availability closes the clause; anything that runs on is a different
+    # sentence wearing the same first five words.
+    r"\s*(?=[.,!?]|$)",
+    re.IGNORECASE,
+)
+
+
+def _names_an_earliest_claim(text: str) -> bool:
+    """Does this text rank a slot as the first available, in either word order?
+
+    Both frames or neither. Checking one was the whole of B-125b.
+    """
+    body = text or ""
+    return bool(
+        _EARLIEST_CLAIM_RE.search(body) or _EARLIEST_CLAIM_POST_RE.search(body)
+    )
+
+
+def _strip_earliest_claim(text: str) -> str:
+    """Remove the ranking and leave the sentence standing. PURE.
+
+    The two frames need different repairs. A leading claim is deleted outright.
+    A trailing one is replaced by a full stop -- it usually ends the sentence,
+    so deleting it would run the value into whatever follows ("Five past nine on
+    Tuesday Does that work for you?").
+    """
+    # The pattern's tail is a zero-width lookahead, so any existing
+    # terminator survives the cut and a full stop is added only where the
+    # claim ran to the end of the string with nothing after it.
+    out = _EARLIEST_CLAIM_POST_RE.sub(".", text or "")
+    out = _EARLIEST_CLAIM_RE.sub("", out).lstrip()
+    # Tidy the seam the substitutions can leave: a space before the full stop,
+    # a doubled stop where the sentence already had one, runs of spaces.
+    out = re.sub(r"\s+([.,!?])", r"\1", out)
+    out = re.sub(r"([.!?])\1+", r"\1", out)
+    out = re.sub(r"[.]\s*([.,!?])", r"\1", out)
+    # A trailing claim often follows a comma rather than a dash -- "five past
+    # nine, which is the soonest we have" -- and replacing it with a full stop
+    # leaves ",." behind. The weaker mark loses.
+    out = re.sub(r"[,;:]\s*([.!?])", r"\1", out)
+    out = re.sub(r"\s{2,}", " ", out).strip()
+    if out:
+        out = out[0].upper() + out[1:]
+    return out
+
 
 def _earliest_claim_is_supported(text: str, session: Dict[str, Any]) -> bool:
     """May Susie say "the earliest I have is X"?
@@ -1768,7 +1839,7 @@ def _earliest_claim_is_supported(text: str, session: Dict[str, Any]) -> bool:
     slot that was free.
     """
     try:
-        if not _EARLIEST_CLAIM_RE.search(text or ""):
+        if not _names_an_earliest_claim(text):
             return True           # no claim made; nothing to support
         days = session.get("available_days") or []
         if not isinstance(days, list) or not days:
@@ -1892,10 +1963,8 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     # outright would leave the turn with nothing to say — the failure mode this
     # would be trading down to.
     if not _earliest_claim_is_supported(result, session):
-        _ranked = _EARLIEST_CLAIM_RE.sub("", result).lstrip()
+        _ranked = _strip_earliest_claim(result)
         if _ranked != result:
-            if _ranked:
-                _ranked = _ranked[0].upper() + _ranked[1:]
             logger.warning(
                 "[ms_gate5] removed an unsupported EARLIEST claim — the day has "
                 "a bookable time before the one being called the soonest "
