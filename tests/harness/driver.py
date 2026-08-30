@@ -13,9 +13,19 @@ WHAT IS REAL AND WHAT IS NOT
 ----------------------------
 REAL: the system prompt, the model, the chunker, the fast path, the gates,
 `_flush_slot_buf` and the whole offer-record reconciliation, every session
-mutation, and the availability payload pipeline (see fake_clinic).
+mutation, the availability payload pipeline (see fake_clinic), and the
+pre-dispatch work `_pre_turn` mirrors -- the verbal phone confirm and the
+transcript-handler captures.
 
 NOT REAL: STT, TTS audio, Twilio, Redis, and the calendar/SMS providers.
+
+READ `_pre_turn` BEFORE TRUSTING A RESULT. `run_turn` is not a whole turn:
+connection.py does work either side of it, and this driver mirrors only the
+pieces listed there. Anything it does not mirror is missing from every run, and
+a missing safeguard does not read as "missing" -- it reads as the engine
+failing. Until 2026-08-30 the two pre-dispatch captures were absent, and a probe
+of the CA86c320ef duration guarantee reported a defect that cannot happen on a
+live call. Both directions of that error are worked through in `_pre_turn`.
 
 WHY save_session IS PATCHED RATHER THAN POINTED AT A FAKE REDIS
 ---------------------------------------------------------------
@@ -241,6 +251,29 @@ class ConversationDriver:
         fired on a caller DECLINING to give a number. Re-implementing either
         here would rebuild both bugs inside the tool meant to catch them.
 
+        THE PRE-DISPATCH CAPTURES ARE THE OTHER LOAD-BEARING PIECE, and they
+        were missing until 2026-08-30. connection.py's transcript handler runs
+        `capture_duration_choice` and `capture_under_age` against the raw
+        utterance BEFORE the turn is dispatched. A driver that skips them runs
+        the engine with its primary safeguards removed and reports the model
+        unaided -- which is wrong in BOTH directions, and quietly so:
+
+          - It MANUFACTURES defects. A probe of the CA86c320ef guarantee (the
+            caller says "the ninety minute one please" and the diary must not
+            say 60) reported WRONG on two runs in four. With no capture,
+            `_resolve_duration_minutes` has nothing to prefer and the model's
+            `duration_minutes` argument wins by default -- the exact failure the
+            capture exists to prevent, reproduced by omitting it. Live, the
+            capture latches 90 first and the argument loses with a WARNING.
+          - It HIDES real ones. `capture_under_age` is the only under-age
+            enforcement on the template clinics. Without it a run shows an
+            under-age caller sailing through, and a test written against that
+            output pins the wrong behaviour as correct.
+
+        IMPORTED, NEVER RE-TYPED, for the same reason the phone predicates are.
+        `tests/harness/test_pre_dispatch_captures.py` fails when a capture is
+        added to that handler and not mirrored here, so this cannot drift again.
+
         Deliberately NOT modelled: the DTMF/keypad path. It needs digit events
         this driver has no way to send, and `phone_entered_by_keypad` is one of
         the conditions below, so the un-modelled path stays correctly inert.
@@ -249,7 +282,15 @@ class ConversationDriver:
             _confirm_caller_number,
             _phone_confirm_is_yes,
             _phone_question_on_the_table,
+            capture_duration_choice,
+            capture_under_age,
         )
+
+        # Unconditional and before dispatch, exactly as connection.py runs them.
+        # Both never overwrite and never raise, so there is no ordering subtlety
+        # to reproduce beyond running them ahead of the turn.
+        capture_duration_choice(self.session, text)
+        capture_under_age(self.session, text)
 
         if self.session.get("phone_entered_by_keypad"):
             return
