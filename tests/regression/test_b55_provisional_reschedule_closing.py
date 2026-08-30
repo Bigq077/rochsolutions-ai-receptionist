@@ -188,7 +188,21 @@ UNCHANGED_CLINIC_PROMPTS = {
     # NOTE: this is NOT the value the same row takes on vitaledge-onboarding
     # (8f4f8eb0c44033eb) even though the ADDITION is identical - the prompts
     # either side of it differ per branch. Recompute; never copy a pin across.
-    "jv_v1": "0625b55638d5c43e",
+    #
+    # Re-pinned 2026-08-30 (O-1, ported from latency-eval 2d72f87a): the booking
+    # sequence gained rung "1c. SESSION LENGTH", ordering the length question
+    # BEFORE the timing question. The question is not new -- it rendered as a
+    # free-floating "DURATION QUESTION FOR <SERVICE>" fact with no position in
+    # the ladder, so the only thing that ever forced it was the tool-time
+    # `duration_choice_gate`, i.e. after the caller had already answered a
+    # timing question. Owner-reported by ear from the demo line, and verified
+    # there on a live call before this port.
+    #
+    # Gated on `_spine_has_duration_choice(clinic)`, a predicate over the
+    # services catalogue -- so jv_v1 moves (Sports Massage 30/60) and demo,
+    # theorem and theorem_v3 do not. HASH RECOMPUTED ON THIS BRANCH: canonical's
+    # value for the same commit is d4fb03b5e5b56c7e, which is NOT valid here.
+    "jv_v1": "20fca990587548ee",
     "theorem": "8565be9a48a7a9aa",
     "theorem_v3": "761036c8d0da91ed",
 }

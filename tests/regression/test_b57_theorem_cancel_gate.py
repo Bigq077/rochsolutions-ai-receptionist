@@ -343,7 +343,21 @@ UNMOVED_PROMPTS = {
     # CONTAINMENT, verified not assumed: demo, theorem and theorem_v3 all HELD.
     # Only the two template_v1 clinics move, which is what this table is for.
     # Hashes recomputed on THIS branch; they differ per branch, never copy.
-    "jv_v1": "0625b55638d5c43e",
+    #
+    # Re-pinned 2026-08-30 (O-1, ported from latency-eval 2d72f87a): the booking
+    # sequence gained rung "1c. SESSION LENGTH", ordering the length question
+    # BEFORE the timing question. The question is not new -- it rendered as a
+    # free-floating "DURATION QUESTION FOR <SERVICE>" fact with no position in
+    # the ladder, so the only thing that ever forced it was the tool-time
+    # `duration_choice_gate`, i.e. after the caller had already answered a
+    # timing question. Owner-reported by ear from the demo line, and verified
+    # there on a live call before this port.
+    #
+    # Gated on `_spine_has_duration_choice(clinic)`, a predicate over the
+    # services catalogue -- so jv_v1 moves (Sports Massage 30/60) and demo,
+    # theorem and theorem_v3 do not. HASH RECOMPUTED ON THIS BRANCH: canonical's
+    # value for the same commit is d4fb03b5e5b56c7e, which is NOT valid here.
+    "jv_v1": "20fca990587548ee",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -392,7 +406,11 @@ UNMOVED_PROMPTS = {
     # gated on minimum_age_years, so jv_v1 - the other template_v1 clinic,
     # whose policy is "No minimum age" - renders nothing and HELD, as did
     # demo, theorem and theorem_v3. Recomputed on THIS branch.
-    "vital_edge": "f5c33525220113b8",
+    # Re-pinned 2026-08-30 with jv_v1 above (O-1, rung 1c). vital_edge carries
+    # a 60/90 choice on BOTH its massage services, so it moves for the same
+    # reason. It is pinned here but not in the b55 table, and the two files
+    # hash differently -- recomputed on THIS branch with THIS file's _sha.
+    "vital_edge": "8e3a6e1b92d3cb80",
 }
 
 
