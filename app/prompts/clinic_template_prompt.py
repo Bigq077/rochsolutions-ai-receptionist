@@ -146,6 +146,26 @@ def _has_duration_options(svc: Dict[str, Any]) -> bool:
     return bool(svc.get("typical_duration_minutes_options"))
 
 
+def _spine_has_duration_choice(clinic: Dict[str, Any]) -> bool:
+    """Does this clinic sell ANY service with a choice of session lengths?
+
+    Gates rung 1c of the booking sequence. A clinic with no such service has no
+    length question to order, so it must render byte-identical — the property
+    `UNCHANGED_CLINIC_PROMPTS` in `test_b55_provisional_reschedule_closing`
+    exists to prove, and the reason this is a predicate over the catalogue
+    rather than a clinic-id check. `if clinic == "..."` in engine code is the
+    bug, not the fix.
+
+    Tolerant of a malformed `services` entry: an unknown id returns a shape
+    whose `services` can be a list of strings, and a prompt renderer is not the
+    place to raise on it.
+    """
+    for svc in (clinic.get("services") or []):
+        if isinstance(svc, dict) and _has_duration_options(svc):
+            return True
+    return False
+
+
 def _home_visits_enabled(clinic: Dict[str, Any]) -> bool:
     """True if the clinic offers home visits at all — via the 'home_visit'
     modality, a dedicated 'home_visit' service, or any per-service
@@ -2272,6 +2292,53 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "answered the slot instead, and the booking completed with no reason at "
         "all. book_appointment REFUSES without a reason on record, so asking "
         "late means asking twice.\n"
+        # ── 1c. SESSION LENGTH ────────────────────────────────────────────
+        # O-1, owner, 2026-08-30, from listening to the demo line: the length
+        # question "seems a bit awkward" because it lands AFTER the timing
+        # question and abandons it mid-flow:
+        #
+        #     Susie:  "Right — do you have a preference for when you'd like
+        #              to come in?"
+        #     caller: "whatever you've got next week"
+        #     [ms_tools] check_availability blocked — 'sports_massage' offers
+        #                [30, 60] minutes and the caller has not chosen
+        #     Susie:  "Would you like the thirty-minute session at thirty-eight
+        #              pounds, or the sixty-minute at sixty-two?"
+        #
+        # THE QUESTION WAS NEVER A RUNG. It renders as a free-floating fact
+        # ("DURATION QUESTION FOR <SERVICE>: ..." — see the duration block
+        # above), so the model had prices and wording but no POSITION, and the
+        # only thing that ever forced the timing was `duration_choice_gate`,
+        # which is tool-time and therefore cannot be reached until the caller
+        # has already given a day. Late by construction.
+        #
+        # It is fixed by giving it a position rather than by moving the gate.
+        # The gate STAYS exactly as it is: it is what stopped a 90-minute
+        # booking being written as 60 (CA86c320ef, 4 Aug) and it is the
+        # backstop for the model ignoring this rung. Prompt decides the ORDER,
+        # gate decides whether the lookup may run — the split
+        # `duration_choice_gate` already documents as "the ORDERING half only".
+        #
+        # Gated on the clinic actually having a service with a choice of
+        # lengths, the same discipline as `reason_question_is_custom` above:
+        # demo, theorem and theorem_v3 sell no such service and must render
+        # byte-identical, which `UNCHANGED_CLINIC_PROMPTS` then proves.
+        + ("1c. SESSION LENGTH — AFTER THE SERVICE IS KNOWN, BEFORE TIMING. "
+           "The moment you know which service the caller wants, if it is one "
+           "that comes in more than one length (see DURATION QUESTION above "
+           "for which, and for the exact lengths and prices), ask which length "
+           "they would like as its own short turn — naming both lengths and "
+           "both prices — and WAIT for the answer. Ask it BEFORE the timing "
+           "question in step 2, not after it. The length decides the slot "
+           "grid, so a time offered before it is agreed is a time for an "
+           "appointment nobody has chosen yet: on CAa1e98c447774ec15340a6b84cc"
+           "89cff0 the caller picked a slot off a grid built at the shorter "
+           "length, was asked the length only afterwards, chose the longer "
+           "one, and had the whole lookup redone underneath them — the call "
+           "ran 3m02s and booked nothing. If the "
+           "caller has ALREADY named a length or a price, that IS the answer: "
+           "do NOT ask again. Never ask it after presenting slots.\n"
+           if _spine_has_duration_choice(clinic) else "")
         + ("2. MODALITY THEN TIMING. Default to in-clinic at "
            f"{loc_spoken} (location='{tk['primary_location_id']}'). If the caller "
            "has indicated REMOTE in ANY utterance so far — 'online', 'video', "

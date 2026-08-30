@@ -177,7 +177,23 @@ UNCHANGED_CLINIC_PROMPTS = {
     # the donor's practitioner in its rendered prompt, which can only come from
     # engine code. Nothing else in this file's containment claim changes —
     # demo / theorem / theorem_v3 use a different engine and are byte-identical.
-    "jv_v1": "a55429e037c05913",
+    #
+    # Re-pinned 2026-08-30, a55429e037c05913 -> d4fb03b5e5b56c7e. O-1: the
+    # booking sequence gained rung "1c. SESSION LENGTH", which orders the
+    # length question BEFORE the timing question in step 2. The question itself
+    # is not new — it rendered as a free-floating "DURATION QUESTION FOR
+    # <SERVICE>" fact with no position in the ladder, which is why it only ever
+    # got asked when `duration_choice_gate` blocked the tool, i.e. after the
+    # caller had already answered a timing question. Owner-reported from the
+    # demo line.
+    #
+    # jv_v1 moves because it sells Sports Massage at [30, 60]; it is the only
+    # clinic in this table that does. demo, theorem and theorem_v3 sell no
+    # multi-length service and are byte-identical across the change — which is
+    # the containment claim this table exists to prove, and the reason the rung
+    # is gated on `_spine_has_duration_choice(clinic)` (a predicate over the
+    # catalogue) rather than on a clinic id.
+    "jv_v1": "d4fb03b5e5b56c7e",
     "theorem": "8565be9a48a7a9aa",
     # Re-pinned 2026-08-25: 'Children under fifteen not seen' -> 'Children
     # under seven not seen'. Mark's minimum age is 7 (owner-confirmed

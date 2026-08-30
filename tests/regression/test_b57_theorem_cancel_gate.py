@@ -351,7 +351,19 @@ UNMOVED_PROMPTS = {
     # the donor's practitioner in its prompt, which can only come from code.
     # Hashes recomputed with THIS file's _sha - the two pin tables hash
     # differently, so a value must never be copied between them.
-    "jv_v1": "a55429e037c05913",
+    # Re-pinned 2026-08-30, a55429e037c05913 -> d4fb03b5e5b56c7e. O-1: the
+    # booking ladder gained rung "1c. SESSION LENGTH", ordering the length
+    # question BEFORE the timing question. Gated on
+    # _spine_has_duration_choice(clinic), so exactly the clinics that sell a
+    # multi-length service move -- jv_v1 (Sports Massage 30/60) and vital_edge
+    # (Sports Massage and Deep Tissue, both 60/90) below. demo, theorem and
+    # theorem_v3 sell no such service and HELD, which is this table's claim.
+    #
+    # NOTE FOR THE NEXT READER: this edit moved TWO pin tables, not one. The
+    # b55 table pins jv_v1 only; this one pins vital_edge as well, and the two
+    # hash differently (see the note above -- never copy a value between them).
+    # Recomputed with THIS file's _sha.
+    "jv_v1": "d4fb03b5e5b56c7e",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -410,7 +422,12 @@ UNMOVED_PROMPTS = {
     # is gated on minimum_age_years, so jv_v1 - the other template_v1 clinic,
     # whose policy is "No minimum age" - renders nothing and HELD, as did demo,
     # theorem and theorem_v3.
-    "vital_edge": "9344be1c88fb18e5",
+    # Re-pinned 2026-08-30, 9344be1c88fb18e5 -> f92b8c5f07d18182. Rung 1c, as
+    # for jv_v1 above. vital_edge is the clinic O-1 matters most for: BOTH its
+    # massage services carry a 60/90 choice, so before this the length question
+    # could only ever be forced by the tool-time gate, i.e. after the caller had
+    # already answered a timing question.
+    "vital_edge": "f92b8c5f07d18182",
 }
 
 
