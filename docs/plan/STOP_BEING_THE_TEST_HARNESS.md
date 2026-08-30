@@ -1,10 +1,15 @@
 # Stop being the test harness — before the cohort lands
 
-**Status as of 2026-08-30, early morning.** Phase 1 done. **Phase 2 DONE — all
+**Status as of 2026-08-30, late morning.** Phase 1 done. **Phase 2 DONE — all
 three parts. Phase 4 DONE.** Phase 3 ready and blocked on an owner action.
-**The two ungated items are PORTED and live on all three patient lines**, and
-the four findings of the 2026-08-30 demo call are fixed on canonical — see
-"The 2026-08-30 call" and "The port — DONE" below.
+**The two ungated items are PORTED and live on all three patient lines.** The
+four findings of the 2026-08-30 demo call plus B-125/B-125b are fixed on
+canonical and verified across FOUR demo-line calls.
+
+> 🔴 **START HERE IF YOU ARE PICKING THIS UP COLD.** Read
+> "**HANDOVER — the state at 2026-08-30 11:00**" immediately below. It says
+> what is done, what is owed to the patient lines and approved to go, and the
+> two things the owner asked for by ear that are not yet built.
 Two live-call confirmations banked: the fourth clinic booking from config
 alone, and Theorem's emergency intercept. The
 hold-speech decision is SETTLED — and the measurement that settled it says the
@@ -17,6 +22,167 @@ caller".
 
 This document is the plan and its running record. It is written to be picked up
 cold: if you have not read anything else, read this.
+
+---
+
+## HANDOVER — the state at 2026-08-30 11:00
+
+Written to be picked up in a fresh session with no other context.
+
+### Branch tips
+
+| branch | tip | note |
+|---|---|---|
+| `latency-eval` | `61d65180` | canonical + the Northgate demo line (**+447366263180**) |
+| `jv_v2` | `945e371c` | live — Joint Venture |
+| `vitaledge-onboarding` | `3d2486ee` | live — Vital Edge |
+| `theorem-onboarding` | `1afa95d2` | live — Theorem |
+
+Deploy proof is `[build_info] running build <sha>` in the Render log at call
+cleanup. `/health` returns a hardcoded 1.0.0 and proves nothing.
+
+### ✅ APPROVED AND PENDING — the port to the three patient lines
+
+**The owner said to do this.** It is the next action, not a proposal.
+
+Port to `jv_v2`, `vitaledge-onboarding`, `theorem-onboarding`:
+
+1. **Finding 2** — the exhaustion sentence, once per offer (`e1ebcf9a`)
+2. **Finding 3** — captured session length into CALL STATE (`5ab3fcc5`)
+3. **B-125 + B-125b** — the earliest/soonest ranking guard (`0ea44018`,
+   `61d65180`)
+
+Evidence standing behind each: B-125 fired live twice; finding 3 held on three
+calls; **finding 2 is proven by regression test only** — four calls failed to
+trigger it because the caller ended the call at that point every time. The
+owner accepted the test evidence on the reasoning that the fix can only
+DECLINE to repeat a sentence and fall through to a real lookup, so it cannot
+assert anything false.
+
+Procedure, per branch (~20 min total, baselines already established once):
+
+    git worktree add -b port/<name> <dir> origin/<branch>
+    cp .env <dir>/                     # a scratch tree has none; without it a
+                                       # different SET of tests runs
+    # two clean SEQUENTIAL full-suite runs for the baseline, COLUMNS=250
+    # (a narrow terminal wraps long test ids and corrupts the failing set)
+    # apply, run once, diff the failing SETS — never the counts
+
+Known baselines: **VE 119, JV 109, Theorem 114** (after the 30 Aug port).
+
+Findings 1 and 4 are **NOT** portable: `app/hold_speech.py` does not exist on
+any patient branch. Confirmed by `git cat-file -e`, not assumed.
+
+### 🟠 OWNER-REQUESTED, NOT STARTED — two items from the ear, 2026-08-30
+
+Both came from the owner listening to the demo line. Neither is a bug report
+against a guard; both are about how the call FEELS.
+
+#### O-1. The duration question lands in the wrong place
+
+Today the caller says what they want, is asked WHEN they would like to come
+in, answers that, and only then gets asked how long the session should be:
+
+    Susie:  "Right — do you have a preference for when you'd like to come in?"
+    caller: "whatever you've got next week"
+    [ms_tools] check_availability blocked — 'sports_massage' offers [30, 60]
+               minutes and the caller has not chosen. Asking first
+    Susie:  "Would you like the thirty-minute session at thirty-eight pounds,
+             or the sixty-minute at sixty-two?"
+
+The owner's words: *"it seems a bit awkward"*. The timing question is asked,
+answered, and then abandoned mid-flow for a second question the caller was not
+expecting — and the day/time they just gave is only acted on a turn later.
+
+**Wanted:** the duration question comes right after the caller names the
+service, before the timing question, so the two are not interleaved.
+
+Where it lives: the gate is in `app/tools/receptionist_tools.py`
+(`check_availability blocked — ... offers [30, 60] minutes`, fires once per
+call). It is a TOOL-TIME block, which is structurally why it lands late — the
+tool is not reached until the caller has given a day. Moving it earlier means
+asking at service-selection time rather than at first lookup, so this is a
+flow change and not a wording change. Size it before starting.
+
+⚠️ Do not simply delete the tool-time block: it is the thing that stopped a
+booking being written at the wrong length (`CA86c320ef`, 4 Aug — caller chose
+90 minutes and got 60). Whatever asks earlier must keep that guarantee, and
+`_service_duration_choice` must still be latched before any grid is built.
+
+#### O-2. Two hold phrases in a row — "Let me look that up" on top of a head
+
+The owner: *"it goes with the filler, and then it says, for example, 'Let me
+see what we have on Monday.' It's 'Let me look that up,' which sounds a bit
+robotic. We could take off 'Let me look that up.'"*
+
+**This is a real defect, and the logs name it exactly.** It is B-121 in the
+direction nobody checked. `CAd1bc6681b69e48fc8527449d65a03a23`, build
+`61d651804c20`:
+
+    10:26:01.403  situational head (named_day): 'Let me see what Tuesday looks like —'
+    10:26:03.084  synthesise:  "Let me check what's available on Tuesday for you."
+                               ^^ 1.68s later, a SECOND hold phrase
+
+    10:26:21.016  situational head (earliest): 'Let me see what the earliest is —'
+    10:26:22.397  synthesise:  'Let me check that for you.'
+                               ^^ 1.38s later, a SECOND hold phrase
+
+The `_hold_head_spoken` latch closes B-121 for the **tool-time** producer. It
+does nothing about the model's OWN preserved pre-tool line, which
+`keep_pre_slot_speech` lets through — so on this clinic the head fires at
+600ms and the model says its own version of the same thing ~1.5s later. Two
+ways of saying "wait a moment", back to back, which is precisely the
+"canned filler" sound the arbiter exists to remove.
+
+Note the asymmetry that makes it easy to miss: when Gate 5 DELETES the model's
+line as a banned phrase (`just_a_moment`), the caller hears one phrase and it
+sounds right. When the model phrases it in a way Gate 5 permits ("Let me check
+that for you."), both are spoken. So the defect appears and disappears
+depending on the model's wording, which is why three verification calls passed
+their stated criteria while the owner could still hear it.
+
+**The fix is NOT a phrase blacklist.** "Code must never match one literal of
+model speech" — that family has cost five fixes here. The structural answer is
+that `_hold_head_spoken` should suppress the preserved pre-tool line the same
+way it suppresses the tool-time producer: if a head has already spoken, the
+model's own hold sentence is a duplicate and `join_after_head` should strip it
+rather than let it through as a second utterance. Some of that machinery
+already exists (`_INTERIM_DUPE_RE`, `_strip_interim_opener`, `join_after_head`)
+and is not reached on this path.
+
+Also worth checking while in there: `_NAMES_THE_WORK` already decides whether a
+preserved line claims a lookup. That is the same discriminator the suppression
+would need.
+
+### ⚪ Still open, previously recorded, unchanged
+
+- The T-3 nudge arms "Anything else you'd like to know?" after Susie's own
+  "Take care — bye!" — seen on every call in this series.
+- `[clinical_screening] last_bot_prompt truncated at 200 chars` (B-31) still
+  fires and still falls back correctly.
+- The demo line's Sheets append fails on an invalid
+  `GOOGLE_SERVICE_ACCOUNT_JSON` escape — known-accepted THERE, not on a
+  patient line.
+- The ElevenLabs `/v1/models` 401 at prewarm is a `models_read` scope thing and
+  does not predict synthesis failure. The log line says so itself.
+- Phase 3, the fold: blocked on the owner, not on engineering.
+
+### How the four demo calls map to the fixes
+
+| | call 1 `CA7182…` 07:32 | call 2 `CA4fff…` 10:11 | call 3 `CAd1bc…` 10:26 |
+|---|---|---|---|
+| finding 1 — heads after a readout | ✅ both turns | ✅ 4 heads | ✅ 4 heads |
+| finding 2 — sentence twice | not triggered | not triggered | not triggered |
+| finding 3 — length re-asked | ✅ | ✅ | ✅ |
+| finding 4 — latch vs Gate 5 | ✅ revoked ×3 | ✅ revoked ×3, **held ×1** | ✅ revoked ×2, **held ×2** |
+| B-125 — false "earliest" | 🔴 FOUND | ✅ stripped | ✅ stripped |
+| B-125b — trailing frame | — | 🔴 FOUND | not triggered |
+| clip pool | — | ✅ variant 4/5 | ✅ variant 1/5 |
+
+Finding 4 holding correctly (the latch NOT revoked when the phrase survived
+Gate 5) is the strongest single piece of evidence in the set — it shows the
+guard is conditional in both directions rather than simply always firing.
+
 
 ---
 
@@ -516,12 +682,17 @@ In the order I would take it:
    above. The engine correctness backlog from this exercise is now empty.
 2. ~~**`northgate.transfer_phone`**~~ — **done**, `deb0dc76`.
 3. ~~**The held port to the live clinics**~~ — the **two ungated items are
-   done**, 2026-08-30. See "The port — DONE" below for what landed and what is
-   still held.
-4. ~~**The four findings of the 2026-08-30 demo call.**~~ **Done** on canonical
-   — see below. Findings 2's fix APPLIES to the live branches and is the next
-   thing in this queue, once someone places a call on the demo line to hear it.
-5. **Phase 3, the fold.** Blocked on you, not on engineering.
+   done**, 2026-08-30. See "The port — DONE" below.
+4. ~~**The four findings of the 2026-08-30 demo call.**~~ **Done** on canonical,
+   verified over four demo-line calls.
+5. **PORT findings 2, 3 and B-125/B-125b to the three patient lines.**
+   **Owner-approved 2026-08-30, this is the next action.** Full instructions
+   and the evidence standing behind each are in the HANDOVER block at the top.
+6. **O-1, the duration question's position**, and **O-2, two hold phrases in a
+   row.** Both owner-reported by ear on 2026-08-30, neither started. See the
+   HANDOVER block — O-2 in particular is a real defect with log lines, not a
+   wording preference.
+7. **Phase 3, the fold.** Blocked on you, not on engineering.
 
 Not started and deliberately so: the `last_offered_slots` three-contract
 restructure stays post-webinar.
@@ -754,7 +925,7 @@ of 29 Aug, three from the suite and one from the call that verified it.
 
 | branch | tip | note |
 |---|---|---|
-| `latency-eval` | `5ab3fcc5` | canonical; also serves Northgate on the test line. Carries the four findings of the 2026-08-30 call. |
+| `latency-eval` | `61d65180` | canonical; also serves Northgate on the demo line **+447366263180**. Carries the four findings of the 2026-08-30 call plus B-125/B-125b. |
 | `jv_v2` | `945e371c` | live — Joint Venture; has the orphan guard and the clip pool |
 | `vitaledge-onboarding` | `3d2486ee` | live — Vital Edge; same two |
 | `theorem-onboarding` | `1afa95d2` | live — Theorem; same two. Stays separate by decision. |
