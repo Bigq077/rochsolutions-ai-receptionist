@@ -1,112 +1,34 @@
-"""Three findings from the demo call of 2026-08-30, build 9e8d22bcc8fa.
+"""Two findings from the demo call of 2026-08-30, build 9e8d22bcc8fa.
 
 That call confirmed all four fixes from the night before and was clean on the
-call sheet's own criteria. These are what it surfaced that was new. None is a
-safety defect; all three are the kind of thing a caller notices.
+call sheet's own criteria. These are what it surfaced that was new. Neither is
+a safety defect; both are the kind of thing a caller notices.
 
-  1. After a numbered readout, no diary head could ever fire again.
   2. The same sentence spoken twice, six seconds apart.
   3. The session length asked twice, two minutes after it was answered.
 
-Finding 4 -- the hold latch reading text Gate 5 may delete -- has its own file,
-`test_the_hold_latch_survives_gate_5.py`, because it needs the streaming path
-rather than a pure function.
+THIS IS THE PATIENT-BRANCH COPY AND IT IS DELIBERATELY SHORTER THAN CANONICAL'S.
+Findings 1 and 4 are both about hold speech and neither exists here: this branch
+has no `app/hold_speech.py` (`git cat-file -e` says so on all three patient
+branches), and no `offered_slot_labels` / `utterance_is_slot_selection` in
+`app/media_streams/connection.py` either. Finding 1's section imported all five
+of those names at module scope, so carrying it over does not fail -- it is a
+COLLECTION error that interrupts the whole run and reports no failures at all.
+Section 1 is therefore removed rather than skipped, so that the absence is a
+fact about this branch rather than a silently-green test.
+
+When hold speech is ported here, restore section 1 from canonical's copy of
+this file; do not rewrite it.
 """
 from __future__ import annotations
 
 import pytest
 
-from app.hold_speech import _CONFIRM_Q, Intent, classify_intent
-from app.media_streams.connection import (
-    offered_slot_labels,
-    utterance_is_slot_selection,
-)
 from app.tools.slot_followup import (
     exhaustion_offer_signature,
     exhaustion_sentence_already_said,
     note_exhaustion_sentence_said,
 )
-
-
-# ═══ 1. After a numbered readout, no diary head can ever fire ═══════════════
-#
-# `_CONFIRM_Q` listed `\bnumber \d\b` to catch a confirm question. A slot
-# readout always says "Number 1, ... Number 2, ...", so from the first offer
-# onwards every turn read as answering one and every diary intent was dropped.
-# 244 suppressions in the corpus, 186 from that token alone.
-#
-# It is NOT simply deleted: most of the 186 are genuine selections and should
-# stay silent. The engine's own B-90 verdict -- is this utterance one of the
-# labels just offered? -- replaces the proxy.
-
-READOUT = "Number 1, ten in the morning. Number 2, two in the afternoon."
-OFFER = {"slot_labels": ["ten in the morning", "two in the afternoon"]}
-
-
-def test_the_readout_token_is_gone_from_the_confirm_pattern():
-    """State the deletion out loud. Putting it back re-breaks every later head."""
-    assert not _CONFIRM_Q.search(READOUT), (
-        "a slot READOUT still matches _CONFIRM_Q — every diary head for the "
-        "rest of the call is suppressed again"
-    )
-
-
-@pytest.mark.parametrize("utterance,intent", [
-    ("um what do you have next tuesday", Intent.NAMED_DAY),
-    ("actually what's the soonest you've got", Intent.EARLIEST),
-])
-def test_a_new_request_after_a_readout_gets_its_head(utterance, intent):
-    """The two turns from the call that got silence where they wanted a head."""
-    hits = classify_intent(utterance, READOUT, slot_selection=False)
-    assert intent in hits, (
-        f"{utterance!r} got {hits} — a caller asking something new during the "
-        f"slot window is still waiting for a lookup"
-    )
-
-
-@pytest.mark.parametrize("picked", [
-    "ten in the morning",
-    "can I take two in the afternoon please",
-    "yeah ten in the morning",
-])
-def test_choosing_a_slot_still_gets_silence(picked):
-    """The 186 the pattern was reaching for. A selection is an ANSWER; there is
-    no lookup behind it and a head in front of it would promise one."""
-    assert utterance_is_slot_selection(picked, OFFER), picked
-    assert classify_intent(picked, READOUT, slot_selection=True) == []
-
-
-def test_a_genuine_confirm_question_still_suppresses():
-    """Removing one token must not disarm the rest of the pattern."""
-    for q in (
-        "Just to confirm, is that right?",
-        "Which one of those works best?",
-        "Shall I go ahead and book that?",
-    ):
-        assert _CONFIRM_Q.search(q), q
-
-
-def test_the_selection_verdict_has_exactly_one_definition():
-    """It had three: inline at the B-90 capture site, a hand-written mirror in
-    the B-90 test, and the `number \\d` proxy in _CONFIRM_Q that was a worse
-    version of the same question asked of the wrong sentence.
-
-    This pins the shared one so the next reader does not write a fourth.
-    """
-    assert offered_slot_labels(OFFER) == {"10 in morning", "2 in afternoon"}
-    assert not utterance_is_slot_selection("nine in the morning", OFFER)
-    assert not utterance_is_slot_selection("mornings please", OFFER)
-    # Unreadable input reports False rather than raising — this sits on the
-    # live turn path and a head is a nicety.
-    for junk in (None, "", 123, []):
-        assert utterance_is_slot_selection(junk, OFFER) is False
-    assert offered_slot_labels(None) == set()
-
-
-def test_the_keypad_map_counts_as_an_offer_too():
-    """A keypress injects the map value, not the spoken label list."""
-    session = {"v3_dtmf_slot_map": {"1": "ten in the morning"}}
-    assert utterance_is_slot_selection("ten in the morning", session)
 
 
 # ═══ 2. The same sentence twice, six seconds apart ═════════════════════════
@@ -180,11 +102,41 @@ def test_the_follow_up_path_declines_the_second_time():
 # The capture was right and the booking was written at a real 60 minutes. The
 # model simply had no way to see that the question was settled.
 
+def _a_template_v1_clinic() -> str:
+    """A clinic id THIS branch actually ships, not a hardcoded one.
+
+    Canonical renders `northgate` -- the demo line's clinic, which no patient
+    branch has. The hardcoded version does not fail the assertion when ported:
+    `get_clinic` on an unknown id returns a shape whose `services` is a list of
+    strings, and the renderer dies with `AttributeError: 'str' object has no
+    attribute 'get'` deep inside `clinic_template_prompt`. That reads as a
+    broken port rather than as a test pinned to somebody else's clinic.
+
+    `_b7_call_state` is per-renderer, not per-clinic, so any `template_v1`
+    clinic proves the same thing.
+    """
+    import json
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[2] / "app" / "clinics"
+    for d in sorted(root.iterdir()):
+        try:
+            cfg = json.loads((d / "clinic.json").read_text(encoding="utf-8"))
+        except Exception:
+            continue  # `demo/` is not always valid JSON on every branch
+        if cfg.get("prompt_engine") == "template_v1":
+            return d.name
+    pytest.skip("this branch ships no template_v1 clinic")
+
+
+CLINIC = _a_template_v1_clinic
+
+
 def _call_state(session: dict) -> str:
     from app.clinic_config import get_clinic
     from app.prompts.clinic_template_prompt import build_clinic_prompt
 
-    static, dynamic = build_clinic_prompt(session, get_clinic("northgate"))
+    static, dynamic = build_clinic_prompt(session, get_clinic(session["clinic_id"]))
     for blob in (static, dynamic):
         for line in blob.split("\n"):
             if "already known (do NOT re-ask)" in line:
@@ -194,7 +146,7 @@ def _call_state(session: dict) -> str:
 
 def test_a_captured_session_length_reaches_the_model():
     line = _call_state({
-        "clinic_id": "northgate",
+        "clinic_id": CLINIC(),
         "turn_count": 3,
         "collected": {},
         "_service_duration_choice": 60,
@@ -208,7 +160,7 @@ def test_a_captured_session_length_reaches_the_model():
 def test_no_length_no_line():
     """It must not assert a length the caller never chose."""
     line = _call_state({
-        "clinic_id": "northgate",
+        "clinic_id": CLINIC(),
         "turn_count": 3,
         "collected": {"name": "Quentin"},
     })
@@ -224,7 +176,7 @@ def test_it_rides_in_the_do_not_re_ask_list_rather_than_a_new_rule():
     value being visibly KNOWN is what closes the question.
     """
     line = _call_state({
-        "clinic_id": "northgate",
+        "clinic_id": CLINIC(),
         "turn_count": 3,
         "collected": {"name": "Quentin"},
         "_service_duration_choice": 90,
