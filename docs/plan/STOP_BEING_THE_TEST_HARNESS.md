@@ -1,15 +1,16 @@
 # Stop being the test harness — before the cohort lands
 
-**Status as of 2026-08-30, late morning.** Phase 1 done. **Phase 2 DONE — all
-three parts. Phase 4 DONE.** Phase 3 ready and blocked on an owner action.
-**The two ungated items are PORTED and live on all three patient lines.** The
-four findings of the 2026-08-30 demo call plus B-125/B-125b are fixed on
-canonical and verified across FOUR demo-line calls.
+**Status as of 2026-08-30, early afternoon.** Phase 1 done. **Phase 2 DONE —
+all three parts. Phase 4 DONE.** Phase 3 ready and blocked on an owner action.
+**Nothing is owed to the patient lines.** The four findings of the 2026-08-30
+demo call, B-125/B-125b, and BOTH items the owner raised by ear (O-1 and O-2)
+are landed, and every branch that can carry each one has it. All four live
+branches were pushed and their suites diffed at zero regressions.
 
 > 🔴 **START HERE IF YOU ARE PICKING THIS UP COLD.** Read
-> "**HANDOVER — the state at 2026-08-30 11:00**" immediately below. It says
-> what is done, what is owed to the patient lines and approved to go, and the
-> two things the owner asked for by ear that are not yet built.
+> "**HANDOVER — the state at 2026-08-30 14:10**" immediately below. It says
+> what is done, what the 12:41 verification call did and did NOT prove, and
+> the three things it surfaced that nobody has acted on yet.
 
 Two live-call confirmations banked: the fourth clinic booking from config
 alone, and Theorem's emergency intercept. The
@@ -26,7 +27,7 @@ cold: if you have not read anything else, read this.
 
 ---
 
-## HANDOVER — the state at 2026-08-30 11:00
+## HANDOVER — the state at 2026-08-30 14:10
 
 Written to be picked up in a fresh session with no other context.
 
@@ -34,126 +35,92 @@ Written to be picked up in a fresh session with no other context.
 
 | branch | tip | note |
 |---|---|---|
-| `latency-eval` | `6c2f96cb` | canonical + the Northgate demo line (**+447366263180**). Last verified build on the line was `61d651804c20`; everything after it is documentation. |
-| `jv_v2` | `945e371c` | live — Joint Venture |
-| `vitaledge-onboarding` | `3d2486ee` | live — Vital Edge |
-| `theorem-onboarding` | `1afa95d2` | live — Theorem |
+| `latency-eval` | `89a52fe0` | canonical + the Northgate demo line (**+447366263180**). Build `2d72f87a935c` was verified on a live call at 12:41 on 30 Aug; `89a52fe0` on top of it is tests only. |
+| `jv_v2` | `2088c668` | live — Joint Venture |
+| `vitaledge-onboarding` | `6c3dd2b4` | live — Vital Edge |
+| `theorem-onboarding` | `aad9f677` | live — Theorem |
 
 Deploy proof is `[build_info] running build <sha>` in the Render log at call
 cleanup. `/health` returns a hardcoded 1.0.0 and proves nothing.
 
-### ✅ APPROVED AND PENDING — the port to the three patient lines
+### ✅ DONE — the port to the patient lines, and both items from the ear
 
-**The owner said to do this.** It is the next action, not a proposal.
+Everything the 11:00 handover listed as pending or not-started is now landed
+and pushed. Nothing in this block is owed.
 
-Port to `jv_v2`, `vitaledge-onboarding`, `theorem-onboarding`:
+**The three-fix port (finding 2 `e1ebcf9a`, finding 3 `5ab3fcc5`, B-125 +
+B-125b `0ea44018` / `61d65180`)** went to all three patient branches in one
+pass. Findings 1 and 4 were confirmed NOT portable and are not a gap: they are
+defects *inside* the situational hold-head feature, and `git grep` finds zero
+files for `app/hold_speech.py`, "situational head", `_hold_head_spoken`,
+`_CONFIRM_Q` and `join_after_head` on all three branches. No head producer
+means no defect to port — not a fix that was skipped.
 
-1. **Finding 2** — the exhaustion sentence, once per offer (`e1ebcf9a`)
-2. **Finding 3** — captured session length into CALL STATE (`5ab3fcc5`)
-3. **B-125 + B-125b** — the earliest/soonest ranking guard (`0ea44018`,
-   `61d65180`)
+**O-1 — the duration question now lands before the timing question.**
+`2d72f87a` on canonical, ported to `jv_v2` and `vitaledge-onboarding`.
+**Theorem: N-A** (no multi-length service). The root cause was NOT a missing
+instruction: the prompt has carried "DURATION QUESTION FOR <SERVICE>" with the
+right lengths and prices for months. It had no POSITION in the numbered ladder
+the model actually follows, so the only thing that ever forced it was the
+tool-time `duration_choice_gate` — unreachable until the caller has already
+given a day. Late by construction. Fixed by adding rung **`1c. SESSION
+LENGTH`** between `1b. REASON` and the timing rung, gated on
+`_spine_has_duration_choice(clinic)`. **`duration_choice_gate` is deliberately
+untouched** and remains the backstop; a test asserts it still blocks.
 
-Evidence standing behind each: B-125 fired live twice; finding 3 held on three
-calls; **finding 2 is proven by regression test only** — four calls failed to
-trigger it because the caller ended the call at that point every time. The
-owner accepted the test evidence on the reasoning that the fix can only
-DECLINE to repeat a sentence and fall through to a real lookup, so it cannot
-assert anything false.
+**O-2 — a head is no longer followed by the model's own hold phrase.**
+`1c43c46e`, canonical only. **No port: N-A on all three patient lines**, same
+evidence as findings 1 and 4 — no head producer exists there, so there is no
+first phrase for the model's line to duplicate.
 
-Procedure, per branch (~20 min total, baselines already established once):
+### 🔬 What the 12:41 verification call proved, and what it did not
 
-    git worktree add -b port/<name> <dir> origin/<branch>
-    cp .env <dir>/                     # a scratch tree has none; without it a
-                                       # different SET of tests runs
-    # two clean SEQUENTIAL full-suite runs for the baseline, COLUMNS=250
-    # (a narrow terminal wraps long test ids and corrupts the failing set)
-    # apply, run once, diff the failing SETS — never the counts
+`CA8e688605a9460906840840ed561246ac`, build `2d72f87a935c`, 96s, demo line.
 
-Known baselines: **VE 119, JV 109, Theorem 114** (after the 30 Aug port).
+**O-1: confirmed.** The ladder ran `1b → 1c → 2` in order —
+`"Right — what's the appointment for?"` → `"Would you like a 30-minute session
+at thirty-eight pounds, or a 60-minute one at sixty-two pounds?"` → *length
+captured: 60 minutes* → `"Do you have a preference for when you'd like to come
+in?"`. **`check_availability blocked` never appears in the call**: the gate did
+not have to fire, which is the defect gone at source rather than caught.
 
-Findings 1 and 4 are **NOT** portable: `app/hold_speech.py` does not exist on
-any patient branch. Confirmed by `git cat-file -e`, not assumed.
+**O-2: confirmed, but by its SECOND half only — read this before trusting it.**
+Four `head=True` phrases were synthesised and none of the eleven `head=False`
+chunks is a hold phrase, so no duplicate reached the caller. But on both
+lookups the model happened to say *"Just a moment while I check what's
+available."*, which Gate 5 deletes anyway — so the duplicate-stripper was not
+the operative mechanism. What actually did the work, twice, is the **latch
+ownership fix**:
 
-### 🟠 OWNER-REQUESTED, NOT STARTED — two items from the ear, 2026-08-30
+    [ms_gate5] the preserved pre-tool line IS a hold phrase (...) but a head
+    had already spoken — the latch is not ours and stays NON-revocable
 
-Both came from the owner listening to the demo line. Neither is a bug report
-against a guard; both are about how the call FEELS.
+Without it the revocation would have cleared a latch belonging to the head
+producer (Gate 5 had removed the model's sentence, so `_spoken_this_turn` held
+no hold phrase), the tool-time producer would have stopped standing down, and
+it would have spoken the second phrase. **The half the owner originally
+reported — the model's line SURVIVING Gate 5 and being spoken — did not occur
+on this call and remains unconfirmed live.** It depends on the model's wording
+and cannot be forced.
 
-#### O-1. The duration question lands in the wrong place
+### 🟠 Seen on the verification call, not yet acted on
 
-Today the caller says what they want, is asked WHEN they would like to come
-in, answers that, and only then gets asked how long the session should be:
+Three things in `CA8e688605`, in priority order. None blocks anything above.
 
-    Susie:  "Right — do you have a preference for when you'd like to come in?"
-    caller: "whatever you've got next week"
-    [ms_tools] check_availability blocked — 'sports_massage' offers [30, 60]
-               minutes and the caller has not chosen. Asking first
-    Susie:  "Would you like the thirty-minute session at thirty-eight pounds,
-             or the sixty-minute at sixty-two?"
-
-The owner's words: *"it seems a bit awkward"*. The timing question is asked,
-answered, and then abandoned mid-flow for a second question the caller was not
-expecting — and the day/time they just gave is only acted on a turn later.
-
-**Wanted:** the duration question comes right after the caller names the
-service, before the timing question, so the two are not interleaved.
-
-Where it lives: the gate is in `app/tools/receptionist_tools.py`
-(`check_availability blocked — ... offers [30, 60] minutes`, fires once per
-call). It is a TOOL-TIME block, which is structurally why it lands late — the
-tool is not reached until the caller has given a day. Moving it earlier means
-asking at service-selection time rather than at first lookup, so this is a
-flow change and not a wording change. Size it before starting.
-
-⚠️ Do not simply delete the tool-time block: it is the thing that stopped a
-booking being written at the wrong length (`CA86c320ef`, 4 Aug — caller chose
-90 minutes and got 60). Whatever asks earlier must keep that guarantee, and
-`_service_duration_choice` must still be latched before any grid is built.
-
-#### O-2. Two hold phrases in a row — "Let me look that up" on top of a head
-
-The owner: *"it goes with the filler, and then it says, for example, 'Let me
-see what we have on Monday.' It's 'Let me look that up,' which sounds a bit
-robotic. We could take off 'Let me look that up.'"*
-
-**This is a real defect, and the logs name it exactly.** It is B-121 in the
-direction nobody checked. `CAd1bc6681b69e48fc8527449d65a03a23`, build
-`61d651804c20`:
-
-    10:26:01.403  situational head (named_day): 'Let me see what Tuesday looks like —'
-    10:26:03.084  synthesise:  "Let me check what's available on Tuesday for you."
-                               ^^ 1.68s later, a SECOND hold phrase
-
-    10:26:21.016  situational head (earliest): 'Let me see what the earliest is —'
-    10:26:22.397  synthesise:  'Let me check that for you.'
-                               ^^ 1.38s later, a SECOND hold phrase
-
-The `_hold_head_spoken` latch closes B-121 for the **tool-time** producer. It
-does nothing about the model's OWN preserved pre-tool line, which
-`keep_pre_slot_speech` lets through — so on this clinic the head fires at
-600ms and the model says its own version of the same thing ~1.5s later. Two
-ways of saying "wait a moment", back to back, which is precisely the
-"canned filler" sound the arbiter exists to remove.
-
-Note the asymmetry that makes it easy to miss: when Gate 5 DELETES the model's
-line as a banned phrase (`just_a_moment`), the caller hears one phrase and it
-sounds right. When the model phrases it in a way Gate 5 permits ("Let me check
-that for you."), both are spoken. So the defect appears and disappears
-depending on the model's wording, which is why three verification calls passed
-their stated criteria while the owner could still hear it.
-
-**The fix is NOT a phrase blacklist.** "Code must never match one literal of
-model speech" — that family has cost five fixes here. The structural answer is
-that `_hold_head_spoken` should suppress the preserved pre-tool line the same
-way it suppresses the tool-time producer: if a head has already spoken, the
-model's own hold sentence is a duplicate and `join_after_head` should strip it
-rather than let it through as a second utterance. Some of that machinery
-already exists (`_INTERIM_DUPE_RE`, `_strip_interim_opener`, `join_after_head`)
-and is not reached on this path.
-
-Also worth checking while in there: `_NAMES_THE_WORK` already decides whether a
-preserved line claims a lookup. That is the same discriminator the suppression
-would need.
+1. **Two guards had to correct the model in 96 seconds.**
+   `[slot_followup] CORRECTED a false 'the only time is' claim — the day holds
+   more times (B-100)`, and `read-back time corrected: 'five past nine in the
+   morning' -> 'eight in the morning' … the model crossed two options`. Both
+   caught it, nothing wrong reached the caller. But that is two near-misses on
+   one short call in the failure class that matters most here, and it is worth
+   asking why the model is producing them at that rate.
+2. **Latency on the slot turns is over the bar.** `content_ttfa_ms=5990` and
+   `4150` against the 1.5s p95 target in CLAUDE.md §6. First audio is fast
+   (`ttfa_ms=740`) because the head covers it — so the hold speech is masking
+   a real 4–6s to content rather than the number having improved.
+3. **Turn 2 was 9.3s of continuous speech** — empathy, then the knowledge
+   sentence, then the duration question. If the flow still feels long, that is
+   where to look, not at the ordering.
 
 ### ⚪ Still open, previously recorded, unchanged
 
@@ -312,6 +279,73 @@ every trace of them, render the prompt: 107,985 characters, **zero leakage**.
 ---
 
 ## The traps — what cost time, so it does not cost it again
+
+### The recorded post-port baselines were WRONG — measure, do not inherit
+
+The 11:00 handover said **VE 119, JV 109, Theorem 114**. Measured on 30 Aug,
+each from two clean sequential runs with both `.env` files copied and
+`COLUMNS=250`, the real figures at the same commits were:
+
+| branch | recorded | measured |
+|---|---|---|
+| `vitaledge-onboarding` | 119 | **105** |
+| `jv_v2` | 109 | **103** |
+| `theorem-onboarding` | 114 | **106** |
+| `latency-eval` | — | **107** |
+
+`pytest-randomly` is not installed, so ordering is not the explanation. The
+numbers were stale or taken differently; the code wins (CLAUDE.md §7). **A
+recorded count is not a baseline.** Take your own two sequential runs at the
+branch tip and diff the failing SETS — every port on 30 Aug was verified that
+way and all four came back identical.
+
+### A canonical test file that names a clinic will break on every port
+
+Three instances in two days, and the third was self-inflicted:
+
+1. The ported 2026-08-30 findings file hardcoded `get_clinic("northgate")`.
+2. The new O-1 file hardcoded `CHOICE_CLINICS = ["northgate", ...]`.
+3. The same O-1 file pinned northgate's `"2. MODALITY THEN TIMING"` wording and
+   reported vital_edge — which renders plain `"2. TIMING"` — as badly ordered
+   when the rung was in exactly the right place.
+
+`northgate` is the DEMO LINE's clinic and no patient branch ships it. Worse,
+`get_clinic` on an unknown id does not raise: it returns a shape whose
+`services` is a list of strings, and the renderer dies with `AttributeError:
+'str' object has no attribute 'get'` deep inside `clinic_template_prompt`,
+which reads as a broken engine rather than a broken test. **Discover the clinic
+from `app/clinics/` at run time using the same predicate the code under test is
+gated on**, and add a test that the discovery is non-empty — an empty list
+makes every parametrized case pass by running zero of them.
+
+### A missing module is a COLLECTION error, not a red test
+
+`5ab3fcc5`'s test file imports `app.hold_speech` at module scope and covers
+findings 1, 2 and 3 together. On a patient branch that module does not exist,
+so pytest interrupts the ENTIRE run and reports zero failures. The first
+post-port run died in 17 seconds looking like a catastrophe and measuring
+nothing. Split the unportable section out rather than skipping it, so the
+absence is a recorded fact about the branch.
+
+### One prompt edit moves TWO pin tables, and their hashes are not interchangeable
+
+`test_b55_provisional_reschedule_closing` pins `jv_v1`; `test_b57_theorem_cancel_gate`
+pins `jv_v1` AND `vital_edge`. They hash differently, and **every value is
+branch-local** — the same commit produced `d4fb03b5e5b56c7e` on canonical,
+`6c304fe4952d23a1` on vitaledge-onboarding and `20fca990587548ee` on jv_v2.
+Recompute with each file's own `_sha`, on the branch you are on. Never copy.
+The tables are worth the trouble: they are what proved rung 1c stayed off
+demo, theorem and theorem_v3.
+
+### An ad-hoc harness script bypasses the conftest that makes it honest
+
+`tests/harness/conftest.py` loads `ANTHROPIC_API_KEY` from `tests/auto/.env`
+and hard-SKIPs without it, because an unauthenticated run does not fail — the
+engine's broad except turns it into "Sorry, I had a bit of a blip there", and a
+probe scores that as a clean negative result. A script run outside pytest gets
+none of that. The first O-1 ordering probe reported 5/5 "NEITHER" for exactly
+this reason. Load the key the same way the conftest does, or run it under pytest.
+
 
 - **A local branch was 164 commits behind origin.** Always base off
   `origin/<branch>`.
