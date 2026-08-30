@@ -4085,6 +4085,11 @@ def _build_theorem_v3(session: dict) -> str:
     if collected.get("phone"): known.append(f"phone={collected['phone']}")
     pt = collected.get("patient_type") or session.get("new_or_returning")
     if pt: known.append(f"patient_type={pt}")
+    # See clinic_template_prompt for the reasoning. Both CALL STATE producers
+    # carry it, so the fact does not depend on which prompt a clinic renders.
+    _dur_choice = session.get("_service_duration_choice")
+    if _dur_choice:
+        known.append(f"session_length={_dur_choice} minutes (caller chose this)")
     # Only surface location if caller has explicitly confirmed it this call.
     # selected_location defaults to "alcester" in session.py — never treat
     # that default as a caller-confirmed location.
