@@ -6459,11 +6459,35 @@ def _append_history(
     `assistant_text` is what the caller HEARD — the post-Gate-5 text. As of
     2026-08-02 conversation_history stores this rather than the raw generation.
 
-    `raw_text` is what the model produced. It is kept ONLY for session["turns"],
-    which feeds the owner-facing actionable summary and the SMS router for live
-    clinics and has always been tuned against the raw shape (see the note below).
+    `raw_text` is what the model produced. It is kept in session["turns"] under
+    a separate `raw` key, present only when it differs from what was spoken.
     Defaults to assistant_text on the deterministic paths, where the text we
     queue IS the text we speak.
+
+    session["turns"]["text"] WAS the raw generation until 2026-08-30. It fed the
+    owner-facing actionable summary through `_format_turns`, so the owner's
+    record of a call was built from what the model GENERATED rather than what
+    the caller HEARD. On CA8e688605 (30 Aug, demo line) two guards corrected one
+    sentence on the way out -- a wrong time and a false completeness claim --
+    and the summary was still handed the uncorrected version, naming a time the
+    caller was never offered. The Gate 5f case is worse than the time: a
+    "you're booked in for Thursday" that Gate 5f stopped the caller ever hearing
+    was still reported to the owner as though it had been said.
+
+    The note below scoped session["turns"] out on 2026-08-02 as out of scope for
+    the history fix. This is that revisit; the SMS path genuinely is unaffected,
+    because the confirmation SMS reads `selected_slot` / `selected_slot_speech`
+    off the booking record and never the transcript.
+
+    ONE CONSUMER STILL WANTS THE RAW, and it is a P1 if it loses it:
+    connection.py's Gate 5g name recovery. Gate 5g deletes a booking CTA when
+    the name is missing, and the sentence it deletes is usually the model's
+    acknowledgement of the name the caller just gave -- the only place a first
+    name is ever read from. The recovery re-runs the name parser against the raw
+    reply. On CA041352eb the caller was asked their name four times and hung up.
+    It reads `raw` first and falls back to `text`; the fallback is a no-op on the
+    deterministic paths, where the two are equal and the recovery's own
+    `!= _last_bot` guard declines.
 
     `spoken_text` overrides what the obs record stores; it now normally equals
     assistant_text and is kept for callers that pass it explicitly.
@@ -6485,11 +6509,15 @@ def _append_history(
     history.append({"role": "assistant", "content": assistant_text})
     if len(history) > MAX_HISTORY_TURNS:
         session["conversation_history"] = history[-MAX_HISTORY_TURNS:]
-    # Raw, deliberately — live clinics' summaries and SMS windows are tuned
-    # against this shape and must not move as a side effect of the history fix.
-    session.setdefault("turns", []).append(
-        {"role": "assistant", "text": raw_text if raw_text is not None else assistant_text}
-    )
+    # `text` is what the caller HEARD; `raw` is what the model produced, and is
+    # present only when the two differ. See the docstring — this was the raw
+    # generation until 2026-08-30, which meant the owner's record of a call
+    # could contradict the call.
+    _raw = raw_text if raw_text is not None else assistant_text
+    _entry = {"role": "assistant", "text": assistant_text}
+    if _raw != assistant_text:
+        _entry["raw"] = _raw
+    session.setdefault("turns", []).append(_entry)
 
     # The CALLER side of the observability transcript (app/obs/**). The assistant
     # side is no longer written here: it is recorded in connection.py's TTS loop,

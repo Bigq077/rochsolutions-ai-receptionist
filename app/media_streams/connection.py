@@ -12577,10 +12577,20 @@ class WebSocketCallHandler:
                             # next. CA041352eb: asked four times, then hung up.
                             #
                             # The raw generation survives in session["turns"]
-                            # (_append_history keeps raw_text there). Retry
-                            # against it, but ONLY on a turn Gate 5g actually
-                            # rewrote — outside that window the spoken text is
-                            # the right source and must stay so.
+                            # under the `raw` key — _append_history writes it
+                            # there whenever it differs from what was spoken.
+                            # Retry against it, but ONLY on a turn Gate 5g
+                            # actually rewrote — outside that window the spoken
+                            # text is the right source and must stay so.
+                            #
+                            # `raw` since 2026-08-30. `text` USED to be the raw
+                            # generation; it is now what the caller heard, so
+                            # reading it here would make _raw_reply equal
+                            # _last_bot, the guard below would decline, and the
+                            # name would never be recovered — CA041352eb, asked
+                            # four times then hung up. The `or` fallback is a
+                            # no-op on the deterministic paths, where the two
+                            # are equal and that same guard declines anyway.
                             if (
                                 not _name_persisted
                                 and self.session.pop(
@@ -12591,7 +12601,9 @@ class WebSocketCallHandler:
                                 _raw_reply = ""
                                 for _t in reversed(_raw_turns):
                                     if _t.get("role") == "assistant":
-                                        _raw_reply = _t.get("text", "") or ""
+                                        _raw_reply = (
+                                            _t.get("raw") or _t.get("text", "") or ""
+                                        )
                                         break
                                 if _raw_reply and _raw_reply != _last_bot:
                                     _name_persisted = _v3_try_persist_name(

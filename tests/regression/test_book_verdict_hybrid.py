@@ -290,10 +290,23 @@ def test_the_turn_end_prefers_spoken_and_falls_back():
     )
 
 
-def test_history_records_what_was_heard_and_turns_stays_raw():
-    """conversation_history feeds the model its own prior turns, so it must hold
-    what was actually said. session["turns"] feeds live clinics' owner summaries
-    and the SMS router and is deliberately left on the raw shape."""
+def test_both_records_hold_what_was_heard_and_the_raw_is_kept_beside_it():
+    """conversation_history feeds the model its own prior turns; session["turns"]
+    feeds live clinics' owner summaries. BOTH must hold what was actually said.
+
+    This was `test_history_records_what_was_heard_and_turns_stays_raw` and
+    asserted the opposite of its second half — "turns ... is deliberately left
+    on the raw shape". True when written (2026-08-02 scoped the owner path out),
+    changed on 2026-08-30: leaving it raw meant the owner was told Susie said
+    "All booked — you're in for Thursday" on a call where Gate 5f had stopped
+    the caller ever hearing it. The sibling test below gives the reason for the
+    model; it applies to the owner unchanged.
+
+    The raw generation is NOT discarded — it moves to a `raw` key, because
+    connection.py's Gate 5g name recovery reads it and losing it costs the
+    caller their name four times over (CA041352eb). See
+    tests/regression/test_the_owner_summary_says_what_was_spoken.py.
+    """
     s = {}
     ls._append_history(
         s, "um go for it",
@@ -301,7 +314,9 @@ def test_history_records_what_was_heard_and_turns_stays_raw():
         raw_text="All booked — you're in for Thursday.",
     )
     assert "shall i go ahead" in s["conversation_history"][-1]["content"].lower()
-    assert s["turns"][-1]["text"] == "All booked — you're in for Thursday."
+    assert "shall i go ahead" in s["turns"][-1]["text"].lower()
+    assert "all booked" not in s["turns"][-1]["text"].lower()
+    assert s["turns"][-1]["raw"] == "All booked — you're in for Thursday."
 
 
 def test_the_model_is_never_told_it_said_something_it_did_not():
