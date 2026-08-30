@@ -1720,6 +1720,88 @@ def _scarcity_claim_is_supported(session: Dict[str, Any]) -> bool:
         return False
 
 
+#: A ranking claim about availability: "the earliest I have is ...", "the
+#: soonest is ...", "the first available is ...". Matches the CLAUSE only, up
+#: to and including the copula, so removing it leaves the payload standing.
+#:
+#: Deliberately NOT an entry in _BANNED_SENTENCE_RE. Every pattern in that
+#: table strips a whole sentence, and here the sentence carries the slot
+#: readout -- banning it would leave the turn silent, which is a worse defect
+#: than the one being fixed.
+_EARLIEST_CLAIM_RE = re.compile(
+    r"\b(?:[Tt]he\s+)?"
+    r"(?:earliest|soonest|first\s+available|next\s+available|very\s+first)"
+    r"(?:\s+(?:one|slot|time|appointment|opening))?"
+    # `\\s*` after the pronoun, not `\\s+`: "I've got" has no space between
+    # them, and requiring one silently dropped the commonest contraction of
+    # the six. Longest alternatives first, or `have` matches and `have got`
+    # is never tried.
+    r"(?:\s+(?:I|we)\s*(?:\'ve\s+got|have\s+got|have|can\s+do|can\s+offer))?"
+    r"\s+(?:is|would\s+be|\'s)\s+",
+    re.IGNORECASE,
+)
+
+
+def _earliest_claim_is_supported(text: str, session: Dict[str, Any]) -> bool:
+    """May Susie say "the earliest I have is X"?
+
+    B-125, CA7182593819eac0a8e87a22928f137eb7. She said it about five past nine
+    while eight in the morning sat bookable on the same day -- a time she had
+    read out twenty seconds earlier. The caller had asked "what's the soonest
+    you've got", which is the most direct question there is, and the answer was
+    wrong by an hour.
+
+    Judged the same way `_scarcity_claim_is_supported` judges "the only one we
+    have": against the DAY, not against whatever subset the turn happens to be
+    holding. The unspoken remainder of a day is a perfectly good thing to offer
+    and a false thing to call the earliest.
+
+    Both sides of the comparison are strings this codebase generates --
+    `day_label` and `slot_times_spoken[0]` are what the readout is built from --
+    so this is containment, not time parsing, and it cannot drift from the
+    wording actually spoken.
+
+    Fails CLOSED. An unreadable session, a day that cannot be identified, or a
+    payload with no spoken times all return False and the claim is stripped.
+    That is the same asymmetry the other two claim predicates use: silence about
+    a ranking costs the caller nothing, and a wrong ranking sent a caller past a
+    slot that was free.
+    """
+    try:
+        if not _EARLIEST_CLAIM_RE.search(text or ""):
+            return True           # no claim made; nothing to support
+        days = session.get("available_days") or []
+        if not isinstance(days, list) or not days:
+            return False
+        low = (text or "").lower()
+
+        # Which day is the claim about? The sentence names it, and day_label is
+        # the string the readout used. More than one match means the claim is
+        # not about a single day and cannot be checked -- fail closed.
+        named = [
+            d for d in days
+            if isinstance(d, dict)
+            and str(d.get("day_label") or "").lower() in low
+            and str(d.get("day_label") or "").strip()
+        ]
+        if len(named) != 1:
+            return False
+
+        spoken = named[0].get("slot_times_spoken") or []
+        if not isinstance(spoken, list) or not spoken:
+            return False
+        first = str(spoken[0] or "").strip().lower()
+        if not first:
+            return False
+
+        # The day's earliest bookable time must be the one being called the
+        # earliest. If the sentence does not contain it, it is ranking something
+        # else first.
+        return first in low
+    except Exception:
+        return False
+
+
 def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     """
     Clean LLM output before it reaches tts_text_queue.
@@ -1795,6 +1877,36 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     except Exception:
         # A confirmation sentence is the last thing that should die in a guard.
         logger.exception("[ms_gate5] read-back reconcile failed — text unchanged")
+
+    # ── Gate 5a-f: a ranking claim must be true of the DAY ───────────────────
+    # B-125. "The earliest I have is Tuesday 1st September — Number 1, five past
+    # nine" was said while eight in the morning sat bookable on that same day,
+    # and had been read out twenty seconds earlier. The caller had asked "what's
+    # the soonest you've got".
+    #
+    # Placed here, with the other claim guards and above the sentence-level
+    # strip, for the same reason they are: a strip below could remove the
+    # sentence and take the correction with it.
+    #
+    # Only the CLAUSE goes. The sentence carries the slot readout, so banning it
+    # outright would leave the turn with nothing to say — the failure mode this
+    # would be trading down to.
+    if not _earliest_claim_is_supported(result, session):
+        _ranked = _EARLIEST_CLAIM_RE.sub("", result).lstrip()
+        if _ranked != result:
+            if _ranked:
+                _ranked = _ranked[0].upper() + _ranked[1:]
+            logger.warning(
+                "[ms_gate5] removed an unsupported EARLIEST claim — the day has "
+                "a bookable time before the one being called the soonest "
+                "(B-125). Kept the times, dropped the ranking: %r -> %r",
+                result[:70], _ranked[:70],
+            )
+            # Never trade a false ranking for silence. If the clause WAS the
+            # whole sentence there is nothing left to offer, and the original
+            # standing is the smaller fault — the same call the opener strip
+            # makes.
+            result = _ranked or result
 
     # ── Gate 5b: sentence-level stripping ────────────────────────────────────
 
