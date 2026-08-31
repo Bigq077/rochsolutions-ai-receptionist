@@ -39,6 +39,7 @@ from typing import Any, Dict, List, Optional
 from app.tools.slot_followup import (
     _closing_question,
     _spoken_series,
+    append_other_dates_offer,
     flatten_bookable_slots,
     more_times_tail,
 )
@@ -63,6 +64,26 @@ class SlotOffer:
     @property
     def text(self) -> str:
         return " ".join(self.chunks)
+
+    @property
+    def first_spoken_date(self) -> Optional[str]:
+        """The ISO date of the first day this offer actually named.
+
+        The FAQ-detour recovery anchor (`v3_last_offered_day_iso`) needs this,
+        and its other source is wrong on multi_day: section 4 of
+        `_flush_slot_buf` reads `session["available_days"][0]["date"]`, the
+        PAYLOAD's first day, which `build_slot_offer` may never have spoken —
+        the days are sorted here and any with no bookable slot is dropped. On
+        single_day the two coincide, which is why step 3 could take either.
+
+        A property, not a stored field, so it cannot drift from `slots`; and
+        named rather than left as `slots[0]["date"]` so that a later change to
+        how `slots` is ordered cannot move the anchor by accident.
+        """
+        for slot in self.slots:
+            if slot.get("date"):
+                return slot["date"]
+        return None
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return "SlotOffer(mode={!r}, {} slot(s), more_times={}, text={!r})".format(
@@ -183,6 +204,7 @@ def build_slot_offer(
     times_per_day: int = MULTI_DAY_TIMES_PER_DAY,
     single_day_max_times: int = SINGLE_DAY_MAX_TIMES,
     more_times: Optional[bool] = None,
+    other_dates: Any = None,
 ) -> Optional[SlotOffer]:
     """Build the spoken offer, its record and its keypad map from the payload.
 
@@ -201,6 +223,18 @@ def build_slot_offer(
     (B-116) — knowledge this function does not have and must not overrule. Given
     a pre-trimmed day it would see nothing held back and would wrongly fall
     silent about the rest of the diary, so the retrieval path's own answer wins.
+
+    `other_dates` is `other_dates_for_requested_day` from the payload — the
+    further dates matching the weekday the caller asked for. Section 3c of
+    `_flush_slot_buf` appends this sentence today with NO mode gate, so it can
+    fire on multi_day, and a deterministic path that returns early would
+    silently stop it. Emitted here through `append_other_dates_offer` rather
+    than reworded, so the sentence keeps one owner.
+
+    Those dates reach the SPEECH only. They never enter `slots` or `dtmf_map`:
+    the payload deliberately carries no times for them, so a date in the record
+    would be bookable through a time the caller never heard (B-108b) and a date
+    in the keypad map would be pressable.
     """
     days = [
         d for d in (available_days or [])
@@ -289,6 +323,19 @@ def build_slot_offer(
     chunks[-1] = "{}{} {}".format(
         chunks[-1], tail, _closing_question(len(dtmf_map))
     )
+
+    # B-111, and it runs LAST for the same reason section 3c does: it appends to
+    # the finished sentence, after the more-times tail and the closing question.
+    #
+    # The dedupe is decided against the WHOLE offer, not the final chunk. A date
+    # already named in an earlier chunk must still suppress it — checking only
+    # the chunk being appended to would say it twice on a multi-day readout,
+    # which is the one place this can happen.
+    if other_dates:
+        _full = " ".join(chunks)
+        _with_dates, _action = append_other_dates_offer(_full, list(other_dates))
+        if _action == "appended":
+            chunks[-1] = chunks[-1] + _with_dates[len(_full):]
 
     return SlotOffer(
         chunks=chunks,

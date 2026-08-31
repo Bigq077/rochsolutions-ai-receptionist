@@ -90,6 +90,28 @@ class TestSectionThreeCSurvivesTheHandover:
         assert offer is not None
         assert "also got" not in offer.text.lower()
 
+    def test_a_date_already_named_in_an_earlier_chunk_is_not_said_twice(self):
+        """The dedupe is against the WHOLE offer, not the chunk appended to.
+
+        `append_other_dates_offer` suppresses a date the reply already names.
+        Here Tuesday 8th is named in chunk 2 and the sentence is appended to
+        chunk 3, so checking only the chunk being appended to would say it
+        twice — and multi_day is the only place that can happen.
+        """
+        offer = build_slot_offer(
+            THREE_DAYS,
+            other_dates=[{"date": "2026-09-08", "spoken": "Tuesday 8th September"}],
+        )
+        assert offer is not None
+        assert "also got" not in offer.text.lower()
+
+    def test_a_date_with_no_spoken_form_is_ignored(self):
+        offer = build_slot_offer(
+            THREE_DAYS, other_dates=[{"date": "2026-09-15", "spoken": ""}],
+        )
+        assert offer is not None
+        assert "also got" not in offer.text.lower()
+
     def test_the_further_dates_are_not_added_to_the_record_or_the_keypad(self):
         """Naming a date is not offering a slot on it.
 
