@@ -103,6 +103,37 @@ reported — the model's line SURVIVING Gate 5 and being spoken — did not occu
 on this call and remains unconfirmed live.** It depends on the model's wording
 and cannot be forced.
 
+### 🔴 THEOREM MUST NOT FOLD AS-IS — canonical is NOT a superset there
+
+Measured 2026-08-31. The runbook's "canonical is a superset" table covered ONLY
+`jv_v2` and `vitaledge-onboarding`. **Theorem was never in it, and the claim is
+false for that branch.**
+
+    susie_system_prompt.py   canonical 3891 lines   theorem-onboarding 4554
+    clinic_config.py         canonical 2015 lines   theorem-onboarding 1782
+
+Canonical is 663 lines BEHIND on the prompt module and 233 ahead on the config
+module — divergent in both directions. Rendering `_build_theorem_v3`, which is
+what Mark's model actually sees:
+
+    theorem-onboarding  688 lines
+    canonical           565 lines      <- 123 lines SHORTER, 172 changed
+
+Among what folding would delete from Mark's live prompt: the whole **NEVER
+safety-boundary block** (never diagnose, never confirm a self-diagnosis, never
+give medication advice, never promise recovery, never interpret scans over the
+phone), the named-treatment handling for steroid/cortisone injections,
+shockwave and dry needling, and the PHYSIO CALLER HANDLING section.
+
+**Why every routine check misses it:** NO function names differ. Same functions
+on both branches, 791 lines of divergent content inside them. A structural diff
+says "identical". Only rendering the prompt shows it — which is the standing
+trap with `theorem_v3` being hardcoded Python rather than clinic.json.
+
+Theorem's fold is therefore a real port of Mark's prompt content UP to
+canonical, reviewed block by block, in daylight, with Mark's eyes on the
+clinical wording. It is not a config change and it is not a branch repoint.
+
 ### 🟠 Seen on the verification call, not yet acted on
 
 Three things in `CA8e688605`, in priority order. None blocks anything above.
@@ -205,9 +236,23 @@ Call `CAa52bd716fafa245c8959a4b476aacff7`, build `3a3af7e`, VE's own line:
 - The diary reader correctly blocked Jonathan's personal calendar entries.
 - Sheets appends fine here (it is broken on the demo line).
 
-**NOT proven: the booking write and the owner notification to Jonathan.** The
-call was deliberately abandoned at the readback so he was not texted at 2am.
-That is the one remaining leg of the Vital Edge cutover.
+**PROVEN 2026-08-31 10:18, `CAa52bd716…`'s successor `CA403eb7e2…`, build
+`fa3db1615981`.** The Vital Edge cutover is COMPLETE.
+
+The caller asked for the 90-minute session and the diary got 90 minutes —
+`PENDING CONFIRMATION — Quentin Rook — Sports Massage, 9:00–10:30`, Tue 8 Sep.
+That is the CA86c320ef guarantee proven end to end on a folded patient line:
+
+    10:19:14  session length captured: 90 minutes
+    10:19:26  check_availability … duration=90m      <- grid built at the caller's length
+    10:20:44  book_appointment slot_iso=2026-09-08T09:00:00
+    10:20:47  notify_owner: sent to +447545862307    <- the owner WAS notified
+    10:20:47  Scheduled 2 reminders (24h + 2h)
+
+The caller's text is correctly provisional-worded — "This is a request, not yet
+confirmed" — because `_book_appointment_provisional` sets
+`confirmation_sms_sent = True` specifically to suppress the smart-SMS follow-up
+that would have said "confirmed". Verified in the source, not assumed.
 
 ---
 
@@ -217,7 +262,7 @@ That is the one remaining leg of the Vital Edge cutover.
 |---|---|
 | **1 — Headless free-form driver** | ✅ Done. Found a live defect on day one. |
 | **2 — Adaptive caller + harvest the corpus** | ✅ **DONE.** Corpus harvested, detectors re-armed, hold speech settled, adaptive caller built and run. |
-| **3 — Collapse the tenancy** | 🟢 **VITAL EDGE IS FOLDED — 2026-08-31 01:57 UTC.** Its Render service tracks `latency-eval` (Live at `3a3af7e`), verified by a real call. JV and Theorem remain. |
+| **3 — Collapse the tenancy** | 🟢 **VITAL EDGE FOLDED AND FULLY VERIFIED** — 2026-08-31. Service tracks `latency-eval`; a real 90-minute booking reached the diary at 90 minutes, owner notified, reminders scheduled. JV is prerequisite-clear (`cbeb46d9`). **Theorem must NOT fold as-is — see below.** |
 | **4 — Two contained slot fixes** | ✅ **DONE.** Both landed; the first was mis-scoped here and is corrected below. |
 
 ---
