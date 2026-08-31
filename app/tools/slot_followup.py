@@ -106,6 +106,17 @@ _SPOKEN_KEY = "slot_starts_spoken"
 _SPOKEN_FP_KEY = "slot_starts_spoken_fp"
 _SPOKEN_LOC_KEY = "slot_starts_spoken_loc"
 
+# Days whose spoken record is a LOSSY projection, not a transcript of what was
+# read out. B-126: on multi_day, `_sync_last_offered_to_spoken` records ONE slot
+# per day -- `slots[0]`, because `_resolve_slot_iso` indexes that list BY
+# POSITION for an ordinal choice -- while the formatter prompt instructs TWO
+# times per day and may reach into `available_days` for the second. A day listed
+# here was heard with times the record does not hold, so "exactly one time was
+# spoken for it" is an artefact of the projection and nothing may be corrected
+# against it. Written by the availability executor; read by
+# reconcile_readback_time.
+LOSSY_SPOKEN_DAYS_KEY = "_lossy_spoken_days"
+
 
 def _day_fingerprints(available_days: Any) -> Dict[str, str]:
     """One fingerprint PER DAY, so a fetch can invalidate a day without
@@ -1907,6 +1918,26 @@ def reconcile_readback_time(
         return text, "unchanged", ""      # names a time really offered that day
     if not _TIME_REFERENCE_RE.search(text):
         return text, "unchanged", ""      # names the day but no time at all
+
+    # B-126. The record for this day is a positional projection of a multi_day
+    # offer, so it cannot say how many times the caller heard on it. Reporting
+    # is still right -- a read-back naming an unrecorded time is worth having
+    # in the call record -- but rewriting it is not. On CA44f1bdbe a correct
+    # "six in the evening" was overwritten with the projected "nine in the
+    # morning" three times, including in the closing, while Acuity held 18:00.
+    if date in set(session.get(LOSSY_SPOKEN_DAYS_KEY) or ()):
+        _dl = next(
+            (_s["day_label"] for _s in flat
+             if _s.get("date") == date and _s.get("day_label")),
+            date,
+        )
+        return (
+            text,
+            "mismatch",
+            f"read-back names a time not in the record for {_dl}, and that "
+            f"record is a multi_day projection -- it holds one time per day, "
+            f"so it cannot say what was spoken. Left as written (B-126).",
+        )
 
     day_label = next(
         (s["day_label"] for s in flat if s.get("date") == date and s.get("day_label")),

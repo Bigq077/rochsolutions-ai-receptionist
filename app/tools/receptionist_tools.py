@@ -5473,6 +5473,39 @@ def _sync_last_offered_to_spoken(
         if spoken_labels:
             session["slot_labels"] = spoken_labels
 
+    # B-126. On multi_day the list above is ONE slot per day, and that is not
+    # negotiable: `_resolve_slot_iso` indexes it BY POSITION so an ordinal
+    # choice ("the second one") maps to a day. But `remaining_unspoken` folds
+    # it into the cumulative SPOKEN record, and the formatter prompt asks for
+    # TWO times per day, permitting a reach into `available_days` for the
+    # second. So the record ends up holding one time for a day the caller heard
+    # two on, and `reconcile_readback_time` read that as "only one was offered,
+    # nothing to choose between" and overwrote a correct read-back
+    # (CA44f1bdbe, 31 Aug 2026 - caller told 9am, Acuity holds 18:00).
+    #
+    # Naming the affected days rather than widening the record: the record is
+    # read by the B-97/B-98 family to decide what has already been offered, and
+    # marking a time heard that was not is how a caller stops being offered a
+    # slot that is free. This says only what is true - "this day is projected,
+    # do not reason from its completeness".
+    from app.tools.slot_followup import LOSSY_SPOKEN_DAYS_KEY
+    session.pop(LOSSY_SPOKEN_DAYS_KEY, None)
+    if result.get("presentation_mode") != "single_day":
+        _by_date = {}
+        for _d in (result.get("available_days") or []):
+            if isinstance(_d, dict) and _d.get("date"):
+                _by_date[_d["date"]] = len(_d.get("slot_times") or _d.get("slots") or [])
+        _lossy = []
+        for _d in (result.get("presented_days") or []):
+            if not isinstance(_d, dict):
+                continue
+            _date = _d.get("date")
+            _shown = len(_d.get("slot_times") or _d.get("slots") or [])
+            if _date and _by_date.get(_date, 0) > _shown:
+                _lossy.append(_date)
+        if _lossy:
+            session[LOSSY_SPOKEN_DAYS_KEY] = _lossy
+
 
 def _filter_same_day_slots(result: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     """Remove today's date from all availability results.
