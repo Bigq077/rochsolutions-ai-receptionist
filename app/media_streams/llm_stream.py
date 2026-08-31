@@ -896,6 +896,36 @@ def _offered_weekday_is_within_reach(
     Past dates do not count. A day that has been and gone cannot be the one the
     caller is accepting, and treating it as reachable would suppress the steer
     on the stalest state in the session.
+
+    ── "next week" moves the lower bound (CA403eb7e2, 31 Aug 2026) ───────────
+    Seven days is measured from TODAY, and that is only the right floor while
+    every intervening date of that weekday was a candidate. It is not when the
+    caller has scoped themselves further out. He said "anytime next week", was
+    offered Monday 7th and Tuesday 8th September, and answered "9 in the morning
+    on a tuesday" — option 2, with its own time. Today was Monday the 31st, so
+    the offered Tuesday was 8 days away: one over the boundary. The nearer
+    Tuesday, 1 September, went unoffered precisely BECAUSE he asked for next
+    week, so it was never a thing he could have meant. The steer fired, the
+    model re-ran the lookup, and he was read the whole day back and had to say
+    "yeah I said 9 in the morning works".
+
+    So a captured `day_preference` of "next week" raises the floor to next
+    Monday, and the offered date qualifies only if it is the FIRST date of that
+    weekday on or after it. Deliberately narrow:
+
+      * ONLY "next week". The other captured values ("this week", "tomorrow",
+        "as soon as possible", "today", "tonight", "whenever") all point at or
+        before the current week and so cannot explain away a nearer date.
+      * FIRST occurrence only, never "anything from next Monday on" — with
+        Tuesday the 8th unoffered, Tuesday the 15th is exactly as ambiguous as
+        before and must stay so.
+      * Earned by the CALLER's own words. With no day_preference the delta-8
+        case is unchanged, so a session that never captured one is not silently
+        loosened.
+
+    The shift words ("next tuesday", "the tuesday after") are tested BEFORE this
+    in `_caller_requests_different_day` and still win, so a caller moving a week
+    on is never read as accepting.
     """
     for _dt in _offered_day_dates(session):
         if _dt.strftime("%A").lower() != word:
@@ -903,7 +933,34 @@ def _offered_weekday_is_within_reach(
         _delta = (_dt - today).days
         if 0 <= _delta <= 7:
             return True
+        if _next_week_pins_the_weekday(session, _dt, word, today):
+            return True
     return False
+
+
+def _next_week_pins_the_weekday(
+    session: Optional[Dict[str, Any]], offered, word: str, today
+) -> bool:
+    """True when the caller's own "next week" makes `offered` the only date that
+    `word` can mean. PURE. See `_offered_weekday_is_within_reach` for the call
+    it comes from and why it is scoped this tightly.
+    """
+    if not session or session.get("day_preference") != "next week":
+        return False
+    from datetime import timedelta as _td
+
+    try:
+        # Monday of next week — from Sunday that is tomorrow, from Monday a
+        # full seven days. Never today: "next week" excludes the current one.
+        _floor = today + _td(days=7 - today.weekday())
+        _wanted = [
+            "monday", "tuesday", "wednesday", "thursday",
+            "friday", "saturday", "sunday",
+        ].index(word)
+    except (ValueError, TypeError, AttributeError):
+        return False
+    _first = _floor + _td(days=(_wanted - _floor.weekday()) % 7)
+    return offered == _first
 
 
 # Words that mark a SHIFT away from the day under discussion even when the
