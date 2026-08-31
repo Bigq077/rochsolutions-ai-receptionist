@@ -150,20 +150,52 @@ every one of those changes at once:
 A superset is not automatically safe. Two consequences point in opposite
 directions, and both are real.
 
-### It is how Vital Edge gets clinical safety work it does not have
+### ~~It is how Vital Edge gets clinical safety work it does not have~~
 
-`app/media_streams/clinical_screening.py` is **1,426 lines on canonical and on
-jv_v2, and 1,117 on vitaledge-onboarding** — 309 lines short. JV took the
-screening port; Vital Edge did not. Among the fixes VE is missing:
+🔴 **THIS SECTION WAS WRONG. Owner-corrected 2026-08-29 and again 2026-08-31.**
+Left in place, struck through, because it was acted on twice and deleting it
+would let a third session re-derive it from the same line count.
 
-- the fracture screen was asked backwards
-- a caller who DENIED a red flag was graded "unclear"
-- "I don't know" cleared a clinical red-flag screen
-- an injury described in ordinary words armed no screen
-- a safety screen could sit pending for the rest of the call
+**The claim was:** `clinical_screening.py` is 1,426 lines on canonical and jv_v2
+against 1,117 on vitaledge-onboarding, so VE is "a live patient line running an
+older safety layer" missing five red-flag fixes.
 
-That is a live patient line running an older safety layer. It is separable from
-the fold and worth doing on its own merits.
+**The line count is true. The conclusion is not.** VE's screening gap is
+DELIBERATE and it is a clinical decision, not an engineering one:
+
+- Vital Edge is a **massage** clinic. Its `clinical_screening` block says so in
+  its own `_note`: physio-style red-flag triage (cauda equina and the rest)
+  would be *"both clinically mismatched and a conversion killer"*, and UK
+  practice is that massage contraindications are taken at the appointment on an
+  intake form by the therapist, not by a receptionist on the phone.
+- The block is **EMERGENCY INTERCEPT ONLY**. `screens` is deliberately ABSENT,
+  and that absence is the whole design: with no screens the prompt renderer
+  emits nothing and `update_screening_state` can never arm one. Every fix in
+  that 340-line gap governs the GRADING of screens VE never runs.
+- Theorem is the same decision, for the same reason.
+
+**Check reachability, not line counts** — and re-derive it rather than quoting
+this, because the reason has already changed once. On 2026-08-29 the gap was
+inert because VE had no `clinical_screening` block at all. As of 2026-08-31 it
+HAS one (1757B against jv_v1's 25432B) and `screening_enabled(vital_edge)` is
+now **True**; what makes the gap inert is `screens` being absent.
+
+    python -c "from app.clinic_config import get_clinic;       print(list(get_clinic('vital_edge')['clinical_screening']))"
+    # ['_note', 'enabled', 'emergency_red_flags']   <- no 'screens'
+
+**The one thing this section got right has since been built.** The real gap was
+the emergency intercept: `detect_emergency()` could not return True on VE
+because its keywords came from the absent block, so a volunteered "I'm having
+chest pain" rested entirely on the model. It now works — verified 2026-08-31 on
+VE's own branch against its own 1,117-line module: chest pain and stroke signs
+both intercept, an ordinary massage complaint does not.
+
+Still open, and Jonathan's clinical call rather than ours: **DVT, narrowly** —
+the one contraindication more dangerous for massage than physio, whose
+presenting words are ordinary massage-booking words ("tight, swollen calf after
+a long flight"). Worth flagging to the owner rather than blocking a booking.
+
+**So the fold has no clinical-screening prerequisite for Vital Edge.**
 
 ### It would also change what live callers hear — RESOLVED for hold speech
 
@@ -194,5 +226,7 @@ Fold ≠ "repoint and go". Either:
 2. **Port the safety work the old way** and defer the fold. Correct, and it is
    the 199-commit treadmill this plan exists to end.
 
-Recommended: (1), with the Vital Edge screening gap handled first and on its own,
-because it is a live clinical gap and should not wait for a tenancy decision.
+Recommended: (1). ~~with the Vital Edge screening gap handled first and on its
+own, because it is a live clinical gap~~ — struck 2026-08-31: there is no Vital
+Edge screening gap to handle, see the correction above. Nothing blocks the Vital
+Edge fold on clinical grounds.
