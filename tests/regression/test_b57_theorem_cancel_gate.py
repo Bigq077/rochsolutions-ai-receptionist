@@ -420,7 +420,15 @@ UNMOVED_PROMPTS = {
     # Rendering went 565 -> 638 lines. theorem_v3 is the ONLY id that moves,
     # which is the containment claim — demo, jv_v1, theorem and theorem_v2 all
     # held byte-identical on the same run.
-    "theorem_v3": "9599715c5174c0e0",
+    # Re-pinned 2026-08-31 (Pile B): canonical's _build_theorem_v3 is now
+    # theorem-onboarding's, so theorem_v3 renders BYTE-IDENTICAL to Mark's live
+    # prompt. Canonical's copy was a stale snapshot, not the advanced one — it
+    # carried the SUPERSEDED Leanne rota (Thu/Fri instead of Thursday evenings
+    # only), a worked example using the reason question that is permanently
+    # banned on this clinic, and the pre-fix "never read back the surname" rule.
+    # theorem_v3 is again the ONLY id that moves; demo, jv_v1, theorem and
+    # theorem_v2 held byte-identical on the same run.
+    "theorem_v3": "c8b94e274006ebdd",
     # Moved 2026-08-25, deliberately: 76ac625e89e83e4a -> e52579ab12c53eab.
     # vital_edge gained the ESTABLISH THE AGE rule in _render_policies. Its
     # minimum of 18 was unenforceable in practice because the gate only arms
