@@ -3352,6 +3352,67 @@ class LLMStream:
             len(raw_chunks),
         )
 
+        # ── 1b. Deterministic offer, if one was built for this payload ───────
+        # Everything from section 3a to section 6 below repairs text a model
+        # wrote: capping the options, parsing the speech back into slots,
+        # regexing the keypad map out of the sentence, re-splitting on
+        # "Number N", reconciling the "a few others that day" claim, and
+        # warning when those disagree. None of it applies when the sentence was
+        # built from the payload — the record and the map came out of the same
+        # function as the words.
+        #
+        # The model's buffered text is DISCARDED, deliberately and noisily:
+        # this path must never blend the two, because a half-model half-code
+        # sentence is the one shape no record could describe.
+        _prebuilt = session.pop("_slot_offer_prebuilt", None)
+        if isinstance(_prebuilt, dict) and _prebuilt.get("chunks"):
+            _det_chunks = [str(c) for c in _prebuilt["chunks"] if str(c).strip()]
+            _det_slots = [s for s in (_prebuilt.get("slots") or []) if s.get("start")]
+            _det_map = dict(_prebuilt.get("dtmf_map") or {})
+            logger.info(
+                "[ms_gate5] deterministic offer in force — %d chunk(s); the "
+                "model's %d buffered chunk(s) are discarded (%r)",
+                len(_det_chunks), len(raw_chunks),
+                (" ".join(raw_chunks))[:80],
+            )
+
+            # The record. Cumulative FIRST, as everywhere else in this family:
+            # last_offered_slots is about to be overwritten and is the only
+            # other trace that these were spoken (B-78b).
+            from app.tools.slot_followup import record_spoken_slots
+            record_spoken_slots(session, _det_slots)
+            session["last_offered_slots"] = [
+                {"start": s["start"], "end": s.get("end") or ""} for s in _det_slots
+            ]
+            session["slot_labels"] = [s.get("spoken") for s in _det_slots]
+            # B-126: this record is a transcript, not a projection, so no day
+            # of it needs marking as unsafe to reason from.
+            from app.tools.slot_followup import LOSSY_SPOKEN_DAYS_KEY
+            session.pop(LOSSY_SPOKEN_DAYS_KEY, None)
+
+            if len(_det_map) >= 2:
+                session["v3_dtmf_slot_map"] = _det_map
+                session["v3_awaiting_slot_selection"] = True
+                session["v3_slot_map_armed_turn"] = session.get("turn_count", 0)
+                session.pop("v3_slot_map_superseded", None)
+                session.pop("slots_stale_modality_switch", None)
+                session["_slot_chunks_sent"] = len(_det_chunks)
+                session["_slot_chunks_inhibited"] = 0
+            else:
+                session.pop("_slot_chunks_sent", None)
+                session.pop("_slot_chunks_inhibited", None)
+            if _det_slots and _det_slots[0].get("date"):
+                session["v3_last_offered_day_iso"] = _det_slots[0]["date"]
+
+            for _i, _c in enumerate(_det_chunks):
+                logger.info(
+                    "[ms_gate5] deterministic TTS chunk %d/%d: %r — len=%d",
+                    _i + 1, len(_det_chunks), _c[:60], len(_c),
+                )
+                await tts_queue.put(_c)
+                session["_slotbuf_emitted"] = True
+            return
+
         if not raw_chunks:
             return
 
@@ -6102,6 +6163,101 @@ class LLMStream:
                     result.get("presentation_mode")
                     if isinstance(result, dict) else None
                 )
+                # ── Deterministic single_day presentation ────────────────────
+                # Step 3 of docs/plan/DETERMINISTIC_SLOT_PRESENTATION.md. The
+                # sentence and the record of what it named are built HERE, from
+                # the payload, by one function — so they cannot disagree. The
+                # model still runs and its output is discarded in
+                # _flush_slot_buf; removing that call is a separate,
+                # latency-only change.
+                #
+                # `first_day` is ALREADY trimmed to the positions
+                # choose_presented_indices picked, which prefers times this
+                # caller has not heard (B-116). That selection is NOT taken over
+                # here — only the words are — so more_times is passed in rather
+                # than recomputed off a list that has had slots removed on
+                # purpose.
+                #
+                # multi_day is deliberately not wired yet: it is where Theorem's
+                # 24% unresolvable readouts live, and it ships after this has
+                # run live.
+                session.pop("_slot_offer_prebuilt", None)
+                if (
+                    session.get("_slot_presentation_mode") == "single_day"
+                    and isinstance(_fd, dict)
+                    and (_fd.get("slots") or _fd.get("slot_times"))
+                ):
+                    try:
+                        from app.tools.slot_offer import (
+                            build_slot_offer, earliest_lead_in_is_true,
+                        )
+                        # B-125. "The earliest I have is ..." is a RANKING claim
+                        # about the day, and first_day has already had heard
+                        # times removed from it (B-116), so its first slot is
+                        # not necessarily the day's. Gate 5a-f catches that on
+                        # the model path; a payload-built sentence never reaches
+                        # Gate 5, so it is decided here against the UNTRIMMED
+                        # day and dropped to the neutral opener when it cannot
+                        # be established.
+                        _lead_in = (
+                            str(result.get("lead_in") or "")
+                            if isinstance(result, dict) else ""
+                        )
+                        if _lead_in == "earliest":
+                            _full = next(
+                                (
+                                    d for d in (
+                                        (result or {}).get("available_days") or []
+                                    )
+                                    if isinstance(d, dict)
+                                    and d.get("date") == _fd.get("date")
+                                ),
+                                None,
+                            )
+                            if not earliest_lead_in_is_true(_full, _fd):
+                                logger.info(
+                                    "[ms_gate5] earliest lead-in dropped — the "
+                                    "presented list does not start at the day's "
+                                    "first slot (B-125)"
+                                )
+                                _lead_in = ""
+                        _offer = build_slot_offer(
+                            [_fd],
+                            lead_in=_lead_in,
+                            more_times=bool(session.get("_slot_more_times")),
+                        )
+                    except Exception:
+                        # A caller mid-booking must not lose the offer to a
+                        # formatter fault. Falling through leaves the model's
+                        # presentation and the existing repair layer exactly as
+                        # they were.
+                        logger.exception(
+                            "[ms_gate5] deterministic slot offer failed — "
+                            "falling back to the model's presentation"
+                        )
+                        _offer = None
+                    if _offer is not None:
+                        # A plain dict: the session is serialised to Redis.
+                        session["_slot_offer_prebuilt"] = {
+                            "chunks": list(_offer.chunks),
+                            "slots": [
+                                {
+                                    "start": s.get("start"),
+                                    "end": s.get("end") or "",
+                                    "spoken": s.get("spoken"),
+                                    "date": s.get("date"),
+                                }
+                                for s in _offer.slots
+                            ],
+                            "dtmf_map": dict(_offer.dtmf_map),
+                            "more_times": bool(_offer.more_times),
+                        }
+                        logger.info(
+                            "[ms_gate5] deterministic single_day offer built: "
+                            "%d chunk(s), %d slot(s) recorded — %r",
+                            len(_offer.chunks), len(_offer.slots),
+                            [s.get("start") for s in _offer.slots],
+                        )
                 # WHICH day this readout is about. Needed because a clinic on a
                 # fixed evening rota has the same spoken labels on every day of
                 # the week, so resolving a label against the whole sweep is

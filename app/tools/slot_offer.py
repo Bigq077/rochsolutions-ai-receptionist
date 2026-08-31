@@ -135,6 +135,46 @@ def _pick_times_for_day(
     return picked[:limit]
 
 
+def earliest_lead_in_is_true(
+    full_day: Any, presented_day: Any
+) -> bool:
+    """May this readout open "The earliest I have is ..."?
+
+    B-125, and the reason this check exists at all: `first_day` reaching the
+    formatter has ALREADY been trimmed by `choose_presented_indices`, which
+    prefers times the caller has not heard. So the first slot of the presented
+    list is not necessarily the first slot of the DAY —
+
+        "The earliest I have is Tuesday 1st September — Number 1, five past
+         nine"   ... while eight in the morning sat bookable that same day,
+                     and had been read out twenty seconds earlier.
+
+    On the model path Gate 5a-f catches that afterwards. A payload-built
+    sentence never reaches Gate 5, so the claim is decided here instead, from
+    the untrimmed day — the same one-way, deny-by-default shape the guards use.
+
+    False whenever it cannot be established, including a missing or unusable
+    payload: a neutral opener is always safe, and a false ranking claim is not.
+    """
+    def _first_start(day):
+        if not isinstance(day, dict):
+            return None
+        starts = [
+            str(s.get("start"))
+            for s in flatten_bookable_slots([day])
+            if s.get("start")
+        ]
+        return min(starts) if starts else None
+
+    presented_first = _first_start(presented_day)
+    if not presented_first:
+        return False
+    full_first = _first_start(full_day)
+    if not full_first:
+        return False
+    return presented_first == full_first
+
+
 def build_slot_offer(
     available_days: Any,
     *,
@@ -142,6 +182,7 @@ def build_slot_offer(
     max_days: int = MULTI_DAY_MAX_DAYS,
     times_per_day: int = MULTI_DAY_TIMES_PER_DAY,
     single_day_max_times: int = SINGLE_DAY_MAX_TIMES,
+    more_times: Optional[bool] = None,
 ) -> Optional[SlotOffer]:
     """Build the spoken offer, its record and its keypad map from the payload.
 
@@ -153,6 +194,13 @@ def build_slot_offer(
     A day filtered by a time-of-day band reports `times_not_shown`, and those
     hidden slots count as "more" even though no walk over `slots` can see them
     (B-97).
+
+    PASS `more_times` when the days handed in have ALREADY been trimmed to what
+    should be spoken. `_cap_presented_slots` selects those positions through
+    `choose_presented_indices`, which prefers times this caller has not heard
+    (B-116) — knowledge this function does not have and must not overrule. Given
+    a pre-trimmed day it would see nothing held back and would wrongly fall
+    silent about the rest of the diary, so the retrieval path's own answer wins.
     """
     days = [
         d for d in (available_days or [])
@@ -178,6 +226,7 @@ def build_slot_offer(
 
     spoken_days = days[:max_days]
     more = len(days) > len(spoken_days)
+    _more_is_given = more_times is not None
 
     named: List[Dict[str, Any]] = []
     dtmf_map: Dict[str, str] = {}
@@ -227,6 +276,9 @@ def build_slot_offer(
 
     if not named:
         return None
+
+    if _more_is_given:
+        more = bool(more_times)
 
     # The tail is a claim about the clinic's diary, so it is made only where it
     # has a referent — ONE day. "A few others that day" after a three-day

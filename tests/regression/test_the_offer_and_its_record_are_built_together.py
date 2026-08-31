@@ -198,3 +198,35 @@ def test_the_earliest_lead_in_is_a_parameter_not_a_model_choice():
 def test_nothing_to_offer_returns_none_rather_than_a_sentence(payload):
     """The caller keeps its own empty-day handling; it does not inherit one."""
     assert build_slot_offer(payload) is None
+
+
+# ── B-125: the earliest claim, on a path that never reaches Gate 5 ───────────
+
+def test_the_earliest_claim_is_refused_when_heard_times_were_trimmed_away():
+    """B-125. `first_day` has already had heard times removed (B-116), so its
+    first slot is not necessarily the day's. Gate 5a-f catches that on the model
+    path; a payload-built sentence never reaches Gate 5."""
+    from app.tools.slot_offer import earliest_lead_in_is_true
+
+    full = _day("2026-09-01", "Tuesday 1st September",
+                ["08:00", "09:05", "14:00"],
+                ["eight in the morning", "five past nine", "two in the afternoon"])
+    # choose_presented_indices dropped the 08:00 the caller already heard.
+    trimmed = _day("2026-09-01", "Tuesday 1st September",
+                   ["09:05", "14:00"], ["five past nine", "two in the afternoon"])
+
+    assert earliest_lead_in_is_true(full, trimmed) is False
+    assert earliest_lead_in_is_true(full, full) is True
+
+
+@pytest.mark.parametrize("full,presented", [
+    (None, {"date": "2026-09-01"}),
+    ({"date": "2026-09-01"}, None),
+    ({}, {}),
+    ("not a day", {"date": "2026-09-01"}),
+])
+def test_an_unusable_payload_refuses_the_claim_rather_than_guessing(full, presented):
+    """A neutral opener is always safe; a false ranking claim is not."""
+    from app.tools.slot_offer import earliest_lead_in_is_true
+
+    assert earliest_lead_in_is_true(full, presented) is False
