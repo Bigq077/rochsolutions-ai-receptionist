@@ -3017,6 +3017,26 @@ def _build_theorem_v3(session: dict) -> str:
             "one/two.\n"
         )
     )
+    # ⚠️ THE CLOSINGS BELOW PROMISE A CONFIRMATION TEXT, AND THE PROMISE IS
+    # UNGATED. "I've just sent you a confirmation text" is in this block's
+    # success closing, and "Confirmation text on its way" in the reschedule and
+    # cancel closings further down. NONE of the three reads `sms_enabled()` —
+    # measured 2026-08-31, they render identically with SMS_ENABLED unset,
+    # "false" and "true". That is unlike the template clinics, where the prompt
+    # and the sender share one owner (9b2691d2).
+    #
+    # So on this clinic SMS_ENABLED=true is REQUIRED, not optional: turn it off
+    # and Susie tells every caller a text is on its way while none is sent,
+    # three times per call. The default also FLIPS on a fold —
+    # theorem-onboarding defaults "true", canonical defaults "false" — so
+    # repointing the service alone is enough to cause it.
+    #
+    # If SMS is ever genuinely wanted off here, CHANGE THESE LINES FIRST.
+    #
+    # APPOINTMENT_REMINDERS_ENABLED is a SEPARATE switch and is deliberately
+    # false for Theorem (owner decision, 2026-08-31 — Mark has his own reminder
+    # system). That is safe precisely because nothing in this prompt promises a
+    # reminder; only the text is promised.
     booking_flow = (
         "BOOKING FLOW\n"
         "HARD RULE — NEW/RETURNING QUESTION IS PERMANENTLY BANNED "
