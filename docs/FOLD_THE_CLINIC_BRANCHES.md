@@ -240,6 +240,35 @@ a long flight"). Worth flagging to the owner rather than blocking a booking.
 
 **So the fold has no clinical-screening prerequisite for Vital Edge.**
 
+### The same decision covers THEOREM — owner + Mark, 2026-08-31
+
+Reaffirmed by the owner: **Theorem runs an emergency intercept only, and no
+clinical screening. That is a decision Quentin took WITH Mark**, not a gap, and
+it is the same call as Vital Edge's. Do not propose porting the physio screening
+to Mark's line; if it is ever raised it is his clinical decision, not an
+engineering one.
+
+⚠️ **The two clinics reach it by DIFFERENT config shapes, and the flag lies.**
+Measured on canonical 2026-08-31:
+
+| clinic | block | keys | `screening_enabled` | `detect_emergency` |
+|---|---|---|---|---|
+| `theorem` / `_v2` / `_v3` | 700B | `emergency_red_flags` only | **False** | **works** |
+| `vital_edge` | 1757B | `_note`, `enabled`, `emergency_red_flags` | **True** | **works** |
+
+`screening_enabled()` needs the block AND `enabled: true`; Theorem's block omits
+`enabled`. But `detect_emergency()` reads `emergency_red_flags` directly and
+does NOT gate on that flag, so the intercept fires either way. **Reading
+`screening_enabled(theorem) == False` as "Theorem has no emergency cover" is
+wrong.** Verify with `detect_emergency`, never the flag.
+
+Neither clinic declares `screens`, which is what actually keeps the screening
+layer inert.
+
+**Checked before the Theorem fold:** canonical carries the same 700B block for
+all three theorem ids, and both chest pain and stroke signs intercept there. The
+fold does not cost Mark the intercept.
+
 ### It would also change what live callers hear — RESOLVED for hold speech
 
 `app/hold_speech.py` existed **only on canonical** with **no flag** — it was
