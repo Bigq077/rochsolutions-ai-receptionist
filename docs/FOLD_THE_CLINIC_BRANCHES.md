@@ -60,7 +60,48 @@ the first seconds of every boot:
 
 `(DEFAULT)` in that line on a live service means someone forgot.
 
-### 2. The JV calendar — **the blocker**
+### 2. ~~The JV calendar — **the blocker**~~ — RESOLVED 2026-08-29
+
+🟢 **Not a blocker. Both branches already point `jv_v1` at
+`jointventurephysiotherapy@gmail.com`**, the calendar Carepatron syncs both
+ways. The `63bc844e…` "Susie Demo" repoint was replaced on canonical on
+2026-08-29 and now survives only on `vitaledge-onboarding` and
+`theorem-onboarding`, neither of which serves `jv_v1`. Confirmed in the live
+boot banner on 2026-08-31:
+
+    [deploy] +447367002651 -> jv_v1 | booking=google_calendar
+             | calendar=jointventurephysiotherapy@gmail.com
+
+The section below is kept for the double-booking history, which is still the
+reason the value matters. The "decision needed" at the end of it is done.
+
+### 🔴 The REAL JV prerequisite was the dial target — fixed `cbeb46d9`
+
+Found 2026-08-31 while looking for the calendar problem. Canonical carried
+Marcus's **business** number `+447586605462` in both `transfer_phone` and
+`call_overflow.dial_phone`; jv_v2 carries `+447478558845`, his second SIM.
+
+That business number is unconditionally diverted to the Twilio line
+`+447367002651`, so dialling it FROM Twilio sends the call **straight back into
+Susie** and his phone never rings. Folding JV as canonical stood would have
+looped every live transfer back to the receptionist the caller was being
+escorted away from — silently. `call_overflow.enabled` is false on both, so the
+front-desk half is dormant, but `transfer_phone` is live on every escalation.
+
+`digest.email_to` was empty on canonical too, so JV's end-of-day booking email
+would have gone nowhere.
+
+Both ported, owner-confirmed. `owner_notification_sms` and `owner_alerts.phone`
+deliberately STAY on the business number — GSM diversion does not divert SMS,
+and both numbers authorise the OFF/ON toggle. That asymmetry is the easy thing
+to get wrong.
+
+Canonical's `jv_v1` config is now functionally identical to jv_v2's, verified by
+a structural diff ignoring comment keys. **JV now folds by repointing the branch
+and setting the two env vars, exactly like Vital Edge.**
+
+<details><summary>The original section, for the double-booking history</summary>
+
 
 | branch | `jv_v1` calendar |
 |---|---|
@@ -86,6 +127,8 @@ was built to be. I have deliberately not done this unattended.
 
 Vital Edge needs no equivalent decision — `vitaledgetherapy@gmail.com` on every
 branch.
+
+</details>
 
 ### 3. Four live-default guard tests
 
