@@ -34,8 +34,30 @@ import pytest
 
 from app.clinic_config import get_clinic
 from app.media_streams import connection as conn
-from app.tools.receptionist_tools import _resolve_duration_minutes
 from tests.harness.driver import ConversationDriver
+
+
+def _resolve_duration_minutes_or_skip():
+    """Imported lazily, because it does not exist on every branch.
+
+    `_resolve_duration_minutes` is absent on theorem-onboarding: Mark sells no
+    service with a choice of lengths, so that branch never grew the resolver.
+    A module-scope `from ... import _resolve_duration_minutes` therefore turns
+    this file into a COLLECTION error there — pytest interrupts the whole run
+    and reports ZERO failures, which looks like catastrophe and measures
+    nothing. That is the third time in two days a canonical test file has been
+    ported into that exact failure, so it is worth stating plainly: an import
+    at module scope is a hard dependency on every branch the file can reach.
+    """
+    try:
+        from app.tools.receptionist_tools import _resolve_duration_minutes
+    except ImportError:
+        pytest.skip(
+            "_resolve_duration_minutes does not exist on this branch — it has "
+            "no service with a choice of lengths, so the CA86c320ef guarantee "
+            "is N-A here"
+        )
+    return _resolve_duration_minutes
 
 
 #: `capture_x(self.session, utterance)` — the shape the transcript handler uses.
@@ -95,6 +117,7 @@ def test_without_the_capture_the_models_argument_wins():
     removed, and it is what four harness runs reported before `_pre_turn`
     mirrored the capture.
     """
+    _resolve_duration_minutes = _resolve_duration_minutes_or_skip()
     clinic, svc = _clinic_with_a_length_choice()
     opts = [int(o) for o in svc["typical_duration_minutes_options"]]
     shortest, longest = min(opts), max(opts)
@@ -108,6 +131,7 @@ def test_without_the_capture_the_models_argument_wins():
 def test_with_the_capture_the_caller_wins():
     """The guarantee itself (CA86c320ef): the caller's spoken length outranks
     the model's argument, so a 90-minute booking cannot be written as 60."""
+    _resolve_duration_minutes = _resolve_duration_minutes_or_skip()
     clinic, svc = _clinic_with_a_length_choice()
     opts = [int(o) for o in svc["typical_duration_minutes_options"]]
     shortest, longest = min(opts), max(opts)
