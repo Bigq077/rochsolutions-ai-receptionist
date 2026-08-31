@@ -1,236 +1,200 @@
 # Stop being the test harness — before the cohort lands
 
-**Status as of 2026-08-30, early afternoon.** Phase 1 done. **Phase 2 DONE —
-all three parts. Phase 4 DONE.** Phase 3 ready and blocked on an owner action.
-**Nothing is owed to the patient lines.** The four findings of the 2026-08-30
-demo call, B-125/B-125b, and BOTH items the owner raised by ear (O-1 and O-2)
-are landed, and every branch that can carry each one has it. All four live
-branches were pushed and their suites diffed at zero regressions.
+**Status as of 2026-08-31, midday.** Phase 1 done. **Phase 2 DONE. Phase 4
+DONE. Phase 3 is UNDERWAY — two of three clinics are folded onto canonical and
+both were verified by real bookings.** Vital Edge and Joint Venture no longer
+have their own branches. Theorem does not fold yet: half its prerequisite
+(Pile A) landed today and the other half needs decision-by-decision review.
+
+> 🔴 **`latency-eval` IS NOW A LIVE LINE FOR TWO CLINICS.** A push auto-deploys
+> to real patients at Vital Edge and Joint Venture and restarts both services.
+> This reverses the "push whenever" posture that held while the branch served
+> only the demo line. Neither posture is permanent — check which Render
+> services track the branch before assuming either.
 
 > 🔴 **START HERE IF YOU ARE PICKING THIS UP COLD.** Read
-> "**HANDOVER — the state at 2026-08-30 14:10**" immediately below. It says
-> what is done, what the 12:41 verification call did and did NOT prove, and
-> the three things it surfaced that nobody has acted on yet.
-
-Two live-call confirmations banked: the fourth clinic booking from config
-alone, and Theorem's emergency intercept. The
-hold-speech decision is SETTLED — and the measurement that settled it says the
-filler architecture was aimed at the wrong latency source. See Phase 2.
-
-The adaptive caller exists and has been run: sixteen personas, 11.8 minutes, no
-phone. **It found three engine defects on its first full run, and a fourth came
-from the live call that verified them.** All four are fixed. See "The adaptive
-caller".
-
-This document is the plan and its running record. It is written to be picked up
-cold: if you have not read anything else, read this.
+> "**HANDOVER — the state at 2026-08-31 12:00**" immediately below. It carries
+> the branch tips, what is done, the next piece of work (Theorem Pile B) with
+> the method already agreed with the owner, and the open items nobody has
+> acted on.
 
 ---
 
-## HANDOVER — the state at 2026-08-30 14:10
+## HANDOVER — the state at 2026-08-31 12:00
 
 Written to be picked up in a fresh session with no other context.
+
+### 🔴 READ THIS FIRST — `latency-eval` is a LIVE line for TWO clinics
+
+Vital Edge folded onto it at 01:57 and Joint Venture at ~11:00 on 2026-08-31.
+**A push to canonical now auto-deploys to real patients at two clinics** and
+restarts both services. Out-of-hours timing, a revert target in hand, and a real
+call after any engine change. CLAUDE.md carries the same warning; the old "push
+whenever" text was correct only while this branch served the demo line alone.
+
+`SMS_ENABLED` and `APPOINTMENT_REMINDERS_ENABLED` are per-SERVICE env vars. The
+demo service leaves them at canonical's `false` default and sends nothing; VE
+and JV set both explicitly. **Canonical's code defaults must stay OFF** or a test
+call texts a real patient.
 
 ### Branch tips
 
 | branch | tip | note |
 |---|---|---|
-| `latency-eval` | `89a52fe0` | canonical + the Northgate demo line (**+447366263180**). Build `2d72f87a935c` was verified on a live call at 12:41 on 30 Aug; `89a52fe0` on top of it is tests only. |
-| `jv_v2` | `2088c668` | live — Joint Venture |
-| `vitaledge-onboarding` | `6c3dd2b4` | live — Vital Edge |
-| `theorem-onboarding` | `aad9f677` | live — Theorem |
+| `latency-eval` | `560b51f7` | canonical. Serves **Vital Edge**, **Joint Venture**, and the Northgate demo line (**+447366263180**). |
+| `vitaledge-onboarding` | `e6a65f9d` | **ROLLBACK TARGET ONLY** — VE is folded. Still deployable. DO NOT DELETE until VE has run a full week on canonical. |
+| `jv_v2` | `206b4b85` | **ROLLBACK TARGET ONLY** — JV is folded. Same rule. |
+| `theorem-onboarding` | `b4b8e640` | **LIVE — Mark's line, NOT folded.** +447380841468. |
 
 Deploy proof is `[build_info] running build <sha>` in the Render log at call
-cleanup. `/health` returns a hardcoded 1.0.0 and proves nothing.
+cleanup. `/health` returns a hardcoded 1.0.0 and proves nothing. The startup and
+shutdown banners say "Theorem Health AI Receptionist" on ALL FOUR branches —
+leftover branding, not a signal. To identify a running branch quickly, use the
+Render dashboard's Deploys tab.
 
-### ✅ DONE — the port to the patient lines, and both items from the ear
+### ✅ Phase 3 is underway — two of three clinics folded and verified
 
-Everything the 11:00 handover listed as pending or not-started is now landed
-and pushed. Nothing in this block is owed.
+**Vital Edge** — folded, then proven end to end: the caller asked for 90 minutes
+and the diary got `PENDING CONFIRMATION — Quentin Rook — Sports Massage,
+9:00–10:30`. Owner notified, both reminders scheduled, and the caller's text
+correctly says "This is a request, not yet confirmed".
 
-**The three-fix port (finding 2 `e1ebcf9a`, finding 3 `5ab3fcc5`, B-125 +
-B-125b `0ea44018` / `61d65180`)** went to all three patient branches in one
-pass. Findings 1 and 4 were confirmed NOT portable and are not a gap: they are
-defects *inside* the situational hold-head feature, and `git grep` finds zero
-files for `app/hold_speech.py`, "situational head", `_hold_head_spoken`,
-`_CONFIRM_Q` and `join_after_head` on all three branches. No head producer
-means no defect to port — not a fix that was skipped.
+**Joint Venture** — folded, `outcome=booked`, and the appointment landed in
+**Marcus (Joint Venture Physiotherapy)** — the real diary, not the demo
+calendar. `owner_alert → ***5462` went to Marcus's BUSINESS number while
+`transfer_phone` points at his Susie SIM, which is the asymmetry that would
+otherwise have looped every live transfer back into Susie.
 
-**O-1 — the duration question now lands before the timing question.**
-`2d72f87a` on canonical, ported to `jv_v2` and `vitaledge-onboarding`.
-**Theorem: N-A** (no multi-length service). The root cause was NOT a missing
-instruction: the prompt has carried "DURATION QUESTION FOR <SERVICE>" with the
-right lengths and prices for months. It had no POSITION in the numbered ladder
-the model actually follows, so the only thing that ever forced it was the
-tool-time `duration_choice_gate` — unreachable until the caller has already
-given a day. Late by construction. Fixed by adding rung **`1c. SESSION
-LENGTH`** between `1b. REASON` and the timing rung, gated on
-`_spine_has_duration_choice(clinic)`. **`duration_choice_gate` is deliberately
-untouched** and remains the backstop; a test asserts it still blocks.
+**Theorem** — NOT folded. Pile A of the prerequisite is done (below); Pile B is
+the next piece of work.
 
-**O-2 — a head is no longer followed by the model's own hold phrase.**
-`1c43c46e`, canonical only. **No port: N-A on all three patient lines**, same
-evidence as findings 1 and 4 — no head producer exists there, so there is no
-first phrase for the model's line to duplicate.
+### ▶ NEXT: Theorem, Pile B — 75 lines needing decision-by-decision scrutiny
 
-### 🔬 What the 12:41 verification call proved, and what it did not
+**Pile A is DONE** (`560b51f7`). It was not a prose port: canonical was
+assembling five `theorem_v3` prompt blocks for no clinic at all. The content was
+already here — `app/clinics/theorem/caller_concerns.py` is byte-identical to
+Mark's 65,577 bytes and the rest are literals. **The WIRING was what got lost in
+porting.** Rendering went 565 → 638 lines and restored PHYSIO CALLER HANDLING
+(including the whole NEVER safety block), JOINT INJECTIONS, LANGUAGE, PERSONA
+CHARACTER and the Redditch redirect. Containment verified: `theorem_v3` is the
+only clinic whose prompt moved.
 
-`CA8e688605a9460906840840ed561246ac`, build `2d72f87a935c`, 96s, demo line.
+**Pile B is the remaining 75-line gap** between canonical's `theorem_v3` render
+and theorem-onboarding's, spread across 11 SHARED sections that have diverged on
+both branches — `RESCHEDULE / CANCEL FLOW` (~27), `BOOKING FLOW` (~15),
+`DATE AWARENESS` (~8), `VOICE RULES` (~5) and scraps. Canonical also has 24
+lines of its own in those sections.
 
-**O-1: confirmed.** The ladder ran `1b → 1c → 2` in order —
-`"Right — what's the appointment for?"` → `"Would you like a 30-minute session
-at thirty-eight pounds, or a 60-minute one at sixty-two pounds?"` → *length
-captured: 60 minutes* → `"Do you have a preference for when you'd like to come
-in?"`. **`check_availability blocked` never appears in the call**: the gate did
-not have to fire, which is the defect gone at source rather than caught.
+**The owner's instruction, verbatim in spirit:** *"Canonical is more advanced but
+needs real scrutiny in regards to every single decision and rule… we did quite a
+lot of work on Theorem, so we need to check if the decisions weren't made on
+purpose. It's not just a fold-in hope. It needs to be precise."*
 
-**O-2: confirmed, but by its SECOND half only — read this before trusting it.**
-Four `head=True` phrases were synthesised and none of the eleven `head=False`
-chunks is a hold phrase, so no duplicate reached the caller. But on both
-lookups the model happened to say *"Just a moment while I check what's
-available."*, which Gate 5 deletes anyway — so the duplicate-stripper was not
-the operative mechanism. What actually did the work, twice, is the **latch
-ownership fix**:
+So the working rule is **canonical wins by default — its versions are the later
+fixes (the surname-never-read-back rule, the calling-number offer, the
+`cancel`/`counsel` near-miss guard, "never ask a rescheduler if they would
+rather cancel") — EXCEPT where Theorem's text encodes a deliberate decision.**
+Known-deliberate so far: the never-ask-the-reason gate, the four-location
+ladder, and the emergency-only screening (below). Every resolution must be
+listed in the commit so it is auditable.
 
-    [ms_gate5] the preserved pre-tool line IS a hold phrase (...) but a head
-    had already spoken — the latch is not ours and stays NON-revocable
+**The agreed method, not yet started:** produce a table of every real
+disagreement — the two versions side by side, which is newer, and where findable
+the commit and call that put Theorem's version there — so the owner can see
+whether each divergence was a decision or drift. Read-only analysis, no pushes.
+Two open questions for the owner: how they want to review it (published page vs
+in-terminal), and whether any further sections are already known-deliberate.
 
-Without it the revocation would have cleared a latch belonging to the head
-producer (Gate 5 had removed the model's sentence, so `_spoken_this_turn` held
-no hold phrase), the tool-time producer would have stopped standing down, and
-it would have spoken the second phrase. **The half the owner originally
-reported — the model's line SURVIVING Gate 5 and being spoken — did not occur
-on this call and remains unconfirmed live.** It depends on the model's wording
-and cannot be forced.
+### 🟢 SETTLED — do not reopen: VE and Theorem run an EMERGENCY INTERCEPT ONLY
 
-### ✅ JOINT VENTURE FOLDED — 2026-08-31
+**An owner decision, taken by Quentin WITH Mark.** Reaffirmed 2026-08-31.
+Neither clinic runs the physio-style clinical screening that jv_v1/northgate do.
+Do not propose porting it; if raised, it is a clinical decision for the clinic
+owner. At least three agents have now tried to "close the gap".
 
-Same runbook as Vital Edge, no surprises. Build `6a6f3647de5d`, `outcome=booked`,
-and the diary shows *Initial Assessment (Musculoskeletal) for Marcus — Quentin
-Rook, Tuesday 8 September 5:00–5:40pm* in **Marcus (Joint Venture
-Physiotherapy)** — the real JV calendar, not the demo one.
+⚠️ **The flag reads backwards for Theorem and the two clinics use different
+config shapes:**
 
-The dial-target port (`cbeb46d9`) proved itself on the same call:
-`owner_alert sent [booking] → ***5462` went to Marcus's BUSINESS number while
-`transfer_phone` now points at the Susie SIM. That asymmetry — SMS to the
-business number, dialling to the SIM — is the thing that would have looped every
-live transfer back into Susie, and it is now correct on canonical.
+| clinic | block | `screening_enabled` | `detect_emergency` |
+|---|---|---|---|
+| `theorem` / `_v2` / `_v3` | 700B, `emergency_red_flags` only | **False** | **works** |
+| `vital_edge` | 1757B, `enabled: true` too | **True** | **works** |
 
-**Two of three clinics are off their own branches.** Only Theorem remains, and
-it cannot fold as-is.
+`detect_emergency()` reads the keywords directly and does not gate on
+`screening_enabled`, so `screening_enabled(theorem) == False` does NOT mean
+Mark has no emergency cover. **Verify with `detect_emergency`, never the flag.**
+Neither clinic declares `screens`, which is what keeps the screening layer
+inert. Checked before the fold: canonical carries the same block, so folding
+does not cost Mark the intercept.
 
-### ✅ THE SLOT-SELECTION REPETITION IS CLOSED — verified live, `25c1e08a`
+### What landed today, in order
 
-Owner-reported twice (VE 10:19, JV 11:03): he named a day AND its time from the
-offer and was made to say it again. Fixed in `25c1e08a`; see that commit for the
-root cause. Verified on JV at 11:17 on the fixed build:
+All on canonical unless noted.
 
-    11:17:27  caller: "um anytime next week"   -> day_preference captured
-    11:17:32  "Number 1, Monday 7th ... Number 2, Tuesday 8th - quarter to six"
-    11:17:47  caller: "uh yeah the tuesday at quarter to 6 suits me"
-    11:17:49  "So that's Tuesday the 8th of September at quarter to six in the
-               evening - could I take your first name and surname?"
+- **The three-fix port** to all three patient branches — finding 2, finding 3,
+  B-125/B-125b. Findings 1 and 4 were confirmed NOT portable (no
+  `app/hold_speech.py`, no head producer on any patient branch).
+- **O-2** (`1c43c46e`) — a situational head followed by the model's own hold
+  phrase. Three parts; the latch-ownership half is why the obvious fix alone is
+  self-defeating. Canonical only, N-A elsewhere.
+- **O-1** (`2d72f87a`) — the session-length question now has a POSITION in the
+  booking ladder (rung `1c`, before timing) rather than only being forced by the
+  tool-time gate. Ported to jv_v2 and vitaledge-onboarding. Measured via the
+  harness: northgate 0/6 → 5/6 length-first.
+- **The owner-summary seam** (`750a23d1`) — `session["turns"]` held the RAW
+  generation, so the owner's record was built from what the model produced
+  rather than what the caller heard. Now spoken, with the raw kept under a
+  `raw` key that Gate 5g's name recovery still needs.
+- **The harness pre-dispatch captures** (`0e9ad6c5`) — see the traps section.
+- **The harness ported to all four branches**, byte-identical, plus
+  `test_this_branchs_booking_flow.py` which drives a real booking per branch
+  behind `HARNESS_LIVE_LLM=1`.
+- **The JV dial target** (`cbeb46d9`) — canonical dialled Marcus's BUSINESS
+  number, which is diverted to the Twilio line, so every transfer would have
+  looped back into Susie. Prerequisite for the JV fold.
+- **The slot-selection repetition** (`25c1e08a`) — owner-reported twice.
+  Verified closed on a live call at 11:17.
+- **Theorem Pile A** (`560b51f7`).
 
-**No `DIFFERENT DAY REQUESTED steer applied`. No second check_availability. No
-day read back.** Straight from the selection to the readback.
+### 🟠 Open, not started
 
-⚠️ NOTE FOR THE NEXT READER, because it caused confusion here: the JV call at
-11:03 that reproduced the bug ran build `6a6f3647`, which PREDATES the fix — it
-was committed but deliberately held unpushed so the fold and the fix stayed
-separable. A reproduction is only evidence against a fix if the build carried it;
-check `[build_info]` before concluding a fix failed.
+1. **Theorem Pile B** — above. The next piece of work.
+2. **Two SMS to the caller on one abandoned call.** JV
+   `CA94878c32f6046bcfcb04ac7fb7d482ff`, 11:18: `✅ Smart SMS sent [abandoned] →
+   ***1207` at 11:18:01, then a SECOND send to the same number at 11:18:08,
+   after the obs judge, with no router line in front of it. The obs/alerts path
+   is gated on `OBS_ALERTS_ENABLED` and its one ungated channel is Sentry, so
+   that is not the source. **Not diagnosed.** A patient getting two texts from
+   one abandoned call is worth chasing.
+3. **The read-back crossing.** `[ms_gate5] read-back time corrected` fired on
+   three of four calls in the 30–31 Aug series — always ADJACENT slot options
+   ('five past nine' for eight; 'ten in the morning' for nine; 'quarter to six'
+   for five). The guard catches it and nothing wrong reaches the caller, but a
+   guard firing that often is a workaround, not a guard. The true rate needs
+   Render log history, which no session has had.
+4. **Content latency.** `content_ttfa_ms` of 4–6s is routine on slot turns
+   against the 1.5s p95 bar, with one 12s outlier (`llm_ttft_ms=10012`). First
+   audio is fast because the filler covers it — the hold speech is MASKING this,
+   not fixing it.
+5. **VE keyterms.** "athlete" is not in Vital Edge's 84-term list; STT mangled
+   "I'm just an athlete who wants a massage" into nonsense and cost a re-ask.
+   Config, low risk, not done — it changes STT on every VE call.
+6. **T-3 nudge** still arms "Anything else you'd like to know?" after Susie's
+   own sign-off.
+7. **B-31** `last_bot_prompt truncated at 200 chars` still fires and still falls
+   back correctly.
 
-### 🟠 New, unattributed: two SMS to the caller on one abandoned call
+### ⚪ Known-accepted, unchanged
 
-JV `CA94878c32f6046bcfcb04ac7fb7d482ff`, 11:18. `✅ Smart SMS sent [abandoned] →
-***1207` at 11:18:01, then a SECOND send to the same number at 11:18:08, after
-the obs judge, with no router line in front of it. The obs/alerts path is gated
-on `OBS_ALERTS_ENABLED` and its one ungated channel is Sentry, not SMS, so that
-is not the source. **Not diagnosed** — recorded so the next session starts from
-the log rather than rediscovering it. A patient getting two texts from one
-abandoned call is worth chasing.
-
-### 🔴 THEOREM MUST NOT FOLD AS-IS — canonical is NOT a superset there
-
-Measured 2026-08-31. The runbook's "canonical is a superset" table covered ONLY
-`jv_v2` and `vitaledge-onboarding`. **Theorem was never in it, and the claim is
-false for that branch.**
-
-    susie_system_prompt.py   canonical 3891 lines   theorem-onboarding 4554
-    clinic_config.py         canonical 2015 lines   theorem-onboarding 1782
-
-Canonical is 663 lines BEHIND on the prompt module and 233 ahead on the config
-module — divergent in both directions. Rendering `_build_theorem_v3`, which is
-what Mark's model actually sees:
-
-    theorem-onboarding  688 lines
-    canonical           565 lines      <- 123 lines SHORTER, 172 changed
-
-Among what folding would delete from Mark's live prompt: the whole **NEVER
-safety-boundary block** (never diagnose, never confirm a self-diagnosis, never
-give medication advice, never promise recovery, never interpret scans over the
-phone), the named-treatment handling for steroid/cortisone injections,
-shockwave and dry needling, and the PHYSIO CALLER HANDLING section.
-
-**Why every routine check misses it:** NO function names differ. Same functions
-on both branches, 791 lines of divergent content inside them. A structural diff
-says "identical". Only rendering the prompt shows it — which is the standing
-trap with `theorem_v3` being hardcoded Python rather than clinic.json.
-
-Theorem's fold is therefore a real port of Mark's prompt content UP to
-canonical, reviewed block by block, in daylight, with Mark's eyes on the
-clinical wording. It is not a config change and it is not a branch repoint.
-
-### 🟠 Seen on the verification call, not yet acted on
-
-Three things in `CA8e688605`, in priority order. None blocks anything above.
-
-1. **Two guards had to correct the model in 96 seconds.**
-   `[slot_followup] CORRECTED a false 'the only time is' claim — the day holds
-   more times (B-100)`, and `read-back time corrected: 'five past nine in the
-   morning' -> 'eight in the morning' … the model crossed two options`. Both
-   caught it, nothing wrong reached the caller. But that is two near-misses on
-   one short call in the failure class that matters most here, and it is worth
-   asking why the model is producing them at that rate.
-2. **Latency on the slot turns is over the bar.** `content_ttfa_ms=5990` and
-   `4150` against the 1.5s p95 target in CLAUDE.md §6. First audio is fast
-   (`ttfa_ms=740`) because the head covers it — so the hold speech is masking
-   a real 4–6s to content rather than the number having improved.
-3. **Turn 2 was 9.3s of continuous speech** — empathy, then the knowledge
-   sentence, then the duration question. If the flow still feels long, that is
-   where to look, not at the ordering.
-
-### ⚪ Still open, previously recorded, unchanged
-
-- The T-3 nudge arms "Anything else you'd like to know?" after Susie's own
-  "Take care — bye!" — seen on every call in this series.
-- `[clinical_screening] last_bot_prompt truncated at 200 chars` (B-31) still
-  fires and still falls back correctly.
 - The demo line's Sheets append fails on an invalid
-  `GOOGLE_SERVICE_ACCOUNT_JSON` escape — known-accepted THERE, not on a
-  patient line.
+  `GOOGLE_SERVICE_ACCOUNT_JSON` escape — accepted THERE, not on a patient line.
+  Sheets works on the VE and JV services.
 - The ElevenLabs `/v1/models` 401 at prewarm is a `models_read` scope thing and
   does not predict synthesis failure. The log line says so itself.
-- Phase 3, the fold: blocked on the owner, not on engineering.
+- `⚠️ CLINIC CONFIG` warnings for `theorem*` appear on every service — every
+  branch ships every clinic while serving one. Not yours unless the warning
+  names the clinic that service actually serves.
 
-### How the four demo calls map to the fixes
-
-| | call 1 `CA7182…` 07:32 | call 2 `CA4fff…` 10:11 | call 3 `CAd1bc…` 10:26 |
-|---|---|---|---|
-| finding 1 — heads after a readout | ✅ both turns | ✅ 4 heads | ✅ 4 heads |
-| finding 2 — sentence twice | not triggered | not triggered | not triggered |
-| finding 3 — length re-asked | ✅ | ✅ | ✅ |
-| finding 4 — latch vs Gate 5 | ✅ revoked ×3 | ✅ revoked ×3, **held ×1** | ✅ revoked ×2, **held ×2** |
-| B-125 — false "earliest" | 🔴 FOUND | ✅ stripped | ✅ stripped |
-| B-125b — trailing frame | — | 🔴 FOUND | not triggered |
-| clip pool | — | ✅ variant 4/5 | ✅ variant 1/5 |
-
-Finding 4 holding correctly (the latch NOT revoked when the phrase survived
-Gate 5) is the strongest single piece of evidence in the set — it shows the
-guard is conditional in both directions rather than simply always firing.
-
-
----
 
 ## The verdict that started it
 
@@ -255,53 +219,18 @@ all the way through and nothing since has challenged it.
 
 ---
 
-## 🔴 `latency-eval` IS NOW A LIVE LINE
+## 🔴 `latency-eval` IS A LIVE LINE — see the handover
 
-**2026-08-31, 01:57 UTC.** Vital Edge's Render service (`vitaledge`,
-`srv-d8va6cbtqb8s73fbpvag`) was repointed from `vitaledge-onboarding` to
-`latency-eval`, went Live at `3a3af7e`, and served a real call five minutes
-later. **A push to canonical is now a deploy to real patients.** CLAUDE.md's
-"push whenever" block has been corrected; do not act on a cached memory of it.
+**Superseded 2026-08-31 midday.** This section recorded the Vital Edge fold when
+it was the only one. Joint Venture has since folded too, so canonical now serves
+TWO live clinics plus the demo line. The current statement, the branch tips and
+the rollback targets are in the HANDOVER block at the top of this document;
+duplicating them here is how one of the two copies goes stale.
 
-Rollback is to point that service back at `vitaledge-onboarding`, which stays
-deployable — **do not delete it until VE has run a full week on canonical.**
-
-The demo line (+447366263180, `northgate`) is still on this branch, which is the
-design working: `SMS_ENABLED` is per-SERVICE, so the demo service keeps
-canonical's `false` default and sends nothing while Vital Edge sets it
-explicitly. **Canonical's code defaults must stay OFF.**
-
-### What the first folded call proved, and what it did not
-
-Call `CAa52bd716fafa245c8959a4b476aacff7`, build `3a3af7e`, VE's own line:
-
-- **O-1** — the ladder ran `1b REASON → 1c SESSION LENGTH → 2 TIMING`, and
-  `check_availability blocked` never appeared: the tool-time gate did not have
-  to fire. First confirmation of O-1 on a patient line.
-- **O-2** — one hold phrase (`[filler] primary suppressed`).
-- `session length captured: 60 minutes` — the pre-dispatch capture works live.
-- The diary reader correctly blocked Jonathan's personal calendar entries.
-- Sheets appends fine here (it is broken on the demo line).
-
-**PROVEN 2026-08-31 10:18, `CAa52bd716…`'s successor `CA403eb7e2…`, build
-`fa3db1615981`.** The Vital Edge cutover is COMPLETE.
-
-The caller asked for the 90-minute session and the diary got 90 minutes —
-`PENDING CONFIRMATION — Quentin Rook — Sports Massage, 9:00–10:30`, Tue 8 Sep.
-That is the CA86c320ef guarantee proven end to end on a folded patient line:
-
-    10:19:14  session length captured: 90 minutes
-    10:19:26  check_availability … duration=90m      <- grid built at the caller's length
-    10:20:44  book_appointment slot_iso=2026-09-08T09:00:00
-    10:20:47  notify_owner: sent to +447545862307    <- the owner WAS notified
-    10:20:47  Scheduled 2 reminders (24h + 2h)
-
-The caller's text is correctly provisional-worded — "This is a request, not yet
-confirmed" — because `_book_appointment_provisional` sets
-`confirmation_sms_sent = True` specifically to suppress the smart-SMS follow-up
-that would have said "confirmed". Verified in the source, not assumed.
-
----
+The rule is unchanged and worth repeating once: **a push to canonical is a
+deploy to real patients.** Rollback for either clinic is to point its Render
+service back at its own branch, which stays deployable and must not be deleted
+until that clinic has run a full week on canonical.
 
 ## Phase status
 
@@ -309,7 +238,7 @@ that would have said "confirmed". Verified in the source, not assumed.
 |---|---|
 | **1 — Headless free-form driver** | ✅ Done. Found a live defect on day one. |
 | **2 — Adaptive caller + harvest the corpus** | ✅ **DONE.** Corpus harvested, detectors re-armed, hold speech settled, adaptive caller built and run. |
-| **3 — Collapse the tenancy** | 🟢 **VITAL EDGE *AND* JOINT VENTURE FOLDED AND FULLY VERIFIED** — 2026-08-31. Service tracks `latency-eval`; a real 90-minute booking reached the diary at 90 minutes, owner notified, reminders scheduled. JV folded 2026-08-31 11:0x and booked live into Marcus's own calendar. **Theorem must NOT fold as-is — see below.** |
+| **3 — Collapse the tenancy** | 🟢 **UNDERWAY — 2 of 3 folded.** Vital Edge and Joint Venture both run `latency-eval` and both were verified by a real booking. Theorem is blocked on Pile B of its prompt reconciliation — see the handover. |
 | **4 — Two contained slot fixes** | ✅ **DONE.** Both landed; the first was mis-scoped here and is corrected below. |
 
 ---
