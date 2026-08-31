@@ -177,13 +177,47 @@ all the way through and nothing since has challenged it.
 
 ---
 
+## 🔴 `latency-eval` IS NOW A LIVE LINE
+
+**2026-08-31, 01:57 UTC.** Vital Edge's Render service (`vitaledge`,
+`srv-d8va6cbtqb8s73fbpvag`) was repointed from `vitaledge-onboarding` to
+`latency-eval`, went Live at `3a3af7e`, and served a real call five minutes
+later. **A push to canonical is now a deploy to real patients.** CLAUDE.md's
+"push whenever" block has been corrected; do not act on a cached memory of it.
+
+Rollback is to point that service back at `vitaledge-onboarding`, which stays
+deployable — **do not delete it until VE has run a full week on canonical.**
+
+The demo line (+447366263180, `northgate`) is still on this branch, which is the
+design working: `SMS_ENABLED` is per-SERVICE, so the demo service keeps
+canonical's `false` default and sends nothing while Vital Edge sets it
+explicitly. **Canonical's code defaults must stay OFF.**
+
+### What the first folded call proved, and what it did not
+
+Call `CAa52bd716fafa245c8959a4b476aacff7`, build `3a3af7e`, VE's own line:
+
+- **O-1** — the ladder ran `1b REASON → 1c SESSION LENGTH → 2 TIMING`, and
+  `check_availability blocked` never appeared: the tool-time gate did not have
+  to fire. First confirmation of O-1 on a patient line.
+- **O-2** — one hold phrase (`[filler] primary suppressed`).
+- `session length captured: 60 minutes` — the pre-dispatch capture works live.
+- The diary reader correctly blocked Jonathan's personal calendar entries.
+- Sheets appends fine here (it is broken on the demo line).
+
+**NOT proven: the booking write and the owner notification to Jonathan.** The
+call was deliberately abandoned at the readback so he was not texted at 2am.
+That is the one remaining leg of the Vital Edge cutover.
+
+---
+
 ## Phase status
 
 | Phase | State |
 |---|---|
 | **1 — Headless free-form driver** | ✅ Done. Found a live defect on day one. |
 | **2 — Adaptive caller + harvest the corpus** | ✅ **DONE.** Corpus harvested, detectors re-armed, hold speech settled, adaptive caller built and run. |
-| **3 — Collapse the tenancy** | 🟡 New-clinic path proved and live. Fold groundwork done. **The fold itself is blocked on an owner action.** |
+| **3 — Collapse the tenancy** | 🟢 **VITAL EDGE IS FOLDED — 2026-08-31 01:57 UTC.** Its Render service tracks `latency-eval` (Live at `3a3af7e`), verified by a real call. JV and Theorem remain. |
 | **4 — Two contained slot fixes** | ✅ **DONE.** Both landed; the first was mis-scoped here and is corrected below. |
 
 ---

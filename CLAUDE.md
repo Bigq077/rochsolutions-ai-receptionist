@@ -37,18 +37,37 @@ promoted by merging as-is."* That line has been re-chartered: it now applies to
 the **WS latency levers** (still experimental, still default OFF), not to the
 branch. Do not cite it as a reason to avoid basing work here.
 
-> ✅ **`latency-eval` is not a live line — push whenever.** Corrected 2026-08-02
-> by the repo owner. This block previously said a push here was a live deploy
-> needing out-of-hours timing and coordination; that was wrong and it cost real
-> time, because agents kept staging finished, suite-verified work overnight for
-> a deploy window that does not exist.
+> 🔴 **`latency-eval` IS a live line as of 2026-08-31. A push here reaches real
+> patients.** Vital Edge was folded onto it at 01:57 UTC — Render service
+> `vitaledge` (`srv-d8va6cbtqb8s73fbpvag`) now tracks `latency-eval`, verified
+> live at `3a3af7e` and confirmed by a real call five minutes later.
 >
-> The gated branches are the two **deployment** branches — `jv-v1-onboarding`
-> and `vitaledge-onboarding` — which serve live clinics. Apply out-of-hours
-> timing, a revert commit in hand, and coordination **there**, not here.
+> **So: out-of-hours timing, a revert target in hand, and a real call after any
+> engine change — HERE, not only on the clinic branches.** `autoDeploy` is on,
+> so a push is a deploy. The rollback for Vital Edge is to point its service
+> back at `vitaledge-onboarding`, which stays deployable and must not be
+> deleted until VE has run a full week on canonical.
 >
-> The canonical-first rule is unchanged: engine fixes land here first and the
-> clinic branches inherit them by cherry-pick.
+> <details><summary>What this block used to say, and why it changed</summary>
+>
+> From 2026-08-02 to 2026-08-30 it read *"`latency-eval` is not a live line —
+> push whenever"*, and that was correct for that period: the branch served only
+> the Northgate demo line. It was itself a correction of an earlier over-caution
+> that cost real time, with agents staging finished work overnight for a deploy
+> window that did not exist. **Neither version is a standing truth — the fold is
+> what changed it, and it will change again as JV and Theorem fold.** Check
+> which services track this branch before assuming either posture.
+> </details>
+>
+> The demo line (**+447366263180**, `northgate`) is still on this branch too,
+> which is the whole point of the design: `SMS_ENABLED` and
+> `APPOINTMENT_REMINDERS_ENABLED` are per-SERVICE env vars, so the demo service
+> leaves them at their `false` code default and sends nothing, while the Vital
+> Edge service sets both explicitly. **Canonical's defaults must stay OFF** or a
+> test call texts a real patient.
+>
+> The canonical-first rule is unchanged: engine fixes land here first. What has
+> changed is that "here" is now also a deployment.
 
 > ⚠️ **Check which branch and which worktree you are actually in before
 > measuring anything.** There are ~15 registered worktrees under
