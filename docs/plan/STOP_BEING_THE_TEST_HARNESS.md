@@ -103,6 +103,53 @@ reported — the model's line SURVIVING Gate 5 and being spoken — did not occu
 on this call and remains unconfirmed live.** It depends on the model's wording
 and cannot be forced.
 
+### ✅ JOINT VENTURE FOLDED — 2026-08-31
+
+Same runbook as Vital Edge, no surprises. Build `6a6f3647de5d`, `outcome=booked`,
+and the diary shows *Initial Assessment (Musculoskeletal) for Marcus — Quentin
+Rook, Tuesday 8 September 5:00–5:40pm* in **Marcus (Joint Venture
+Physiotherapy)** — the real JV calendar, not the demo one.
+
+The dial-target port (`cbeb46d9`) proved itself on the same call:
+`owner_alert sent [booking] → ***5462` went to Marcus's BUSINESS number while
+`transfer_phone` now points at the Susie SIM. That asymmetry — SMS to the
+business number, dialling to the SIM — is the thing that would have looped every
+live transfer back into Susie, and it is now correct on canonical.
+
+**Two of three clinics are off their own branches.** Only Theorem remains, and
+it cannot fold as-is.
+
+### ✅ THE SLOT-SELECTION REPETITION IS CLOSED — verified live, `25c1e08a`
+
+Owner-reported twice (VE 10:19, JV 11:03): he named a day AND its time from the
+offer and was made to say it again. Fixed in `25c1e08a`; see that commit for the
+root cause. Verified on JV at 11:17 on the fixed build:
+
+    11:17:27  caller: "um anytime next week"   -> day_preference captured
+    11:17:32  "Number 1, Monday 7th ... Number 2, Tuesday 8th - quarter to six"
+    11:17:47  caller: "uh yeah the tuesday at quarter to 6 suits me"
+    11:17:49  "So that's Tuesday the 8th of September at quarter to six in the
+               evening - could I take your first name and surname?"
+
+**No `DIFFERENT DAY REQUESTED steer applied`. No second check_availability. No
+day read back.** Straight from the selection to the readback.
+
+⚠️ NOTE FOR THE NEXT READER, because it caused confusion here: the JV call at
+11:03 that reproduced the bug ran build `6a6f3647`, which PREDATES the fix — it
+was committed but deliberately held unpushed so the fold and the fix stayed
+separable. A reproduction is only evidence against a fix if the build carried it;
+check `[build_info]` before concluding a fix failed.
+
+### 🟠 New, unattributed: two SMS to the caller on one abandoned call
+
+JV `CA94878c32f6046bcfcb04ac7fb7d482ff`, 11:18. `✅ Smart SMS sent [abandoned] →
+***1207` at 11:18:01, then a SECOND send to the same number at 11:18:08, after
+the obs judge, with no router line in front of it. The obs/alerts path is gated
+on `OBS_ALERTS_ENABLED` and its one ungated channel is Sentry, not SMS, so that
+is not the source. **Not diagnosed** — recorded so the next session starts from
+the log rather than rediscovering it. A patient getting two texts from one
+abandoned call is worth chasing.
+
 ### 🔴 THEOREM MUST NOT FOLD AS-IS — canonical is NOT a superset there
 
 Measured 2026-08-31. The runbook's "canonical is a superset" table covered ONLY
@@ -262,7 +309,7 @@ that would have said "confirmed". Verified in the source, not assumed.
 |---|---|
 | **1 — Headless free-form driver** | ✅ Done. Found a live defect on day one. |
 | **2 — Adaptive caller + harvest the corpus** | ✅ **DONE.** Corpus harvested, detectors re-armed, hold speech settled, adaptive caller built and run. |
-| **3 — Collapse the tenancy** | 🟢 **VITAL EDGE FOLDED AND FULLY VERIFIED** — 2026-08-31. Service tracks `latency-eval`; a real 90-minute booking reached the diary at 90 minutes, owner notified, reminders scheduled. JV is prerequisite-clear (`cbeb46d9`). **Theorem must NOT fold as-is — see below.** |
+| **3 — Collapse the tenancy** | 🟢 **VITAL EDGE *AND* JOINT VENTURE FOLDED AND FULLY VERIFIED** — 2026-08-31. Service tracks `latency-eval`; a real 90-minute booking reached the diary at 90 minutes, owner notified, reminders scheduled. JV folded 2026-08-31 11:0x and booked live into Marcus's own calendar. **Theorem must NOT fold as-is — see below.** |
 | **4 — Two contained slot fixes** | ✅ **DONE.** Both landed; the first was mis-scoped here and is corrected below. |
 
 ---
