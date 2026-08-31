@@ -412,7 +412,15 @@ UNMOVED_PROMPTS = {
     #
     # CONTAINMENT: demo, jv_v1, theorem and vital_edge all HELD — the edit is
     # inside _build_theorem_v3's POLICIES block, which only theorem_v3 renders.
-    "theorem_v3": "d41b67bc0bd992f2",
+    # Re-pinned 2026-08-31: theorem_v3 GAINED five prompt blocks canonical had
+    # been assembling for no clinic at all — PHYSIO CALLER HANDLING (incl. the
+    # NEVER safety block), JOINT INJECTIONS, LANGUAGE, PERSONA CHARACTER and the
+    # Redditch redirect. Not new text: caller_concerns.py was already here
+    # byte-identical and the rest are literals; the WIRING was lost in porting.
+    # Rendering went 565 -> 638 lines. theorem_v3 is the ONLY id that moves,
+    # which is the containment claim — demo, jv_v1, theorem and theorem_v2 all
+    # held byte-identical on the same run.
+    "theorem_v3": "9599715c5174c0e0",
     # Moved 2026-08-25, deliberately: 76ac625e89e83e4a -> e52579ab12c53eab.
     # vital_edge gained the ESTABLISH THE AGE rule in _render_policies. Its
     # minimum of 18 was unenforceable in practice because the gate only arms
