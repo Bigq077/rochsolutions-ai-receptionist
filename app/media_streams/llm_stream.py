@@ -3401,8 +3401,16 @@ class LLMStream:
             else:
                 session.pop("_slot_chunks_sent", None)
                 session.pop("_slot_chunks_inhibited", None)
-            if _det_slots and _det_slots[0].get("date"):
-                session["v3_last_offered_day_iso"] = _det_slots[0]["date"]
+            # `day_iso` is set only by the multi_day builder, to the PAYLOAD's
+            # first day -- the same value section 4 writes, and the meaning
+            # turn_handler documents. single_day sends None and keeps the
+            # first-spoken-slot behaviour it shipped with, where the two
+            # coincide anyway. See the anchor note at the multi_day build site.
+            _det_day = _prebuilt.get("day_iso")
+            if not _det_day and _det_slots and _det_slots[0].get("date"):
+                _det_day = _det_slots[0]["date"]
+            if _det_day:
+                session["v3_last_offered_day_iso"] = _det_day
 
             for _i, _c in enumerate(_det_chunks):
                 logger.info(
@@ -6178,15 +6186,24 @@ class LLMStream:
                 # than recomputed off a list that has had slots removed on
                 # purpose.
                 #
-                # multi_day is deliberately not wired yet: it is where Theorem's
-                # 24% unresolvable readouts live, and it ships after this has
-                # run live.
+                # multi_day is wired below, as step 4. It is where the parse
+                # failure actually lives: measured over the stored corpus on
+                # 1 Sept 2026, 51 of 52 multi_day readouts (98%) hand the
+                # positional resolver a DAY-only label -- "Monday 10th August"
+                # -- because extract_slot_options commits to the segment before
+                # the em dash. A day label matches every slot on that day and
+                # the resolver refuses an ambiguous match by design, so
+                # multi_day does not fail occasionally; it cannot succeed.
                 session.pop("_slot_offer_prebuilt", None)
+                _offer = None
+                _det_mode = None
+                _det_day_iso = None
                 if (
                     session.get("_slot_presentation_mode") == "single_day"
                     and isinstance(_fd, dict)
                     and (_fd.get("slots") or _fd.get("slot_times"))
                 ):
+                    _det_mode = "single_day"
                     try:
                         from app.tools.slot_offer import (
                             build_slot_offer, earliest_lead_in_is_true,
@@ -6236,28 +6253,99 @@ class LLMStream:
                             "falling back to the model's presentation"
                         )
                         _offer = None
-                    if _offer is not None:
-                        # A plain dict: the session is serialised to Redis.
-                        session["_slot_offer_prebuilt"] = {
-                            "chunks": list(_offer.chunks),
-                            "slots": [
-                                {
-                                    "start": s.get("start"),
-                                    "end": s.get("end") or "",
-                                    "spoken": s.get("spoken"),
-                                    "date": s.get("date"),
-                                }
-                                for s in _offer.slots
-                            ],
-                            "dtmf_map": dict(_offer.dtmf_map),
-                            "more_times": bool(_offer.more_times),
-                        }
-                        logger.info(
-                            "[ms_gate5] deterministic single_day offer built: "
-                            "%d chunk(s), %d slot(s) recorded — %r",
-                            len(_offer.chunks), len(_offer.slots),
-                            [s.get("start") for s in _offer.slots],
+                # ── Deterministic multi_day presentation (step 4) ────────────
+                # Fed `presented_days`, NOT `available_days`, and that choice is
+                # the whole point rather than a detail:
+                #
+                #   * `presented_days` is what `_cap_presented_slots` already
+                #     decided should be SPOKEN -- <= _MAX_PRESENTED_DAYS (2)
+                #     days at per_day=1. Taking it keeps ONE owner for "how
+                #     many", which is the invariant this plan exists to
+                #     establish. Feeding `available_days` and re-capping here
+                #     would create a second owner and rebuild the defect.
+                #   * Those times went through `choose_presented_indices`, which
+                #     prefers times this caller has not heard (B-116).
+                #     `available_days` is the untrimmed bookable set and has
+                #     had no such selection, so building from it would re-offer
+                #     times the caller was just read.
+                #
+                # CALLER-AUDIBLE CONSEQUENCE, measured and deliberate. Live
+                # multi_day readouts are bimodal: 24 of 52 are 2 days x 1 time
+                # (the model obeying presented_days) and 25 are 3 days x 2 times
+                # (the model obeying its own prompt instead). This normalises
+                # every multi_day readout to the first shape. To restore the
+                # richer one, raise `per_day` in `_cap_presented_slots` -- ONE
+                # line, one owner, and it moves the model path identically.
+                #
+                # No more-times tail is emitted: `build_slot_offer` makes that
+                # claim only where it has a referent -- one day -- which is the
+                # B-99 rule. 50 of those 52 readouts carry no tail today, so
+                # silence is also what almost all callers already hear.
+                elif (
+                    session.get("_slot_presentation_mode") == "multi_day"
+                    and isinstance(result, dict)
+                    and result.get("presented_days")
+                ):
+                    _det_mode = "multi_day"
+                    try:
+                        from app.tools.slot_offer import build_slot_offer
+                        # No lead_in. "The earliest I have is ..." is a claim
+                        # about ONE day; B-125 decided it against the untrimmed
+                        # day, and there is no such day here.
+                        _offer = build_slot_offer(
+                            list(result["presented_days"]),
+                            more_times=bool(session.get("_slot_more_times")),
+                            other_dates=session.get("_slot_other_dates"),
                         )
+                        # THE ANCHOR KEEPS ITS EXISTING MEANING. Section 4 of
+                        # _flush_slot_buf writes v3_last_offered_day_iso as
+                        # `available_days[0]["date"]` -- the PAYLOAD's first day
+                        # -- and turn_handler documents it as exactly that. The
+                        # one time a reader treated it as "the day the caller is
+                        # being offered", CA6e1024db went four turns with the
+                        # staleness gate blind for the whole call, and the fix
+                        # was to read `available_days` as the primary signal,
+                        # NOT to change what this scalar holds. Four readers sit
+                        # on that contract, so step 4 does not touch it.
+                        #
+                        # `SlotOffer.first_spoken_date` is the better value and
+                        # is tested, but adopting it is a separate change to a
+                        # session key with its own blast radius, its own tests
+                        # and its own real call.
+                        _av = (result.get("available_days") or [])
+                        if _av and isinstance(_av[0], dict):
+                            _det_day_iso = _av[0].get("date") or None
+                    except Exception:
+                        logger.exception(
+                            "[ms_gate5] deterministic multi_day offer failed — "
+                            "falling back to the model's presentation"
+                        )
+                        _offer = None
+                if _offer is not None:
+                    # A plain dict: the session is serialised to Redis.
+                    session["_slot_offer_prebuilt"] = {
+                        "chunks": list(_offer.chunks),
+                        "slots": [
+                            {
+                                "start": s.get("start"),
+                                "end": s.get("end") or "",
+                                "spoken": s.get("spoken"),
+                                "date": s.get("date"),
+                            }
+                            for s in _offer.slots
+                        ],
+                        "dtmf_map": dict(_offer.dtmf_map),
+                        "more_times": bool(_offer.more_times),
+                        # Absent on single_day, so section 1b keeps its existing
+                        # behaviour there verbatim. Only multi_day sets it.
+                        "day_iso": _det_day_iso,
+                    }
+                    logger.info(
+                        "[ms_gate5] deterministic %s offer built: "
+                        "%d chunk(s), %d slot(s) recorded — %r",
+                        _det_mode, len(_offer.chunks), len(_offer.slots),
+                        [s.get("start") for s in _offer.slots],
+                    )
                 # WHICH day this readout is about. Needed because a clinic on a
                 # fixed evening rota has the same spoken labels on every day of
                 # the week, so resolving a label against the whole sweep is
