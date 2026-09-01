@@ -23,9 +23,36 @@ operator that the caller had hung up. They had not.
 The fix is to record the assistant side at the one seam every utterance passes
 through: connection.py's TTS loop, at the point a chunk is about to be spoken —
 after the pre-slot suppression, the tts_inhibit discard and the dedup guard, so
-text the caller never heard is never recorded (that was the second half of the
-same defect: the judge quoted a suppressed "Let me just check what we have for
-you." back as a redundant step Susie had added).
+suppressed text is not recorded (that was the second half of the same defect: the
+judge quoted a suppressed "Let me just check what we have for you." back as a
+redundant step Susie had added).
+
+WHAT THIS LIST IS, EXACTLY: INTENT TO SPEAK — NOT AUDIO
+------------------------------------------------------
+P2 of OPEN_DEFECTS_HOLD_AND_SLOTS_2026-09-01. This docstring used to say "text
+the caller never heard is never recorded", and connection.py's comment at the
+call site said the same. **Both were false, and the claim is what made them
+expensive.** The seam is past every *suppression* check, but it sits BEFORE
+`split_tts_text`, before synthesis and before playback. Three things can still
+take the audio away afterwards:
+
+  * a barge-in cancelling synthesis part-way through the sub-chunks;
+  * a barge-in tearing down PLAYBACK after synthesis completed — the audio was
+    already in Twilio's buffer and the teardown flushed it (this is P1,
+    CAa2bdff2b: 12.2s of appointment times synthesised, ~1.9s heard, four
+    assistant entries stored);
+  * the TTS loop rewriting a chunk before synthesis, which `record_assistant`
+    is now given the rewritten form of.
+
+Two sessions read this list as audio and diagnosed working features as broken —
+once reporting a live, working disclosure as missing. So: **a fragment here means
+Susie was about to say this, not that anyone heard it.**
+
+`cut` (see `note_cut`) closes the first case only. Its ABSENCE is not evidence
+the fragment was heard — the playback case leaves no mark here at all, and
+answering it would mean threading chunk identity through `_send_loop`'s playout
+clock. Cross-check `[ms_tts] tts_finished` and `barge-in start` in the Render
+log before concluding a caller heard anything.
 
 Fragments are NOT merged into one entry per utterance. A merge rule needs to know
 where one utterance ends and the next begins, and at this seam it does not — the
@@ -87,3 +114,27 @@ def record_assistant(session: Dict[str, Any], text: str) -> None:
     if turns and turns[-1].get("role") == "assistant" and turns[-1].get("text") == text:
         return
     turns.append({"role": "assistant", "text": text})
+
+
+def note_cut(session: Dict[str, Any], *, spoke: int, of: int) -> None:
+    """Mark the fragment just recorded as cut off part-way through synthesis.
+
+    Called from the TTS loop when a barge-in cancels the sub-chunk loop, which
+    is the ONE downstream loss knowable at that seam without following the audio
+    into `_send_loop`. `spoke`/`of` are sub-chunks, not seconds: coarse, but the
+    difference between "she said this" and "she got a third of the way in".
+
+    The text is deliberately NOT truncated to what was spoken. `split_tts_text`
+    works on the post-substitution string ("oh seven five oh two"), while this
+    list stores the pre-substitution form on purpose so it reads back as
+    English — so the sub-chunks cannot be spliced into it without corrupting
+    every phone number in the corpus. A marker on the whole fragment is honest;
+    a spliced one would not be.
+
+    Absence of this marker is NOT evidence the fragment was heard — see the
+    module docstring. It says nothing about the playback case.
+    """
+    turns = _turns(session)
+    if not turns or turns[-1].get("role") != "assistant":
+        return
+    turns[-1]["cut"] = {"spoke": int(spoke), "of": int(of)}

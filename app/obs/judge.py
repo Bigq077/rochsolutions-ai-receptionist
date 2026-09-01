@@ -101,12 +101,31 @@ Respond with ONLY a single JSON object, no preamble and no code fences, exactly:
 # ---------------------------------------------------------------------------
 
 def _format_transcript(turns: List[Dict[str, str]]) -> str:
+    """Render the stored turns for the judge.
+
+    P2: a fragment marked `cut` was cancelled part-way through synthesis by a
+    barge-in, so the caller heard the start of it and not the rest. Without the
+    marker the judge reads a truncated sentence as a complete one and scores
+    Susie for saying something nobody heard — the same class of invention that
+    made it report a caller as having hung up (see app/obs/turns.py).
+
+    Said in sub-chunks rather than seconds because that is what is actually
+    known here; and stated as a fact about the AUDIO, not the text, so the judge
+    does not read it as Susie having spoken the marker aloud.
+    """
     if not turns:
         return "(no transcript)"
     lines = []
     for t in turns:
         role = str(t.get("role", "?")).upper()
-        lines.append(f"{role}: {t.get('text', '')}")
+        line = f"{role}: {t.get('text', '')}"
+        cut = t.get("cut")
+        if isinstance(cut, dict):
+            line += (
+                f"   [interrupted — only {cut.get('spoke')} of "
+                f"{cut.get('of')} parts of this line were spoken]"
+            )
+        lines.append(line)
     return "\n".join(lines)
 
 

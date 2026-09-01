@@ -14931,11 +14931,45 @@ class WebSocketCallHandler:
                 # Recorded HERE and nowhere else. This is the one seam every
                 # utterance passes through — greeting, watchdog re-asks, the
                 # dead-air safety net's sign-off, DTMF questions, the transfer
-                # line, LLM replies — and it is past every suppression check
-                # above, so nothing the caller did not hear is stored. See
-                # app/obs/turns.py for what this cost when it lived in
-                # llm_stream._append_history instead (call CAe2120b).
-                _obs_turns.record_assistant(self.session, _obs_chunk_text)
+                # line, LLM replies. See app/obs/turns.py for what this cost
+                # when it lived in llm_stream._append_history instead (call
+                # CAe2120b).
+                #
+                # P2, 2026-09-01. This comment used to end "...and it is past
+                # every suppression check above, so nothing the caller did not
+                # hear is stored." THAT WAS FALSE, and the false half is the
+                # expensive half: two sessions read this list as audio and
+                # diagnosed working features as broken. It is past every
+                # SUPPRESSION check, but it sits before `split_tts_text`, before
+                # synthesis and before playback — so a barge-in that cancels
+                # synthesis below, or one that tears down playback after
+                # synthesis finished (P1, CAa2bdff2b: 12.2s stored, ~1.9s
+                # heard), leaves the fragment recorded exactly as if it had been
+                # spoken in full.
+                #
+                # What is stored is INTENT TO SPEAK. `note_cut` below closes the
+                # synthesis-cancelled case; nothing here closes the playback
+                # one, and its absence must not be read as "heard".
+                #
+                # `_obs_display_text`, not `_obs_chunk_text`: the leading-marker
+                # strip above rewrites what is synthesised, so recording the
+                # un-stripped form would store a "Right —" no caller heard —
+                # a third instance of this same defect, added by the fix for
+                # P3. `_obs_chunk_text` itself must NOT be rewritten: it is the
+                # string `_unrecord_spoken` matches against llm_stream's record
+                # and the one `_slot_readout_chunks` compares by equality.
+                # Applied to the pre-substitution form directly, so the phone
+                # numbers in this list stay readable as English.
+                _obs_display_text = _obs_chunk_text
+                try:
+                    from app.hold_speech import (
+                        strip_marker_before_question as _strip_marker_obs,
+                    )
+
+                    _obs_display_text = _strip_marker_obs(_obs_chunk_text)
+                except Exception:  # pragma: no cover - never break the record
+                    _obs_display_text = _obs_chunk_text
+                _obs_turns.record_assistant(self.session, _obs_display_text)
 
                 # Change C: cancel filler timer; inject 100ms breath gap if
                 # the clip already fired this turn (one-shot: _filler_breath_injected
@@ -15043,6 +15077,11 @@ class WebSocketCallHandler:
                     self._turn_timing._content_marked = True
                     await self.audio_out_queue.put(_CONTENT_AUDIO_MARKER)
 
+                # P2: how much of this fragment actually reached ElevenLabs.
+                # The obs entry above was written before any of it was
+                # synthesised, so without this a fragment cut off one sub-chunk
+                # in is stored identically to one spoken in full.
+                _subs_spoken = 0
                 for sub_text in sub_chunks:
                     # Track current sub-chunk so barge-in resume is accurate.
                     self._current_tts_text = sub_text
@@ -15065,10 +15104,35 @@ class WebSocketCallHandler:
                     finally:
                         self._tts_task = None
 
+                    # Counted after the await returns without cancellation. A
+                    # sub-chunk that raised a synthesis error is counted too:
+                    # the loop continues past it deliberately, so the fragment
+                    # was not CUT even though part of it went missing, and
+                    # calling that a barge-in would be a different lie.
+                    _subs_spoken += 1
+
                     # Barge-in may have fired between sub-chunks (rare race).
                     if self._barge_in_pending:
                         _any_cancelled = True
                         break
+
+                if _any_cancelled:
+                    # P2: correct the record written before synthesis started.
+                    # Never raises — an obs annotation must not be able to break
+                    # a call, and the barge-in path is the worst place to try.
+                    try:
+                        _obs_turns.note_cut(
+                            self.session,
+                            spoke=_subs_spoken,
+                            of=len(sub_chunks),
+                        )
+                        logger.info(
+                            "[ms_conn] obs: fragment cut after %d/%d sub-chunk(s)"
+                            " — %r",
+                            _subs_spoken, len(sub_chunks), _obs_display_text[:40],
+                        )
+                    except Exception:  # pragma: no cover - defensive
+                        pass
 
                 if not _any_cancelled:
                     # All sub-chunks completed — place sentinel so send_loop can
