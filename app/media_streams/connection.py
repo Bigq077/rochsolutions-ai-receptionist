@@ -11068,6 +11068,23 @@ class WebSocketCallHandler:
                                 if _confirmed_loc:
                                     _loc_label = _confirmed_loc.capitalize()
                                     _ack = f"{_loc_label}."
+                                    # P5: record the answer this ack is
+                                    # acknowledging. This branch resolves the
+                                    # location inline and never reaches
+                                    # run_turn, which until now was the ONLY
+                                    # caller of record_user — so the caller's
+                                    # "Alcester" was absent from the obs
+                                    # transcript while Susie's "Alcester." was
+                                    # recorded normally. 68 of the 105 location
+                                    # questions in the corpus read as Susie
+                                    # asking and then answering herself, and one
+                                    # was reported as exactly that defect.
+                                    # record_user is adjacent-duplicate safe, so
+                                    # the sub-paths below that re-queue to
+                                    # run_turn cannot double-record.
+                                    _obs_turns.record_user(
+                                        self.session, utterance
+                                    )
                                     await self.tts_text_queue.put(_ack)
                                     self.session["last_bot_prompt"] = _ack
                                     self.session["selected_location"] = (
