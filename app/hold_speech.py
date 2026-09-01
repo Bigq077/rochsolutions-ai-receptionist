@@ -880,6 +880,44 @@ def is_hold_head(text: str) -> bool:
     return bool(text) and bool(_HEAD_RE.match(text.strip()))
 
 
+#: A discourse marker standing on its own, with nothing behind it.
+#:
+#: The prompt MANDATES one of these at booking step 1 -- "acknowledge simply:
+#: 'Right -' and NOTHING ELSE", because connection.py then injects the next
+#: question. So the marker is not a model quirk to be reworded away; it is a
+#: deliberate stub, and it reads correctly when it is the only acknowledgement
+#: the caller hears.
+#:
+#: A CLOSED set, matched only when it is the WHOLE chunk. Both halves matter.
+#: The set is closed because the phrase is our own prompt's, not the model's
+#: invention -- the same argument ACK_OPENER_RE makes for being an allow-list,
+#: and the shape-based version it rejects would be worse here, where the
+#: chunker legitimately emits short dash-terminated fragments of real speech.
+#: Requiring the whole chunk is what keeps "Right - Tuesday at ten is free"
+#: out of it: only a chunk that says nothing at all can be dropped for saying
+#: nothing.
+#:
+#: Deliberately NOT ACK_OPENER_RE, which is a wider family ("of course",
+#: "got it", "no problem at all") serving `strip_head_echo` at a different
+#: layer. Reusing it here would drop 67 chunks across the stored corpus where
+#: the evidenced defect is 32, and widening blast radius on the barge-in/TTS
+#: path is not a thing to do for free.
+BARE_MARKER_RE = re.compile(
+    r"^\s*(?:right|so|okay|ok|alright|all right|now|well)"
+    r"\s*[,.!—–-]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def is_bare_discourse_marker(text: str) -> bool:
+    """Is this chunk a discourse marker and nothing else? PURE.
+
+    Read by connection.py's TTS loop to decide whether a chunk is worth
+    synthesising once a hold phrase has already performed the same speech act.
+    """
+    return bool(text) and bool(BARE_MARKER_RE.match(text.strip()))
+
+
 #: Susie's own acknowledgement and hold openers, for removal once a head has
 #: already performed that speech act.
 #:

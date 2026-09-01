@@ -14804,6 +14804,70 @@ class WebSocketCallHandler:
                 if _ro_saved and _obs_chunk_text.strip() not in _ro_saved:
                     self.session.pop("_slot_readout_chunks", None)
 
+                # ── P3: a bare marker on top of a hold phrase ─────────────
+                # "Let's get you booked in —" / "Right —" / "What's the
+                # appointment for?" — three fragments before a question, 32
+                # times in the stored corpus. The middle one is the prompt's
+                # mandated booking-step-1 stub ("acknowledge simply: 'Right —'
+                # and NOTHING ELSE"), which is correct when it is the ONLY
+                # acknowledgement — and it is, on the ~10 turns per corpus
+                # where the model beat the 600ms head delay. When the head
+                # wins the race instead, the same speech act is performed
+                # twice and the second one carries no words.
+                #
+                # Dropped HERE, at the audio, and deliberately nowhere else.
+                # The obvious fix — returning "" from `join_after_head`, whose
+                # `suppress_pure_duplicate` branch already exists and is
+                # already passed True from both call sites — is the one that
+                # cannot be taken. `_strip_interim_opener` leaves a bare marker
+                # intact, so that branch is never reached today; making it
+                # reachable would empty the turn, and an empty turn on this
+                # path is not silence, it is worse:
+                #
+                #   * `_record_spoken` is skipped, so `_display_reply` is "",
+                #     so conversation_history stores "" — and the booking-ack
+                #     injector at ~13500 gates on `_last_bot` containing
+                #     "right —". It would never fire, and the question the
+                #     caller is owed would never be asked.
+                #   * `_any_tts_emitted` stays False, so Gate 5's empty-turn
+                #     fallback arms. On freeform clinics (all four live ones)
+                #     it is DEFERRED to the v3 post-turn path and speaks only
+                #     if nothing else did — which, with the injector dead, is
+                #     exactly what happens. The caller says "I'd like to book
+                #     an appointment" and hears "Sorry, I didn't quite catch
+                #     that — could you say that again?"
+                #
+                # That is the dead end `strip_head_echo` refuses to walk into
+                # ("Never returns empty ... a head with nothing behind it is
+                # the dead-end defect this whole change exists to remove"). It
+                # is right at ITS layer. This layer is the complement: the head
+                # has already been spoken, the record is already written, and
+                # the injected question is still coming, so the two words can
+                # be dropped from the audio without any of it moving.
+                #
+                # So: no `_unrecord_spoken` here, and that is the point, not an
+                # oversight. The dedup guard below drops a redundant chunk and
+                # leaves the record standing for the same reason. Every write
+                # gate reading `last_bot_prompt` sees exactly what it sees
+                # today; the caller simply stops hearing the word twice.
+                if not _watchdog_reask and self.session.get(
+                    "_hold_head_spoken"
+                ):
+                    try:
+                        from app.hold_speech import is_bare_discourse_marker
+
+                        _bare_marker = is_bare_discourse_marker(chunk_text)
+                    except Exception:  # pragma: no cover - never break audio
+                        _bare_marker = False
+                    if _bare_marker:
+                        logger.info(
+                            "[ms_conn] TTS bare-marker drop: %r — a hold phrase"
+                            " already acknowledged this turn (record kept so the"
+                            " booking-ack injector still fires)",
+                            chunk_text[:40],
+                        )
+                        continue
+
                 # Skip consecutive identical chunks (dedup guard) — but never for
                 # a watchdog re-ask, which is a deliberate replay of the question.
                 if (
