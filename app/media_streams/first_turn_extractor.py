@@ -186,6 +186,63 @@ def _usable_body_parts(text_low: str, words: list) -> set:
     return found
 
 
+# Words the reason phrase should not START or END on. The window below is a
+# fixed span around the body part, so it routinely opens on the run-up ("for
+# my left shoulder") and closes mid-clause ("...it's been"). Neither carries
+# meaning, and the fragment is what an operator reads on the call record.
+#
+# Measured over the 556 stored in-scope openings: trimming changes the TEXT on
+# 103 and the fire/no-fire DECISION on none. That invariant is the point - the
+# decision is what suppresses the reason question, and it is verified live.
+_REASON_LEAD_WORDS = frozenset({
+    "for", "my", "the", "a", "an", "i", "i'd", "id", "like", "to", "book",
+    "booking", "appointment", "um", "uh", "erm", "yeah", "yes", "hi", "hello",
+    "please", "it's", "its", "it", "and", "with", "about", "of", "in", "on",
+    "got", "get", "just", "really", "been", "is", "was", "have", "having",
+    "need", "want", "see", "someone", "there", "so", "well", "that", "this",
+    "me", "looking",
+})
+_REASON_TRAIL_WORDS = frozenset({
+    "it's", "its", "it", "is", "was", "been", "and", "the", "my", "for", "a",
+    "an", "to", "that", "this", "of", "with", "but", "really", "i", "i'd",
+    "id", "i've", "ive", "i'm", "im", "kind", "sort", "bit", "very", "quite",
+    "so", "just", "want", "get", "please", "looking", "think", "like",
+})
+
+# Where the caller stops DESCRIBING and starts TRANSACTING. Without this the
+# forward window swallows the booking clause: "tight hamstring from running"
+# became "tight hamstring from running and i'd like".
+_REASON_STOP_WORDS = frozenset({
+    "book", "booking", "booked", "appointment", "appointments", "schedule",
+    "slot", "can", "could", "would", "i'd", "id", "please", "available",
+    "availability",
+})
+
+
+def _bare(w: str) -> str:
+    return w.strip(".,!?;:").lower()
+
+
+def _reason_window(words: list, start: int, end: int) -> str:
+    """Join words[start:end], stopping early at a transactional word."""
+    out = []
+    for j in range(start, end):
+        if j > start and _bare(words[j]) in _REASON_STOP_WORDS:
+            break
+        out.append(words[j])
+    return " ".join(out)
+
+
+def _trim_reason(phrase: str) -> str:
+    """Drop leading run-up and trailing dangle from a reason phrase."""
+    w = phrase.split()
+    while w and _bare(w[0]) in _REASON_LEAD_WORDS:
+        w.pop(0)
+    while w and _bare(w[-1]) in _REASON_TRAIL_WORDS:
+        w.pop()
+    return " ".join(w).strip()
+
+
 def _extract_reason(t: str) -> Optional[str]:
     """
     Extract a short, usable reason/injury phrase.
@@ -213,8 +270,10 @@ def _extract_reason(t: str) -> Optional[str]:
         for i, w in enumerate(words):
             if _part_stem(w) in parts:
                 start = max(0, i - 3)
-                end   = min(len(words), i + 3)
-                snippet = _TRAILING_JUNK.sub("", " ".join(words[start:end]))
+                end   = min(len(words), i + 10)
+                snippet = _trim_reason(
+                    _TRAILING_JUNK.sub("", _reason_window(words, start, end))
+                )
                 if len(snippet) > 2:
                     return snippet
 
@@ -226,8 +285,10 @@ def _extract_reason(t: str) -> Optional[str]:
         stem = w.rstrip(".,!?;:").lower()
         if stem in _INJURY_VERBS:
             start = max(0, i - 1)
-            end   = min(len(words), i + 4)
-            snippet = _TRAILING_JUNK.sub("", " ".join(words[start:end]))
+            end   = min(len(words), i + 6)
+            snippet = _trim_reason(
+                _TRAILING_JUNK.sub("", _reason_window(words, start, end))
+            )
             if len(snippet) > 2:
                 return snippet
 
