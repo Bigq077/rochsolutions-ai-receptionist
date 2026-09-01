@@ -306,6 +306,51 @@ notified" claim.
 
 ## P5 — Theorem: Susie answered her own question, and a phonetic spelling reached TTS
 
+> **MOSTLY MISDIAGNOSED. The one real recording bug is FIXED as `d0454e41`
+> on `latency-eval`, 2026-09-01. Not yet promoted.** Both headline claims
+> were the transcript, not the call — this is P2 biting a third time in this
+> same document. Taken in turn:
+>
+> **"Susie answered her own question" — NO.** `connection.py` resolves the
+> location INLINE and speaks `_ack = f"{_loc_label}."` to confirm the clinic
+> the caller just named. What is missing is the CALLER's "Alcester": that
+> branch never reaches `run_turn`, and `llm_stream._append_history` was the
+> ONLY caller of `record_user` in the codebase. Corpus: of 105 location
+> questions, **68** are followed by Susie's own bare "Alcester."/"Redditch."
+> with no caller turn between, and 28 by a real caller turn — the two paths
+> are mutually exclusive. A defect reproducing on 65% of a deterministic
+> path is a recording bug. **Fixed:** the inline branch now records the
+> answer, and `record_user` is adjacent-duplicate safe. It is worth fixing
+> rather than just explaining, because the judge's verdict on this
+> transcript IS the operator CALL BACK SMS — a caller who appears silent is
+> described to the operator as one.
+>
+> **"A phonetic spelling reached TTS" — NO, it is the design.**
+> `app/clinics/theorem/canonical.py` documents `"Awlstuh"` as a TTS-only
+> pronunciation hint for Alcester, which is said "AWL-stuh", and P2
+> established that obs stores the PRE-substitution form. Pinned by a test so
+> nobody "corrects" the spelling and breaks the pronunciation on every
+> Theorem call.
+>
+> **The doubled reschedule question — REAL, STILL OPEN.** 3 occurrences in
+> 806 calls once the designed no-input re-asks ("Sorry, I didn't catch
+> that…", "I'm having trouble hearing you…") are excluded. On
+> `CA17e0639e237340` the filler between the two asks is a TOOL-time one, so
+> both questions are one turn: the model asked, ran a lookup with no answer
+> to look up, then asked again. Root cause needs the Render log, not the
+> corpus. Rare and caller-audible, not a booking failure.
+>
+> **Stacked fillers — REAL, STILL OPEN, and NOT Theorem-specific.** 89 in
+> the corpus. Counted with a detector covering BOTH filler families (legacy
+> ellipsis pool *and* arbiter heads — an ellipsis-only regex reports
+> northgate as having zero fillers, which is wrong and nearly produced a
+> false conclusion here). Per call: northgate 0.32, jv_v1 0.12, vital_edge
+> 0.07, theorem_v3 0.04. **So the hold-speech arbiter does NOT fix stacking**
+> — northgate is the only clinic with it ON and has the highest rate. Its
+> 25 calls are test traffic and mostly predate `0bc6ca45`, so that number is
+> confounded and the honest reading is "no evidence either way". Its own
+> job; do not fold it into the hold_speech rollout.
+
 **Severity: MEDIUM.** `CA17e0639e237340`, 2026-09-01 11:34.
 
 ```
