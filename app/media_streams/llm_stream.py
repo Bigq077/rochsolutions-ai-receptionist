@@ -3034,6 +3034,35 @@ class LLMStream:
             else:
                 session["_opening_probe_count"] = _probes + 1
 
+        # Commit the opening reason HERE, not only on the booking-ack path.
+        # CAa23b1ed5 (demo line, first live call on this fix) is why: the
+        # condition-led rung told the model NOT to say "Right -", so the
+        # injector never ran, so `_reason_already_known` - the only caller of
+        # `commit_opening_reason` - never ran either, and the call finished
+        # with "pre-summary reason: collected=None session=None". The two
+        # halves of the fix were fighting: the better the question is
+        # suppressed, the less often the reason gets written.
+        #
+        # That matters because A2 refuses a booking carrying no reason and its
+        # refusal text orders the model to ask - AFTER slots, which BOOKING
+        # STEPS 1b forbids outright. Recording it at the point the utterance
+        # is read makes the write independent of which path the turn takes.
+        #
+        # Gated to clinics that opt into a reason question, so a clinic that
+        # never asks (theorem, theorem_v3) keeps an empty reason as its own
+        # correct outcome rather than silently gaining one.
+        try:
+            from app.media_streams.turn_handler import (
+                _clinic_asks_its_own_reason_question as _asks_reason,
+            )
+            if _asks_reason(session):
+                from app.media_streams.first_turn_extractor import (
+                    commit_opening_reason as _commit_reason,
+                )
+                _commit_reason(session)
+        except Exception:
+            logger.debug("[ms_llm] opening-reason commit failed", exc_info=True)
+
         # ── Step 5: System prompt (two-block caching) ───────────────────
         # static_prompt: large, never changes within a call → cached.
         # dynamic_prompt: small per-turn state → sent uncached each turn.

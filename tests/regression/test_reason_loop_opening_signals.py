@@ -232,3 +232,50 @@ class TestStripIsBounded:
         for _ in range(3):
             out = sanitise_response("Got it - what's the appointment for?", s)
             assert "appointment for" not in out.lower()
+
+
+# -- the reason must be recorded whichever path the turn takes --------------
+
+class TestReasonIsRecordedPathIndependently:
+    """CAa23b1ed5 / CA52dc5ea1, the first two live calls on this fix.
+
+    Both ended "pre-summary reason: collected=None session=None". The first is
+    the interesting one: RC-2 told the model NOT to say "Right -", so the
+    booking-ack injector never ran, and the injector was the ONLY caller of
+    `commit_opening_reason`. The two halves of the fix were fighting - the
+    better the question is suppressed, the less often the reason is written.
+
+    A2 itself is not at risk (it reads the model's tool argument first), but an
+    abandoned call that stated a reason leaves the operator nothing to act on.
+    """
+
+    def test_the_reason_is_recorded_for_an_opt_in_clinic(self):
+        from app.media_streams.first_turn_extractor import commit_opening_reason
+        s = _session(opening="um yeah hi there i'd like to book an appointment "
+                             "my left shoulder's been really sore for a couple of weeks")
+        assert commit_opening_reason(s) is True
+        assert "shoulder" in (s.get("reason") or "").lower()
+        assert "shoulder" in (s["collected"].get("reason") or "").lower()
+
+    def test_a_clinic_that_never_asks_is_not_given_a_reason(self):
+        """Theorem records a reason only when volunteered through its own
+        mechanism; an empty reason is a correct outcome there."""
+        from app.media_streams.turn_handler import (
+            _clinic_asks_its_own_reason_question,
+        )
+        s = _session(clinic_id="theorem_v3",
+                     opening="hi i'd like to book my knee is sore")
+        assert _clinic_asks_its_own_reason_question(s) is False
+
+    def test_run_turn_commits_the_reason_and_not_only_the_injector(self):
+        """Source-level, because the defect was a MISSING call site: the helper
+        worked perfectly and simply was not reached on the condition-led path.
+        A behavioural test of the helper cannot catch that, and did not."""
+        import inspect
+        from app.media_streams import llm_stream
+        src = inspect.getsource(llm_stream)
+        assert "commit_opening_reason" in src, (
+            "run_turn no longer commits the opening reason; the only remaining "
+            "call site is the booking-ack injector, which the condition-led "
+            "rung deliberately bypasses"
+        )
