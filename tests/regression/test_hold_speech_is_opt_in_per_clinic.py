@@ -65,6 +65,20 @@ def test_a_clinic_that_says_nothing_keeps_todays_behaviour():
 HOLD_SPEECH_OPT_IN = {
     "northgate": "the demo tenant — no patients, opted in 2026-08-29 so the "
                  "arbiter can be heard before it is offered to anyone real",
+    "vital_edge": (
+        "OWNER decision (Quentin), 2026-09-01, as the first patient line. "
+        "JONATHAN HAS NOT HEARD IT — the owner chose to go first and told "
+        "the practitioner after, which is a weaker standard than this list "
+        "was written to expect, and is recorded that way on purpose. "
+        "Chosen first of the three because VE is provisional: "
+        "confirm_write_kind(provisional=True) returns PENDING_REQUEST, so its "
+        "write heads are 'Sending that over to Jonathan -', not the "
+        "WRITE_BOOK pool that would claim a booking VE never makes "
+        "(test_one_hold_phrase_that_never_lies pins that). Evidence it works "
+        "at all is northgate's, not VE's — CA54f4a6b5, 2026-09-01, where the "
+        "situational head fired and was heard. Revert = set "
+        "operational.hold_speech false and drop this entry."
+    ),
 }
 
 
