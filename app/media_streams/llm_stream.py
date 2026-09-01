@@ -1403,6 +1403,66 @@ def _refusal_is_a_genuine_duplicate(
 # down fired across seven separate turns after the first failure.
 BOOKING_WRITE_FAILED_KEY = "_booking_write_failed"
 
+def _same_callback_lead(session: dict, args: dict) -> bool:
+    """True when this callback/waitlist call repeats one already sent.
+
+    B-121, CA8522b3e23fc64293 (Vital Edge, 1 Sep 2026). Alice rang for Jonathan,
+    the callback was taken correctly, and then `request_callback` fired three
+    more times -- on "great then susie", on "okay then is that all", and on her
+    asking whether he really had been told. Each repeat queued a hold phrase and
+    re-narrated "Jonathan's been notified", so a finished errand kept restarting
+    in her ear.
+
+    The same farewell-turn re-fire `_WRITE_TOOL_FAMILIES` already guards for
+    booking, reschedule and cancel -- its own comment records the cancel case,
+    CA0f9a12, in these words: "the model fired cancel_appointment one more time
+    on the farewell turn". `request_callback` and `add_to_waitlist` were never
+    members of that family, so nothing stood between them and the repeat.
+
+    Matched on the LEAD, not merely on the latch. A caller may legitimately ask
+    for a second, different person to be rung back, and refusing that would be
+    the B-62 mistake in a new place: a real write suppressed because an earlier
+    one succeeded.
+
+    Phones are compared on their last ten digits so "+447383262949" and
+    "07383 262949" are one number; names case- and space-insensitively. Both
+    absent from either side returns False -- an unknown lead is not a repeat,
+    which is the direction this must fail in.
+    """
+    if not session.get("callback_write_confirmed"):
+        return False
+    prev = session.get("callback_lead")
+    if not isinstance(prev, dict):
+        return False
+
+    def _ph(v: str) -> str:
+        d = "".join(ch for ch in str(v or "") if ch.isdigit())
+        return d[-10:] if len(d) >= 10 else d
+
+    def _nm(v: str) -> str:
+        return " ".join(str(v or "").lower().split())
+
+    new_ph, old_ph = _ph(args.get("phone")), _ph(prev.get("phone"))
+    new_nm, old_nm = _nm(args.get("patient_name")), _nm(prev.get("patient_name"))
+    if not (new_ph and old_ph) and not (new_nm and old_nm):
+        return False
+    return (new_ph == old_ph) and (new_nm == old_nm)
+
+
+# What the model is told when the gate above refuses. Deliberately shaped like
+# `_WRITE_ALREADY_DONE_RULE` rather than like a failure: on B-65 a refusal
+# `message` that contradicted the already-done rule had Susie apologising for a
+# cancellation that had in fact succeeded. Nothing here asserts world state
+# beyond the one thing this code actually knows -- that the clinic was told.
+_CALLBACK_ALREADY_SENT_RULE = (
+    "The clinic has already been notified about this caller earlier on this "
+    "call, and they have already been told so. This further attempt did not go "
+    "through and does not undo it. Do not apologise, do not tell the caller "
+    "anything failed, and do not announce the notification again as though it "
+    "were new. If they are saying goodbye, simply say goodbye. If they are "
+    "asking you to confirm it is done, confirm it briefly."
+)
+
 _WRITE_ALREADY_DONE_RULE = {
     WRITE_FAMILY_BOOKING: (
         "A booking already completed successfully earlier on this call. This "
@@ -6178,6 +6238,28 @@ class LLMStream:
                             "reschedule request, or on an ambiguous, negative or "
                             "absent reply."
                         ),
+                    }
+                elif (
+                    tool_name in ("request_callback", "add_to_waitlist")
+                    and _same_callback_lead(session, args)
+                ):
+                    # B-121. Sited HERE, in the gate-refusal chain, and not as a
+                    # latch inside the executor -- that would be too late. The
+                    # hold phrase is queued by `with_filler` in the `else`
+                    # branch BEFORE the executor returns, so an executor-level
+                    # guard would still leave the caller hearing "Let me get
+                    # that message over for you…" over an errand already done.
+                    # Refusing above the branch suppresses the filler and the
+                    # re-write together, exactly as the booking and cancel
+                    # consent gates already do.
+                    logger.info(
+                        "[ms_llm] %s BLOCKED — the clinic was already notified "
+                        "about this lead on this call (repeat on a farewell or "
+                        "acknowledgement turn)", tool_name,
+                    )
+                    result = {
+                        "status":  "callback_already_sent",
+                        "message": _CALLBACK_ALREADY_SENT_RULE,
                     }
                 elif tool_name == "escalate_to_claude":
                     result = await self._exec_escalate(args, session)

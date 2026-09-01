@@ -9376,6 +9376,17 @@ def _queue_owner_callback_sms(
         session["_waitlist_pinged"] = True
         session["human_requested"] = True
         session["callback_write_confirmed"] = True
+        # B-121: remember WHO was sent, not merely that something was. The
+        # duplicate gate in llm_stream must tell "say it again" from "a second,
+        # different lead on the same call", and this is the one place BOTH
+        # request_callback and add_to_waitlist latch -- so recording it here
+        # covers each of them without either executor knowing about the other.
+        # Same lesson as B-62/B-65, where remembering only THAT a write landed
+        # made a genuinely different write look like a repeat.
+        session["callback_lead"] = {
+            "patient_name": patient_name,
+            "phone": phone,
+        }
         logger.info(
             "owner callback SMS queued (%s) to ***%s",
             kind,
