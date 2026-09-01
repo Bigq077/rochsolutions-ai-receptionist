@@ -109,25 +109,47 @@ def test_one_unheard_time_is_offered_alone():
 # ---------------------------------------------------------------------------
 def test_a_genuine_repeat_is_still_served_in_full():
     """"Could you repeat those?" after hearing everything is not this defect.
-    Nothing is unheard, so the chronological readout stands - unchanged from
-    B-116, and the reason the pad exists at all."""
+    Nothing is unheard, so the readout is served IN FULL rather than shortened
+    -- that is the reason the pad exists at all.
+
+    Since 1 Sept the three are spread across the day instead of taken
+    chronologically. B-119 is about LENGTH, not order: the property is that a
+    genuine repeat still gets three, so the count is asserted first.
+    """
     session = {"available_days": [_day(ALL_SEVEN)]}
     record_spoken_slots(session, _day(ALL_SEVEN)["slots"])
     idx = choose_presented_indices(session, _day(ALL_SEVEN), 3)
-    assert [ALL_SEVEN[i] for i in idx] == ["09:00", "10:00", "12:00"]
+    assert len(idx) == 3, "a genuine repeat is served in full"
+    assert [ALL_SEVEN[i] for i in idx] == ["09:00", "10:00", "16:00"]
 
 
-def test_a_first_time_caller_is_unaffected():
-    """No spoken record: byte-identical to the plain chronological slice."""
-    assert choose_presented_indices({}, _day(ALL_SEVEN), 3) == [0, 1, 2]
+def test_a_first_time_caller_hears_times_spread_across_the_day():
+    """DELIBERATE REVERSAL -- owner decision, 1 Sept 2026. Was
+    `test_a_first_time_caller_is_unaffected`, pinning "byte-identical to the
+    plain chronological slice".
+
+    See the twin of this test in test_b116_* for the reasoning. B-119 is
+    unaffected either way: with no spoken record there is nothing to pad WITH.
+    """
+    idx = choose_presented_indices({}, _day(ALL_SEVEN), 3)
+    assert len(idx) == 3
+    assert idx == [0, 1, 6]
 
 
 def test_more_unheard_than_the_limit_still_caps_at_three():
-    """The cap is the cap. B-119 only removes the top-up, never the ceiling."""
+    """The cap is the cap. B-119 only removes the top-up, never the ceiling.
+
+    Six times are unheard against a limit of three, so the ceiling is what is
+    under test here. The 1 Sept spread rule decides WHICH three, and 09:00 --
+    the one time already heard -- stays out of them either way.
+    """
     session = {"available_days": [_day(ALL_SEVEN)]}
     record_spoken_slots(session, _slots(["09:00"]))
     idx = choose_presented_indices(session, _day(ALL_SEVEN), 3)
-    assert [ALL_SEVEN[i] for i in idx] == ["10:00", "12:00", "13:00"]
+    picked = [ALL_SEVEN[i] for i in idx]
+    assert len(picked) == 3, "the ceiling holds"
+    assert "09:00" not in picked
+    assert picked == ["10:00", "12:00", "16:00"]
 
 
 def test_available_days_still_carries_every_bookable_time():

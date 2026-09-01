@@ -71,7 +71,10 @@ def test_a_refusal_hands_back_a_capped_day_not_the_whole_diary():
     s = _session_mid_call()
     out = ls._presentation_for_refusal(s, s["available_days"])
     assert "first_day" in out, "a refusal with no first_day is the B-118 door"
-    assert out["first_day"]["slot_times"] == ["12:00", "13:00", "14:00"]
+    # The B-118 property is that a refusal is CAPPED rather than handing back
+    # the whole diary; which three it names is the 1 Sept spread rule.
+    assert len(out["first_day"]["slot_times"]) == 3, "a refusal must be capped"
+    assert out["first_day"]["slot_times"] == ["12:00", "13:00", "15:00"]
 
 
 def test_the_refusal_does_not_lead_with_times_already_heard():
@@ -135,10 +138,19 @@ def test_the_availability_arming_check_still_sees_a_payload():
     assert out.get("available_days")
 
 
-def test_a_first_time_caller_is_unaffected():
+def test_a_first_time_caller_gets_a_capped_spread_readout():
+    """DELIBERATE REVERSAL -- owner decision, 1 Sept 2026. Was
+    `test_a_first_time_caller_is_unaffected`, asserting `ALL_SEVEN[:3]`.
+
+    A refusal is built by the same selector as a real lookup -- which is the
+    whole point of B-118 -- so it inherits the spread rule along with it. The
+    B-118 property, capped rather than the whole diary, is asserted on its own
+    line above the literal.
+    """
     s = {"available_days": [_day(ALL_SEVEN)]}
     out = ls._presentation_for_refusal(s, s["available_days"])
-    assert out["first_day"]["slot_times"] == ALL_SEVEN[:3]
+    assert len(out["first_day"]["slot_times"]) == 3, "a refusal must be capped"
+    assert out["first_day"]["slot_times"] == ["09:00", "10:00", "16:00"]
 
 
 def test_it_never_raises():

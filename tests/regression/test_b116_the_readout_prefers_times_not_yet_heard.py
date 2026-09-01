@@ -79,11 +79,20 @@ def _session_after_the_band_was_spent():
 # The defect
 # ---------------------------------------------------------------------------
 def test_the_readout_does_not_hand_back_the_times_just_heard():
+    """The B-116 property: nothing already heard comes back.
+
+    The literal moved on 1 Sept; the property did not. The unheard pool is
+    12:00-16:00, and the spread rule takes its earliest and then spans what is
+    left, giving 12:00, 13:00, 15:00 where the chronological slice gave 12:00,
+    13:00, 14:00. Both satisfy B-116. The assertion that carries the DEFECT is
+    the "not in spoken" one, and it is unchanged -- so it is asserted first.
+    """
     session = _session_after_the_band_was_spent()
     idx = choose_presented_indices(session, _day(ALL_SEVEN), 3)
     spoken = [ALL_SEVEN[i] for i in idx]
-    assert spoken == ["12:00", "13:00", "14:00"], spoken
     assert "09:00" not in spoken and "10:00" not in spoken
+    assert len(spoken) == 3
+    assert spoken == ["12:00", "13:00", "15:00"], spoken
 
 
 def test_the_cap_used_by_the_other_executors_prefers_unheard_too():
@@ -92,7 +101,10 @@ def test_the_cap_used_by_the_other_executors_prefers_unheard_too():
     session = _session_after_the_band_was_spent()
     out = _cap_presented_slots({"available_days": [_day(ALL_SEVEN)]}, session)
     first = out["first_day"]
-    assert first["slot_times"] == ["12:00", "13:00", "14:00"]
+    # Spread since 1 Sept: earliest of the unheard pool, then across the day.
+    # The B-116 property is the line above it -- nothing heard comes back.
+    assert not ({"09:00", "10:00"} & set(first["slot_times"]))
+    assert first["slot_times"] == ["12:00", "13:00", "15:00"]
     assert first.get("more_times") is True
 
 
@@ -112,12 +124,19 @@ def test_the_acuity_readout_asks_which_three_not_just_how_many():
 # ---------------------------------------------------------------------------
 def test_a_caller_who_has_heard_everything_is_not_starved():
     """The preference REORDERS; it must never withhold. When every time has
-    been heard there is nothing unheard to lead with, and the readout falls
-    back to the chronological three it always gave."""
+    been heard there is nothing unheard to lead with, and the readout still
+    serves a full three.
+
+    Since 1 Sept those three are spread across the day rather than taken from
+    the front, so the fallback is no longer chronological. The invariant this
+    test exists for is the COUNT -- "not starved" -- which is why it is now
+    asserted on its own line, ahead of the literal.
+    """
     session = {"available_days": [_day(ALL_SEVEN)]}
     record_spoken_slots(session, _day(ALL_SEVEN)["slots"])
     idx = choose_presented_indices(session, _day(ALL_SEVEN), 3)
-    assert [ALL_SEVEN[i] for i in idx] == ["09:00", "10:00", "12:00"]
+    assert len(idx) == 3, "the readout must never withhold"
+    assert [ALL_SEVEN[i] for i in idx] == ["09:00", "10:00", "16:00"]
 
 
 def test_a_partly_heard_day_speaks_only_the_unheard():
@@ -138,10 +157,26 @@ def test_a_partly_heard_day_speaks_only_the_unheard():
     assert picked == sorted(picked)
 
 
-def test_a_first_time_caller_is_unaffected():
-    """No record yet -- byte-identical to the slice this replaced."""
+def test_a_first_time_caller_hears_times_spread_across_the_day():
+    """DELIBERATE REVERSAL -- owner decision, 1 Sept 2026.
+
+    This was `test_a_first_time_caller_is_unaffected`, pinning "byte-identical
+    to the slice this replaced". That pin is precisely what the owner asked to
+    change, so it is reversed here on purpose rather than re-aimed quietly.
+
+    On CA6a59e59f0a67fe964693a64690f70544 the FIRST lookup of the call offered
+    "eight in the morning, or ten to nine in the morning" -- the front of the
+    day, fifty minutes apart. The first lookup is the commonest readout there
+    is, so leaving this path chronological would have left the defect live for
+    very nearly every caller.
+
+    B-116 itself is untouched by the reversal: with no spoken record there is
+    nothing that COULD be handed back, which is why this path was always safe
+    to change.
+    """
     idx = choose_presented_indices({}, _day(ALL_SEVEN), 3)
-    assert idx == [0, 1, 2]
+    assert len(idx) == 3
+    assert idx == [0, 1, 6]
 
 
 def test_the_three_arrays_stay_aligned():
