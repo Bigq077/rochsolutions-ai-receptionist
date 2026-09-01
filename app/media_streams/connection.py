@@ -14868,6 +14868,47 @@ class WebSocketCallHandler:
                         )
                         continue
 
+                # ── Owner, 2026-09-01: no "Right —" in front of the question ──
+                # "I'd like to book an appointment" answered with "Right —
+                # what's the appointment for?" should just be the question.
+                # Same mandated stub as above; this is the shape where the
+                # model welds the question on instead of stopping, so there is
+                # no second fragment to drop — the marker has to come off the
+                # front of the sentence.
+                #
+                # `chunk_text` ONLY, deliberately. `_obs_chunk_text` is the
+                # pre-substitution form that `_unrecord_spoken` matches against
+                # the record written in llm_stream, and that `_slot_readout_
+                # chunks` compares by equality — rewriting it would break both
+                # by making the strings differ. So the obs transcript keeps the
+                # marker while the caller does not hear it, which is the P2
+                # caveat already documented in the defect doc: obs is
+                # intent-to-speak, not audio.
+                #
+                # It also keeps `last_bot_prompt` and conversation_history
+                # intact, which is what the booking-ack injector needs — the
+                # same reason the bare-marker drop above does not un-record.
+                # Applied to a watchdog re-ask too: the replay is
+                # `last_question`, which still carries the marker, and a
+                # re-ask that reads differently from what the caller heard
+                # the first time sounds like a new question. Stripping
+                # cannot eat the replay the way the drop above could, so
+                # the exemption that guard needs does not apply here.
+                try:
+                    from app.hold_speech import (
+                        strip_marker_before_question as _strip_marker,
+                    )
+
+                    _stripped = _strip_marker(chunk_text)
+                except Exception:  # pragma: no cover - never break audio
+                    _stripped = chunk_text
+                if _stripped != chunk_text:
+                    logger.info(
+                        "[ms_conn] TTS leading-marker strip: %r -> %r",
+                        chunk_text[:40], _stripped[:40],
+                    )
+                    chunk_text = _stripped
+
                 # Skip consecutive identical chunks (dedup guard) — but never for
                 # a watchdog re-ask, which is a deliberate replay of the question.
                 if (

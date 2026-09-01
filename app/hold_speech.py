@@ -918,6 +918,51 @@ def is_bare_discourse_marker(text: str) -> bool:
     return bool(text) and bool(BARE_MARKER_RE.match(text.strip()))
 
 
+#: The same markers, LEADING a chunk that has real speech behind them.
+#:
+#: Em/en dash only, never the comma form. "Right, Alcester." and "Right, that's
+#: the number confirmed" are Susie AGREEING with something the caller just
+#: said -- the marker is carrying the agreement, and cutting it turns a
+#: confirmation into a bare assertion. The dash form carries nothing: it is the
+#: booking-step-1 stub with the question welded onto it.
+_LEAD_MARKER_RE = re.compile(
+    r"^\s*(?:right|so|okay|ok|alright|all right|now|well)\s*[—–]\s*(?=\S)",
+    re.IGNORECASE,
+)
+
+
+def strip_marker_before_question(text: str) -> str:
+    """Drop a leading discourse marker when a QUESTION follows it. PURE.
+
+    Owner instruction, 2026-09-01: asking to book and being answered "Right --
+    what's the appointment for?" should just be the question. The marker is the
+    prompt's mandated booking-step-1 acknowledgement (see BARE_MARKER_RE); when
+    the model welds the question onto it rather than stopping, the caller hears
+    an acknowledgement they did not need in front of the only thing that
+    matters.
+
+    Requiring a QUESTION behind it is what keeps this off the ten stored cases
+    where the marker is doing real work -- "Right -- mornings it is.",
+    "Right -- Thursday afternoon.", "Right -- so you'd like to come in next
+    week." Those acknowledge what the caller SAID, and are statements. Over the
+    798-call corpus this rewrites 201 chunks, every one of them a booking-flow
+    question, and leaves those ten alone.
+
+    Returns ``text`` unchanged when it does not apply, and never returns empty:
+    a chunk that is NOTHING but the marker has no question behind it and so
+    never matches here -- that case belongs to ``is_bare_discourse_marker``.
+    """
+    if not text:
+        return text
+    match = _LEAD_MARKER_RE.match(text)
+    if not match:
+        return text
+    rest = text[match.end():].lstrip()
+    if not rest or not rest.rstrip().endswith("?"):
+        return text
+    return rest[0].upper() + rest[1:]
+
+
 #: Susie's own acknowledgement and hold openers, for removal once a head has
 #: already performed that speech act.
 #:

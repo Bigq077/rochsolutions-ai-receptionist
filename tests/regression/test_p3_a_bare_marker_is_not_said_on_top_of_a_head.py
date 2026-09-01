@@ -58,7 +58,10 @@ Hence: no `_unrecord_spoken` in the new branch. That is load-bearing, and
 import inspect
 
 from app.media_streams import connection as c
-from app.hold_speech import is_bare_discourse_marker
+from app.hold_speech import (
+    is_bare_discourse_marker,
+    strip_marker_before_question,
+)
 
 
 # The live calls, verbatim.
@@ -114,6 +117,18 @@ def _tts_loop_source() -> str:
     return inspect.getsource(c.WebSocketCallHandler._tts_loop)
 
 
+def _code_only(text: str) -> str:
+    """Source with comment lines removed.
+
+    These assertions are about what the code DOES. The comments in this region
+    necessarily name `_unrecord_spoken` and `_obs_chunk_text` to explain why
+    neither is touched, and a substring search over raw source cannot tell an
+    explanation from a call."""
+    return " ".join(
+        ln for ln in text.splitlines() if not ln.strip().startswith("#")
+    )
+
+
 def test_the_guard_drops_the_marker_at_the_audio():
     src = _tts_loop_source()
     assert "is_bare_discourse_marker" in src, (
@@ -148,7 +163,9 @@ def test_the_record_is_deliberately_left_standing():
     src = _tts_loop_source()
     start = src.index("TTS bare-marker drop")
     end = src.index("TTS dedup: skipping duplicate chunk")
-    branch = src[src.rindex("if not _watchdog_reask", 0, start):end]
+    branch = _code_only(
+        src[src.rindex("if not _watchdog_reask", 0, start):end]
+    )
     assert "_unrecord_spoken" not in branch, (
         "the bare-marker drop now un-records the chunk. That empties "
         "conversation_history for the turn, so the booking-ack injector never "
@@ -178,4 +195,75 @@ def test_the_injector_still_recognises_the_stub_it_keys_on():
     assert '"right —",' in src, (
         "_V3_ACK_PHRASES no longer contains the bare booking stub — the reason "
         "the record is deliberately left standing may no longer hold"
+    )
+
+
+# -- the owner's follow-up, 2026-09-01 -------------------------------------
+# "I asked for a booking appointment and it went 'Right'." The bare-marker
+# drop above only fires when the marker stands ALONE after a head. When the
+# model welds the question onto it instead — one chunk, one synthesis call,
+# which is what CAf5785c49 actually did — there is no second fragment to
+# drop and the marker has to come off the front of the sentence.
+
+
+def test_the_marker_comes_off_the_front_of_the_booking_question():
+    assert strip_marker_before_question(
+        "Right — what's the appointment for?"
+    ) == "What's the appointment for?"
+    assert strip_marker_before_question(
+        "Right — do you have a preference for when you'd like to come in?"
+    ) == "Do you have a preference for when you'd like to come in?"
+
+
+def test_a_marker_doing_real_work_keeps_it():
+    """The ten stored cases where the marker acknowledges what the caller SAID.
+    These are statements, not questions, and cutting the marker turns an
+    acknowledgement into a bare assertion."""
+    for kept in (
+        "Right — mornings it is.",
+        "Right — Thursday afternoon. Let me check what's available.",
+        "Right — so you'd like to come in next week.",
+        "Right — let me look that up for you.",
+    ):
+        assert strip_marker_before_question(kept) == kept
+
+
+def test_the_comma_form_is_never_touched():
+    """"Right, Alcester." is Susie agreeing with the clinic the caller just
+    named — the marker carries the agreement. Em/en dash only."""
+    for kept in (
+        "Right, Alcester. I've got you on oh seven five oh two — is that best?",
+        "Right, that's the number confirmed.",
+        "Right, whenever suits you best — do you have a preference?",
+    ):
+        assert strip_marker_before_question(kept) == kept
+
+
+def test_stripping_never_empties_a_chunk():
+    """A chunk that is nothing but the marker has no question behind it, so it
+    never matches here — that case belongs to the drop above. Between them
+    neither path can leave the turn with no audio."""
+    for bare in ("Right —", "So —", "Okay —", ""):
+        assert strip_marker_before_question(bare) == bare
+
+
+def test_the_strip_is_wired_in_and_leaves_the_obs_text_alone():
+    """`_obs_chunk_text` is what `_unrecord_spoken` matches against the record
+    written in llm_stream, and what `_slot_readout_chunks` compares by
+    equality. Rewrite it and both break silently by making the strings differ,
+    so only `chunk_text` — the synthesis form — is touched."""
+    src = _tts_loop_source()
+    assert "strip_marker_before_question" in src, (
+        "the leading-marker strip is gone from _tts_loop — callers hear "
+        '"Right —" in front of the booking question again'
+    )
+    start = src.index("TTS leading-marker strip")
+    branch = _code_only(
+        src[src.rindex("Owner, 2026-09-01", 0, start):
+            src.index("Skip consecutive identical chunks")]
+    )
+    assert "_obs_chunk_text" not in branch, (
+        "the leading-marker strip now rewrites _obs_chunk_text — "
+        "_unrecord_spoken and the slot-readout comparison both match on that "
+        "string and will stop matching"
     )
