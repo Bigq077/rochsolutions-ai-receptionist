@@ -530,6 +530,71 @@ live line; the revert is this one commit.
 
 ---
 
+## P7 — the read-back guard calls a CORRECT read-back a mismatch
+
+**Severity: LOW as it stands (log-only), MEDIUM as a safety signal. Open.**
+Found on `CAabe1acabf5eddee255fa53e681773034`, 2026-09-01 23:51, `northgate`,
+build `ebdd9759`. Not caller-audible — but it is the guard that exists to catch
+B-95, and it is crying wolf.
+
+Susie offered Friday 4th September at `08:00` and `15:30`, the caller said
+"yeah half past 3 on the last day works", and she read it back correctly:
+
+```
+  So that's Friday the 4th of September at half past three — could I take
+  your first name and surname?
+```
+
+```
+23:51:30 [ms_gate5] read-back time NOT in the offer and not safely correctable:
+         read-back names Friday 4th September but not one of the times offered
+         on it ['eight in the morning', 'half past three in the afternoon']
+```
+
+Half past three **is** one of the times offered on it. The check is
+
+```python
+if any(_readback_norm(t) in phrase for t in offered):   # slot_followup.py:2103
+```
+
+— containment of the WHOLE offered label in the read-back. Susie said "half
+past three"; the label is "half past three in the afternoon". A read-back that
+drops the part-of-day suffix, which is the natural way to say it once the day
+is already named, can never match.
+
+Reproduced against the real function with this call's exact payload: the
+sentence above returns `mismatch`, and the same sentence with "in the
+afternoon" appended returns `unchanged`.
+
+**No caller-facing effect today.** `turn_handler.py:1953` logs and leaves the
+text alone; the rewrite branch needs `len(offered) == 1` *and* another day's
+full label to appear in the phrase, which a truncated read-back does not
+produce. So this is a false alarm, not a wrong sentence.
+
+**Why it still matters:** this is the B-95 net — "the second one please" read
+back as option 2's DAY with option 1's TIME, the caller asked to agree to a
+slot that did not exist. A net that fires on correct read-backs cannot be
+escalated on, and anything built on the `mismatch` verdict later (alert,
+re-ask, block) would fire on good calls.
+
+**Fix, not written:** match the offered label with the part-of-day suffix
+OPTIONAL, and accept only when the suffix-stripped form is **unique** among
+that day's offered labels. A day holding both 03:30 and 15:30 leaves a bare
+"half past three" genuinely ambiguous and must stay a mismatch — dropping the
+suffix unconditionally would trade a false alarm for a missed one, which is the
+wrong direction for this guard.
+
+### Same call, already known, no action
+
+* `last_bot_prompt truncated at 200 chars and lost its '?'` fired twice
+  (B-31) — the documented fallback worked both times.
+* `GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON` → Sheets append skipped.
+  Already listed below.
+* ElevenLabs `401` on `/v1/models` prewarm — documented as not predictive of
+  synthesis failure, and synthesis succeeded on every chunk of this call.
+
+---
+
 ## Also open, unrelated to hold speech
 
 * **`GOOGLE_SERVICE_ACCOUNT_JSON` is malformed** — `Invalid \escape: line 5
