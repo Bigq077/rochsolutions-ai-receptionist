@@ -1,7 +1,8 @@
 # ADR-002 — Release promotion after the four-clinic fold
 
 **Status:** Accepted (2026-09-01) — `latency-eval` = staging, `production` = the live line.
-Branch created at `cda304a3`. **Inert until the Render services are repointed — see Action items.**
+**LIVE since 2026-09-01** — services repointed, all action items closed.
+First promotion `cda304a3` → `1d85d13e`, verified on the demo line before promoting.
 **Date:** 2026-09-01
 **Deciders:** Quentin (owner, sign-off) · Claude Code (analysis)
 **Supersedes:** nothing. **Amends:** ADR-001's deployment model, which assumed one branch per clinic.
@@ -160,28 +161,66 @@ as clearance for all four clinics.**
 
 ---
 
-## Action items
+## Action items — status at close of 2026-09-01
 
-**Owner (Render dashboard — Claude Code cannot see or do these; the branch is
-inert until they are done):**
+All six are done. Kept rather than deleted because the ORDER mattered: item 1 is
+what made it safe to push item 5 at all.
 
-1. **Now, interim:** turn `autoDeploy` **off** on the three patient services.
-   This alone closes the hole and needs no repo change.
-2. Repoint the three patient services from `latency-eval` to **`production`**,
-   `autoDeploy` on. Leave the demo service on `latency-eval`.
-3. Confirm the demo service is the ONLY service on `latency-eval`.
-4. Fill in `DEPLOYMENT_INVENTORY.md`, including line 53.
+**Owner (Render dashboard — Claude Code cannot see or do these):**
 
-**Verification after step 2 — do not assume, prove it:** push a comment-only
-commit to `latency-eval`, then check a demo call's cleanup log for
-`[build_info] running build <sha>`. That log line is the only deploy proof —
-`/health` returns a hardcoded `1.0.0`. The three patient services must NOT show
-the new sha until `production` is pushed.
+1. ✅ **`autoDeploy` OFF on the three patient services.** Done first, as the
+   interim. This is what let the rest of the day proceed: with the hole closed,
+   a push to `latency-eval` reached only the demo line even before the repoint.
+2. ✅ **Repointed** the three patient services `latency-eval` → `production`,
+   autoDeploy back on.
+3. ✅ Demo service confirmed as the only service on `latency-eval`.
+4. ✅ `DEPLOYMENT_INVENTORY.md` filled to the limit of what is knowable from the
+   repo; the dashboard-only cells are marked and still need the owner.
 
 **Repo:**
 
-5. Correct `CLAUDE.md` §2 and the branch/deploy block.
-6. Consider a branch protection rule on `production` (fast-forward only).
+5. ✅ `CLAUDE.md` §2 rewritten (`1d85d13e`), §3's "tenant selection happens at
+   deploy time" corrected against the code, `render.yaml` given a header saying
+   it does not decide what is live. The STATE CHECK block was flipped in
+   `6fbf1679` once the repoint landed — leaving it saying "inert" would have cost
+   the next session the same over-caution the 2026-08-02 posture once cost.
+6. ✅ Ruleset on `production`: restrict deletions, block force pushes, require
+   linear history — with the owner on the **bypass list**, deliberately. Linear
+   history is the rule that actually encodes this ADR: divergence is the failure
+   mode, and a merge commit is how it would start.
+   **Deliberately NOT enabled:** *require a pull request* would reject the
+   promotion push outright (it is not a merge and has no PR), and *require status
+   checks* would block every promotion forever, because this suite's baseline is
+   RED by design (117 failing; you verify by diffing the failing set).
+   Caveat: blocking force pushes also blocks the documented rollback, which is
+   why the bypass list exists. It is a guardrail against accident, not a lock to
+   dismantle mid-incident.
+
+## First promotion through the gate
+
+`cda304a3` → `1d85d13e`, fast-forward.
+
+Verified on the demo line BEFORE promoting — call
+`CAc119b8838f556ac20f9552dee2e4021f`, `[build_info] running build 1d85d13e`,
+booked end-to-end (event `vjqu5nlcsk5mp7iogh6fh21u14`), every continuation chunk
+lowercase, i.e. no severed sentence.
+
+**Why "production was never called" is not an objection.** The promotion is a
+pointer move to the same commit object and the same tree; Render deploys a
+commit, not a branch name. `requirements.txt` is fully `==` pinned (since the
+2026-08-21 `anthropic>=0.40.0` → 1.0.0 outage), so the patient rebuild resolves
+the same dependency set. The moment promotion becomes a cherry-pick, that
+argument fails — which is exactly what *require linear history* protects.
+
+**What the demo call still did NOT prove, same commit or not:** the demo service
+runs `SMS_ENABLED=off` and `APPOINTMENT_REMINDERS_ENABLED=off`, confirmed in that
+call's log. The confirmation-SMS and reminder paths executed **zero lines**. That
+is fine for an engine change and useless as a gate for anything near
+notifications — add that to the tenant coverage gap below, not instead of it.
+
+**Still open:** no patient-line call has yet been checked for
+`[build_info] running build 1d85d13e`. Until one is, the promotion is verified by
+argument, not evidence.
 
 ---
 
@@ -195,4 +234,5 @@ the new sha until `production` is pushed.
 | **Interim** | C (`autoDeploy` off on patient services) — do this first, it is five minutes |
 | **Deferred** | E (staging service), F (automated call suite) — both still wanted |
 | **Known gap** | A demo call does not validate `theorem_v3` or `vital_edge` |
-| **Blocked on** | Owner action items 1–3. **Until then nothing has changed and every push still reaches patients.** |
+| **Status** | Live. Action items 1–6 all closed 2026-09-01. `production` carries a ruleset: no deletions, no force pushes, linear history required, owner on the bypass list. |
+| **Outstanding** | No patient-line call has been checked for `[build_info] running build 1d85d13e`. Until one is, the promotion is verified by argument, not evidence. |
