@@ -30,7 +30,7 @@ reconstruction, and cannot disagree with what the caller heard.
 DEFAULTS REPRODUCE TODAY'S SPEECH — up to 3 days x 2 times, or one day x 3
 times — so wiring this in is not also a behaviour change. The numbers are an
 owner decision and now live in one place, rather than disagreeing across
-`_MAX_PRESENTED_DAYS` (2), `MAX_SPOKEN_OPTIONS` (3) and the prompt (6).
+`_MAX_PRESENTED_DAYS` (now 3), `MAX_SPOKEN_OPTIONS` (3) and the prompt (6).
 """
 from __future__ import annotations
 

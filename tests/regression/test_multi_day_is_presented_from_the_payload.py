@@ -81,6 +81,9 @@ def _prebuilt(presented=None, more_times=False, other_dates=None, day_iso=None):
         "dtmf_map": dict(offer.dtmf_map),
         "more_times": bool(offer.more_times),
         "day_iso": day_iso,
+        # Taken from the offer, exactly as llm_stream does -- section 1b reads
+        # it to decide whether last_offered_slots is one-per-day.
+        "mode": offer.mode,
     }
 
 
@@ -108,28 +111,74 @@ async def test_the_payload_speaks_and_the_model_is_discarded():
 
 
 @pytest.mark.asyncio
-async def test_the_record_holds_every_time_the_sentence_named():
-    """SIX slots, not three.
+async def test_the_cumulative_record_holds_every_time_the_sentence_named():
+    """SIX slots in the CUMULATIVE record, which the old design could not state.
 
-    This is the invariant the current design cannot state. `last_offered_slots`
-    on the model path is one slot per day and positional, so the second time on
-    each day -- which the caller definitely heard -- was never in the record.
+    `last_offered_slots` is one slot per day and positional, so the second time
+    on each day -- which the caller definitely heard -- used to be recorded
+    nowhere. That is what let `reconcile_readback_time` decide "only one was
+    offered, nothing to choose between" and overwrite a correct read-back on
+    CA44f1bdbe.
     """
+    from app.tools.slot_followup import spoken_starts_for_offer
+
     session = {"_slot_offer_prebuilt": _prebuilt(), "available_days": PRESENTED}
     spoken = await _flush(session)
     text = " ".join(spoken)
-    assert [s["start"] for s in session["last_offered_slots"]] == [
-        "2026-09-07T10:00:00+01:00",
-        "2026-09-07T17:00:00+01:00",
-        "2026-09-08T09:00:00+01:00",
-        "2026-09-08T14:00:00+01:00",
-        "2026-09-09T11:00:00+01:00",
-        "2026-09-09T18:00:00+01:00",
-    ]
+    # The record normalises the offset away, so compare on the local stamp.
+    recorded = {str(s)[:19] for s in spoken_starts_for_offer(session)}
+    assert recorded >= {
+        "2026-09-07T10:00:00", "2026-09-07T17:00:00",
+        "2026-09-08T09:00:00", "2026-09-08T14:00:00",
+        "2026-09-09T11:00:00", "2026-09-09T18:00:00",
+    }, f"the second time on each day is not in the cumulative record: {recorded}"
     for label in session["slot_labels"]:
         assert label in text
     # B-126: a transcript, so no day is marked unsafe to reason from.
     assert LOSSY_SPOKEN_DAYS_KEY not in session
+
+
+@pytest.mark.asyncio
+async def test_the_offer_on_the_table_is_ONE_slot_per_day():
+    """`last_offered_slots` is positional, and a position means a DAY.
+
+    `_resolve_slot_iso` maps an ordinal onto this list and the DTMF map is
+    day-keyed, so the two must agree. Writing every named slot here was correct
+    only while a multi_day offer carried one time per day -- the lists were then
+    identical. At two times per day they diverge, and "the second one" would
+    pick Monday's SECOND time while pressing 2 picks TUESDAY.
+
+    receptionist_tools calls this "not negotiable". It is.
+    """
+    session = {"_slot_offer_prebuilt": _prebuilt(), "available_days": PRESENTED}
+    await _flush(session)
+    assert [s["start"] for s in session["last_offered_slots"]] == [
+        "2026-09-07T10:00:00+01:00",
+        "2026-09-08T09:00:00+01:00",
+        "2026-09-09T11:00:00+01:00",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_ordinal_list_and_the_keypad_agree_position_for_position():
+    """The property that actually protects the caller, stated once.
+
+    Whatever the caps become, saying "the second one" and pressing 2 must select
+    the same day. This is the test that fails if someone raises
+    _MAX_PRESENTED_TIMES_MULTI_DAY without revisiting the record.
+    """
+    session = {"_slot_offer_prebuilt": _prebuilt(), "available_days": PRESENTED}
+    await _flush(session)
+    offered = session["last_offered_slots"]
+    keypad = session["v3_dtmf_slot_map"]
+    assert len(offered) == len(keypad)
+    for digit, label in keypad.items():
+        start = offered[int(digit) - 1]["start"]
+        day = next(d for d in PRESENTED if d["day_label"] == label)
+        assert start.startswith(day["date"]), (
+            f"pressing {digit} means {label} but the ordinal at that position "
+            f"is {start} -- speaking and pressing would book different days"
+        )
 
 
 @pytest.mark.asyncio
@@ -239,21 +288,21 @@ class TestTheBuildSiteContract:
         assert result.get("presented_days")
         assert result.get("first_day") is None
 
-    def test_presented_days_carries_one_time_per_day(self):
-        """The measured cap, and the reason the readout normalises to 2x1.
+    def test_presented_days_carries_three_days_at_two_times_each(self):
+        """The owner's cap, and now the ONLY owner of how much is spoken.
 
-        `_cap_presented_slots` sets per_day = 1 as soon as more than one day
-        survives, and _MAX_PRESENTED_DAYS is 2. Live readouts are bimodal --
-        24 of 52 at 2 days x 1 time, 25 at 3 days x 2 -- because the model
-        sometimes obeyed this and sometimes obeyed its own prompt. Building
-        from `presented_days` makes this the single owner. Raising per_day here
-        is the one-line change that moves both paths together.
+        Owner decision 1 Sept 2026, reversing 24 Aug. Live readouts were
+        bimodal -- 24 of 52 at 2 days x 1 time, 25 at 3 days x 2 -- because the
+        model read `available_days` and obeyed its own prompt about half the
+        time. Since step 4 the sentence is built from `presented_days`, so what
+        is not selected here is not said, and these two constants decide it
+        outright.
         """
         result = self._result()
         days = result["presented_days"]
-        assert len(days) <= 2
+        assert len(days) == 3
         for day in days:
-            assert len(day["slot_times"]) == 1
+            assert len(day["slot_times"]) == 2
 
     def test_the_offer_built_from_it_is_usable(self):
         from app.tools.slot_offer import build_slot_offer

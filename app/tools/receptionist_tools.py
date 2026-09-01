@@ -5264,7 +5264,20 @@ def _resolve_clinic_id(session: Dict[str, Any]) -> str:
 _VALID_SERVICES: frozenset[str] = frozenset({"physiotherapy assessment"})
 
 
-_MAX_PRESENTED_DAYS = 2
+# Owner decision 1 Sept 2026, REVERSING the 24 Aug decision recorded below.
+# Three days, two times each. The reason is that as of step 4 of
+# DETERMINISTIC_SLOT_PRESENTATION.md these numbers are the ONLY owner of how
+# much is spoken on the covered lines -- the sentence is built from
+# `presented_days` by `build_slot_offer`, so what is not selected here is not
+# said, and there is no longer a model quietly reading `available_days` and
+# offering more anyway.
+#
+# That is what made the old pair safe to leave wrong. Measured over the stored
+# corpus on 1 Sept, live multi_day readouts were bimodal -- 24 of 52 at two
+# days x one time, 25 at three days x two -- because the model obeyed its own
+# prompt about half the time. Callers were ALREADY getting three-by-two on half
+# their calls; this makes it deliberate instead of accidental.
+_MAX_PRESENTED_DAYS = 3
 
 # A single day's SPOKEN times. Owner decision 24 Aug 2026: three is the most a
 # caller can hold in their head at once. _check_availability_acuity has always
@@ -5272,9 +5285,25 @@ _MAX_PRESENTED_DAYS = 2
 # executors, and matches slot_followup.MAX_SPOKEN_OPTIONS, which enforces the
 # same number on the assembled speech whichever executor produced it.
 #
-# multi_day stays at ONE time per day: two days named in a breath is already
-# two things to hold, and three times each would be six.
+# UNCHANGED: single_day still speaks three times.
 _MAX_PRESENTED_TIMES_SINGLE_DAY = 3
+
+# A multi_day readout's SPOKEN times PER DAY.
+#
+# Was 1, with this reasoning, kept because the concern is real and did not stop
+# being real: "two days named in a breath is already two things to hold, and
+# three times each would be six." `clinic_template_prompt` puts a number on it
+# -- "Reading out three days with two times each takes over twenty seconds,
+# which is where callers hang up" -- and asks for "TWO, not three, not six".
+#
+# Overridden 1 Sept 2026 by the owner. Two things make it a different bet than
+# it was in August. Each day is ONE numbered option carrying two times, so the
+# caller holds three choices, not six; and the deterministic sentence is fixed
+# and short, where the twenty-second estimate was of a model improvising around
+# the list. The measured spoken length is asserted by
+# test_the_three_by_two_readout_stays_short, so if this ever does grow past a
+# sentence a caller can hold, a test says so rather than a hang-up.
+_MAX_PRESENTED_TIMES_MULTI_DAY = 2
 
 
 def _cap_presented_slots(
@@ -5294,7 +5323,10 @@ def _cap_presented_slots(
         return result
 
     kept = days[:max_days]
-    per_day = 1 if len(kept) > 1 else _MAX_PRESENTED_TIMES_SINGLE_DAY
+    per_day = (
+        _MAX_PRESENTED_TIMES_MULTI_DAY if len(kept) > 1
+        else _MAX_PRESENTED_TIMES_SINGLE_DAY
+    )
 
     presented: List[Dict[str, Any]] = []
     truncated = False

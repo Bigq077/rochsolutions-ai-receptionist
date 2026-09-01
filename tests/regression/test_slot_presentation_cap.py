@@ -87,10 +87,15 @@ def _bookable_times(result: dict) -> list[str]:
     return [t for d in (result.get("available_days") or []) for t in (d.get("slot_times") or [])]
 
 
-def test_nine_options_speak_two_but_keep_all_nine_bookable():
-    """Three days in, two spoken (one time each) — the multi_day shape."""
+def test_nine_options_speak_six_but_keep_all_nine_bookable():
+    """Three days in, six spoken (two times each) — the multi_day shape.
+
+    The property under test is unchanged and is the one that matters: capping
+    SPEECH must never remove a time from the bookable data. Only the spoken
+    count moved, 2 -> 6, with the 1 Sept cap decision.
+    """
     out = _cap_presented_slots(_nine_option_result())
-    assert len(_spoken_times(out)) == 2
+    assert len(_spoken_times(out)) == 6
     assert len(_bookable_times(out)) == 9
 
 
@@ -132,8 +137,22 @@ def test_a_day_with_exactly_three_times_speaks_all_three_and_claims_no_more():
     assert out["first_day"].get("more_times") is not True
 
 
-def test_multi_day_still_speaks_ONE_time_per_day():
-    """Two days named is already two things to hold; three times each is six."""
+def test_multi_day_speaks_TWO_times_per_day():
+    """Owner decision 1 Sept 2026, REVERSING 24 Aug.
+
+    The August rule was ONE time per day -- "two days named in a breath is
+    already two things to hold, and three times each would be six". It was safe
+    to leave wrong, because the model read `available_days` and offered more
+    anyway on about half of calls (measured 1 Sept: 24 of 52 readouts at two
+    days x one time, 25 at three days x two). Since step 4 of
+    DETERMINISTIC_SLOT_PRESENTATION.md the sentence is built from
+    `presented_days`, so these constants are now the only thing deciding what a
+    caller hears, and the owner chose the richer readout deliberately.
+
+    The caller still holds THREE choices, not six: each day is ONE numbered
+    option carrying two times. `test_the_three_by_two_readout_stays_short`
+    guards the length that reasoning depends on.
+    """
     src = {
         "available_days": [
             _day("2026-08-03", ["16:30", "18:00", "19:00"]),
@@ -143,7 +162,57 @@ def test_multi_day_still_speaks_ONE_time_per_day():
     }
     out = _cap_presented_slots(src)
     assert out["presentation_mode"] == "multi_day"
-    assert [d["slot_times"] for d in out["presented_days"]] == [["16:30"], ["17:00"]]
+    assert [d["slot_times"] for d in out["presented_days"]] == [
+        ["16:30", "18:00"], ["17:00", "18:30"],
+    ]
+
+
+def test_multi_day_presents_up_to_THREE_days():
+    src = {
+        "available_days": [
+            _day("2026-08-03", ["16:30"]), _day("2026-08-04", ["17:00"]),
+            _day("2026-08-05", ["18:00"]), _day("2026-08-06", ["19:00"]),
+        ],
+        "total_days": 4,
+    }
+    out = _cap_presented_slots(src)
+    assert [d["date"] for d in out["presented_days"]] == [
+        "2026-08-03", "2026-08-04", "2026-08-05",
+    ]
+    assert out.get("more_times") is True     # the fourth day was held back
+
+
+def test_the_three_by_two_readout_stays_short():
+    """The length the 1 Sept decision is betting on, measured not assumed.
+
+    `clinic_template_prompt` warns that "reading out three days with two times
+    each takes over twenty seconds, which is where callers hang up". That
+    estimate was of a MODEL improvising around the list; the deterministic
+    sentence is fixed and this pins it, so a future edit that pads the wording
+    fails a test rather than a call.
+
+    ~165 wpm is a conversational TTS rate. The bound is deliberately loose: it
+    is a regression guard on the SENTENCE, not a latency measurement.
+    """
+    from app.tools.slot_offer import build_slot_offer
+
+    src = {
+        "available_days": [
+            _day("2026-08-03", ["16:30", "18:00"]),
+            _day("2026-08-04", ["17:00", "18:30"]),
+            _day("2026-08-05", ["09:00", "14:00"]),
+        ],
+        "total_days": 3,
+    }
+    out = _cap_presented_slots(src)
+    offer = build_slot_offer(list(out["presented_days"]))
+    words = len(offer.text.split())
+    assert len(offer.dtmf_map) == 3, "three numbered choices, not six"
+    assert len(offer.slots) == 6, "six times named, all of them recorded"
+    assert words <= 70, (
+        f"the three-by-two readout grew to {words} words "
+        f"(~{words / 165 * 60:.0f}s spoken): {offer.text!r}"
+    )
 
 
 def test_a_day_with_one_slot_is_left_alone():
@@ -200,7 +269,7 @@ def test_session_keeps_full_availability_after_the_capped_return():
         )
     )
 
-    assert len(_spoken_times(returned)) == 2
+    assert len(_spoken_times(returned)) == 6      # 3 days x 2, from 1 Sept
     assert len(session["available_days"]) == 3
     assert sum(len(d["slot_times"]) for d in session["available_days"]) == 9
     # And the RETURN keeps them too — that is what the model reads next turn.

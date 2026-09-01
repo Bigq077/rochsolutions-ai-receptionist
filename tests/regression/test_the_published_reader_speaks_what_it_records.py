@@ -128,15 +128,30 @@ def test_the_record_holds_only_what_was_spoken(monkeypatch):
 
 
 def test_an_ordinal_cannot_reach_an_unspoken_date(monkeypatch):
-    """The money test. Two days are spoken, so "the third" must resolve to
-    nothing rather than to the third published day."""
+    """The money test. THREE days are spoken since the 1 Sept cap decision, so
+    the boundary moved from "the third" to "the fourth". The property did not
+    move at all: an ordinal must never reach a date nobody was read out.
+
+    Carries its own positive control. "The third" is a SPOKEN day now and must
+    resolve; without that half, a resolver that had silently stopped working
+    would make the negative half pass forever.
+    """
     result, session = _run(monkeypatch, _published([2, 3, 4, 5]))
-    third = sorted({d["date"] for d in result["available_days"]})[2]
+    dates = sorted({d["date"] for d in result["available_days"]})
+    third, fourth = dates[2], dates[3]
 
     _try_slot_selection("would you like", "the third", "the third", session)
     picked = session.get("selected_slot")
-    assert picked is None or not picked["start"].startswith(third), (
-        f"an ordinal selected {picked!r} - {third} was never spoken"
+    assert picked is not None and picked["start"].startswith(third), (
+        f"'the third' reached {picked!r}, but {third} IS spoken now -- if the "
+        f"resolver is dead, the unspoken half of this test proves nothing"
+    )
+
+    session.pop("selected_slot", None)
+    _try_slot_selection("would you like", "the fourth", "the fourth", session)
+    picked = session.get("selected_slot")
+    assert picked is None or not picked["start"].startswith(fourth), (
+        f"an ordinal selected {picked!r} - {fourth} was never spoken"
     )
 
 

@@ -3381,10 +3381,36 @@ class LLMStream:
             # other trace that these were spoken (B-78b).
             from app.tools.slot_followup import record_spoken_slots
             record_spoken_slots(session, _det_slots)
-            session["last_offered_slots"] = [
-                {"start": s["start"], "end": s.get("end") or ""} for s in _det_slots
-            ]
-            session["slot_labels"] = [s.get("spoken") for s in _det_slots]
+            # TWO RECORDS, AND THEY ARE NOT THE SAME LIST.
+            #
+            # The cumulative record above holds every time the sentence named.
+            # `last_offered_slots` is "the offer on the table" and is read BY
+            # POSITION -- `_resolve_slot_iso` maps an ordinal ("the second
+            # one") onto it, and on multi_day a position means a DAY, which is
+            # also what the day-keyed DTMF map means. receptionist_tools calls
+            # that "not negotiable" and it is right.
+            #
+            # Writing every slot here was correct only while a multi_day offer
+            # carried ONE time per day: the two lists were then identical. At
+            # two times per day they diverge, and "the second one" would pick
+            # the first day's SECOND time while pressing 2 picks the second
+            # DAY -- one utterance meaning two different slots depending on
+            # whether the caller spoke or pressed.
+            _det_positional: list = []
+            _det_pos_labels: list = []
+            _det_seen_dates: set = set()
+            for _s in _det_slots:
+                if _prebuilt.get("mode") == "multi_day":
+                    _sd = _s.get("date")
+                    if _sd in _det_seen_dates:
+                        continue
+                    _det_seen_dates.add(_sd)
+                _det_positional.append(
+                    {"start": _s["start"], "end": _s.get("end") or ""}
+                )
+                _det_pos_labels.append(_s.get("spoken"))
+            session["last_offered_slots"] = _det_positional
+            session["slot_labels"] = _det_pos_labels
             # B-126: this record is a transcript, not a projection, so no day
             # of it needs marking as unsafe to reason from.
             from app.tools.slot_followup import LOSSY_SPOKEN_DAYS_KEY
@@ -6258,11 +6284,12 @@ class LLMStream:
                 # the whole point rather than a detail:
                 #
                 #   * `presented_days` is what `_cap_presented_slots` already
-                #     decided should be SPOKEN -- <= _MAX_PRESENTED_DAYS (2)
-                #     days at per_day=1. Taking it keeps ONE owner for "how
-                #     many", which is the invariant this plan exists to
-                #     establish. Feeding `available_days` and re-capping here
-                #     would create a second owner and rebuild the defect.
+                #     decided should be SPOKEN -- <= _MAX_PRESENTED_DAYS (3) days
+                #     at _MAX_PRESENTED_TIMES_MULTI_DAY (2) times each. Taking
+                #     it keeps ONE owner for "how many", which is the invariant
+                #     this plan exists to establish. Feeding `available_days`
+                #     and re-capping here would create a second owner and
+                #     rebuild the defect.
                 #   * Those times went through `choose_presented_indices`, which
                 #     prefers times this caller has not heard (B-116).
                 #     `available_days` is the untrimmed bookable set and has
@@ -6270,12 +6297,12 @@ class LLMStream:
                 #     times the caller was just read.
                 #
                 # CALLER-AUDIBLE CONSEQUENCE, measured and deliberate. Live
-                # multi_day readouts are bimodal: 24 of 52 are 2 days x 1 time
-                # (the model obeying presented_days) and 25 are 3 days x 2 times
-                # (the model obeying its own prompt instead). This normalises
-                # every multi_day readout to the first shape. To restore the
-                # richer one, raise `per_day` in `_cap_presented_slots` -- ONE
-                # line, one owner, and it moves the model path identically.
+                # multi_day readouts were bimodal: 24 of 52 at 2 days x 1 time
+                # (the model obeying presented_days) and 25 at 3 days x 2 times
+                # (the model obeying its own prompt instead). Owner decision of
+                # 1 Sept 2026: three days at two times, every time. Both
+                # numbers live in `_cap_presented_slots` and nowhere else, so
+                # changing them moves this path and the model path together.
                 #
                 # No more-times tail is emitted: `build_slot_offer` makes that
                 # claim only where it has a referent -- one day -- which is the
@@ -6339,6 +6366,12 @@ class LLMStream:
                         # Absent on single_day, so section 1b keeps its existing
                         # behaviour there verbatim. Only multi_day sets it.
                         "day_iso": _det_day_iso,
+                        # Read by section 1b to decide whether
+                        # `last_offered_slots` is one-per-day (multi_day, where
+                        # a position means a DAY) or every slot named. Taken
+                        # from the offer rather than re-derived, so it cannot
+                        # disagree with the sentence that was built.
+                        "mode": _offer.mode,
                     }
                     logger.info(
                         "[ms_gate5] deterministic %s offer built: "
