@@ -365,6 +365,87 @@ with a filler between, and stacks two ellipsis fillers back to back.
 
 ---
 
+## P6 — A caller who ACCEPTS a slot in words is read the list again
+
+**Severity: HIGH. Open. Not caused by the 1 Sep work — it predates it by
+weeks, on every clinic.** Found on the first Vital Edge call after the
+hold-speech flip, `CA82b240ccad48ed219371c3f2fddfffb8`, 2026-09-01 21:46,
+build `f875126e`. `outcome=abandoned`, judge `score=1`.
+
+```
+  assi  Number 3, Wednesday 9th September — nine in the morning, or six in
+        the evening. Any of those work?
+  user  um yeah the last day at 6 in the evening works
+  assi  Let me see what I've got in the evening —            <- read as a NEW query
+  assi  Here's what we've got coming up — Number 1, Monday 7th September —
+        TEN in the morning, or FIVE in the evening.          <- and the 6pm he
+  assi  Number 2 …                                              picked is GONE
+```
+
+**The model got it right and the engine threw the answer away.** From the
+Render log, one second before that second readout:
+
+```
+21:48:19  [ms_gate5] deterministic offer in force — 3 chunk(s); the model's 1
+          buffered chunk(s) are discarded
+          ('PRE_SLOTWednesday 9th September at six in the evening
+            works. Can I just get yo')
+```
+
+### Chain
+
+1. The caller picks in WORDS, not by number. `utterance_is_slot_selection`
+   (`connection.py:306`) is containment against `offered_slot_labels`, and the
+   map was `day_selection` — `{1: Monday 7th, 2: Tuesday 8th, 3: Wednesday
+   9th}`. "the last day" is an ordinal by POSITION and matches no label, so
+   the pick is invisible to it.
+2. The model therefore reads "6 in the evening" as a time-band request and
+   calls `check_availability` again. The situational head agrees —
+   `situational head (time_band)`.
+3. That builds a fresh offer into `session["_slot_offer_prebuilt"]`, and the
+   cache is invalidated (`date_hint changed from 'any' to 'next week'`), so
+   the times come back DIFFERENT: 09:00/18:00 became 10:00/17:00. The slot
+   the caller just accepted is no longer on the list.
+4. In iteration 2 the model self-corrects and produces the right sentence.
+   `_flush_slot_buf` (`llm_stream.py:3508`) discards it, because a prebuilt
+   offer wins unconditionally.
+
+Step 4 is the one that makes it unrecoverable. Its comment is right about the
+case it was written for — never blend a half-model half-code sentence — but
+it assumes the model's buffered text is an OFFER. Here it was an ACCEPTANCE
+moving the booking forward, and there is no test of which.
+
+### How common
+
+Corpus, 806 calls: **106** read the numbered offer more than once (July,
+August and September; jv_v1 73, theorem_v3 21, northgate 7, vital_edge 5).
+Many of those are legitimate — a caller asking "what else have you got?"
+SHOULD get a second list. Narrowing to "the caller's reply named a slot or a
+time and another readout followed anyway" gives **33 calls, 24 of them
+abandoned**. Hand-checked clear acceptances inside that set:
+`CA903bd6ef1ce0c8` (VE, "uh the second one please", abandoned),
+`CA5842023b88b926` (jv_v1, "The second one", abandoned),
+`CA3c5b401045dac2` (jv_v1, "let's see that saturday slot please", abandoned),
+`CA5e72ee56351475` (jv_v1, "wednesday at 5 in the evening suits me"),
+`CA130c0a6b823817` (jv_v1, "the tuesday at 5 in the evening works"), and this
+one. **"The second one" fails too** — so this is not only about "the last
+day".
+
+### Proposed fix — NOT written yet, and not to be rushed
+
+The tempting fix is to widen `utterance_is_slot_selection` to understand
+ordinals. Do that and step 4 still discards the acceptance the next time the
+model calls the tool for any other reason. **Fix step 4:** a prebuilt offer
+must not overwrite model text that is not itself an offer — if the buffered
+text carries no "Number N", the payload offer should be dropped and the
+model's sentence spoken, with `record_spoken_slots` NOT recording slots
+nobody heard. Widening the ordinal matching is worth doing as well, second.
+
+This is the slot path on live patient lines. Small diff, a regression test
+built from this call's exact transcript, and a real call before promotion.
+
+---
+
 ## Also open, unrelated to hold speech
 
 * **`GOOGLE_SERVICE_ACCOUNT_JSON` is malformed** — `Invalid \escape: line 5
