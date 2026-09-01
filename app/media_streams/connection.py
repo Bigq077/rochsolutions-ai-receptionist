@@ -228,6 +228,16 @@ _BARGE_IN_THRESHOLD_S: float = BARGE_IN_THRESHOLD_MS / 1000.0
 # there is always an exit.
 _MAX_ECHO_RESUMES: int = 2
 
+# B-120. How much unplayed audio a barge-in must destroy before a slot readout
+# is worth reading out again. A readout runs 8-12s, so a teardown inside one
+# strands seconds of options the caller needs; a teardown in its last breath
+# strands a syllable, and re-reading twelve seconds over that would be the
+# worse outcome. Measured against the audio ALREADY SCHEDULED and thrown away
+# (_tts_playout_end_mono minus now), never against elapsed time -- a barge-in
+# after playback has ended has nothing scheduled and scores 0.0, which is what
+# keeps this arm off every turn where Susie had in fact finished speaking.
+_SLOT_REREAD_MIN_LOST_S: float = 2.0
+
 
 # Clock hours as SPOKEN vs as TRANSCRIBED. The offer is generated text and
 # spells the hour ("ten in the morning"); AssemblyAI hands back the caller's
@@ -14779,6 +14789,21 @@ class WebSocketCallHandler:
                 if self._slot_represented_once:
                     self._slot_represented_once = False
 
+                # B-120: the saved readout is only re-readable while it is what
+                # the caller is hearing. The instant a chunk from any later turn
+                # plays, those options are history -- the caller has moved on,
+                # and re-reading them after an unrelated barge-in would be
+                # gibberish. `_slot_readout_chunks` alone cannot tell the two
+                # apart; the slot map outlives the readout by design (it stays
+                # armed for DTMF until a slot is chosen), so it is not the
+                # discriminator either. This is: the last chunk to reach the
+                # caller's ear was, or was not, part of the readout.
+                # _obs_chunk_text, because the stored chunks are the
+                # pre-substitution form the queue was given.
+                _ro_saved = self.session.get("_slot_readout_chunks")
+                if _ro_saved and _obs_chunk_text.strip() not in _ro_saved:
+                    self.session.pop("_slot_readout_chunks", None)
+
                 # Skip consecutive identical chunks (dedup guard) — but never for
                 # a watchdog re-ask, which is a deliberate replay of the question.
                 if (
@@ -15845,6 +15870,16 @@ class WebSocketCallHandler:
             self._tts_pending_terminal = 0
             self._tts_pending_terminal_text = ""
             self._tts_pending_terminal_chunk_start_ts = 0.0
+            # B-120: how much audio this teardown is about to throw away.
+            # _tts_playout_end_mono is the absolute instant the queued audio
+            # would have finished playing, so the remainder is exactly what the
+            # caller will now never hear -- and it is the only place that number
+            # exists, because the next line destroys it. Negative (playback
+            # already finished) clamps to 0.0, which is the reading the slot
+            # re-read below depends on to stay off ordinary barge-ins.
+            self.session["barge_in_playout_lost_s"] = max(
+                0.0, self._tts_playout_end_mono - time.monotonic()
+            )
             # Reset the cumulative playout clock: the Twilio buffer is cleared
             # below, so any audio scheduled into the future is discarded.  Without
             # this, the next response's first chunk would be scheduled against the
@@ -16201,6 +16236,76 @@ class WebSocketCallHandler:
                             "last_question", "",
                         ) or ""
                     ).strip()
+                # ── B-120: a slot readout torn down at PLAYBACK ────────────
+                # CAa2bdff2b702cea88 (1 Sep 2026, demo line). Susie had 12.2s
+                # of Friday's options scheduled; a partial of 'hi' -- a word
+                # nobody said -- tore the turn down 1.9s in. The caller heard
+                # "…Number one, eight in the" and then silence, and said "uh
+                # you got cut off say that again".
+                #
+                # Three guards were in place and none of them could fire:
+                #   • _BARGE_NOISE runs on the FINAL; the teardown is on the
+                #     PARTIAL, and no final ever arrived
+                #     (barge-in-tears-down-before-the-noise-filter).
+                #   • synthesis_active=False was read as "she has finished
+                #     speaking". It means "we have finished SENDING", and on a
+                #     readout those differ by twelve seconds.
+                #   • the heard-nothing recovery (Bug A, in _tts_loop) triggers
+                #     on chunks discarded by tts_inhibit BEFORE synthesis.
+                #     These were synthesised fine and killed at playback, so it
+                #     never armed.
+                #
+                # What did fire is the arm below, and it is right in principle
+                # -- it refuses an ack that would claim the caller spoke -- but
+                # re-asking `last_question` after a truncated readout is
+                # useless: "Any of those work?" refers to options the caller
+                # never heard. So the readout goes again, whole. The tail
+                # ("I've a few others that day if none of those suit") rides on
+                # the last chunk and is the FIRST thing any interruption costs,
+                # so it only survives if the whole readout does.
+                #
+                # Deliberately NOT a stricter teardown. Making barge-in
+                # reluctant makes Susie un-interruptible, and this repo has
+                # already learned that the obvious version of that fix is
+                # wrong. The trigger is untouched; only the recovery changed.
+                #
+                # Ahead of the _own_audio split because the loss is the same
+                # either way: if the readout was destroyed by Susie's own echo,
+                # resuming `interrupted_tts_text` puts back the ONE chunk that
+                # was in flight and leaves the earlier options lost.
+                _lost_s = float(
+                    self.session.get("barge_in_playout_lost_s") or 0.0
+                )
+                _readout = self.session.get("_slot_readout_chunks") or []
+                if (
+                    _readout
+                    and self.session.get("v3_dtmf_slot_map")
+                    and _lost_s >= _SLOT_REREAD_MIN_LOST_S
+                    and _echoes < _MAX_ECHO_RESUMES
+                ):
+                    self.session["echo_resume_count"] = _echoes + 1
+                    # Marker on the first chunk only: it is the one that can
+                    # collide with the consecutive-duplicate guard (on a
+                    # single-chunk readout it IS the chunk just spoken). The
+                    # rest differ from their predecessor by construction, and
+                    # marking them too would drop every one of them out of the
+                    # latency content-mark for no reason.
+                    for _i, _c in enumerate(_readout):
+                        await self.tts_text_queue.put(
+                            (_WATCHDOG_REASK_MARKER if _i == 0 else "") + _c
+                        )
+                    logger.warning(
+                        "[ms_conn] barge-in #%d tore down a slot readout at "
+                        "playback (partial=%r own_audio=%s lost=%.1fs) — "
+                        "re-reading %d chunk(s), not the closing question "
+                        "the caller never heard (%d/%d)",
+                        self.session.get("barge_in_count", 0), _echo_partial,
+                        _own_audio, _lost_s, len(_readout), _echoes + 1,
+                        _MAX_ECHO_RESUMES,
+                    )
+                    return
+                # ── end B-120 ──────────────────────────────────────────────
+
                 _resume = _interrupted_now if _own_audio else _outstanding_q
                 if _resume and _echoes < _MAX_ECHO_RESUMES:
                     self.session["echo_resume_count"] = _echoes + 1

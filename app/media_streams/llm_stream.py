@@ -3505,9 +3505,19 @@ class LLMStream:
                 session.pop("slots_stale_modality_switch", None)
                 session["_slot_chunks_sent"] = len(_det_chunks)
                 session["_slot_chunks_inhibited"] = 0
+                # B-120: keep the readout TEXT, not just its chunk count. The
+                # count is all the pre-synthesis recovery needs -- it only has
+                # to know the caller heard nothing -- but a readout torn down
+                # at PLAYBACK has to be SPOKEN again, so the words themselves
+                # must survive the teardown. Stripped, because _tts_loop
+                # compares against the stripped chunk it is about to speak.
+                session["_slot_readout_chunks"] = [
+                    c.strip() for c in _det_chunks if c.strip()
+                ]
             else:
                 session.pop("_slot_chunks_sent", None)
                 session.pop("_slot_chunks_inhibited", None)
+                session.pop("_slot_readout_chunks", None)
             # `day_iso` is set only by the multi_day builder, to the PAYLOAD's
             # first day -- the same value section 4 writes, and the meaning
             # turn_handler documents. single_day sends None and keeps the
@@ -3924,6 +3934,10 @@ class LLMStream:
         if _slot_map_count >= 2:
             session["_slot_chunks_sent"]      = len(tts_chunks)
             session["_slot_chunks_inhibited"] = 0
+            # B-120 -- see the deterministic arm above for why the text is kept.
+            session["_slot_readout_chunks"] = [
+                c.strip() for c in tts_chunks if c.strip()
+            ]
             logger.info(
                 "[ms_gate5] slot inhibit guard armed: %d chunk(s) tracked",
                 len(tts_chunks),
@@ -3932,6 +3946,7 @@ class LLMStream:
             # No slot map — discard any stale counters from a previous turn.
             session.pop("_slot_chunks_sent",      None)
             session.pop("_slot_chunks_inhibited", None)
+            session.pop("_slot_readout_chunks",   None)
 
         # ── 8. Send to TTS ───────────────────────────────────────────────────
         for i, c in enumerate(tts_chunks):
