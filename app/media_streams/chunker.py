@@ -41,6 +41,29 @@ from typing import List, Optional
 MIN_WORDS = 15
 MAX_WORDS = 50
 
+# How far past MAX_WORDS the buffer may run to reach the end of the sentence
+# it is in the middle of.
+#
+# The hard cutoff had no notion of sentence position, so it severed a clause
+# wherever the 50th word happened to fall - and `sanitise_response` then
+# capitalises every chunk head, promoting the stranded tail into a sentence
+# of its own. Five of these reached callers (measured over 8,555 stored
+# assistant chunks, 2026-09-01):
+#
+#   "...sorted with Marcus right"          -> "Away."
+#   "...so he can take a proper"           -> "Look?"
+#   "...for when you'd like to come"       -> "In?"   (twice)
+#   "...a proper look at what's driving"   -> "It."
+#
+# Every one ended its sentence within two words of the cut, which is what
+# makes a bounded grace the right shape: the chunker cannot see ahead, but it
+# can afford to wait a little before giving up on the sentence.
+#
+# Costs nothing audible. A 50-word chunk is ~15s of speech and is already
+# playing while the next one buffers, so waiting a few more tokens delays no
+# audio; MAX_WORDS is a forward-progress guard, not a latency budget.
+MAX_WORDS_SENTENCE_GRACE = 12
+
 HARD_SPLIT_CHARS = frozenset({".", "!", "?"})
 SOFT_SPLIT_CHARS = frozenset({",", ";", ":"})   # only used at MAX_WORDS
 
@@ -164,9 +187,33 @@ class ResponseChunker:
         self._buffer += token
         self._word_count += _count_words(token)
 
-        # Condition 1: hard cutoff
+        # Condition 1: hard cutoff - but finish the sentence if it is close.
+        # See MAX_WORDS_SENTENCE_GRACE. Past MAX_WORDS we stop adding words
+        # speculatively and start looking for the sentence end; the first one
+        # inside the grace wins, and if none arrives we cut as before.
         if self._word_count >= MAX_WORDS:
-            return self._handle_candidate(self._emit())
+            _s = self._buffer.rstrip()
+            # A COMMA counts as somewhere to stop, not just a full stop.
+            # Without it the grace is unsafe on the one shape that really
+            # does run long: a slot readout is a comma-separated list with no
+            # full stop in it ("half past ten in the morning, twenty past
+            # eleven in the morning, ..."). The longest punctuation-free run
+            # in 8,555 stored chunks is 60 words - two short of the grace
+            # ceiling - and a readout that ran three words longer would push
+            # its emission past the point where hold-and-merge can release
+            # it, turning the whole turn into one very long TTS call.
+            #
+            # With a comma accepted, a readout cuts at the first comma after
+            # MAX_WORDS - a natural pause - and never approaches the ceiling,
+            # while an ordinary sentence still gets its word or two of grace.
+            _at_end = (
+                bool(_s)
+                and (_s[-1] in HARD_SPLIT_CHARS or _s[-1] == ",")
+                and not _ends_with_abbreviation(_s)
+            )
+            if _at_end or self._word_count >= MAX_WORDS + MAX_WORDS_SENTENCE_GRACE:
+                return self._handle_candidate(self._emit())
+            return None
 
         # Condition 2: sentence boundary.  The threshold is lowered for the
         # first chunk of the turn only (WS-A); every later chunk keeps MIN_WORDS,
