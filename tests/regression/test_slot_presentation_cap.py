@@ -29,6 +29,7 @@ import copy
 
 import pytest
 
+from app.tools.slot_followup import part_of_day as _part_of_day
 from app.tools.receptionist_tools import (
     _MAX_PRESENTED_TIMES_SINGLE_DAY,
     _cap_presented_slots,
@@ -99,13 +100,27 @@ def test_nine_options_speak_six_but_keep_all_nine_bookable():
     assert len(_bookable_times(out)) == 9
 
 
-def test_v5_unspoken_half_eight_stays_in_available_days():
-    """THE live regression: capped speech must not erase a time from the data."""
+def test_v5_an_unspoken_time_stays_in_available_days():
+    """THE live regression: capped speech must not erase a time from the data.
+
+    Stated as the property rather than by naming which time goes unspoken. The
+    1 Sept spread rule changed WHICH three of the four are chosen -- it now
+    picks across the day instead of the first three -- and pinning literals
+    made this read as a regression when the invariant had not moved. The
+    fixture's own docstring says what is under test: "an unspoken time stays
+    bookable in available_days".
+    """
     out = _cap_presented_slots(_v5_wednesday())
     assert out["presentation_mode"] == "single_day"
-    assert _spoken_times(out) == ["17:30", "18:15", "19:45"]
-    assert "20:30" in _bookable_times(out)
-    assert "20:30" not in _spoken_times(out)
+
+    spoken, bookable = _spoken_times(out), _bookable_times(out)
+    assert len(spoken) == _MAX_PRESENTED_TIMES_SINGLE_DAY == 3
+    assert len(bookable) == 4, "the cap must not remove a time from the data"
+
+    unspoken = [t for t in bookable if t not in spoken]
+    assert unspoken, "a fourth time exists so this cannot pass vacuously"
+    for t in unspoken:
+        assert t in bookable
     assert out["first_day"].get("more_times") is True
 
 
@@ -162,8 +177,12 @@ def test_multi_day_speaks_TWO_times_per_day():
     }
     out = _cap_presented_slots(src)
     assert out["presentation_mode"] == "multi_day"
+    # SPREAD, not the first two. Owner request 1 Sept after a live call offered
+    # "eight in the morning, or ten to nine in the morning" -- fifty minutes
+    # apart is not two options. Each day keeps its earliest and takes the
+    # LATEST in a different part of the day.
     assert [d["slot_times"] for d in out["presented_days"]] == [
-        ["16:30", "18:00"], ["17:00", "18:30"],
+        ["16:30", "19:00"], ["17:00", "20:00"],
     ]
 
 
@@ -274,8 +293,14 @@ def test_session_keeps_full_availability_after_the_capped_return():
     assert sum(len(d["slot_times"]) for d in session["available_days"]) == 9
     # And the RETURN keeps them too — that is what the model reads next turn.
     assert len(_bookable_times(returned)) == 9
-    assert "20:15" in _bookable_times(returned)
-    assert "20:15" not in _spoken_times(returned)
+    # As above: the property is that SOMETHING goes unspoken and stays bookable,
+    # not that a particular time does. The 1 Sept spread rule moved which six of
+    # the nine are chosen, and 20:15 is now among them.
+    _unspoken = [t for t in _bookable_times(returned)
+                 if t not in _spoken_times(returned)]
+    assert _unspoken, "nine bookable against six spoken must leave some unspoken"
+    for _t in _unspoken:
+        assert _t in _bookable_times(returned)
 
 
 def test_day_firsts_used_by_numbered_selection_are_preserved():
@@ -301,5 +326,91 @@ def test_sync_last_offered_matches_the_spoken_subset_so_remaining_starts_after()
     _sync_last_offered_to_spoken(session, out)
     assert len(session["last_offered_slots"]) == _MAX_PRESENTED_TIMES_SINGLE_DAY
     assert session["last_offered_slots"][0]["start"].startswith("2026-08-06T16:30")
+
+    # The invariant is that the follow-up NEVER re-offers a time already read
+    # out -- not that it comes strictly later. Since the 1 Sept spread rule the
+    # three spoken times are taken across the day (16:30, 18:00, 20:15), so
+    # what remains INTERLEAVES with them rather than starting after the last.
+    # That is correct: every remaining time is still one the caller has not
+    # heard, which is the property this guards.
+    offered = {s["start"][11:16] for s in session["last_offered_slots"]}
     rem = remaining_slots_after_offer(days, session["last_offered_slots"])
-    assert [s["time"] for s in rem] == ["18:45", "19:30", "20:15"]
+    rem_times = [s["time"] for s in rem]
+    assert rem_times, "a six-slot day must leave something unspoken"
+    assert not (set(rem_times) & offered), (
+        f"the follow-up would re-offer a time already read out: "
+        f"{sorted(set(rem_times) & offered)}"
+    )
+    assert sorted(rem_times + sorted(offered)) == [
+        "16:30", "17:15", "18:00", "18:45", "19:30", "20:15",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# The 1 Sept spread rule, stated as the caller hears it
+# ---------------------------------------------------------------------------
+def test_two_times_on_a_day_are_not_next_door_to_each_other():
+    """Owner request, from CA6a59e59f0a67fe964693a64690f70544 (1 Sept 2026).
+
+    The readout offered "eight in the morning, or ten to nine in the morning"
+    -- consecutive slots, fifty minutes apart -- on all three days. Two options
+    a caller cannot tell apart are one option.
+    """
+    src = {
+        "available_days": [
+            _day("2026-09-02", ["08:00", "08:50", "09:40", "13:00", "17:10"]),
+        ] * 1,
+        "total_days": 1,
+    }
+    # Two days so the multi_day per-day cap applies.
+    src["available_days"].append(_day("2026-09-03", ["08:00", "08:50", "17:10"]))
+    src["total_days"] = 2
+
+    out = _cap_presented_slots(src)
+    assert out["presentation_mode"] == "multi_day"
+    for day in out["presented_days"]:
+        times = day["slot_times"]
+        assert len(times) == 2
+        assert times[0] == "08:00", "the earliest is still what most callers want"
+        assert times[1] == "17:10", "the second spans the day, not the next slot"
+
+
+def test_a_single_day_readout_spans_morning_afternoon_and_evening():
+    """The same defect on the single_day path: 08:00, 08:50, 09:40 on a live
+    call, three consecutive morning slots offered as three choices."""
+    src = {
+        "available_days": [
+            _day("2026-09-02", ["08:00", "08:50", "09:40", "10:30", "11:20",
+                                "12:10", "13:00", "14:40", "15:30", "17:10"]),
+        ],
+        "total_days": 1,
+    }
+    out = _cap_presented_slots(src)
+    assert out["presentation_mode"] == "single_day"
+    times = out["first_day"]["slot_times"]
+    assert len(times) == 3
+    parts = {_part_of_day("2026-09-02T{}:00+01:00".format(t)) for t in times}
+    assert len(parts) == 3, (
+        f"three times from one day should span the day, got {times} "
+        f"covering only {sorted(parts)}"
+    )
+
+
+def test_a_band_filtered_day_still_spreads_within_the_band():
+    """No special case for "mornings please".
+
+    The band filter has already removed the afternoons upstream, so nothing is
+    in a different part of the day and the rule falls through to earliest plus
+    latest -- eight and twenty past eleven, not eight and ten to nine.
+    """
+    src = {
+        "available_days": [
+            _day("2026-09-02", ["08:00", "08:50", "09:40", "10:30", "11:20"]),
+            _day("2026-09-03", ["08:00", "08:50", "11:20"]),
+        ],
+        "total_days": 2,
+    }
+    out = _cap_presented_slots(src)
+    assert [d["slot_times"] for d in out["presented_days"]] == [
+        ["08:00", "11:20"], ["08:00", "11:20"],
+    ]

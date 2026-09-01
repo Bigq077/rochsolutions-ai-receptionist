@@ -1679,6 +1679,91 @@ def spoken_starts_for_offer(session: Dict[str, Any]) -> set:
     return _spoken_starts_for_current_offer(session)
 
 
+def part_of_day(start: Any) -> str:
+    """morning / afternoon / evening from an ISO start.
+
+    One definition, imported by `slot_offer` rather than copied, because two
+    copies of a boundary is two answers to "is half four an afternoon slot".
+    """
+    try:
+        hour = int(str(start)[11:13])
+    except (TypeError, ValueError):
+        return ""
+    if hour < 12:
+        return "morning"
+    if hour < 17:
+        return "afternoon"
+    return "evening"
+
+
+def _spread(slots: Any, pool: List[int], limit: int) -> List[int]:
+    """Choose `limit` positions from `pool`, spread across the day.
+
+    Owner request 1 Sept 2026, from a live call: the two times offered per day
+    were "eight in the morning, or ten to nine in the morning" -- fifty minutes
+    apart, which is not a choice a caller experiences as two options. The
+    earliest is kept, because it is what most callers want; the second is the
+    LATEST in a different part of the day, so the pair spans the day.
+
+    Only the ORDER of preference changes, never the pool. `pool` is already
+    whatever B-116/B-119 decided this caller may hear, so spreading cannot
+    reach a time they were meant not to be offered.
+
+    Under a band filter this degrades correctly rather than needing a special
+    case. A caller who asked for mornings has had the afternoons removed
+    upstream, so nothing is in "a different part of the day" and it falls
+    through to earliest-plus-latest -- eight and half eleven rather than eight
+    and ten to nine, which is still the better pair.
+    """
+    if limit <= 0 or not pool:
+        return []
+    if len(pool) <= limit:
+        return list(pool)
+
+    def _start(i: int) -> str:
+        try:
+            return str((slots[i] or {}).get("start") or "")
+        except (IndexError, TypeError, AttributeError):
+            return ""
+
+    if limit == 1:
+        return [pool[0]]
+
+    first = pool[0]
+    if limit == 2:
+        first_part = part_of_day(_start(first))
+        other = [i for i in pool[1:] if part_of_day(_start(i)) != first_part]
+        return sorted([first, other[-1] if other else pool[-1]])
+
+    # Three or more: one per PART OF THE DAY, not evenly spaced by index.
+    # Index spacing looks right and is not -- on a day running 08:00 to 17:10 it
+    # picks 08:00, 11:20, 17:10, which is two mornings and an evening, because
+    # the slots are not spread evenly across the parts. Taking the earliest and
+    # then the LAST of each later part gives a morning, an afternoon and an
+    # evening, which is what a receptionist offers.
+    first_part = part_of_day(_start(first))
+    last_of_part: Dict[str, int] = {}
+    for i in pool[1:]:
+        p = part_of_day(_start(i))
+        if p and p != first_part:
+            last_of_part[p] = i          # later positions overwrite earlier
+    chosen = [first] + sorted(last_of_part.values())
+
+    # Too few parts to fill `limit` -- a day inside one band, or two parts
+    # against a limit of three. Top up by even spacing over what is left, which
+    # is still better than filling from the front.
+    if len(chosen) < limit:
+        rest = [i for i in pool if i not in chosen]
+        need = min(limit - len(chosen), len(rest))
+        if need > 0:
+            step = (len(rest) - 1) / float(need) if need > 1 else 0.0
+            chosen.extend(
+                rest[min(len(rest) - 1, int(round(k * step)))]
+                for k in range(need)
+            )
+    return sorted(set(chosen))[:limit]
+
+
 def choose_presented_indices(
     session: Dict[str, Any], day: Dict[str, Any], limit: int
 ) -> List[int]:
@@ -1743,7 +1828,10 @@ def choose_presented_indices(
     except Exception:      # never let a readout fail on its own preference
         spoken = set()
     if not spoken:
-        return list(range(limit))
+        # The commonest case by far -- the first lookup of a call. This is
+        # exactly where "eight, ten to nine" came from: the first `limit`
+        # positions chronologically.
+        return _spread(slots, list(range(n)), limit)
 
     unheard = [
         i for i, s in enumerate(slots)
@@ -1764,10 +1852,10 @@ def choose_presented_indices(
         # themselves and hung up without booking (judge score 1). Speaking
         # two times is a smaller failure than speaking three where one
         # contradicts the sentence before it.
-        return unheard[:limit]
+        return _spread(slots, unheard, limit)
     # Every time on the day has been heard, so this IS a repeat request.
     # Answer it chronologically -- byte-identical to the old behaviour.
-    return list(range(limit))
+    return _spread(slots, list(range(n)), limit)
 
 
 def pick_by_index(value: Any, indices: List[int]) -> Any:

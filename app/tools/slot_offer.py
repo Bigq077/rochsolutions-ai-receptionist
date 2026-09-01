@@ -38,6 +38,7 @@ from typing import Any, Dict, List, Optional
 
 from app.tools.slot_followup import (
     _closing_question,
+    part_of_day as _part_of_day,
     _spoken_series,
     append_other_dates_offer,
     flatten_bookable_slots,
@@ -89,19 +90,6 @@ class SlotOffer:
         return "SlotOffer(mode={!r}, {} slot(s), more_times={}, text={!r})".format(
             self.mode, len(self.slots), self.more_times, self.text
         )
-
-
-def _part_of_day(start: Any) -> str:
-    """morning / afternoon / evening from an ISO start, for the second pick."""
-    try:
-        hour = int(str(start)[11:13])
-    except (TypeError, ValueError):
-        return ""
-    if hour < 12:
-        return "morning"
-    if hour < 17:
-        return "afternoon"
-    return "evening"
 
 
 def _pick_times_for_day(
