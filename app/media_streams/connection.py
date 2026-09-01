@@ -9368,6 +9368,35 @@ class WebSocketCallHandler:
                     # only within the slot-choice window; harmless elsewhere.
                     if self.session.get("v3_awaiting_slot_selection"):
                         utterance = _apply_slot_day_aliases(utterance)
+                        # ── B-127: a spoken ordinal reads the keypad's table ──
+                        # CA6a59e59f (1 Sept 2026): "uh yeah the second one
+                        # please" was answered with Number ONE's day and Number
+                        # ONE's time, and latched as the confirmed slot. The
+                        # resolver for this already existed and was correct --
+                        # it simply had one caller, the "what else that day"
+                        # follow-up -- so the SELECTION turn let the model
+                        # re-derive the ordinal from a sentence it had written
+                        # itself. Rewriting the utterance to the mapped label
+                        # is precisely what the DTMF block above does with a
+                        # digit, so speech and keypad now resolve through ONE
+                        # table and cannot disagree.
+                        #
+                        # Deny by default: declines on a superseded map, on two
+                        # positions, and on any utterance that names a weekday
+                        # or a time itself. See label_for_spoken_position.
+                        from app.tools.slot_followup import (
+                            label_for_spoken_position,
+                        )
+                        _pos_label = label_for_spoken_position(
+                            self.session, utterance
+                        )
+                        if _pos_label:
+                            logger.info(
+                                "[ms_conn] spoken position resolved through the"
+                                " keypad map: %r -> %r (B-127)",
+                                utterance, _pos_label,
+                            )
+                            utterance = _pos_label
                     # ── Spec H + J: fragment / post-confirmation guard ────────
                     # If we're in the slot-selection window but the transcript
                     # has no slot-signal word, either:

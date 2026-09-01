@@ -610,6 +610,104 @@ def day_selected_by_position(
     return hits[0] if len(hits) == 1 else None
 
 
+def label_for_spoken_position(
+    session: Dict[str, Any], text: str, available_days: Any = None
+) -> "str | None":
+    """The readout label the caller picked BY POSITION, on a SELECTION turn.
+
+    B-127, CA6a59e59f0a67fe964693a64690f70544 (1 Sept 2026, build 5ebe0211,
+    the first live 3x2 multi_day readout):
+
+        Number 1, Tuesday 1st September -- twenty past eleven, or ten past five.
+        Number 2, Wednesday 2nd September -- eight in the morning, or ...
+        Number 3, Thursday 3rd September -- ...
+
+        caller:  "uh yeah the second one please"
+        Susie:   "Tuesday the 1st of September at twenty past eleven"
+
+    Number 2's position, resolved to Number 1's day AND Number 1's first time.
+    The wrong slot was then latched as confirmed.
+
+    WHY THE EXISTING GUARDS ALL MISSED IT, each for a different reason:
+
+      * `day_selected_by_position` resolves exactly this, correctly -- "the
+        second one" folds to "2 one", matches `_POSITION_RE`, and the day-keyed
+        map returns Wednesday. It has ONE caller,
+        `remaining_unspoken_on_current_day`, which is the "what else have you
+        got THAT DAY" follow-up. The SELECTION turn never consulted it, so the
+        ordinal was resolved by the model instead of from data.
+      * `reconcile_readback_time` compares the read-back against what was
+        SPOKEN. The model named a time that genuinely belonged to the day it
+        named, so the sentence was internally consistent and passed straight
+        through. It corrects "the TIME to the DAY, never the reverse", and here
+        the DAY was the wrong half.
+      * The keypad was right the whole time: pressing 2 resolves through this
+        same map and takes Wednesday. Speech and keypad disagreed because only
+        one of them read the table.
+
+    So this is not a new rule. It is the keypad's own resolution, made
+    available to the spoken path, so that "the second one" and a pressed 2
+    cannot diverge -- which is the property
+    `test_the_ordinal_list_and_the_keypad_agree_position_for_position` already
+    asserts of the MAP, and which was untrue of the two READERS.
+
+    DENY BY DEFAULT. Returns None unless every one of these holds:
+
+      * a slot map is live and has not been superseded (B-80 -- a superseded
+        map resolves to a time the caller was offered EARLIER and is no longer
+        being offered, which is a silent wrong-slot booking);
+      * the caller framed exactly one position (`_positions_named` unions two
+        foldings and two hits decline, so "one or two" is ambiguous, not 1);
+      * that position is actually in the map;
+      * the caller named NO day and referred to NO time themselves.
+
+    That last guard is B-105's rule pointed the same way: an explicit naming
+    beats a positional reference to the same readout. "Number 2, but Thursday
+    if you have it" must reach the model whole rather than being rewritten to
+    "Wednesday 2nd September" -- the caller said something this table cannot
+    represent, and flattening it would lose the half that matters.
+
+    The day guard is deliberately WIDER than `day_named_by_caller`, which
+    requires a full naming ("wednesday the 2nd of september") and returns None
+    for a bare weekday by design -- a partial naming is Tier 2 and out of scope
+    there. That is right for B-105, which only SCOPES a follow-up query and
+    leaves the caller's words intact. It is not right here, because resolving a
+    position REPLACES what the caller said. A guard on a destructive rewrite
+    has to fail in the safe direction, so any weekday word at all declines and
+    the utterance reaches the model whole.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    if not isinstance(session, dict):
+        return None
+    if session.get("v3_slot_map_superseded"):
+        return None
+    slot_map = session.get("v3_dtmf_slot_map") or {}
+    if not isinstance(slot_map, dict) or not slot_map:
+        return None
+
+    hits = _positions_named(text)
+    if len(hits) != 1:
+        return None
+    label = slot_map.get(str(next(iter(hits))))
+    if not label or not str(label).strip():
+        return None
+
+    # An explicit naming beats a positional pick -- see the docstring.
+    days = available_days if available_days is not None else (
+        session.get("available_days") or []
+    )
+    if day_named_by_caller(days, text):
+        return None
+    _low = _caller_norm(text)
+    if any(f" {_w} " in f" {_low} " for _w in _WEEKDAY_WORDS):
+        return None
+    if _TIME_REFERENCE_RE.search(text):
+        return None
+
+    return str(label).strip()
+
+
 def remaining_unspoken_on_current_day(
     session: Dict[str, Any], user_text: str = ""
 ) -> List[Dict[str, Any]]:
