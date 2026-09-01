@@ -3009,6 +3009,31 @@ class LLMStream:
         if self._timing is not None:
             self._timing.model = model
 
+        # ── The caller's opening utterance ───────────────────────
+        # Recorded here, immediately before the prompt is built, because
+        # `conversation_history` is appended only AFTER the turn completes
+        # (`_append_history`). On turn 1 — the turn whose opening decides
+        # whether the reason question should be asked at all — history is
+        # still empty, so reading the opening back out of it is impossible.
+        #
+        # Set once and never overwritten: "opening" means the first thing
+        # the caller said, not the most recent thing.
+        # A bare "hi" is a greeting, not an opening, and latching it would
+        # spend the one shot this gets on a turn that says nothing. Defer past
+        # at most two such turns, then take whatever arrives - an unbounded
+        # search would let a quiet caller move the "opening" to the middle of
+        # the call, which is not what any reader of it expects.
+        _ou = (user_text or "").strip()
+        if _ou and not session.get("opening_utterance"):
+            from app.media_streams.first_turn_extractor import (
+                opening_is_substantive as _ou_ok,
+            )
+            _probes = int(session.get("_opening_probe_count") or 0)
+            if _ou_ok(_ou) or _probes >= 2:
+                session["opening_utterance"] = _ou
+            else:
+                session["_opening_probe_count"] = _probes + 1
+
         # ── Step 5: System prompt (two-block caching) ───────────────────
         # static_prompt: large, never changes within a call → cached.
         # dynamic_prompt: small per-turn state → sent uncached each turn.

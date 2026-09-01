@@ -54,7 +54,15 @@ _REASON_QUESTION_RE = re.compile(
     r"what(?:'s|\s+is)?\s+(?:brings|bringing)\s+you\s+in"          # what brings you in
     r"|what\s+brings\s+you\s+(?:to|in\s+to)\s+us"
     r"|what(?:'s|\s+is)\s+the\s+appointment\s+for"                 # what's the appointment for
-    r"|what(?:'s|\s+is)\s+going\s+on\s+with\s+(?:it|that)"         # what's going on with it
+    # Widened 2026-09-01 to "what HAS/HAS BEEN going on with your ANKLE".
+    # The original two-word tail (it|that) missed every version that named
+    # the body part or inserted "been", which is how the second ask usually
+    # arrives once the first has already been answered. Measured before
+    # widening: across 8,533 stored assistant turns the wider arm newly
+    # matches 19, and all 19 are reason questions — no readback, no slot
+    # line, no empathy sentence is caught by it.
+    r"|what(?:'s|\s+is|\s+has)?\s+(?:been\s+)?going\s+on\s+with\s+"
+    r"(?:it|that|the|your)"                                        # what's (been) going on with it/your knee
     r"|what(?:'s|\s+is)\s+(?:been\s+)?troubling\s+you"
     r"|what(?:'s|\s+is)\s+the\s+(?:issue|problem|trouble)"
     r"|which\s+(?:area|body\s+part)\s+(?:is\s+)?(?:it|bothering)"
@@ -2013,11 +2021,57 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     #
     # On CA041352eb the entire turn was the reason question, twice over, so this
     # is the common case rather than the corner.
-    if _clinic_asks_its_own_reason_question(session):
-        _reason_cleaned = result          # this clinic asks it on purpose
+    #
+    # "On purpose" means ONCE. The latch below is what makes the difference
+    # between a clinic that asks its reason question and a clinic that keeps
+    # asking it: on 17 stored calls the caller ANSWERED the question and was
+    # asked again in fresh wording ("Right — what's the appointment for?" →
+    # "my shoulder" → "Got it — can you tell me a bit more about what's been
+    # going on with it?"). Rule 1b and the CALL STATE line both already said
+    # not to, and both are prompt text; the model composes each turn without a
+    # reliable memory of having asked, so "once" has to be enforced where the
+    # words leave the system rather than where they are chosen.
+    #
+    # This deliberately reuses the whole existing branch below rather than
+    # adding a second one: the residue handling, the orphaned-preamble strip
+    # and the substitute-the-outstanding-step fallback are exactly what a
+    # second ask needs too, and they were paid for in incidents already.
+    #
+    # BOUNDED, because an output gate that can never yield is how the Theorem
+    # booking deadlock happened: A2 refuses a booking with no reason on
+    # record, its refusal text ORDERS the model to ask "What's the
+    # appointment for?", and a gate that strips that ask every time leaves
+    # tool and gate fighting for the rest of the call.
+    #
+    # So the strip is unlimited only when the reason is actually ON RECORD -
+    # then A2 will pass and no instruction to re-ask can arrive. When it is
+    # not, exactly ONE re-ask is suppressed and the next is allowed through.
+    # Worst case the caller hears the question twice, which is today's
+    # behaviour; it can no longer become a loop.
+    #
+    # The count is per STRIP, not per turn, and sanitise_response runs once
+    # per streamed chunk - so a question split across a chunk boundary can
+    # spend the allowance early. That direction is deliberate: spending it
+    # early means the next ask is SPOKEN, and a question the caller hears
+    # twice is a smaller failure than a booking that can never complete.
+    _reason_on_record = bool(
+        (session.get("reason") or "").strip()
+        or ((session.get("collected") or {}).get("reason") or "").strip()
+    )
+    _may_strip_reason = bool(session.get("_reason_question_asked")) and (
+        _reason_on_record or int(session.get("_reason_strip_count") or 0) < 1
+    )
+    if (
+        _clinic_asks_its_own_reason_question(session)
+        and not _may_strip_reason
+    ):
+        _reason_cleaned = result          # this clinic asks it on purpose — once
     else:
         _reason_cleaned = _REASON_QUESTION_RE.sub("", result)
     if _reason_cleaned != result:
+        session["_reason_strip_count"] = int(
+            session.get("_reason_strip_count") or 0
+        ) + 1
         # Runs ONLY inside this branch, i.e. only when a reason question was
         # actually removed. A standalone "I've noted the reason on the booking"
         # is a statement of fact and must survive; it is an orphan only when the

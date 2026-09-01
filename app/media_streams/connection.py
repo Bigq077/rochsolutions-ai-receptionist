@@ -1307,6 +1307,28 @@ _TIMING_QUESTION_AFTER_BOOKING_ACK = (
 
 def _reason_already_known(session: dict) -> bool:
     """True when the call already has a booking reason on record."""
+    #
+    # The opening utterance comes FIRST, because on the live media-streams
+    # path it is the only one of these sources that can answer in time. The
+    # two slot checks below are written by `book_appointment`'s A2 gate,
+    # which runs many turns after this decision, and `condition_notes` is
+    # written by a fire-and-forget Haiku task launched during the SAME turn.
+    # Without this call the guard is not merely weak here, it is starved:
+    # every source it consults is still empty when the injector asks.
+    #
+    # `commit_opening_reason` also RECORDS what it found, and that write is
+    # load-bearing rather than tidy-minded — see its docstring. Suppressing
+    # the question without recording the reason hands the caller to the A2
+    # gate, which refuses the booking and instructs the model to ask the very
+    # question Gate 5b-r then strips.
+    try:
+        from app.media_streams.first_turn_extractor import commit_opening_reason
+        if commit_opening_reason(session):
+            return True
+    except Exception:
+        # Never let a parsing helper break a live booking turn: falling
+        # through means the question is asked, which is the old behaviour.
+        logger.debug("[ms_conn] opening-reason commit failed", exc_info=True)
     if (session.get("reason") or "").strip():
         return True
     collected = session.get("collected")

@@ -193,7 +193,19 @@ UNCHANGED_CLINIC_PROMPTS = {
     # the containment claim this table exists to prove, and the reason the rung
     # is gated on `_spine_has_duration_choice(clinic)` (a predicate over the
     # catalogue) rather than on a clinic id.
-    "jv_v1": "d4fb03b5e5b56c7e",
+    # Re-pinned 2026-09-01, d4fb03b5e5b56c7e -> 35b2ba94f4b37c33. B-128: the
+    # condition-led rung of BOOKING STEPS 1 used to end every such turn with a
+    # booking offer, including for callers whose opening words had already
+    # asked to book - 36 stored calls where "would you like to book?" was put
+    # to someone who had just said "I'd like to book". The rung now splits on
+    # whether booking intent was already stated.
+    #
+    # jv_v1 moves ALONE, and that is the containment claim: the rung is gated
+    # on `_has_fluency` (a predicate over the clinic's condition library), so
+    # demo, theorem and theorem_v3 render byte-identical, and Vital Edge -
+    # which opts into a reason question but ships no condition library - is
+    # untouched in its static prompt too.
+    "jv_v1": "35b2ba94f4b37c33",
     "theorem": "8565be9a48a7a9aa",
     # Re-pinned 2026-08-25: 'Children under fifteen not seen' -> 'Children
     # under seven not seen'. Mark's minimum age is 7 (owner-confirmed

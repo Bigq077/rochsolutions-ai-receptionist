@@ -2091,9 +2091,19 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
             "seen; a bare acknowledgement gives them nothing to answer and "
             "wastes the turn. This turn IS the CONDITION FLUENCY reply, and it "
             "is ONE short turn: one or two sentences showing you genuinely know "
-            "that condition, then a SINGLE question — the booking offer for the "
-            f"best-fit service, e.g. 'Shall I get you booked in with {prac} for "
-            "an assessment?'\n"
+            "that condition, then a SINGLE question.\n"
+            "WHICH question depends on what they have ALREADY said, and getting "
+            "this wrong is the commonest way this turn is wasted:\n"
+            "  - They described a complaint but did NOT ask to book: the single "
+            "question IS the booking offer, e.g. 'Shall I get you booked in with "
+            f"{prac} for an assessment?'\n"
+            "  - They described a complaint AND asked to book ('I'd like to book "
+            "an appointment, my ankle's a bit sore'): they have already ACCEPTED. "
+            "Do NOT offer again. Putting 'would you like to book?' to someone "
+            "whose opening words were 'I'd like to book' reads as not having "
+            "listened, and it asks them to agree to something they proposed. Skip "
+            "the offer entirely and ask the next outstanding booking step instead "
+            "- normally the day/time question.\n"
             "Nothing else belongs on that turn. Do NOT ask what the appointment "
             "is for — they just told you, and 1b already forbids re-asking it. "
             "Do NOT ask whether they have been seen here before — that question "
@@ -3021,6 +3031,48 @@ def _b7_call_state(session: Dict[str, Any], clinic: Dict[str, Any], tk: Dict[str
             "did not answer it, move on with what you have; asking a second "
             "time reads as not having listened"
         )
+
+    # ── What the caller already told us in their FIRST sentence ─────────
+    # The engine half of two defects measured over 683 stored calls: the reason
+    # re-asked though the opener gave it (33 calls), and "would you like to
+    # book?" put to a caller whose opening words were "I'd like to book" (36).
+    #
+    # BOOKING STEPS already states both rules, and the model still broke them,
+    # because obeying them means re-reading the opening utterance and judging
+    # it afresh on every turn. These lines do that judging once, deterministically,
+    # and hand over the ANSWER instead of the task — the same division of
+    # labour as the reason-asked latch above: prompt text sets the wording,
+    # engine state sets the guarantee.
+    #
+    # Both are gated on the clinic opting into a reason question, so a clinic
+    # that never asks (theorem, theorem_v3) renders byte-identical.
+    if pf.get("reason_question"):
+        try:
+            from app.media_streams.first_turn_extractor import (
+                opening_reason as _opening_reason,
+                opening_had_booking_intent as _opening_booking,
+            )
+            _op_reason = _opening_reason(session)
+            if _op_reason and not session.get("_reason_question_asked"):
+                state.append(
+                    "the caller ALREADY said what this is about in their first "
+                    f"sentence — {_op_reason!r}. That IS the reason and it is "
+                    "on record; do NOT ask what the appointment is for, in any "
+                    "wording. If you need a detail it does not cover, ask for "
+                    "THAT detail specifically — never the open question again"
+                )
+            if _opening_booking(session):
+                state.append(
+                    "the caller ASKED TO BOOK in their first sentence — they "
+                    "have already accepted, so do NOT ask whether they would "
+                    "like to book, or offer to book, at any point before slots "
+                    "are presented. Go straight to the next outstanding booking "
+                    "step. (Confirming a SPECIFIC slot you have just read out "
+                    "— 'shall I book that in?' — is a different question and "
+                    "remains correct.)"
+                )
+        except Exception:
+            pass
 
     cn = session.get("twilio_from_local") or ""
     if cn:

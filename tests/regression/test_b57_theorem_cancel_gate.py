@@ -363,7 +363,19 @@ UNMOVED_PROMPTS = {
     # b55 table pins jv_v1 only; this one pins vital_edge as well, and the two
     # hash differently (see the note above -- never copy a value between them).
     # Recomputed with THIS file's _sha.
-    "jv_v1": "d4fb03b5e5b56c7e",
+    # Re-pinned 2026-09-01, d4fb03b5e5b56c7e -> 35b2ba94f4b37c33. B-128: the
+    # condition-led rung of BOOKING STEPS 1 used to end every such turn with a
+    # booking offer, including for callers whose opening words had already
+    # asked to book - 36 stored calls where "would you like to book?" was put
+    # to someone who had just said "I'd like to book". The rung now splits on
+    # whether booking intent was already stated.
+    #
+    # jv_v1 moves ALONE, and that is the containment claim: the rung is gated
+    # on `_has_fluency` (a predicate over the clinic's condition library), so
+    # demo, theorem and theorem_v3 render byte-identical, and Vital Edge -
+    # which opts into a reason question but ships no condition library - is
+    # untouched in its static prompt too.
+    "jv_v1": "35b2ba94f4b37c33",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL

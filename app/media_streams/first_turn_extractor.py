@@ -389,3 +389,130 @@ def apply_first_turn_signals(signals: Dict[str, Any], session: Dict[str, Any]) -
         signals.get("first_turn_urgency"),
         signals.get("first_turn_clinic_discovery", False),
     )
+
+
+# ── The caller's opening utterance, read on the LIVE path ─────────────────────
+# Everything above this line is reachable only through FlowEngine
+# (`apply_first_turn_signals` has exactly two callers, both in flow.py), and
+# FlowEngine is bypassed on every live clinic. So on a real call the canonical
+# `reason` slot was NEVER populated from the opening utterance — the only live
+# writer is the A2 gate inside `book_appointment`, which runs many turns later.
+#
+# What that cost (measured over 683 stored calls, 2026-09-01): on 33 calls the
+# caller opened with the reason — "i'd like to book please it's for knee pain"
+# — and was asked "What's the appointment for?" anyway. The guard meant to
+# prevent it, `_reason_already_known`, reads three keys and all three are empty
+# at the moment the injector decides:
+#
+#   session["reason"] / collected["reason"]  -> written only by the A2 gate
+#   soft_context["condition_notes"]          -> written by a fire-and-forget
+#                                               Haiku task launched during the
+#                                               SAME turn; it cannot have landed
+#
+# The guard was not wrong, it was starved. These helpers feed it from the one
+# signal that is available synchronously and needs no model: the caller's own
+# first sentence, through the same deterministic extractor Theorem already uses.
+#
+# Measured on the 556 in-scope (jv_v1 + northgate) openings before shipping:
+# `_extract_reason` fired on 133 with no false positive and no false negative,
+# and `_has_booking` on 268 with none of either. Both fail closed — an opening
+# naming two body parts, or a correction ("not my knee, it's my hip"), returns
+# None and the question is asked as before.
+
+
+def opening_utterance(session: Dict[str, Any]) -> str:
+    """The caller's first utterance of the call, or "" before one has arrived.
+
+    Recorded by run_turn (llm_stream Step 5) rather than read back out of
+    conversation_history, because history is appended AFTER the turn completes:
+    on turn 1 — the only turn that matters here — it is still empty when the
+    system prompt is built.
+    """
+    return (session.get("opening_utterance") or "").strip()
+
+
+def opening_reason(session: Dict[str, Any]) -> Optional[str]:
+    """The reason the caller gave in their opening utterance, if any.
+
+    Pure and cached: `_extract_reason` is deterministic, so the result is
+    memoised per call under a private key rather than recomputed on every
+    prompt render and every gate check.
+    """
+    text = opening_utterance(session)
+    if not text:
+        # Nothing to read yet. Deliberately NOT cached: caching None here would
+        # freeze the answer for the whole call, and the opening utterance is
+        # recorded a moment later on the very first turn.
+        return None
+    if session.get("_opening_reason_cache_for") == text:
+        return session.get("_opening_reason_cache")
+    reason = _extract_reason(text.lower())
+    session["_opening_reason_cache"] = reason
+    session["_opening_reason_cache_for"] = text
+    return reason
+
+
+def opening_had_booking_intent(session: Dict[str, Any]) -> bool:
+    """True when the caller ASKED TO BOOK in their opening utterance.
+
+    Separate from `opening_reason` because the two answer different questions
+    and only their CONJUNCTION is the condition-led opening that BOOKING STEPS
+    1 mishandles: a caller who describes a complaint wants an offer, a caller
+    who describes a complaint AND asks to be booked has already accepted one.
+    """
+    text = opening_utterance(session)
+    if not text:
+        return False
+    if session.get("_opening_booking_cache_for") == text:
+        return session.get("_opening_booking_cache")
+    intent = bool(_has_booking(text.lower()))
+    session["_opening_booking_cache"] = intent
+    session["_opening_booking_cache_for"] = text
+    return intent
+
+
+def commit_opening_reason(session: Dict[str, Any]) -> bool:
+    """Record the opening reason into the canonical slots. Returns True if known.
+
+    The WRITE is not incidental — it is the safety half of the fix, and
+    suppressing the question without it is the failure this must not repeat.
+    `book_appointment`'s A2 gate refuses any booking that carries no reason and
+    its refusal text tells the model to ask "What's the appointment for?" — a
+    phrasing Gate 5b-r then strips. Suppress-without-record therefore does not
+    save a turn, it deadlocks the booking and loops the caller.
+
+    Never overwrites: a reason the caller stated later, or one the model
+    collected, was said with more deliberation than an opening aside.
+    """
+    reason = opening_reason(session)
+    if not reason:
+        return False
+    if not (session.get("reason") or "").strip():
+        session["reason"] = reason
+        logger.info(
+            "[first_turn] opening reason committed on the live path: %r",
+            reason[:60],
+        )
+    collected = session.setdefault("collected", {})
+    if isinstance(collected, dict) and not (collected.get("reason") or "").strip():
+        collected["reason"] = reason
+    return True
+
+
+def opening_is_substantive(text: str) -> bool:
+    """True when *text* is worth latching as the caller's opening.
+
+    A bare "hi" is not an opening, it is a greeting, and latching it spends the
+    one shot this mechanism gets on a turn that says nothing. 77 of the 556
+    in-scope stored openings look like that ("hi", "hi there", and STT
+    fragments such as "hi i'd like to").
+
+    Substantive means: it carries a signal we can act on, or it is long enough
+    that the caller has plainly said something. Kept deliberately loose - the
+    caller of this function bounds how many turns it may defer, so a wrong
+    "not substantive" costs one turn, never the call.
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    return bool(_extract_reason(t)) or bool(_has_booking(t)) or len(t.split()) > 4
