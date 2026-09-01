@@ -6,7 +6,10 @@ then ended. A 14s Anthropic stall therefore produced one phrase at 1.8s and
 ~12s of nothing — breaking the CLAUDE.md §6 bar of "no dead air over 3s without
 a filler or acknowledgement" on precisely the turns the filler exists to cover.
 
-Owner decision 2026-08-03: ONE re-arm at ~5s, then stop. Not a loop.
+Owner decision 2026-08-03: ONE re-arm, then stop. Not a loop.
+Owner decision 2026-09-01: it fires on a GENUINE stall (10s absolute from
+dispatch), not 5s after the first phrase - two contentless phrases five
+seconds apart sound worse to a caller than the silence they replace.
 
 These tests pin the decision logic (`_second_filler_text`) and the fact that
 the re-arm exists at all. They do not need a WebSocket, a connection or an LLM.
@@ -19,7 +22,8 @@ import pytest
 from app.media_streams import llm_stream
 from app.media_streams.config import (
     FILLER_PHRASES,
-    LLM_FILLER_SECOND_DELAY_MS,
+    LLM_FILLER_SECOND_MIN_GAP_MS,
+    LLM_FILLER_SECOND_STALL_MS,
     LLM_FIRST_CHUNK_TIMEOUT_MS,
 )
 from app.media_streams.llm_stream import _second_filler_text
@@ -102,21 +106,138 @@ def test_missing_flag_is_treated_as_not_armed():
 # ── the decision itself, pinned ────────────────────────────────────────────
 
 
-def test_second_delay_is_about_five_seconds():
-    """Owner decision 2026-08-03. If this changes, the change was a decision,
-    not a tweak — re-read REGISTER_B_U.md B-19 before editing this test."""
-    assert LLM_FILLER_SECOND_DELAY_MS == 5000
+def test_the_stall_threshold_is_absolute_not_relative():
+    """The 2026-09-01 correction, and the shape of the bug it fixes.
+
+    The delay used to be 5000ms measured FROM THE FIRST PHRASE. dc6f521e moved
+    the situational head from 3000ms to 600ms and did not touch it, so the
+    second phrase slid from 8.0s to 5.6s with nobody deciding to — 13.9% of
+    turns instead of 4.8%, measured over 294 obs turns.
+
+    An absolute deadline from dispatch cannot drift when the head timing moves
+    again. If this becomes relative once more, that bug is back.
+    """
+    src = Path(llm_stream.__file__).read_text(encoding="utf-8")
+    start = src.index("async def _delayed_filler()")
+    end = src.index("_filler_task = asyncio.create_task", start)
+    body = src[start:end]
+    assert "_filler_t0 + LLM_FILLER_SECOND_STALL_MS" in body, (
+        "the re-arm must wait to an absolute deadline measured from dispatch"
+    )
+    assert LLM_FILLER_SECOND_STALL_MS == 10000
 
 
-def test_worst_case_dead_air_is_bounded_under_the_claude_md_bar():
-    """CLAUDE.md §6: no dead air over 3s without a filler or acknowledgement.
+def test_a_second_phrase_can_never_be_back_to_back():
+    """MIN_GAP is the structural guard, not the tuning knob.
 
-    Before the fix the gap after the first filler was unbounded — it ran as
-    long as the upstream stall. It is now bounded by the re-arm delay."""
+    In practice it never binds — a 600ms head is 9.4s clear of the 10s
+    deadline. It exists so that the NEXT timing change cannot recreate the
+    defect the way dc6f521e did. Four seconds is long enough that two phrases
+    read as separate events rather than a stutter.
+    """
+    assert LLM_FILLER_SECOND_MIN_GAP_MS >= 4000
+    src = Path(llm_stream.__file__).read_text(encoding="utf-8")
+    start = src.index("async def _delayed_filler()")
+    end = src.index("_filler_task = asyncio.create_task", start)
+    assert "LLM_FILLER_SECOND_MIN_GAP_MS" in src[start:end], (
+        "the re-arm must take the LATER of the stall deadline and the min gap"
+    )
+
+
+def test_silence_under_the_stall_threshold_is_a_deliberate_trade():
+    """CLAUDE.md §6 says no dead air over 3s without a filler. Between the head
+    and the 10s deadline we now knowingly break that, and this test exists so
+    the trade is visible rather than accidental.
+
+    Owner decision 2026-09-01, reversing the 2026-08-03 "second filler at ~5s":
+    two contentless phrases 5s apart sound worse to a caller than the silence
+    they replace. The corpus is why the line is at 10s and not lower — over
+    5.6s is 13.9% of turns, over 10s is 2.0%, so this buys back 86% of the
+    doubles while still covering the stalls B-19 was written for.
+    """
     first_at_s = LLM_FIRST_CHUNK_TIMEOUT_MS / 1000.0
-    assert first_at_s <= 3.0, "first filler must still land inside the bar"
-    gap_s = LLM_FILLER_SECOND_DELAY_MS / 1000.0
-    assert gap_s <= 5.0, "the re-armed filler must cap the second silence"
+    assert first_at_s <= 3.0, "the FIRST phrase must still land inside the bar"
+    assert LLM_FILLER_SECOND_STALL_MS >= 8000, (
+        "below ~8s the second phrase stacks often enough to be the defect "
+        "rather than the fix"
+    )
+    assert LLM_FILLER_SECOND_STALL_MS <= 15000, (
+        "above ~15s the B-19 dead air returns — a 24.7s turn exists in the "
+        "corpus and cannot be met with silence"
+    )
+
+
+# ── the live path goes through the refusals ────────────────────────────────
+
+
+def test_the_live_candidate_goes_through_the_same_refusals():
+    """Until 2026-09-01 the live re-arm rendered an UNKNOWN_SLOW head inline
+    and never called this function, so all three refusals above were pinned by
+    tests and enforced nowhere. The candidate parameter is what makes the
+    tests and the running code the same decision."""
+    head = "Still with you —"
+    assert _second_filler_text(
+        _armed_session(), "Sorry to hear that —", False, candidate=head
+    ) == head
+    assert _second_filler_text(
+        _armed_session(), head, False, candidate=head
+    ) is None
+    assert _second_filler_text(
+        _armed_session(), "One moment…", True, candidate=head
+    ) is None
+    assert _second_filler_text(
+        {"_ack_filler_active": False}, "One moment…", False, candidate=head
+    ) is None
+    assert _second_filler_text(
+        _armed_session(), "One moment…", False, candidate="   "
+    ) is None
+
+
+def test_a_candidate_may_not_claim_a_write_twice():
+    """Rule 4, generalised to whatever the arbiter hands us. Two phrases in a
+    row that both claim the booking is being written is the B-30 shape."""
+    write_ack = "Just locking that in now…"
+    assert _second_filler_text(
+        _armed_session(), write_ack, False, candidate=write_ack
+    ) is None
+
+
+def test_the_live_path_actually_calls_this_function():
+    """The regression that made the guards decorative. If the re-arm renders a
+    head inline again, this fails."""
+    src = Path(llm_stream.__file__).read_text(encoding="utf-8")
+    start = src.index("async def _delayed_filler()")
+    end = src.index("_filler_task = asyncio.create_task", start)
+    assert "_second_filler_text(" in src[start:end], (
+        "the live re-arm must take its decision from _second_filler_text"
+    )
+
+
+# ── the five stored doubles that prompted this ─────────────────────────────
+
+
+@pytest.mark.parametrize("head", [
+    "Sorry to hear that —",        # CAc119b8838f556ac2 — the reported one
+    "Let's get you booked in —",   # CA52dc5ea104909d79
+    "Popping that in for you —",   # CA320e6b1cb782173f
+    "Right with you…",             # CA8522b3e23fc64293, Vital Edge
+    "Right, booking you in —",     # CAa4231548cafb7b83
+])
+def test_the_stored_doubles_were_not_stopped_by_wording(head):
+    """Each of these five was heard on a real call: a head, then
+    "Still with you —" five seconds later.
+
+    This test pins WHY the fix is a deadline and not a phrase blocklist. The
+    wording refusal does not stop any of them — the phrases differ, so
+    _second_filler_text allows every pair. What stops them is that all five
+    turns produced content well under 10s. If someone later "fixes" this by
+    banning wordings instead, this test still passes and the defect returns.
+    """
+    slow = "Still with you —"
+    assert head != slow
+    assert _second_filler_text(
+        _armed_session(), head, False, candidate=slow
+    ) == slow, "wording refusal is not what prevents these — the deadline is"
 
 
 def test_the_rearm_is_not_a_loop():

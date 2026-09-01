@@ -57,7 +57,8 @@ from .config import (
     LLM_FIRST_CHUNK_TIMEOUT_MS,
     HOLD_HEAD_DELAY_MS,
     LLM_FILLER_COOLDOWN_SEC,
-    LLM_FILLER_SECOND_DELAY_MS,
+    LLM_FILLER_SECOND_MIN_GAP_MS,
+    LLM_FILLER_SECOND_STALL_MS,
     FILLER_PHRASES,
     FILLER_PHRASE,
     ACK_FILLER_MARKER,
@@ -1123,31 +1124,57 @@ def _caller_requests_new_day_or_time(messages, session: Optional[Dict[str, Any]]
 
 
 def _second_filler_text(
-    session, first_text: str, got_first_chunk: bool
+    session,
+    first_text: str,
+    got_first_chunk: bool,
+    *,
+    candidate: "str | None" = None,
 ) -> "str | None":
-    """Text for the re-armed (second) filler, or None if it must not play.
+    """Text for the re-armed (second) hold phrase, or None if it must not play.
 
     B-19: the background filler was one-shot — it fired once at
     LLM_FIRST_CHUNK_TIMEOUT_MS and the task ended, so an upstream stall past
     that point was bare silence (measured: a 14s spike gave one phrase at 1.8s
     and ~12s of nothing).
 
-    Three reasons NOT to speak again, in order:
+    ``candidate`` is the wording the caller of this function wants to speak —
+    the arbiter's UNKNOWN_SLOW head on the live path. Omitted, it falls back to
+    a rotated pick from FILLER_PHRASES, which is what this function did when it
+    was written. That default is what the B-19 tests exercise; the live path
+    passes a candidate. **Both go through the same refusals**, which is the
+    point of the parameter: until 2026-09-01 the live re-arm rendered a head
+    inline and never called this function at all, so every refusal below was
+    pinned by a test and enforced nowhere.
 
-    1. `got_first_chunk` — the LLM answered during the wait. Belt and braces:
+    Four reasons NOT to speak again, in order:
+
+    1. ``got_first_chunk`` — the LLM answered during the wait. Belt and braces:
        the first token also cancels the whole task, so this is the race guard.
-    2. `_ack_filler_active` is False — a tool-call filler took over
-       (`filler_phrases.with_filler` clears it) and is already speaking.
-       Deliberately NOT `_ack_filler_cancelled`: `_tts_loop` *consumes* that
-       flag, so it reads False whether or not a tool filler won.
-    3. Never a verbatim repeat, and never a second write-ack — the first phrase
-       may have been "Just locking that in now…", and saying it twice claims
-       the write twice to a caller who has already confirmed.
+    2. ``_ack_filler_active`` is False — a tool-call filler took over
+       (``filler_phrases.with_filler`` clears it) and is already speaking.
+       Deliberately NOT ``_ack_filler_cancelled``: ``_tts_loop`` *consumes*
+       that flag, so it reads False whether or not a tool filler won.
+    3. Never a verbatim repeat. Hearing the identical phrase twice reads as a
+       stuck line rather than a hold.
+    4. Never a second write-ack — the first phrase may have been "Just locking
+       that in now…", and saying it twice claims the write twice to a caller
+       who has already confirmed.
     """
     if got_first_chunk:
         return None
     if not session.get("_ack_filler_active"):
         return None
+    if candidate is not None:
+        text = (candidate or "").strip()
+        if not text or text == (first_text or "").strip():
+            return None
+        # Rule 4 generalised: whatever the arbiter hands us, it may not be the
+        # second phrase in a row that claims a write has happened.
+        from app.filler_phrases import is_write_filler as _is_write
+
+        if _is_write(first_text or "") and _is_write(text):
+            return None
+        return text
     pool = [p for p in FILLER_PHRASES if p != first_text] or list(FILLER_PHRASES)
     return random.choice(pool)
 
@@ -4686,35 +4713,66 @@ class LLMStream:
                         )
                     self._last_filler_at = time.monotonic()
 
-                    # ── B-19: re-arm ONCE ────────────────────────────────
+                    # ── B-19: re-arm ONCE, on a GENUINE stall ────────────
                     # Without this the task ends here, so an upstream stall
                     # past this point is bare silence for as long as it lasts
                     # (measured: 14s spike → ~12s of nothing).
                     #
+                    # The wait is to an ABSOLUTE deadline from LLM dispatch,
+                    # not a relative sleep from the phrase above. A relative
+                    # 5s is what let dc6f521e move the head to 600ms and slide
+                    # this from 8.0s to 5.6s without anyone deciding to —
+                    # 13.9% of turns instead of 4.8%, and half the resulting
+                    # phrases landed on top of the head. MIN_GAP is the second
+                    # deadline: whatever the head timing becomes, two phrases
+                    # can never be back to back.
+                    #
                     # Cancellation is already handled: the first token sets
                     # got_first_chunk and cancels this task, so this sleep is
                     # torn down on any normal recovery.
-                    await asyncio.sleep(LLM_FILLER_SECOND_DELAY_MS / 1000.0)
-                    # Not stacking — stacking is two heads back to back. This is
-                    # a second reassurance after five further seconds of nothing,
-                    # where silence is the worse fault (measured: a 14s stall
-                    # left ~12s of dead air). Same arbiter, rotated so it is
-                    # never a verbatim repeat, and still naming no work.
+                    _now = time.monotonic()
+                    _wake_at = max(
+                        _filler_t0 + LLM_FILLER_SECOND_STALL_MS / 1000.0,
+                        _now + LLM_FILLER_SECOND_MIN_GAP_MS / 1000.0,
+                    )
+                    await asyncio.sleep(max(0.0, _wake_at - _now))
                     if got_first_chunk:
                         return
-                    _second_text = _render_head(
-                        _WorkKind.UNKNOWN_SLOW,
-                        index=len(session.get("used_fillers") or []),
+                    # The wording comes from the arbiter; the DECISION comes
+                    # from _second_filler_text, which is the same function the
+                    # B-19 tests pin. Until now this path rendered a head
+                    # directly and never called it, so its three refusals —
+                    # a tool filler took over, the first phrase claimed a
+                    # write, a verbatim repeat — were pinned by tests and NOT
+                    # enforced on the live path. One owner, or the tests are
+                    # describing a function nobody runs.
+                    _second_text = _second_filler_text(
+                        session,
+                        _ack_filler_text,
+                        got_first_chunk,
+                        candidate=_render_head(
+                            _WorkKind.UNKNOWN_SLOW,
+                            index=len(session.get("used_fillers") or []),
+                        ),
                     )
-                    if not _second_text or _second_text == _ack_filler_text:
+                    if not _second_text:
+                        logger.info(
+                            "[ms_llm] second hold phrase refused after %.1fs "
+                            "— silence is the better fault here",
+                            time.monotonic() - _filler_t0,
+                        )
                         return
                     logger.info(
-                        "[ms_llm] second filler phrase (no chunk %.1fs after "
-                        "the first): %r",
-                        LLM_FILLER_SECOND_DELAY_MS / 1000.0, _second_text,
+                        "[ms_llm] second filler phrase (genuine stall, %.1fs "
+                        "since dispatch with no content): %r",
+                        time.monotonic() - _filler_t0, _second_text,
                     )
                     await tts_text_queue.put(ACK_FILLER_MARKER + _second_text)
                     self._last_filler_at = time.monotonic()
+            # Dispatch time, so the re-arm above can wait to an ABSOLUTE
+            # deadline rather than a relative sleep that silently changes
+            # meaning when the head timing moves.
+            _filler_t0 = time.monotonic()
             _filler_task = asyncio.create_task(_delayed_filler(), name="ms_llm_filler")
 
         # Regression guard: total cache_control blocks must never exceed 4

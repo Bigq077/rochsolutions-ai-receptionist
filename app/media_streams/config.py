@@ -513,19 +513,43 @@ TTS_CHUNK_TIMEOUT_MS = 3000
 # Still long enough that a normal cadence never stacks fillers.
 LLM_FILLER_COOLDOWN_SEC = 8.0
 
-# How long after the first filler to play a SECOND one, if the LLM is still
-# silent. B-19: the filler was one-shot — the background task fired once at
-# LLM_FIRST_CHUNK_TIMEOUT_MS and then ended, so a 14s upstream spike produced
-# one phrase at 1.8s and ~12s of bare silence. That breaks the CLAUDE.md §6 bar
-# of "no dead air over 3s without a filler or acknowledgement" on exactly the
-# turns the filler exists to cover.
+# When the re-armed (second) hold phrase may speak, and why it is now measured
+# from the TURN rather than from the first phrase.
 #
-# One re-arm at 5s caps the audible gap at ~5s. Owner decision 2026-08-03 was
-# explicitly "a second filler at ~5s, then stop" — this is deliberately NOT a
-# loop. Do not turn it into one without asking: a continuing cadence was
-# considered and rejected because three or four phrases on a slow turn sounds
-# anxious. See docs/plan/REGISTER_B_U.md, B-19/B-07.
-LLM_FILLER_SECOND_DELAY_MS = 5000
+# B-19: the filler was one-shot — the background task fired once and ended, so a
+# 14s upstream spike produced one phrase and ~12s of bare silence. That breaks
+# the CLAUDE.md §6 bar of "no dead air over 3s" on exactly the turns the filler
+# exists to cover. So a re-arm must exist. It is deliberately NOT a loop: owner
+# decision 2026-08-03, three or four phrases on a slow turn sounds anxious.
+#
+# What changed 2026-09-01, and it is a correction rather than a new opinion.
+# The delay used to be 5000ms measured FROM THE FIRST PHRASE. dc6f521e then
+# moved the situational head from 3000ms to 600ms and did not touch this
+# number, so the second phrase silently slid from firing at 8.0s to firing at
+# 5.6s. Measured over 294 turns in the obs corpus:
+#
+#     turns over 8.0s   4.8%      <- the old effective trigger
+#     turns over 5.6s  13.9%      <- what it became, unnoticed
+#
+# It tripled the rate as a by-product of an unrelated commit. Five of the ten
+# "Still with you —" emissions in the 57 calls since that change landed on top
+# of another head, which the owner heard on CAc119b8838f556ac2 as
+# "Sorry to hear that —" … "Still with you —" and reported as sounding off.
+#
+# Two constants instead of one, because the bug was a single relative number
+# that no longer meant what it said:
+#
+#   STALL_MS is ABSOLUTE, from LLM dispatch. It cannot drift when the head
+#   timing moves again. 10s is the knee in the corpus — over 5.6s is 13.9% of
+#   turns, over 10s is 2.0% — and it is the point where silence is
+#   unambiguously the worse fault rather than a judgement call.
+#
+#   MIN_GAP_MS is the structural guard that makes stacking unrepresentable
+#   whatever the other numbers become. In practice it never binds (a 600ms head
+#   is 9.4s clear of the 10s deadline); it exists so that the next timing change
+#   cannot recreate this defect the way dc6f521e did.
+LLM_FILLER_SECOND_STALL_MS = 10000
+LLM_FILLER_SECOND_MIN_GAP_MS = 4000
 
 # Bad-line detection: minimum silence gap before playing bad-line phrase
 BAD_LINE_SILENCE_THRESHOLD_SEC = 10.0
