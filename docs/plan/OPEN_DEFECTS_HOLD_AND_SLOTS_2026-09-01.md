@@ -84,85 +84,50 @@ regression test built from this call's exact timings, real call before promotion
 
 ---
 
-## P2 — A multi-day readout never signals that more times exist
+## NOT A DEFECT — the multi-day readout stays silent on purpose
 
-**Severity: MEDIUM.** Not a wording bug — a missing measurement.
+**Owner decision, 2026-09-01. Do not re-open this.** It was raised in that
+session and withdrawn on the owner's clarification, and it is recorded here so
+the next reader does not re-derive it as a bug.
 
-**Evidence:** same call, 15:14:16. `check_availability(date_hint="next week",
-day_window=7)` returned Monday 7th with **twelve** `slot_times`
-(`08:00 … 17:10`). Two were read out. Nothing told the caller the other ten
-existed. Same for Tuesday and Wednesday.
+A multi-day readout — *"Monday: two times. Tuesday: two times. Wednesday: two
+times."* — deliberately does **not** add "and I've more on those days". That is
+intended behaviour, not an omission. `slot_offer.py:306` gates the tail on
+`mode == "single_day"` (B-99: "that day" has no referent after three days named),
+and `llm_stream.py:6284` only ever measures `first_day`, so there is no data
+behind such a claim for days two and three anyway.
 
-**This is currently deliberate**, and the reason is recorded in two places:
+**What the owner actually wants happens already, and it works.** When a caller
+names a specific day and gets that day's slots, the tail fires from
+`more_times_tail()` whenever the day holds more than was read out.
 
-* `slot_offer.py:306` — *"The tail is a claim about the clinic's diary, so it is
-  made only where it has a referent — ONE day. 'A few others that day' after a
-  three-day readout names no day, which is the B-99 rule."*
-* `llm_stream.py:6280` — *"presentation_mode gates the APPEND only… Stripping is
-  unconditional."*
+Verified over the corpus, 2026-08-20 onward:
 
-**The deeper blocker, and the thing that makes a naive fix unsafe:**
-`llm_stream.py:6284` sets `_slot_more_times` from **`first_day` only**.
-
-```python
-_fd = result.get("first_day")
-session["_slot_more_times"] = bool(_fd.get("more_times"))
+```
+single-day readouts        72
+carried the more-times tail 19
+did not                     53
+of those 53, cases where more times were later shown to exist:  0
 ```
 
-So on a multi-day readout that flag describes **Monday**. Appending the existing
-tail after *"Number 3, Wednesday 9th September…"* would assert something about
-Wednesday that the payload never measured. That is the exact failure the whole
-family exists to prevent — on 2026-08-24, `CA98557584dc`, the model said *"I've a
-few others that day"* about a Tuesday holding precisely the two slots the caller
-had just been offered.
+Every readout that had more times said so. No missed disclosure. `CA320e6b1cb782`
+shows it working end to end — the caller heard it and used it (*"oh yeah what
+else have you got"* → got the remaining times).
 
-**Note for whoever picks this up:** the model *was* saying it on multi-day
-readouts before the deterministic builder landed — `CA0453bd85037ece`,
-2026-08-26: *"Number 2, Tuesday 8th September — nine in the morning. And I've a
-few others that day if neither suits."* So "we have always had this" is true, and
-it was unpoliced and wrong.
-
-### Proposed fix
-
-No new caller-facing literal. Reuse `more_times_tail()`
-(`slot_followup.py:1204`) verbatim — its three variants all say "that day", which
-**does** have a referent when the tail sits inside a chunk that just named its
-day (*"Number 1, Monday 7th September — eight in the morning, or ten past five in
-the evening. And I've a few others that day…"*).
-
-Per-day `more_times` is computable from data already in the payload:
-`available_days[i].slot_times` against what `presented_days` actually offered. No
-new tool call.
-
-**Open decision:** say it on the last day that has more (one utterance), or on
-every day that has more (up to three per readout — probably worse than silence).
-Owner leaned toward reuse-what-exists; the count is unresolved.
+**One caveat, which is really P1's problem.** The tail is appended to the LAST
+chunk, after every option and just before the closing question, so on a 12.2s
+readout it lands 10–12 seconds in. That makes it the first thing lost to any
+interruption. On `CAa2bdff2b702cea88` it was generated correctly and never heard,
+which is what made it look absent and produced this false lead. If P1's re-read
+is built, make sure the tail survives it.
 
 ---
 
-## P3 — The more-times line is the most droppable sentence in the call
-
-**Severity: LOW–MEDIUM.** Same family as P1, different cause.
-
-`build_slot_offer` appends the tail and then the closing question to the **last**
-chunk, so on a single-day readout it lands **10–12 seconds into a 12.2-second
-utterance**, after every option.
-
-That makes it the first casualty of *any* interruption — not just the phantom in
-P1, but a caller who hears three times and speaks up, which is the normal and
-expected thing to do. It works when nobody interrupts (`CA320e6b1cb782`: caller
-heard it and used it — *"oh yeah what else have you got"* → got the remaining
-times), but it is structurally fragile.
-
-**Proposed fix:** move the disclosure next to the day it describes rather than
-parking it at the very end. Naturally folds into P2, and into P1's re-read.
-
----
-
-## P4 — The obs transcript records speech the caller never heard
+## P2 — The obs transcript records speech the caller never heard
 
 **Severity: LOW as a defect, HIGH as a trap.** It caused two wrong diagnoses in
-one session.
+one session, including reporting a working feature as broken — see the
+NOT A DEFECT section above.
 
 `connection.py:14808` records the obs transcript, and its comment claims:
 
@@ -183,7 +148,7 @@ separately so "was this heard?" is answerable from the record. Until then,
 
 ---
 
-## P5 — A bare "Right —" is reaching callers
+## P3 — A bare "Right —" is reaching callers
 
 **Severity: MEDIUM.** 10 occurrences in 57 calls since 2026-08-28.
 
@@ -197,13 +162,13 @@ Three fragments before a question. `hold_speech.py:216` documents bare discourse
 markers (`"Right —"`, `"So —"`, `"Okay —"`) as **removed** for failing live in
 three separate ways. They are back — as the *model's own* opening chunk after a
 head, not as a filler. So it is not a filler-pool bug; it is the model echoing
-the head's register, and it needs a different fix from P1/P6.
+the head's register, and it needs a different fix from P1/P4.
 
 Calls: `CA6a59e59f0a67fe`, `CA320e6b1cb78217`, `CA9fda59b3a01981`, and others.
 
 ---
 
-## P6 — Vital Edge played a hold phrase AFTER the sign-off
+## P4 — Vital Edge played a hold phrase AFTER the sign-off
 
 **Severity: MEDIUM. This is a patient line.**
 
@@ -221,7 +186,7 @@ notified" claim.
 
 ---
 
-## P7 — Theorem: Susie answered her own question, and a phonetic spelling reached TTS
+## P5 — Theorem: Susie answered her own question, and a phonetic spelling reached TTS
 
 **Severity: MEDIUM.** `CA17e0639e237340`, 2026-09-01 11:34.
 
