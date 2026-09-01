@@ -13,6 +13,18 @@ Branch state at handover: `origin/latency-eval` = `0bc6ca45` (demo line only),
 
 ## P1 — A phantom barge-in destroyed a 12-second slot readout
 
+> **FIXED `d8af8932` on `latency-eval`, 2026-09-01. Not yet promoted, and
+> not yet heard on a call.** The recovery changed, not the trigger, exactly as
+> proposed below: a barge-in that tears down a readout mid-playback now
+> re-reads the readout whole rather than re-asking the closing question.
+> Gated on audio actually thrown away (`_tts_playout_end_mono` at teardown),
+> on the map still being armed, and on the readout still being what the
+> caller was hearing. Regression test:
+> `tests/regression/test_b120_a_slot_readout_torn_down_at_playback_is_read_again.py`.
+> Full-suite failing set byte-identical to `0a73a5d7`. **Still owed: a real
+> call on +447366263180 before promotion.** The analysis below stands as
+> written — keep it, it is why the three obvious fixes are wrong.
+
 **Severity: HIGH.** Caller-audible, cost a real call, reproduced once and it is
 the top item.
 
@@ -220,5 +232,7 @@ with a filler between, and stacks two ellipsis fillers back to back.
   5.6s, tripling the rate. Now an absolute 10s deadline from dispatch, plus a
   min-gap that makes stacking unrepresentable. On `latency-eval` only —
   **not yet promoted, and not yet heard on a call.**
+* **`d8af8932`** — P1 above, the readout killed at playback. On
+  `latency-eval` only — **not yet promoted, and not yet heard on a call.**
 * **`f2637315`** — the chunker severing a sentence one word early
   (*"…like to come"* / *"In?"*). Promoted, live on all lines.
