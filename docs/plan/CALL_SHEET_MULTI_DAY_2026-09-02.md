@@ -106,11 +106,13 @@ All on **+447366263180**. Say the caller lines verbatim.
 multi_day. If you get a single-day readout you have not tested this change.
 
 **PASS**
-- Two days offered, **one time each**, as numbered options:
+- **Three** days offered, **two times each**, as three numbered options:
   *"Here's what we've got coming up — Number 1, Monday 7th September — ten in
-  the morning. Number 2, Tuesday 8th September — nine in the morning. Either of
-  those work?"*
-- The two days are named clearly and the times belong to the right days.
+  the morning, or five in the evening. Number 2, Tuesday 8th September — nine
+  in the morning, or two in the afternoon. Number 3, Wednesday 9th September —
+  eleven in the morning, or six in the evening. Any of those work?"*
+- Three NUMBERED choices carrying six times — not six numbers.
+- All three days are named clearly and every time belongs to the right day.
 - No "a few others that day".
 
 **FAIL**
@@ -121,19 +123,36 @@ multi_day. If you get a single-day readout you have not tested this change.
 
 **In the log, expect:**
 ```
-[ms_gate5] deterministic multi_day offer built: 2 chunk(s), 2 slot(s) recorded
-[ms_gate5] deterministic offer in force — 2 chunk(s); the model's N buffered chunk(s) are discarded
+[ms_gate5] deterministic multi_day offer built: 3 chunk(s), 6 slot(s) recorded
+[ms_gate5] deterministic offer in force — 3 chunk(s); the model's N buffered chunk(s) are discarded
 ```
 The second line is the point: the model still ran and its words were thrown away.
 
-> ⚠️ **LISTEN FOR THIS FIRST — the one deliberate caller-audible change.**
-> Live multi_day readouts today are bimodal: about half are 2 days × 1 time and
-> half are 3 days × 2 times, because the model has been reading `available_days`
-> and ignoring the cap. **Every multi_day readout now becomes 2 days × 1 time** —
-> `_cap_presented_slots`' actual cap. If two options sounds too thin on a real
-> call, the fix is **one line**: `per_day` in `_cap_presented_slots`
-> (`receptionist_tools.py:5296`), which moves the model path identically and
-> keeps one owner. **That is your decision, not a defect.**
+> ⚠️ **LISTEN FOR THIS FIRST — the deliberate caller-audible change.**
+> Owner decision 1 Sept, reversing 24 Aug. Live multi_day readouts were
+> bimodal: 24 of 52 at two days × one time, 25 at three days × two. Every
+> readout is now **three days × two times**, deliberately.
+>
+> **The thing to judge is LENGTH.** `clinic_template_prompt` warns that
+> "reading out three days with two times each takes over twenty seconds, which
+> is where callers hang up". Measured: 56 words, **~20s** spoken, against ~11s
+> for the old two-by-one. That warning is now the live bet. If it drags on the
+> phone, the dial-back is one line — `_MAX_PRESENTED_TIMES_MULTI_DAY` back to
+> 1, or `_MAX_PRESENTED_DAYS` back to 2, in `receptionist_tools.py`.
+
+### Block 1b — say "the second one"
+
+Immediately after block 1, say: **"The second one, please."**
+
+**PASS** — she takes **Tuesday**, the day she read as Number 2.
+**FAIL** — she takes Monday's second TIME (five in the evening).
+
+This is the defect the cap change surfaced. `last_offered_slots` is read by
+position, and a position means a DAY; at two times per day, writing every named
+slot into it would make "the second one" and pressing 2 mean different slots.
+Fixed, and pinned by
+`test_the_ordinal_list_and_the_keypad_agree_position_for_position` — but it is
+worth hearing once on a real call, because speaking and pressing must agree.
 
 ### Block 2 — press a digit
 
