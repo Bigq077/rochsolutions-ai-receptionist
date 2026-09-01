@@ -45,14 +45,17 @@ to the one that was called. Rollback is moving the pointer, not reverting code:
 git push --force-with-lease origin <last-good-sha>:production
 ```
 
-> 🔴 **STATE CHECK — the gate is not active until the Render services are
-> repointed.** `production` exists at `cda304a3` (created 2026-09-01, identical
-> to `latency-eval`, i.e. exactly what every service was already running), but
-> repointing a service is a dashboard action. **Until ADR-002 action items 1–3
-> are done, all four services still track `latency-eval` with `autoDeploy` on,
-> and a push here is a four-clinic deploy that restarts three patient lines.**
-> Confirm which branch each service tracks before you push. When the repoint is
-> done, delete this block and say so in the commit message.
+> ✅ **The gate is LIVE as of 2026-09-01** (owner-confirmed; repointing is a
+> dashboard action this repo cannot see). The demo service is the only thing on
+> `latency-eval`; the three patient services track `production` with autoDeploy
+> on. So **a push to `latency-eval` reaches only +447366263180** — push freely.
+> A push to `production` reaches patients — that one is out-of-hours work with a
+> revert target in hand.
+>
+> First promotion through the gate: `cda304a3` → `1d85d13e`, verified by call
+> `CAc119b8838f556ac20f9552dee2e4021f` on the demo line before promoting.
+> **Do not take this as permanent** — the posture on this branch has now reversed
+> four times. Confirm which branch each service tracks before you push.
 
 **The canonical-first rule is retired.** It existed because engine fixes had to
 be ported to per-clinic branches. There is nothing left to port to — one build
