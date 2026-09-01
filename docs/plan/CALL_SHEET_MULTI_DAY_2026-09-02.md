@@ -70,8 +70,17 @@ To revert: `git push origin 7d6837cf:latency-eval --force-with-lease`
 `vitaledge` (`srv-d8va6cbtqb8s73fbpvag`), at call cleanup:
 
 ```
-[build_info] running build b7bde9e5…
+[build_info] running build <the SHA you pushed>
 ```
+
+Get the SHA you are looking for with:
+
+```bash
+git -C C:/Users/quent/susie-slots rev-parse --short HEAD
+```
+
+(Not `b7bde9e5` — that is the wiring commit, and this sheet was committed on
+top of it, so the branch tip is later.)
 
 Also expect, in the first seconds of boot:
 
