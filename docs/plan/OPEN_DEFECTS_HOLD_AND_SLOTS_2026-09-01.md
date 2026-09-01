@@ -182,6 +182,37 @@ Calls: `CA6a59e59f0a67fe`, `CA320e6b1cb78217`, `CA9fda59b3a01981`, and others.
 
 ## P4 — Vital Edge played a hold phrase AFTER the sign-off
 
+> **MISDIAGNOSED HERE, AND FIXED AS `f876230a` on `latency-eval`, 2026-09-01.
+> Not yet promoted, and not yet heard on a call.**
+> It is NOT a filler outliving its turn. `request_callback` fired FOUR times
+> on this call — turns 7, 11, 15 and 19 of the obs transcript — three of them
+> triggered by a plain acknowledgement or a goodbye. The hold phrase follows
+> the sign-off because the model streamed farewell text and a tool call in the
+> same turn, so the filler was correctly announcing a genuine fresh write.
+> Reading the transcript as audio is exactly the P2 trap below.
+
+> **And it is NOT Vital Edge only.** `build_tool_schemas` is clinic-aware, so
+> the flat master list proves nothing on its own — checked directly, it hands
+> `request_callback` and `add_to_waitlist` to all four live clinics, and the
+> executor has no clinic gate. The corpus shows it only on VE because VE is
+> the only clinic with any callback traffic (5 calls; the other three have
+> zero). Silence, not a negative.
+
+> Root cause: the farewell-turn re-fire `_WRITE_TOOL_FAMILIES` already guards
+> for booking/reschedule/cancel. These two tools were never members. Gated
+> now in the refusal chain above the executor, so the filler is suppressed
+> with the re-write. Test:
+> `tests/regression/test_b121_a_finished_callback_keeps_restarting.py`.
+
+> **Not harmful, which lowers the urgency:** the owner SMS dedups on
+> `_waitlist_pinged` and the record uses `setdefault`, so Jonathan was texted
+> once and no data was damaged. Only the speech repeated.
+
+> **Adjacent defect this exposed, NOT fixed:** because that SMS dedup is
+> per-CALL rather than per-LEAD, a caller who asks for a *second, different*
+> person to be rung back has that lead silently dropped — the tool still
+> returns "Clinic notified". Pre-existing and untouched by this fix.
+
 **Severity: MEDIUM. This is a patient line.**
 
 `CA8522b3e23fc64293`, 2026-09-01 13:44:
@@ -232,6 +263,8 @@ with a filler between, and stacks two ellipsis fillers back to back.
   5.6s, tripling the rate. Now an absolute 10s deadline from dispatch, plus a
   min-gap that makes stacking unrepresentable. On `latency-eval` only —
   **not yet promoted, and not yet heard on a call.**
+* **`f876230a`** — P4 below, the callback that kept re-firing. On
+  `latency-eval` only — **not yet promoted, and not yet heard on a call.**
 * **`d8af8932`** — P1 above, the readout killed at playback. On
   `latency-eval` only — **not yet promoted, and not yet heard on a call.**
 * **`f2637315`** — the chunker severing a sentence one word early
