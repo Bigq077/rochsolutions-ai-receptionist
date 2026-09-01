@@ -137,6 +137,40 @@ is built, make sure the tail survives it.
 
 ## P2 — The obs transcript records speech the caller never heard
 
+> **FIXED `4acc5a35` on `latency-eval`, 2026-09-01. Not yet promoted.** The
+> false claim went first, in both places that made it — connection.py's
+> record site and `app/obs/turns.py`'s docstring. Both now say what the list
+> actually is: **intent to speak**. That is the half that cost the two wrong
+> diagnoses, and it is why the wording is pinned by a test.
+>
+> Then the two downstream losses that are cheaply knowable at that seam:
+>
+> * **The P3 leading-marker strip** rewrites what is synthesised, so the
+>   record now stores the rewritten form. Recording the un-stripped text
+>   would have been this defect a THIRD time, added by the fix for P3.
+>   `_obs_chunk_text` itself is untouched — it is the string
+>   `_unrecord_spoken` matches against llm_stream's record and the one
+>   `_slot_readout_chunks` compares by equality — so the strip is applied to
+>   the pre-substitution form separately, keeping phone numbers readable.
+> * **A barge-in cancelling synthesis part-way** now annotates the fragment
+>   already written (`turns.note_cut`, sub-chunks spoken of total), and the
+>   judge renders it. A truncated line read as complete is the same class of
+>   invention that once had it text the operator that a caller had hung up
+>   when they had not. An uncut line renders byte-identical, so this cannot
+>   move scoring on calls that had no barge-in.
+>
+> **STILL OPEN, deliberately: the playback case.** Synthesis finished, the
+> audio was already in Twilio's buffer, and the teardown flushed it — P1,
+> `CAa2bdff2b8`, 12.2s stored and ~1.9s heard. Closing it means threading
+> chunk identity through `_send_loop`'s cumulative playout clock, i.e. the
+> audio path, for a LOW-severity defect. **So the absence of `cut` is still
+> not evidence a fragment was heard**, both docstrings say so, and
+> `test_absence_of_the_marker_is_not_a_claim` exists to stop that caveat
+> being dropped once the marker makes the record look trustworthy. Keep
+> cross-checking `[ms_tts] tts_finished` and `barge-in start` in the Render
+> log. Regression test:
+> `tests/regression/test_p2_the_obs_record_does_not_claim_speech_was_heard.py`.
+
 **Severity: LOW as a defect, HIGH as a trap.** It caused two wrong diagnoses in
 one session, including reporting a working feature as broken — see the
 NOT A DEFECT section above.
