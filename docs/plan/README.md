@@ -14,6 +14,7 @@ in §Corrections below.
 |---|---|---|
 | 1 | [`../../CLAUDE.md`](../../CLAUDE.md) | Repo context, architecture, hazards, conventions |
 | 2 | [`BRANCH_DECISION.md`](BRANCH_DECISION.md) | Which branch is the production base (ADR) |
+| 2a | [`RELEASE_PROMOTION_DECISION.md`](RELEASE_PROMOTION_DECISION.md) | **ADR-002 (1 Sep 2026).** All four services now track one branch, so a push reached every patient line at once. `latency-eval` = staging (demo line), `production` = the three patient lines, promoted by fast-forward after a demo call. Amends ADR-001's one-branch-per-clinic model. **Inert until the Render services are repointed.** |
 | 3 | [`PRODUCTION_READINESS_PLAN.md`](PRODUCTION_READINESS_PLAN.md) | Phased plan with gates |
 | 4 | [`FAILURE_MODE_REGISTER.md`](FAILURE_MODE_REGISTER.md) | Ranked risk register (FM-nn) |
 | 5 | [`REGISTER_B_U.md`](REGISTER_B_U.md) | **Live defect queue** — `B-nn` / `U-nn` |
