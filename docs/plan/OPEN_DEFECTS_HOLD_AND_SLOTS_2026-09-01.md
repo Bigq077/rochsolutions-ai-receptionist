@@ -162,7 +162,48 @@ separately so "was this heard?" is answerable from the record. Until then,
 
 ## P3 — A bare "Right —" is reaching callers
 
-**Severity: MEDIUM.** 10 occurrences in 57 calls since 2026-08-28.
+> **MISDIAGNOSED HERE, AND FIXED AS `bf01f9fc` on `latency-eval`,
+> 2026-09-01. Not yet promoted, and not yet heard on a call.** The reading
+> below — "it is the model echoing the head's register" — is wrong, and it
+> points at a prompt fix that would not have worked. **The prompt MANDATES
+> the bare marker:** `clinic_template_prompt.py:2266` says *"acknowledge
+> simply: 'Right —' and NOTHING ELSE"*, because `connection.py` then injects
+> the next question itself (`_next_question_after_booking_ack`). The stub is
+> deliberate, and it reads correctly when it is the ONLY acknowledgement the
+> caller hears — which it is on every turn where the model beats the 600ms
+> head delay and no head plays.
+>
+> **The defect is the RACE, not the register.** When the head wins instead,
+> the head and the stub perform the same contentless speech act ~1s apart.
+> Measured over all 798 stored calls (8,639 assistant chunks): 188 bare
+> markers, of which **32 follow a contentless hold phrase** — the defect —
+> and 156 do not, which is the intended two-fragment design and is left
+> alone.
+>
+> **The obvious fix is the one that must not be taken.** `join_after_head`
+> has a `suppress_pure_duplicate` branch for exactly this shape and both
+> call sites already pass it `True`; it is unreachable only because
+> `_strip_interim_opener` does not recognise a bare marker. Making it
+> reachable empties the turn — `_display_reply` becomes `""`, so
+> `conversation_history` stores `""`, so the booking-ack injector (which
+> gates on `_last_bot` containing `"right —"`) never fires; Gate 5's
+> empty-turn fallback then arms behind it, DEFERRED on freeform clinics to
+> the post-turn path, and answers *"I'd like to book an appointment"* with
+> *"Sorry, I didn't quite catch that — could you say that again?"* That is
+> the dead end `strip_head_echo` documents and refuses to walk into.
+>
+> So the drop is at the AUDIO, in `_tts_loop`, above the dedup guard, gated
+> on `_hold_head_spoken`. **No `_unrecord_spoken` — that omission is
+> load-bearing**, and is pinned by a test, exactly as the dedup guard below
+> it already keeps the record for a chunk it drops. Vocabulary is a closed
+> set matched whole-chunk only, deliberately NOT `ACK_OPENER_RE` (which
+> would drop 67 chunks where the evidence is 32). Regression test:
+> `tests/regression/test_p3_a_bare_marker_is_not_said_on_top_of_a_head.py`.
+> Full-suite failing set byte-identical to `3cd337cc` (118 = 118, nothing
+> newly failing). **Still owed: a real call on +447366263180.**
+
+**Severity: MEDIUM.** 10 occurrences in 57 calls since 2026-08-28. (Measured
+over the full corpus above: 32.)
 
 ```
 assi  Let's get you booked in —
