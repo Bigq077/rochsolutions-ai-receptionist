@@ -218,9 +218,16 @@ call's log. The confirmation-SMS and reminder paths executed **zero lines**. Tha
 is fine for an engine change and useless as a gate for anything near
 notifications — add that to the tenant coverage gap below, not instead of it.
 
-**Still open:** no patient-line call has yet been checked for
-`[build_info] running build 1d85d13e`. Until one is, the promotion is verified by
-argument, not evidence.
+**Confirmed on the patient services**, 2026-09-01 15:05: the Render dashboard
+shows `vitaledge` (`srv-d8va6cbtqb8s73fbpvag`) on branch **`production`**, commit
+**`1d85d13`**, **Live** — with the preceding event still reading `cda304a`, so
+the transition is in the platform's own record. Owner reports all three patient
+services live on it.
+
+That is deploy evidence, not runtime evidence. The remaining check is cheap and
+worth doing on the next real patient call: `[build_info] running build 1d85d13e`
+in the cleanup log proves the *serving process* is that build, which is a
+slightly stronger claim than "the deploy went Live".
 
 ---
 
@@ -235,4 +242,4 @@ argument, not evidence.
 | **Deferred** | E (staging service), F (automated call suite) — both still wanted |
 | **Known gap** | A demo call does not validate `theorem_v3` or `vital_edge` |
 | **Status** | Live. Action items 1–6 all closed 2026-09-01. `production` carries a ruleset: no deletions, no force pushes, linear history required, owner on the bypass list. |
-| **Outstanding** | No patient-line call has been checked for `[build_info] running build 1d85d13e`. Until one is, the promotion is verified by argument, not evidence. |
+| **Proven** | `vitaledge` shown Live on `production` @ `1d85d13` in the Render dashboard, 15:05; all three patient services reported live. Runtime confirmation via `[build_info]` on a real call is still worth one look. |

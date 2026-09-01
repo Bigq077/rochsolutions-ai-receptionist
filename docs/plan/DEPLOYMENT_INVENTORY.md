@@ -15,7 +15,7 @@ Four Render services, one lineage (ADR-002). Region: Frankfurt for all — set i
 | Render service | Branch | Clinic(s) | Twilio number(s) | Evidence |
 |---|---|---|---|---|
 | `srv-d9ac6bfaqgkc739dstsg` — the **demo** service, host `low-latency-joint-venture.onrender.com` | `latency-eval` | `northgate` | +447366263180 | stream URL + `[ms_router] to=` in call `CAc119b8838f556ac20f9552dee2e4021f`; service id confirmed 2026-07-27 |
-| `srv-d8va6cbtqb8s73fbpvag` — `vitaledge` | `production` | `vital_edge` | +447426779875 | repointed to `latency-eval` 2026-08-31 01:57 UTC, to `production` 2026-09-01 |
+| `srv-d8va6cbtqb8s73fbpvag` — `vitaledge`, host `rochsolutions-ai-receptionist-2.onrender.com`, Starter plan | `production` | `vital_edge` | +447426779875 | repointed to `latency-eval` 2026-08-31 01:57 UTC, to `production` 2026-09-01; dashboard shows Live @ `1d85d13` at 15:05 |
 | **[owner]** — the JV service | `production` | `jv_v1` | +447367002651 | `clinic_config.TWILIO_TO_CLINIC` |
 | **[owner]** — the Theorem service | `production` | `theorem_v3`, and **[owner]** whether `theorem_v2` is the same service | +447380841468 (v3), +447366530580 (v2) | `clinic_config.TWILIO_TO_CLINIC` |
 
