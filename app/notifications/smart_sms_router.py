@@ -146,8 +146,24 @@ def extract_condition_label(reason: str) -> str:
             return label
 
     # 2. Body parts
+    #
+    # Word-boundary, NOT substring. `if key in r` matched inside ordinary words
+    # and put a body part on the operator's SMS that the caller never named.
+    # Found in real caller speech on 2026-09-01, scanning 4,534 stored turns:
+    #
+    #   "no it's not swollen nor warm"            -> "arm pain"   (w-ARM)
+    #   "just want to get our chip"               -> "hip pain"   (c-HIP)
+    #   "how far towards manchester"              -> "chest pain" (man-CHEST-er)
+    #
+    # The last one is the reason this is not merely cosmetic: this clinic is IN
+    # Manchester, so the collision word is one every local caller says, and
+    # "chest pain" is a red-flag label to raise falsely on an operator alert.
+    #
+    # Only the LEADING boundary is anchored. Trailing is deliberately left open
+    # so ordinary inflections still match - "knees", "shoulders", "ankle's" -
+    # which is what the substring behaviour was buying, and it is kept.
     for key, label in _BODY_PARTS:
-        if key in r:
+        if re.search(r"\b" + re.escape(key), r):
             if is_fracture:
                 return f"a broken {key}"
             if is_post_surg:
