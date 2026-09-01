@@ -3506,6 +3506,70 @@ class LLMStream:
         # this path must never blend the two, because a half-model half-code
         # sentence is the one shape no record could describe.
         _prebuilt = session.pop("_slot_offer_prebuilt", None)
+
+        # ── 1b-i. …unless the model was not making an offer at all ──────────
+        # P6, CA82b240ccad48ed219371c3f2fddfffb8 (1 Sep 2026, vital_edge,
+        # build f875126e). Susie read three days, the caller said "the last day
+        # at 6 in the evening works", the pick was not recognised as one, and
+        # the model called check_availability again. On the second pass it
+        # RECOVERED — it wrote "Wednesday 9th September at six in the evening
+        # works. Can I just get your name" — and the block below threw that away
+        # and read the list a second time. The caller hung up. outcome=abandoned,
+        # judge score 1.
+        #
+        # Re-reading is not merely redundant, it is destructive, and by
+        # construction rather than by luck: `choose_presented_indices` prefers
+        # times this caller has NOT heard (B-116). The slot they just accepted
+        # is the one slot guaranteed to be missing from the second readout. On
+        # this call every day went 09:00/18:00 -> 10:00/17:00; the six o'clock
+        # he had just agreed to no longer existed in Susie's mouth.
+        #
+        # The discard below is right about the case it was written for and
+        # wrong about this one: it assumes the model's buffered text is an
+        # OFFER. Two structural facts decide it here, neither of them a match
+        # against model wording:
+        #
+        #   * the model numbered no options — `extract_slot_options` is the
+        #     same parser sections 3a-6 use to do their job, and with nothing
+        #     to find every one of those repairs is already a no-op; and
+        #   * an offer is ALREADY standing, so the caller has heard options and
+        #     the model is answering a pick rather than opening the batting.
+        #
+        # That second condition is what makes this safe. On a FIRST lookup
+        # `last_offered_slots` is empty, so a model that says something
+        # contentless can never cost the caller the only offer they were going
+        # to get — the deterministic sentence still wins, exactly as before.
+        if isinstance(_prebuilt, dict) and _prebuilt.get("chunks") and raw_chunks:
+            from app.tools.slot_followup import extract_slot_options as _eso
+            _stand_down = [
+                (rc[len(PRE_SLOT_MARKER):] if rc.startswith(PRE_SLOT_MARKER) else rc).strip()
+                for rc in raw_chunks
+            ]
+            _stand_down = [c for c in _stand_down if c]
+            _model_text = " ".join(_stand_down)
+            if (
+                _model_text
+                and not _eso(_model_text)
+                and session.get("last_offered_slots")
+            ):
+                logger.warning(
+                    "[ms_gate5] deterministic offer STOOD DOWN — the model "
+                    "numbered no options and an offer is already on the table, "
+                    "so this is an answer to a pick, not a presentation. "
+                    "Speaking the model instead; the standing offer and its "
+                    "record are left untouched (P6). model=%r",
+                    _model_text[:120],
+                )
+                # Nothing is recorded. `record_spoken_slots`, `last_offered_slots`,
+                # `slot_labels` and the DTMF map all still describe the offer the
+                # caller is choosing FROM, and that offer is the one still
+                # standing. Writing the unspoken payload over it would renumber
+                # the keypad under a caller mid-sentence.
+                for _c in _stand_down:
+                    await tts_queue.put(_c)
+                    session["_slotbuf_emitted"] = True
+                return
+
         if isinstance(_prebuilt, dict) and _prebuilt.get("chunks"):
             _det_chunks = [str(c) for c in _prebuilt["chunks"] if str(c).strip()]
             _det_slots = [s for s in (_prebuilt.get("slots") or []) if s.get("start")]

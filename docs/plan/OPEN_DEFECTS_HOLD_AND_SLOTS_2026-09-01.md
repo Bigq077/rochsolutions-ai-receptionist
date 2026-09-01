@@ -444,6 +444,90 @@ nobody heard. Widening the ordinal matching is worth doing as well, second.
 This is the slot path on live patient lines. Small diff, a regression test
 built from this call's exact transcript, and a real call before promotion.
 
+### Update, 1 Sep 23:40 — step 4 fixed; two corrections to the entry above
+
+**Correction 1 — the two defects here have different ages, and the entry
+above merges them.** The deterministic path did not exist "for weeks". It
+landed **31 Aug 22:15 UTC** (`fa8c22ba` 22:46 BST, `7d6837cf` 23:15 BST) —
+about 23 hours before this call. So:
+
+* **Step 1, the RECOGNITION defect** — a caller picks in words, it is not read
+  as a pick, and the model re-queries. Old, and the volume defect.
+* **Step 4, the DISCARD** — a prebuilt offer overwrites the model's recovery.
+  Can only have existed since 31 Aug.
+
+Re-scanned the 807-call corpus with a filter that excludes legitimate "what
+else have you got?" replies: **106** calls read the numbered offer more than
+once, **28** of those after a reply that named a slot or a time, **14**
+abandoned. (The 33/24 above used a looser filter; the shape agrees, the
+numbers are filter-dependent — treat both as estimates.) Split at the
+deterministic path:
+
+| | picks | abandoned | clinics |
+|---|---|---|---|
+| before 31 Aug 22:15 | **27** | 13 | jv_v1 20, theorem_v3 5, vital_edge 1, northgate 1 |
+| after | **1** | 1 | vital_edge — this call |
+
+So the 24-abandoned figure above must **not** be attributed to step 4. On all
+27 historical calls the model's own text was spoken, and it read the list
+again anyway — they are step 1. Step 4 has exactly one observed instance: this
+one. It remains worth fixing first because it is a 23-hour-old regression, it
+is a 64-line change against step 1's semantic surgery, and it converts a
+recoverable failure into an unrecoverable one — but the case for it rests on
+**one** observation of the model self-correcting, not on 24.
+
+**Correction 2 — the re-read does not merely return different times; it is
+guaranteed to withdraw the accepted slot.** The entry above reads
+`date_hint 'any' -> 'next week'` cache invalidation as the reason. It is not.
+`choose_presented_indices` (`slot_followup.py:1865`) deliberately prefers
+times this caller has **not heard** (B-116), so the one slot certain to be
+missing from any second readout is the slot they just accepted. The stored
+transcript shows it on all three days at once:
+
+```
+  offer:   Mon 7th / Tue 8th / Wed 9th — nine in the morning, or six in the evening
+  re-read: Mon 7th / Tue 8th / Wed 9th — TEN in the morning, or FIVE in the evening
+```
+
+09:00/18:00 -> 10:00/17:00 on every day. That is B-116 working, not a fault to
+be chased, and it is the reason the re-read must not happen at all.
+
+### The fix, on `fix/p6-slot-acceptance` — NOT pushed
+
+`llm_stream.py` section **1b-i**, +64 lines, nothing deleted. The deterministic
+offer stands down when **both** hold:
+
+* `extract_slot_options()` finds no numbered option in the model's buffered
+  text — the same parser sections 3a-6 use, so with nothing to find every one
+  of those repairs is already a no-op; and
+* an offer is **already standing** (`last_offered_slots` non-empty), so the
+  caller has heard options and the model is answering a pick.
+
+The second condition is what makes it safe: on a first lookup there is no
+standing offer, so a contentless model turn can never cost a caller the only
+offer they were going to get — the payload sentence still wins, exactly as
+before. Nothing is recorded when it stands down: `last_offered_slots`,
+`slot_labels` and the keypad map still describe the offer the caller is
+choosing *from*, and overwriting them would renumber the keypad mid-sentence.
+
+Deliberately **not** matching model wording — [[write-gates-match-one-literal]]
+has burned this codebase three times.
+
+`tests/regression/test_p6_an_accepted_slot_is_not_read_back_as_a_list.py`,
+5 tests built from this call's transcript. Two fail before the fix and pass
+after; three pin the existing behaviour and pass in both trees. Full
+`tests/regression` failing set is **byte-identical** before and after — 24
+either side, same tests — with passes 6370 -> 6375.
+
+**Still open, and now the bigger half: step 1.** Widening pick recognition to
+understand "the last day", "the second one" and a bare time is the ~27-call
+defect. Not attempted here.
+
+**Before this promotes:** a real call on the demo line (+447366263180) that
+reproduces the shape — read a multi-day offer, accept one in words — and
+confirms Susie moves to the name instead of re-reading. `latency-eval` is a
+live line; the revert is this one commit.
+
 ---
 
 ## Also open, unrelated to hold speech
