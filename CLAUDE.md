@@ -20,54 +20,66 @@ call and the first onboarding cohort are flawless.
 
 ---
 
-## 2. Canonical branch
+## 2. Branches and deployment
 
-**`latency-eval` is THE engine branch.** Settled 2026-07-22 — no longer contested.
-`release/cohort-1` was merged into it and retired; there is now exactly one engine
-branch plus two deployment branches (`jv-v1-onboarding`, `vitaledge-onboarding`)
-that inherit engine fixes by cherry-pick **from** `latency-eval`. `main` is a
-separate historical lineage — leave it alone. See `docs/plan/BRANCH_DECISION.md`.
+**One lineage, two branches.** Settled 2026-09-01 by ADR-002 —
+`docs/plan/RELEASE_PROMOTION_DECISION.md`. Read it before pushing anything.
 
-**Canonical-first rule:** every engine fix commits to `latency-eval` first; the
-live clinics inherit it. Never fix on a clinic branch and port up — that strands
-safety fixes at convergence.
+| Branch | Role | Services tracking it | Phones it can reach |
+|---|---|---|---|
+| `latency-eval` | **staging** — engine work lands here | the demo service (`srv-d9ac6bfaqgkc739dstsg`) | **+447366263180** (`northgate`) only |
+| `production` | **the live line** | the three patient services, incl. `vitaledge` (`srv-d8va6cbtqb8s73fbpvag`) | `jv_v1`, `vital_edge`, `theorem_v2`, `theorem_v3` |
+
+```bash
+git push origin latency-eval                # deploys the DEMO line only
+#   ... call +447366263180, read the cleanup log for [build_info] ...
+git push origin latency-eval:production     # deploys the three PATIENT lines
+```
+
+**`production` is always an ancestor of `latency-eval`.** Promotion is a
+fast-forward, never a cherry-pick — so there is no port, no divergence, no
+per-branch prompt-hash re-pinning, and the commit a clinic runs is bit-identical
+to the one that was called. Rollback is moving the pointer, not reverting code:
+
+```bash
+git push --force-with-lease origin <last-good-sha>:production
+```
+
+> 🔴 **STATE CHECK — the gate is not active until the Render services are
+> repointed.** `production` exists at `cda304a3` (created 2026-09-01, identical
+> to `latency-eval`, i.e. exactly what every service was already running), but
+> repointing a service is a dashboard action. **Until ADR-002 action items 1–3
+> are done, all four services still track `latency-eval` with `autoDeploy` on,
+> and a push here is a four-clinic deploy that restarts three patient lines.**
+> Confirm which branch each service tracks before you push. When the repoint is
+> done, delete this block and say so in the commit message.
+
+**The canonical-first rule is retired.** It existed because engine fixes had to
+be ported to per-clinic branches. There is nothing left to port to — one build
+serves every clinic, and tenancy is resolved at **runtime** from the Twilio
+`to=` number via `clinic_config.TWILIO_TO_CLINIC` (five numbers, four clinics).
+That fold closed **FM-14** ("engine drift across the four deployed branches",
+likelihood 5, the highest in the register).
+
+What the fold also did, silently, was delete the staging gate — branch-per-clinic
+had been providing one as a side effect. ADR-002 is the replacement. It is not a
+free win: **a green demo call validates the ENGINE, not the tenants.** `northgate`
+is a faithful `jv_v1` proxy, but `theorem_v3` renders a hardcoded Python prompt
+that `clinic.json` never reaches and short-circuits to the Acuity executor, and
+`vital_edge` has no condition library and uses the diary reader. Do not read a
+green demo call as clearance for all four clinics.
 
 `LATENCY.md` used to call this branch *"a lab, not a release candidate… never
 promoted by merging as-is."* That line has been re-chartered: it now applies to
 the **WS latency levers** (still experimental, still default OFF), not to the
 branch. Do not cite it as a reason to avoid basing work here.
 
-> 🔴 **`latency-eval` IS a live line as of 2026-08-31. A push here reaches real
-> patients.** Vital Edge was folded onto it at 01:57 UTC — Render service
-> `vitaledge` (`srv-d8va6cbtqb8s73fbpvag`) now tracks `latency-eval`, verified
-> live at `3a3af7e` and confirmed by a real call five minutes later.
->
-> **So: out-of-hours timing, a revert target in hand, and a real call after any
-> engine change — HERE, not only on the clinic branches.** `autoDeploy` is on,
-> so a push is a deploy. The rollback for Vital Edge is to point its service
-> back at `vitaledge-onboarding`, which stays deployable and must not be
-> deleted until VE has run a full week on canonical.
->
-> <details><summary>What this block used to say, and why it changed</summary>
->
-> From 2026-08-02 to 2026-08-30 it read *"`latency-eval` is not a live line —
-> push whenever"*, and that was correct for that period: the branch served only
-> the Northgate demo line. It was itself a correction of an earlier over-caution
-> that cost real time, with agents staging finished work overnight for a deploy
-> window that did not exist. **Neither version is a standing truth — the fold is
-> what changed it, and it will change again as JV and Theorem fold.** Check
-> which services track this branch before assuming either posture.
-> </details>
->
-> The demo line (**+447366263180**, `northgate`) is still on this branch too,
-> which is the whole point of the design: `SMS_ENABLED` and
-> `APPOINTMENT_REMINDERS_ENABLED` are per-SERVICE env vars, so the demo service
-> leaves them at their `false` code default and sends nothing, while the Vital
-> Edge service sets both explicitly. **Canonical's defaults must stay OFF** or a
-> test call texts a real patient.
->
-> The canonical-first rule is unchanged: engine fixes land here first. What has
-> changed is that "here" is now also a deployment.
+> **Defaults must stay OFF on this lineage.** `SMS_ENABLED` and
+> `APPOINTMENT_REMINDERS_ENABLED` are per-SERVICE env vars. One build now serves
+> the demo line and the patient lines, so the code default is the only thing
+> stopping a test call from texting a real patient — the demo service leaves them
+> at `false`, the patient services set them explicitly. Never flip a default to
+> make something work locally.
 
 > ⚠️ **Check which branch and which worktree you are actually in before
 > measuring anything.** There are ~15 registered worktrees under
@@ -92,14 +104,22 @@ this one.** The work is enabling, provisioning and verifying — not building.
 
 ### Branch topology (do not merge blindly)
 
-- `main`, `jv-v1-onboarding`, `vitaledge-onboarding`, `latency-eval` — the four
-  branches currently deployed as four separate Render services.
-- `theorem-*`, `jv-*` — historical, already merged to their parent branches.
+- `latency-eval`, `production` — the only two branches that are deployed.
+- `main`, `jv-v1-onboarding`, `vitaledge-onboarding`, `theorem-onboarding`,
+  `jv_v2` — the retired per-clinic deployment branches. They are **frozen
+  rollback targets, not deploy branches**: each still runs, and repointing a
+  service back at one is the escape hatch if the fold turns out badly. **Do not
+  delete them**, and do not commit to them. `main` in particular is no longer
+  "historical lineage to leave alone" — it was Mark's Theorem clinic, and it was
+  folded, so it is a rollback target like the rest.
+- `theorem-*`, `jv-*`, `port/*` — historical, already folded or abandoned.
 - `feat/obs-*`, `fix/obs-*` — the observability work, unmerged into `latency-eval`.
 
-`latency-eval` is 189 commits ahead of `main` and 142 behind. That divergence is
-mostly intentional (different clinic, different tuning). **Never do a blind
-`merge main`.** Any integration is a deliberate, reviewed, file-by-file exercise.
+**Never do a blind `merge main`** — or a blind merge of any retired branch. Any
+integration is a deliberate, reviewed, file-by-file exercise. Note also that
+`git cherry` cannot audit port status between these branches (patch-ids differ
+after a cherry-pick, so it calls ported work unported and hides real gaps) —
+grep for the added code instead.
 
 ---
 
@@ -127,26 +147,46 @@ Supporting: `app/knowledge/` (clinic knowledge retrieval), `app/prompts/`
 (system prompts, per-clinic), `app/notifications/` (SMS/email), `app/storage/`,
 `app/integrations/sheets.py`, `app/routes/admin.py`.
 
-### Multi-tenancy — partially implemented
+### Multi-tenancy — runtime, with residual deploy-time couplings
 
 Clinic data lives in `app/clinics/<clinic_id>/clinic.json` (+ `knowledge.md`),
 loaded via `app/clinic_loader.py` and `app/clinic_config.py`. The JV config is
 ~30 KB across 33 top-level keys — this layer is genuinely well developed.
 
-**But tenant selection happens at deploy time, not runtime.** Evidence:
+**Tenant selection is a runtime lookup on the Twilio `To` number.**
+`app/routes/twilio.py:247` calls `clinic_id_from_twilio_to(to_number)` on the
+inbound webhook and pins `clinic_id` onto the session; the map is
+`clinic_config.TWILIO_TO_CLINIC` — five numbers, four clinics. One build serves
+all of them. **An unmapped number falls back to the `demo` clinic** rather than
+failing (`app/routes/realtime.py:504`), so a typo in that map is inaudible on the
+call and shows up in someone else's calendar.
 
-- `.env.example` contains `CLINIC_NAME`, `CLINIC_ADDRESS`, `CLINIC_PHONE` and
-  `ACUITY_CALENDAR_ID_ALCESTER` / `_REDDITCH` / `_MARK` / `_LEANNE` — tenant
-  identity and per-practitioner calendars live in environment variables.
-- Clinic names are hardcoded in engine files: `app/fast_path.py`,
+This is what made the 2026-09-01 fold possible and closed FM-14. It is also why
+adding a clinic is a config change, not a branch — see `validate_all_clinics()`
+in `clinic_config.py`, the onboarding checklist as code, covered by
+`tests/tenancy/`.
+
+**What is still deploy-time, and therefore still a trap:**
+
+- **Per-service env vars.** `SMS_ENABLED`, `APPOINTMENT_REMINDERS_ENABLED`,
+  `OBS_*`, `SHEETS_ENABLED` are set per Render service, not per clinic. With one
+  build serving the demo line and the patient lines, these are the only thing
+  separating them — see the defaults warning in §2.
+- **`.env.example`** still carries `CLINIC_NAME`, `CLINIC_ADDRESS`,
+  `CLINIC_PHONE` and `ACUITY_CALENDAR_ID_ALCESTER` / `_REDDITCH` / `_MARK` /
+  `_LEANNE`. Tenant identity and per-practitioner calendars in environment
+  variables is the leftover of the old model; moving them into `clinic.json` is
+  `PRODUCTION_READINESS_PLAN.md` Phase 6.
+- **Clinic names hardcoded in engine files:** `app/fast_path.py`,
   `app/flows/brain.py`, `app/booking/booking/utils.py`,
-  `app/booking/booking/providers/acuity.py`.
-- `render.yaml` declares one service with `autoDeploy: true` and no branch pin —
-  the branch is set per-service in the Render dashboard.
+  `app/booking/booking/providers/acuity.py`. Theorem goes further — its prompt is
+  built in Python (`_build_theorem_v3`) and `clinic.json` never reaches the model.
+- **`render.yaml`** declares one service with `autoDeploy: true` and no branch
+  pin — the branch is set **per-service in the Render dashboard**, which is why
+  "what is actually live?" cannot be answered from this repo. That is FM-20.
 
-Result: one clinic = one branch = one deployment. This is the structural blocker
-to onboarding at cohort scale. See `docs/plan/PRODUCTION_READINESS_PLAN.md`
-Phase 4.
+If you find yourself writing `if clinic == "..."` in `app/`, that is the bug, not
+the fix.
 
 ### Stack
 
@@ -252,7 +292,10 @@ Anything that does not move one of those five is not on the critical path.
 Start at `docs/plan/README.md` — it gives the reading order and a log of
 corrections already applied.
 
-- `docs/plan/BRANCH_DECISION.md` — **open, blocks everything.**
+- `docs/plan/RELEASE_PROMOTION_DECISION.md` — **ADR-002, the deploy gate.**
+  Read before any push. `docs/plan/BRANCH_DECISION.md` (ADR-001) is closed —
+  its one-branch-per-clinic model was superseded by the fold; keep it for the
+  reasoning, do not follow its workflow.
 - `docs/plan/PRODUCTION_READINESS_PLAN.md` — phased roadmap with gates.
 - `docs/plan/FAILURE_MODE_REGISTER.md` — ranked risk register.
 - `docs/plan/SKILL_PLAYBOOK.md` — which engineering skill to invoke when.

@@ -1,5 +1,16 @@
 # Region: Frankfurt (EU Central) — confirmed in Render dashboard 12/03/2026.
 # Optimal for UK/EU callers. ~80-150 ms lower RTT vs us-west (Oregon).
+# ⚠️ THIS FILE DOES NOT DECIDE WHAT IS LIVE.
+# It declares ONE service with no branch pin; the branch is set PER-SERVICE in
+# the Render dashboard, and there are four services. So "what is actually
+# deployed?" cannot be answered from this repo — that is FM-20.
+#
+# Per ADR-002 (docs/plan/RELEASE_PROMOTION_DECISION.md, 2026-09-01):
+#   latency-eval -> the demo service only  (+447366263180, northgate)
+#   production   -> the three patient services
+# `autoDeploy: true` below means a push to a tracked branch IS a deploy, and a
+# deploy IS a restart that can drop a call in progress. Check which branch each
+# service tracks before pushing.
 services:
   - type: web
     name: rochsolutions-ai-receptionist
