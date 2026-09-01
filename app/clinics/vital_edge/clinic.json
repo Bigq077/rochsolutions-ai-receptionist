@@ -55,6 +55,8 @@
   "operational": {
     "_note": "Flattened by get_clinic into the legacy clinic contract. booking_system google_calendar_provisional drives the calendar-read + provisional-write + notify path. working_hours is intentionally all-closed — availability comes from the published calendar, not generated.",
     "timezone": "Europe/London",
+    "_hold_speech_note": "Routes hold phrases through app/hold_speech.py (the arbiter) instead of each producer choosing its own. Turned on 2026-09-01, VE first, as a deliberate listening exercise — northgate had been the only clinic running it. booking_system is google_calendar_provisional, so confirm_write_kind returns PENDING_REQUEST and the heads are \"Sending that over to Jonathan -\" rather than the WRITE_BOOK pool, which would claim a confirmed booking VE does not make. Reverting is this one key — no deploy of code, and no branch.",
+    "hold_speech": true,
     "sms_name": "Vital Edge Therapy",
     "sms_appointment_noun": "massage",
     "phone": "+44 7426 779875",
