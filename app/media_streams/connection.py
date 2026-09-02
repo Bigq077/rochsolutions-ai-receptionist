@@ -303,6 +303,12 @@ def offered_slot_labels(session: Any) -> set:
     return {_norm_offer_label(_l) for _l in _src} - {""}
 
 
+from app.tools.slot_followup import (                     # noqa: E402
+    ACCEPTED_SLOT_KEY as _ACCEPTED_SLOT_KEY,
+    slot_accepted_by_caller as _slot_accepted_by_caller,
+)
+
+
 def utterance_is_slot_selection(utterance: Any, session: Any) -> bool:
     r"""Is this utterance the caller PICKING one of the slots just offered? PURE.
 
@@ -11941,6 +11947,47 @@ class WebSocketCallHandler:
                                     "[ms_conn v3] %r is a slot SELECTION, not a "
                                     "time preference — soft context not set (B-90)",
                                     utterance[:60],
+                                )
+
+                            # WHICH slot, when the caller picked in words.
+                            #
+                            # P6/P6b. `utterance_is_slot_selection` above is
+                            # containment against the labels just spoken, so it
+                            # answers "was this a pick?" and cannot answer
+                            # "which one" for an ordinal -- "the last day at 6
+                            # in the evening works" matches no label at all.
+                            # The model then reads that as a fresh time filter,
+                            # calls check_availability again, and B-116
+                            # withholds the accepted slot from the new readout
+                            # BECAUSE it was just heard. Two live calls ended
+                            # that way, both abandoned.
+                            #
+                            # SET PER TURN, and cleared first every time. The
+                            # re-query happens inside this same turn, so a
+                            # turn-scoped value is all the pin needs and a
+                            # stale one cannot survive into a later readout --
+                            # which is the failure shape B-75 already paid for
+                            # once, where a landed reschedule left an arm live
+                            # for the rest of the call.
+                            self.session.pop(_ACCEPTED_SLOT_KEY, None)
+                            try:
+                                _accepted = _slot_accepted_by_caller(
+                                    self.session, utterance
+                                )
+                            except Exception:
+                                # A caller mid-booking must not lose their turn
+                                # to a resolver. Falling through leaves the
+                                # readout exactly as it was before P6b.
+                                logger.exception(
+                                    "[ms_conn v3] accepted-slot resolve failed"
+                                )
+                                _accepted = None
+                            if _accepted:
+                                self.session[_ACCEPTED_SLOT_KEY] = _accepted
+                                logger.info(
+                                    "[ms_conn v3] caller ACCEPTED %s (%r) — "
+                                    "pinned into any readout this turn (P6b)",
+                                    _accepted, utterance[:60],
                                 )
                             # A band named inside a QUESTION is not a stated
                             # preference. B-91 again, same call: "any other

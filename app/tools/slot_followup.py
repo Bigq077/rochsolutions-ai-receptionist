@@ -1862,10 +1862,238 @@ def _spread(slots: Any, pool: List[int], limit: int) -> List[int]:
     return sorted(set(chosen))[:limit]
 
 
+_LAST_POSITION_RE = re.compile(r"\b(?:last|final|latest)\b", re.IGNORECASE)
+_FIRST_POSITION_RE = re.compile(r"\b(?:first|earliest|soonest)\b", re.IGNORECASE)
+_BAND_WORDS = ("morning", "afternoon", "evening")
+
+ACCEPTED_SLOT_KEY = "_accepted_slot_iso"
+
+
+def _band_named(text: str) -> "str | None":
+    """The ONE part-of-day `text` names, or None when it names 0 or 2+."""
+    low = (text or "").lower()
+    hits = {b for b in _BAND_WORDS if re.search(r"\b" + b + r"\b", low)}
+    return hits.pop() if len(hits) == 1 else None
+
+
+def _position_named(text: str, n: int) -> "int | None":
+    """The 1-based list position `text` names, or None when it is not exactly one.
+
+    `_positions_named` owns "number two" / "the second one" / "day 1" and is
+    reused verbatim. What it does NOT own is the relative end of the list --
+    "the last day", "the first one" -- because those are meaningless without
+    knowing how long the list is, which is why they live here and take `n`.
+
+    "the last day at 6 in the evening works" is the utterance that opened P6 on
+    a live Vital Edge call, and "the last day in the afternoon works"
+    reproduced it on the demo line the next night. Neither named a number.
+
+    Declines on disagreement: a sentence that names both a number and an end
+    ("the last one, number 2") is ambiguous and gets no answer, which is the
+    standing rule in this module for two positions.
+    """
+    if n <= 0:
+        return None
+    found = {p for p in _positions_named(text) if 1 <= p <= n}
+    if _LAST_POSITION_RE.search(text or ""):
+        found.add(n)
+    if _FIRST_POSITION_RE.search(text or ""):
+        found.add(1)
+    return found.pop() if len(found) == 1 else None
+
+
+def slot_accepted_by_caller(
+    session: Dict[str, Any], text: str
+) -> "str | None":
+    """The ISO start of the slot the caller just ACCEPTED, or None. PURE.
+
+    Step 1 of P6/P6b. Susie reads a numbered offer, the caller picks in words,
+    and until now nothing on the main path resolved that pick:
+    `utterance_is_slot_selection` is containment against the spoken labels, so
+    an ordinal matches nothing, and `day_selected_by_position` -- which does
+    understand ordinals -- is only wired into the FOLLOW-UP path.
+
+    The model then re-reads the caller's words as a fresh filter and calls
+    `check_availability` again, and `choose_presented_indices` withholds the
+    accepted slot from the new readout BECAUSE it was just heard (B-116). Two
+    live calls ended that way, 21:46 and 00:03 on 1-2 Sep, both abandoned.
+
+    DENY BY DEFAULT, and every step here can decline:
+
+      1. it must not be a "more times" or "different day" request -- those have
+         their own paths and reading one as a pick would set a filter that
+         deletes slots (B-90);
+      2. exactly one DAY, by list position (including "the last") or by name;
+      3. exactly one TIME on that day, and only among times the caller was
+         actually READ -- an unspoken slot cannot have been accepted.
+
+    Returning None is cheap: the caller is no worse off than before this
+    existed. Returning the WRONG slot would pin it into the next readout and
+    read it back as an appointment, so ambiguity always declines.
+    """
+    if not isinstance(session, dict) or not isinstance(text, str) or not text.strip():
+        return None
+    if utterance_requests_more_slots(text) or utterance_requests_different_day(text):
+        return None
+
+    offered = session.get("last_offered_slots")
+    if not isinstance(offered, list) or not offered:
+        return None
+
+    # -- 2. which day -----------------------------------------------------
+    date = None
+    pos = _position_named(text, len(offered))
+    if pos is not None:
+        date = str((offered[pos - 1] or {}).get("start") or "")[:10] or None
+    if not date:
+        named = day_named_by_caller(session.get("available_days"), text)
+        if isinstance(named, dict):
+            date = named.get("date")
+        elif isinstance(named, str):
+            date = named
+    if not date:
+        return None
+
+    # -- 3. which time, among what was SPOKEN -----------------------------
+    try:
+        spoken = spoken_starts_for_offer(session)
+    except Exception:
+        return None
+    flat = flatten_bookable_slots(session.get("available_days"))
+    heard = [
+        s for s in flat
+        if s.get("date") == date
+        and str(s.get("start") or "")[:19] in spoken
+    ]
+    if not heard:
+        return None
+    if len(heard) == 1:
+        return heard[0].get("start") or None
+
+    phrase = _readback_norm(text)
+    hits = []
+    for s in heard:
+        label = str(s.get("spoken") or "").strip()
+        if not label:
+            continue
+        bare = _strip_part_of_day(label)
+        if _readback_norm(label) in phrase or (
+            bare and bare != label and _readback_norm(bare) in phrase
+        ):
+            hits.append(s)
+    if len(hits) == 1:
+        return hits[0].get("start") or None
+
+    band = _band_named(text)
+    if band:
+        in_band = [s for s in heard if part_of_day(s.get("start")) == band]
+        if len(in_band) == 1:
+            return in_band[0].get("start") or None
+    return None
+
+
+def accepted_slot_is_named_in(session: Dict[str, Any], text: str) -> bool:
+    """Does `text` name the slot the caller just accepted? PURE.
+
+    The second half of P6b. The pin makes the accepted slot survive a re-read;
+    this stops the re-read happening at all when the model has already said the
+    right thing.
+
+    On CA5a126fe4e6addcf812836220cdf7ea44 the model recovered correctly after
+    its own re-query -- it wrote "Wednesday 9th September -- Number 1, twenty
+    past four in the afternoon", naming the accepted slot -- and the payload
+    offer replaced it with three earlier times. The P6 stand-down could not
+    help: it declines whenever the model numbers an option, and this text
+    numbered one.
+
+    Asking "does the model name the accepted slot?" separates the two cases
+    that matter without reading the wording: a model CONFIRMING the pick names
+    it, a model presenting a fresh list of alternatives does not. Both halves
+    of the comparison come from the payload -- the accepted ISO and the spoken
+    label the offer was read with -- so this is not a match against a phrase
+    anyone wrote by hand.
+
+    False here is the safe answer: the payload offer wins, exactly as today.
+    """
+    iso = str((session or {}).get(ACCEPTED_SLOT_KEY) or "")[:19]
+    if not iso or not isinstance(text, str) or not text.strip():
+        return False
+    label = next(
+        (
+            str(sl.get("spoken") or "").strip()
+            for sl in flatten_bookable_slots((session or {}).get("available_days"))
+            if str(sl.get("start") or "")[:19] == iso
+        ),
+        "",
+    )
+    if not label:
+        return False
+    phrase = _readback_norm(text)
+    if _readback_norm(label) in phrase:
+        return True
+    bare = _strip_part_of_day(label)
+    return bool(bare and bare != label and _readback_norm(bare) in phrase)
+
+
+def _pin_accepted_index(
+    session: Dict[str, Any], day: Dict[str, Any], chosen: List[int], limit: int
+) -> List[int]:
+    """Force the slot the caller ACCEPTED back into a readout that dropped it.
+
+    P6b, CA5a126fe4e6addcf812836220cdf7ea44 (2 Sep 2026, northgate) and P6,
+    CA82b240ccad48ed219371c3f2fddfffb8 (1 Sep, vital_edge). Both callers
+    accepted a slot, the model re-queried, and the fresh readout did not
+    contain the slot they had just agreed to. Northgate's payload HELD 16:20 --
+    "twenty past four in the afternoon", the accepted time -- and the readout
+    withheld it.
+
+    Nothing was broken when it did that. `choose_presented_indices` prefers
+    times this caller has not heard (B-116), the accepted slot had been heard
+    21 seconds earlier, and so the one time that must survive is the one time
+    guaranteed not to. The rule was written for "what else have you got?",
+    where withholding is right; it has no notion of "this one was just
+    accepted", and that is the gap this closes.
+
+    Deliberately a WRAPPER, and the B-116 body below is untouched. That
+    function is the single owner of "how many, and which" for every readout on
+    every clinic, with four readers on it -- widening its selection rule in
+    place is how you get a defect in a readout nobody was looking at.
+
+    The accepted slot displaces the LAST of the chosen, never adds to them, so
+    `limit` still means what `_cap_presented_slots` says it means. Chronological
+    order is preserved, because the keypad map is built from this order and a
+    caller pressing 2 means the second thing they heard.
+    """
+    iso = str(session.get(ACCEPTED_SLOT_KEY) or "")[:19]
+    if not iso or limit < 1:
+        return chosen
+    slots = day.get("slots") if isinstance(day, dict) else None
+    if not isinstance(slots, list):
+        return chosen
+    idx = next(
+        (i for i, sl in enumerate(slots)
+         if str((sl or {}).get("start") or "")[:19] == iso),
+        None,
+    )
+    if idx is None or idx in chosen:
+        return chosen          # not this day, or already being spoken
+    keep = [i for i in chosen if i != idx][: max(0, limit - 1)]
+    out = sorted(set(keep + [idx]))
+    logger.info(
+        "[slot_followup] pinned the accepted slot back into the readout -- "
+        "%s was heard, so B-116 had dropped it (P6b). %r -> %r",
+        iso, chosen, out,
+    )
+    return out
+
+
 def choose_presented_indices(
     session: Dict[str, Any], day: Dict[str, Any], limit: int
 ) -> List[int]:
     """Which positions in a day's parallel slot arrays should be SPOKEN.
+
+    Wrapper: picks by the B-116 rule below, then pins the slot the caller has
+    just accepted back in if that rule dropped it. See `_pin_accepted_index`.
 
     Returns CHRONOLOGICAL indices, at most `limit`, preferring times this
     caller has not already heard.
@@ -1902,6 +2130,15 @@ def choose_presented_indices(
     time the caller cannot book, so a desynchronised day is not worth a
     cleverer readout.
     """
+    return _pin_accepted_index(
+        session, day, _choose_presented_indices_b116(session, day, limit), limit
+    )
+
+
+def _choose_presented_indices_b116(
+    session: Dict[str, Any], day: Dict[str, Any], limit: int
+) -> List[int]:
+    """The B-116 selection, exactly as it was. Do not add rules here."""
     slots = day.get("slots") if isinstance(day, dict) else None
     n = len(slots) if isinstance(slots, list) else 0
     if n == 0 or limit <= 0:
@@ -2102,6 +2339,8 @@ def reconcile_readback_time(
         return text, "unchanged", ""
     if any(_readback_norm(t) in phrase for t in offered):
         return text, "unchanged", ""      # names a time really offered that day
+    if _offered_time_named_without_its_band(phrase, offered):
+        return text, "unchanged", ""      # same time, said without "in the ..."
     if not _TIME_REFERENCE_RE.search(text):
         return text, "unchanged", ""      # names the day but no time at all
 
@@ -2154,6 +2393,54 @@ def reconcile_readback_time(
     if out == text:
         return text, "mismatch", f"could not locate {wrong!r} to correct"
     return out, "corrected", f"{wrong!r} -> {offered[0]!r} for {day_label}"
+
+
+_PART_OF_DAY_TAIL_RE = re.compile(
+    r"\s+in\s+the\s+(?:morning|afternoon|evening)\s*$", re.IGNORECASE
+)
+
+
+def _strip_part_of_day(label: str) -> str:
+    """"half past three in the afternoon" -> "half past three". Tail only."""
+    return _PART_OF_DAY_TAIL_RE.sub("", str(label or "")).strip()
+
+
+def _offered_time_named_without_its_band(phrase: str, offered: List[str]) -> bool:
+    """True when the read-back names an offered time but drops "in the ...".
+
+    P7, CAabe1acabf5eddee255fa53e681773034 (1 Sep 2026, northgate). Friday was
+    offered at eight in the morning and half past three in the afternoon. Susie
+    read back
+
+        "So that's Friday the 4th of September at half past three -- could I
+         take your first name and surname?"
+
+    which is correct, and the whole-label containment above called it a
+    mismatch, because the label is "half past three in the afternoon" and the
+    sentence stops at "three". Once the DAY has been named the part-of-day adds
+    nothing, so dropping it is the natural way to say it -- and it made the
+    B-95 net cry wolf on a good call.
+
+    UNIQUENESS IS THE WHOLE SAFETY ARGUMENT, and it is why this is not simply a
+    looser match. "half past three" is ambiguous between 03:30 and 15:30 in
+    general; it is unambiguous only when the day offers exactly one of them.
+    Where a day offers both, the stripped forms collide, this returns False and
+    the sentence stays a mismatch -- which is the right answer, because nobody
+    can tell which one she meant either.
+
+    Both sides are stripped: an offer of "half past three in the afternoon" and
+    "half past three in the morning" must collide, and they only do so after
+    the tails come off.
+    """
+    stripped = [_strip_part_of_day(t) for t in offered]
+    for i, bare in enumerate(stripped):
+        if not bare or bare == str(offered[i] or "").strip():
+            continue                      # no tail to drop -- nothing new to try
+        if stripped.count(bare) != 1:
+            continue                      # two times share it: genuinely ambiguous
+        if _readback_norm(bare) in phrase:
+            return True
+    return False
 
 
 def day_named_in_readout(available_days: Any, text: str) -> "str | None":

@@ -3547,6 +3547,31 @@ class LLMStream:
             ]
             _stand_down = [c for c in _stand_down if c]
             _model_text = " ".join(_stand_down)
+            # P6b. The P6 test above declines the moment the model numbers an
+            # option, and on CA5a126fe4e6addcf812836220cdf7ea44 the model's
+            # recovery WAS numbered — "Wednesday 9th September — Number 1,
+            # twenty past four in the afternoon" — while naming exactly the
+            # slot the caller had accepted. It was discarded for three earlier
+            # times and the caller hung up.
+            #
+            # So there are two ways to be sure the model is answering a pick
+            # rather than opening a list, and this is the stronger one: the
+            # caller's acceptance resolved to a slot THIS TURN, and the model's
+            # sentence names that slot. Both sides come from the payload.
+            from app.tools.slot_followup import accepted_slot_is_named_in
+            _names_accepted = accepted_slot_is_named_in(session, _model_text)
+            if _model_text and _names_accepted:
+                logger.warning(
+                    "[ms_gate5] deterministic offer STOOD DOWN — the model "
+                    "names the slot the caller just accepted, so it is "
+                    "confirming a pick, not presenting a list. Speaking the "
+                    "model instead (P6b). model=%r",
+                    _model_text[:120],
+                )
+                for _c in _stand_down:
+                    await tts_queue.put(_c)
+                    session["_slotbuf_emitted"] = True
+                return
             if (
                 _model_text
                 and not _eso(_model_text)
