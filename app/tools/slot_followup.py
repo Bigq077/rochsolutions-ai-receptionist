@@ -1946,6 +1946,40 @@ _BAND_WORDS = ("morning", "afternoon", "evening")
 ACCEPTED_SLOT_KEY = "_accepted_slot_iso"
 
 
+def slot_llm_reply_can_only_be_discarded(session: "Dict[str, Any] | None") -> bool:
+    """Is the post-check_availability model call certain to be thrown away? PURE.
+
+    `_flush_slot_buf` speaks the deterministic offer and discards the model's
+    version of it, EXCEPT where one of the two stand-down guards fires. Those
+    guards are the only reason the reply is ever read, and each has a
+    precondition that can be checked without it:
+
+      * P6  -- `last_offered_slots`: an offer is already standing, so the caller
+        has heard options and may be answering a pick rather than being read a
+        list;
+      * P6b -- `ACCEPTED_SLOT_KEY`: an acceptance resolved to a slot THIS TURN,
+        so a reply naming it is a confirmation, not a presentation.
+
+    With a deterministic offer built and NEITHER precondition set, this is a
+    first lookup: no options have been spoken, so there is no pick to confirm
+    and the discard is guaranteed by construction. The caller then waits ~1.3s
+    for a sentence nobody will ever hear (measured twice live, 2 Sep 2026), and
+    the call can be skipped.
+
+    False is the safe answer everywhere else: it keeps the call, keeps both
+    guards, and keeps today's behaviour exactly.
+    """
+    s = session or {}
+    det = s.get("_slot_offer_prebuilt")
+    if not isinstance(det, dict) or not det.get("chunks"):
+        return False
+    if s.get("last_offered_slots"):
+        return False
+    if s.get(ACCEPTED_SLOT_KEY):
+        return False
+    return True
+
+
 def _band_named(text: str) -> "str | None":
     """The ONE part-of-day `text` names, or None when it names 0 or 2+."""
     low = (text or "").lower()

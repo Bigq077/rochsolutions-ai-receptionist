@@ -4231,6 +4231,7 @@ class LLMStream:
             # exact condition that arms the slot buffer — so it is True ONLY on
             # the slot pass and reset on every other iteration (no cross-turn leak).
             session["_slot_buf_active"] = bool(_last_check_avail)
+            _skip_slot_llm = False
             if _last_check_avail:
                 _slot_buf = asyncio.Queue()
                 _active_q = _slot_buf
@@ -4250,10 +4251,66 @@ class LLMStream:
                 _call_dynamic = ""
                 logger.info(
                     "[ms_llm] slot buffer active (post-check_availability) iter=%d"
-                    " — switched to HAIKU + focused slot prompt",
-                    iteration,
+                    " — model=%s + focused slot prompt",
+                    iteration, model,
                 )
+
+                # ── The call we do not need to make ─────────────────────
+                # The sentence the caller is about to hear is ALREADY built —
+                # `_slot_offer_prebuilt` was written during tool-result handling,
+                # before this iteration was dispatched — and `_flush_slot_buf`
+                # discards the model's version of it wholesale. Measured on two
+                # consecutive live demo calls (2 Sep 2026, build fff61547): 1,355ms
+                # and 1,333ms of the caller's silence spent generating text that was
+                # then thrown away.
+                #
+                # It cannot simply be deleted, because that text is not always
+                # waste: the P6/P6b stand-down guards in `_flush_slot_buf` read it
+                # to notice the model is CONFIRMING a pick rather than opening a
+                # list. Throwing away such a recovery cost a real caller the slot
+                # they had just accepted (CA82b240cc…, 1 Sep, abandoned, judge 1),
+                # which is exactly why those guards exist.
+                #
+                # So skip the call only where neither guard could fire — decidable
+                # here, without the model's text, because both are preconditions
+                # rather than judgements about what it said:
+                #
+                #   * P6  needs `last_offered_slots` — an offer already standing;
+                #   * P6b needs ACCEPTED_SLOT_KEY — an acceptance resolved this turn.
+                #
+                # With neither set this is a FIRST lookup: the caller has heard no
+                # options, so there is no pick to confirm and the discard is
+                # guaranteed by construction rather than by luck. Any later lookup
+                # keeps the call and both guards, byte-identical to today.
+                from app.tools.slot_followup import (
+                    slot_llm_reply_can_only_be_discarded,
+                )
+                _det = session.get("_slot_offer_prebuilt")
+                _skip_slot_llm = slot_llm_reply_can_only_be_discarded(session)
             _last_check_avail = False  # reset; re-armed below after tool execution
+
+            if _skip_slot_llm:
+                # `_flush_slot_buf` drains with get_nowait() until empty, so an
+                # empty queue means raw_chunks == [] — which is also what makes
+                # this safe on the receiving side: the stand-down block is itself
+                # gated on `raw_chunks` being truthy, so it is skipped rather than
+                # evaluated against an absent reply, and section 1b emits the
+                # deterministic chunks exactly as it does today.
+                logger.info(
+                    "[ms_llm] slot LLM call SKIPPED — deterministic offer already "
+                    "built and no standing offer / accepted slot, so the reply "
+                    "could only be discarded (iter=%d)", iteration,
+                )
+                session["_slotbuf_emitted"] = False
+                await self._flush_slot_buf(asyncio.Queue(), tts_text_queue, session)
+                if session.pop("_slotbuf_emitted", False):
+                    session["_turn_real_tts"] = True
+                # History should record what the caller HEARD. Today it records the
+                # discarded model sentence instead, so the transcript and the
+                # speech disagree on every slot offer; with no call made there is
+                # no such sentence, and the spoken text is the only honest value.
+                full_reply += " ".join(str(c) for c in _det["chunks"])
+                break
 
             # ── Try Claude streaming ──────────────────────────────────────
             try:
