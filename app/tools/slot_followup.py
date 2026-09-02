@@ -1690,6 +1690,82 @@ _TIME_REFERENCE_RE = re.compile(
 )
 
 
+# Clock-face words as SPOKEN vs as TRANSCRIBED. `_spoken_slot_time` builds
+# every label in words ("twenty past twelve in the afternoon"); AssemblyAI
+# hands the caller's echo of it back in numerals ("20 past 12"). Folding both
+# onto digits is what lets the containment tests below compare them at all.
+#
+# D1, 2 Sep 2026, CA-pending (northgate). Sibling of B-91, which fixed the
+# SAME defect on `_norm_offer_label` in connection.py and never reached this
+# file. Copying B-91's table across would NOT have been enough: it maps the
+# HOURS one..twelve only, so "twenty past twelve" still met "20 past 12" as
+# "twenty past 12" and missed. The MINUTE words are the half that was absent,
+# and they are the half a clock-face label leads with.
+#
+# Deliberately NOT folded into `_readback_norm` itself, though that is where
+# it looks like it belongs. That normaliser also feeds `_caller_norm`, which
+# applies `_fold_ordinals` AFTER it, and a cardinal fold running first turns
+# "twenty second" into "20 2" -- the compound regex stops matching and B-104's
+# date matching breaks. Measured, not feared. So the fold lives here and is
+# applied at the TIME comparisons only; every date path is untouched by
+# construction rather than by care.
+_CLOCK_UNITS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "twenty": 20,
+}
+# Compounds before units, so "twenty five past" is 25 and not "20 5". Same
+# ordering as _fold_ordinals, and for the same reason.
+_CLOCK_COMPOUNDS = {"twenty five": 25}
+_CLOCK_COMPOUND_RE = re.compile(
+    r"\b(" + "|".join(sorted(_CLOCK_COMPOUNDS, key=len, reverse=True)) + r")\b"
+)
+_CLOCK_UNIT_RE = re.compile(
+    r"\b(" + "|".join(sorted(_CLOCK_UNITS, key=len, reverse=True)) + r")\b"
+)
+
+
+def _fold_clock_words(text: str) -> str:
+    """"twenty past twelve" and "20 past 12" both become "20 past 12".
+
+    "quarter" and "half" are left alone on purpose -- both sides spell them
+    the same way, so folding them would buy nothing and widen the surface for
+    no reason.
+    """
+    t = _CLOCK_COMPOUND_RE.sub(lambda m: str(_CLOCK_COMPOUNDS[m.group(1)]), text)
+    return _CLOCK_UNIT_RE.sub(lambda m: str(_CLOCK_UNITS[m.group(1)]), t)
+
+
+def _time_named_in(phrase: str, value: Any) -> bool:
+    """Does `phrase` name the time `value`? Folded, and WORD-BOUNDED.
+
+    The boundary is not a nicety, it is the whole safety of the fold. Folding
+    turns a bare hour label into one or two digits -- "nine in the morning"
+    strips to "nine" and folds to "9" -- and a read-back names its date in
+    digits too. Plain containment then matched "9" inside "Wednesday the 9th
+    of September", so `_offered_time_named_without_its_band` reported that the
+    sentence named an offered time when it named only the DAY.
+
+    That is B-126 exactly: the guard stands down and a caller is told a time
+    the diary does not hold. Caught by B-126's own tests, which is the reason
+    they exist.
+    """
+    needle = _time_norm(value)
+    if not needle:
+        return False
+    return re.search(r"\b" + re.escape(needle) + r"\b", phrase) is not None
+
+
+def _time_norm(value: Any) -> str:
+    """`_readback_norm` plus the clock-word fold. For TIME comparisons ONLY.
+
+    Use this wherever a spoken slot LABEL meets caller or model speech. Use
+    `_readback_norm` where a DAY does -- see the note above for why the two
+    cannot be the same function.
+    """
+    return _fold_clock_words(_readback_norm(value))
+
+
 def _readback_norm(value: Any) -> str:
     """Fold a spoken phrase or a payload label onto one comparable form.
 
@@ -2036,15 +2112,15 @@ def slot_accepted_by_caller(
             return None
         return heard[0].get("start") or None
 
-    phrase = _readback_norm(text)
+    phrase = _time_norm(text)
     hits = []
     for s in heard:
         label = str(s.get("spoken") or "").strip()
         if not label:
             continue
         bare = _strip_part_of_day(label)
-        if _readback_norm(label) in phrase or (
-            bare and bare != label and _readback_norm(bare) in phrase
+        if _time_named_in(phrase, label) or (
+            bare and bare != label and _time_named_in(phrase, bare)
         ):
             hits.append(s)
     if len(hits) == 1:
@@ -2094,11 +2170,11 @@ def accepted_slot_is_named_in(session: Dict[str, Any], text: str) -> bool:
     )
     if not label:
         return False
-    phrase = _readback_norm(text)
-    if _readback_norm(label) in phrase:
+    phrase = _time_norm(text)
+    if _time_named_in(phrase, label):
         return True
     bare = _strip_part_of_day(label)
-    return bool(bare and bare != label and _readback_norm(bare) in phrase)
+    return bool(bare and bare != label and _time_named_in(phrase, bare))
 
 
 def _pin_accepted_index(
@@ -2434,6 +2510,10 @@ def reconcile_readback_time(
     phrase = _readback_norm(text)
     if not phrase:
         return text, "unchanged", ""
+    # The DAY tests below compare against `phrase`, the TIME tests against
+    # `tphrase`. Holding them apart is what keeps the clock-word fold off a
+    # date -- see the _fold_clock_words note.
+    tphrase = _time_norm(text)
 
     flat = [s for s in flatten_bookable_slots(available_days) if s.get("start")]
     if not flat:
@@ -2467,9 +2547,9 @@ def reconcile_readback_time(
             offered.append(label)
     if not offered:
         return text, "unchanged", ""
-    if any(_readback_norm(t) in phrase for t in offered):
+    if any(_time_named_in(tphrase, t) for t in offered):
         return text, "unchanged", ""      # names a time really offered that day
-    if _offered_time_named_without_its_band(phrase, offered):
+    if _offered_time_named_without_its_band(tphrase, offered):
         return text, "unchanged", ""      # same time, said without "in the ..."
     if not _TIME_REFERENCE_RE.search(text):
         return text, "unchanged", ""      # names the day but no time at all
@@ -2507,7 +2587,7 @@ def reconcile_readback_time(
         label = str(s.get("spoken") or "").strip()
         if not label or label in offered:
             continue
-        if _readback_norm(label) in phrase:
+        if _time_named_in(tphrase, label):
             wrong = label
             break
 
@@ -2568,7 +2648,7 @@ def _offered_time_named_without_its_band(phrase: str, offered: List[str]) -> boo
             continue                      # no tail to drop -- nothing new to try
         if stripped.count(bare) != 1:
             continue                      # two times share it: genuinely ambiguous
-        if _readback_norm(bare) in phrase:
+        if _time_named_in(phrase, bare):
             return True
     return False
 
