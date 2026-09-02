@@ -37,6 +37,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from app.tools.slot_followup import (
+    LOSSY_SPOKEN_DAYS_KEY,
+    record_spoken_slots,
     _closing_question,
     part_of_day as _part_of_day,
     _spoken_series,
@@ -182,6 +184,112 @@ def earliest_lead_in_is_true(
     if not full_first:
         return False
     return presented_first == full_first
+
+
+def offer_as_record(offer: "SlotOffer", day_iso: Optional[str] = None) -> Dict[str, Any]:
+    """A SlotOffer flattened to the plain dict the session can hold.
+
+    The session is serialised to Redis, so the offer crosses that boundary as
+    data. Same shape `_slot_offer_prebuilt` has always had; named here so the
+    two producers cannot drift into two shapes.
+    """
+    return {
+        "chunks": list(offer.chunks),
+        "slots": [
+            {
+                "start": s.get("start"),
+                "end": s.get("end") or "",
+                "spoken": s.get("spoken"),
+                "date": s.get("date"),
+            }
+            for s in offer.slots
+        ],
+        "dtmf_map": dict(offer.dtmf_map),
+        "more_times": bool(offer.more_times),
+        "day_iso": day_iso,
+        "mode": offer.mode,
+    }
+
+
+def apply_offer_to_session(
+    session: Dict[str, Any], record: Dict[str, Any], chunks: List[str]
+) -> None:
+    """Write EVERY record of an offer that is about to be spoken. One place.
+
+    Extracted from `_flush_slot_buf` section 1b on 2026-09-02, unchanged in
+    behaviour, because a second producer needed it and copying it would have
+    made two answers to "what did she just offer?".
+
+    The demo call that forced this, CA3184d8e3c2 at 09:43: a path that SPOKE
+    without writing here left the keypad map saying Monday/Tuesday/Wednesday
+    while Susie had just offered Thursday. The caller said "the last day in the
+    morning works", the resolver read the stale record, and the model confirmed
+    a third day again. **Anything that speaks an offer calls this.** That is the
+    whole rule, and it is the one the slot layer keeps breaking.
+
+    Writes, in the order they must happen:
+
+      1. the CUMULATIVE spoken record (B-78b) FIRST, because
+         `last_offered_slots` is about to be overwritten and is the only other
+         trace that these slots were named;
+      2. `last_offered_slots` + `slot_labels`, which are POSITIONAL -- one entry
+         per DAY on multi_day, because an ordinal ("the second one") and a
+         keypad digit must mean the same thing. Writing every slot here was
+         right only while a multi_day offer carried one time per day;
+      3. the keypad map and its arming flags, only when there are >= 2 options
+         to address;
+      4. `v3_last_offered_day_iso`, which four readers take to mean the
+         PAYLOAD's first day -- not "the day being offered". See the anchor
+         note at the multi_day build site before changing that.
+    """
+    slots = [s for s in (record.get("slots") or []) if s.get("start")]
+    dtmf = dict(record.get("dtmf_map") or {})
+    chunks = [str(c) for c in (chunks or []) if str(c).strip()]
+
+    # 1. Cumulative first.
+    record_spoken_slots(session, slots)
+
+    # 2. Positional: one per DAY on multi_day, every slot otherwise.
+    positional: List[Dict[str, Any]] = []
+    labels: List[Any] = []
+    seen_dates: set = set()
+    for s in slots:
+        if record.get("mode") == "multi_day":
+            d = s.get("date")
+            if d in seen_dates:
+                continue
+            seen_dates.add(d)
+        positional.append({"start": s["start"], "end": s.get("end") or ""})
+        labels.append(s.get("spoken"))
+    session["last_offered_slots"] = positional
+    session["slot_labels"] = labels
+    # B-126: this record is a transcript, not a projection, so no day of it
+    # needs marking as unsafe to reason from.
+    session.pop(LOSSY_SPOKEN_DAYS_KEY, None)
+
+    # 3. The keypad.
+    if len(dtmf) >= 2:
+        session["v3_dtmf_slot_map"] = dtmf
+        session["v3_awaiting_slot_selection"] = True
+        session["v3_slot_map_armed_turn"] = session.get("turn_count", 0)
+        session.pop("v3_slot_map_superseded", None)
+        session.pop("slots_stale_modality_switch", None)
+        session["_slot_chunks_sent"] = len(chunks)
+        session["_slot_chunks_inhibited"] = 0
+        # B-120: the readout TEXT, not just its count. A readout torn down at
+        # PLAYBACK has to be spoken again, so the words must survive it.
+        session["_slot_readout_chunks"] = [c.strip() for c in chunks if c.strip()]
+    else:
+        session.pop("_slot_chunks_sent", None)
+        session.pop("_slot_chunks_inhibited", None)
+        session.pop("_slot_readout_chunks", None)
+
+    # 4. The anchor.
+    day_iso = record.get("day_iso")
+    if not day_iso and slots and slots[0].get("date"):
+        day_iso = slots[0]["date"]
+    if day_iso:
+        session["v3_last_offered_day_iso"] = day_iso
 
 
 def build_slot_offer(

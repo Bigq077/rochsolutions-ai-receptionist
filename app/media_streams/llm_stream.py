@@ -3606,77 +3606,12 @@ class LLMStream:
                 (" ".join(raw_chunks))[:80],
             )
 
-            # The record. Cumulative FIRST, as everywhere else in this family:
-            # last_offered_slots is about to be overwritten and is the only
-            # other trace that these were spoken (B-78b).
-            from app.tools.slot_followup import record_spoken_slots
-            record_spoken_slots(session, _det_slots)
-            # TWO RECORDS, AND THEY ARE NOT THE SAME LIST.
-            #
-            # The cumulative record above holds every time the sentence named.
-            # `last_offered_slots` is "the offer on the table" and is read BY
-            # POSITION -- `_resolve_slot_iso` maps an ordinal ("the second
-            # one") onto it, and on multi_day a position means a DAY, which is
-            # also what the day-keyed DTMF map means. receptionist_tools calls
-            # that "not negotiable" and it is right.
-            #
-            # Writing every slot here was correct only while a multi_day offer
-            # carried ONE time per day: the two lists were then identical. At
-            # two times per day they diverge, and "the second one" would pick
-            # the first day's SECOND time while pressing 2 picks the second
-            # DAY -- one utterance meaning two different slots depending on
-            # whether the caller spoke or pressed.
-            _det_positional: list = []
-            _det_pos_labels: list = []
-            _det_seen_dates: set = set()
-            for _s in _det_slots:
-                if _prebuilt.get("mode") == "multi_day":
-                    _sd = _s.get("date")
-                    if _sd in _det_seen_dates:
-                        continue
-                    _det_seen_dates.add(_sd)
-                _det_positional.append(
-                    {"start": _s["start"], "end": _s.get("end") or ""}
-                )
-                _det_pos_labels.append(_s.get("spoken"))
-            session["last_offered_slots"] = _det_positional
-            session["slot_labels"] = _det_pos_labels
-            # B-126: this record is a transcript, not a projection, so no day
-            # of it needs marking as unsafe to reason from.
-            from app.tools.slot_followup import LOSSY_SPOKEN_DAYS_KEY
-            session.pop(LOSSY_SPOKEN_DAYS_KEY, None)
-
-            if len(_det_map) >= 2:
-                session["v3_dtmf_slot_map"] = _det_map
-                session["v3_awaiting_slot_selection"] = True
-                session["v3_slot_map_armed_turn"] = session.get("turn_count", 0)
-                session.pop("v3_slot_map_superseded", None)
-                session.pop("slots_stale_modality_switch", None)
-                session["_slot_chunks_sent"] = len(_det_chunks)
-                session["_slot_chunks_inhibited"] = 0
-                # B-120: keep the readout TEXT, not just its chunk count. The
-                # count is all the pre-synthesis recovery needs -- it only has
-                # to know the caller heard nothing -- but a readout torn down
-                # at PLAYBACK has to be SPOKEN again, so the words themselves
-                # must survive the teardown. Stripped, because _tts_loop
-                # compares against the stripped chunk it is about to speak.
-                session["_slot_readout_chunks"] = [
-                    c.strip() for c in _det_chunks if c.strip()
-                ]
-            else:
-                session.pop("_slot_chunks_sent", None)
-                session.pop("_slot_chunks_inhibited", None)
-                session.pop("_slot_readout_chunks", None)
-            # `day_iso` is set only by the multi_day builder, to the PAYLOAD's
-            # first day -- the same value section 4 writes, and the meaning
-            # turn_handler documents. single_day sends None and keeps the
-            # first-spoken-slot behaviour it shipped with, where the two
-            # coincide anyway. See the anchor note at the multi_day build site.
-            _det_day = _prebuilt.get("day_iso")
-            if not _det_day and _det_slots and _det_slots[0].get("date"):
-                _det_day = _det_slots[0]["date"]
-            if _det_day:
-                session["v3_last_offered_day_iso"] = _det_day
+            # Every record of this offer, in one place -- shared with the
+            # follow-up producer so the two cannot disagree about what
+            # was just said. See apply_offer_to_session for the ordering
+            # and why each write is the shape it is.
+            from app.tools.slot_offer import apply_offer_to_session
+            apply_offer_to_session(session, _prebuilt, _det_chunks)
 
             for _i, _c in enumerate(_det_chunks):
                 logger.info(

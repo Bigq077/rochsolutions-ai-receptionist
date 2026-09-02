@@ -184,35 +184,74 @@ async def test_two_fresh_days_are_not_padded_with_a_heard_one():
 # ── F2, the follow-up path must stand aside ─────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_the_cached_followup_still_answers_from_day_one_FOR_NOW():
-    """Documents the state after the 09:43 revert — NOT the desired behaviour.
+async def test_what_else_is_answered_with_fresh_days_AND_records_them():
+    """The 09:43 regression, and why the answer must be a producer.
 
-    F2b made this branch decline so a real lookup could offer more days. On the
-    demo call at 09:43 the decline worked and the consequence did not: the model
-    answered "what else" from its own context WITHOUT calling the tool, so no
-    deterministic offer was built and no record was written. The keypad map
-    still said Monday/Tuesday/Wednesday while Susie had just offered Thursday
-    the 10th, the caller said "the last day in the morning works", the resolver
-    read the stale record and pinned Wednesday, and the model confirmed
-    "Saturday the 12th at nine in the morning". Three days in play, none of them
-    agreeing.
+    CA3184d8e3c2. The first attempt made this branch DECLINE so a real lookup
+    could answer. The decline fired; the lookup did not. The model answered from
+    its own context without calling the tool, nothing wrote the record, and the
+    keypad still said Monday/Tuesday/Wednesday while Susie had just offered
+    Thursday the 10th. The caller said "the last day in the morning works", the
+    resolver read the stale record and pinned Wednesday, and the model confirmed
+    Saturday the 12th.
 
-    That is worse than the nine-times-on-one-day answer it replaced: verbose but
-    coherent beats a wrong day read back as a booking. Reverted on the demo line
-    at 09:5x.
-
-    The real fix is to ANSWER this deterministically — build the more-days offer
-    from the cached payload through build_slot_offer and write the record —
-    rather than declining and hoping the model calls the tool. Handing a turn to
-    the model is what leaves the record stale, which is the disease this whole
-    family has.
+    So the assertion is not "did she say the right days" — it is "did the record
+    follow the speech". Both, or neither.
     """
     session = _after_multi_day_readout()
+    session["v3_dtmf_slot_map"] = {
+        "1": "Monday 7th September",
+        "2": "Tuesday 8th September",
+        "3": "Wednesday 9th September",
+    }
+
     spoken = try_unspoken_followup_speech(session, "uh what else have you got")
-    assert spoken is not None, (
-        "the decline is back without the deterministic answer behind it — "
-        "see the docstring, this is the 09:43 regression"
+
+    assert spoken, "'what else' fell through instead of offering more days"
+    for fresh in ("Thursday 10th September", "Friday 11th September",
+                  "Monday 14th September"):
+        assert fresh in spoken, "{} missing from {!r}".format(fresh, spoken)
+    for heard in ("Monday 7th September", "Tuesday 8th September",
+                  "Wednesday 9th September"):
+        assert heard not in spoken, (
+            "re-read a day he had already heard: {}".format(heard)
+        )
+
+    # ...and the record moved with it. This is the half that was missing.
+    assert [x["start"][:10] for x in session["last_offered_slots"]] ==         ["2026-09-10", "2026-09-11", "2026-09-14"]
+    assert list(session["v3_dtmf_slot_map"].values()) == [
+        "Thursday 10th September", "Friday 11th September",
+        "Monday 14th September",
+    ], "the keypad still points at the days he was offered BEFORE this sentence"
+
+
+@pytest.mark.asyncio
+async def test_the_pick_that_followed_now_resolves_to_what_she_just_said():
+    """End to end: the exact utterance from the failing call, after the fix."""
+    from app.tools.slot_followup import slot_accepted_by_caller
+
+    session = _after_multi_day_readout()
+    assert try_unspoken_followup_speech(session, "uh what else have you got")
+
+    assert slot_accepted_by_caller(
+        session, "yeah the last day in the morning works"
+    ) == "2026-09-14T08:00:00+01:00", (
+        "'the last day' still resolves against the offer from BEFORE 'what "
+        "else' — this is what pinned Wednesday while she had offered Thursday"
     )
+
+
+@pytest.mark.asyncio
+async def test_it_falls_through_when_the_week_is_exhausted():
+    """Every day offered: the existing exhaustion answer, not a repeat."""
+    from app.tools.slot_followup import more_days_speech
+
+    session = _after_multi_day_readout()
+    record_spoken_slots(session, [
+        {"start": "{}T08:00:00+01:00".format(d), "date": d}
+        for d in ("2026-09-10", "2026-09-11", "2026-09-14")
+    ])
+    assert more_days_speech(session) is None
 
 
 @pytest.mark.asyncio

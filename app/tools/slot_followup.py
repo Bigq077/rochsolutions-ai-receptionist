@@ -3066,6 +3066,106 @@ def exhaustion_claim_is_supported(session: Dict[str, Any]) -> bool:
         return False
 
 
+def more_days_speech(session: Dict[str, Any]) -> Optional[str]:
+    """Answer "what else have you got" with DAYS he has not heard. Or None.
+
+    The second producer, and it is a producer rather than a decline because of
+    what happened when it was one. CA3184d8e3c2, 2026-09-02 09:43: this branch
+    stood aside so a real lookup could answer, the model answered from its own
+    context WITHOUT calling the tool, and nothing wrote the record. The keypad
+    still said Monday/Tuesday/Wednesday while Susie had just offered Thursday;
+    the caller said "the last day in the morning works"; the resolver read the
+    stale record and pinned Wednesday; the model confirmed Saturday. Three days
+    and no two agreeing.
+
+    So this speaks AND records, through the same two functions the primary
+    readout uses -- `build_slot_offer` for the words, `apply_offer_to_session`
+    for every record of them. There is no third way to put an offer on the
+    table, which is the point.
+
+    Owner decision, 2026-09-02: after a multi-day readout, "what else have you
+    got" means MORE DAYS. Answered from the cached payload, so it costs no tool
+    call -- the latency this path exists to protect is kept, and correctness no
+    longer depends on the model choosing to look something up.
+
+    Returns None -- and the caller falls through unchanged -- whenever it
+    cannot do this honestly: not a multi_day offer, no payload, or every day in
+    the sweep already offered. That last one is the real end of the week, and
+    the existing exhaustion sentence is the right answer to it, not a repeat.
+    """
+    if str(session.get("_slot_presentation_mode") or "") != "multi_day":
+        return None
+    days = session.get("available_days")
+    if not isinstance(days, list) or not days:
+        return None
+    try:
+        # Deferred: slot_offer imports this module, and receptionist_tools
+        # imports it too -- both edges exist only inside functions.
+        from app.tools.slot_offer import (
+            apply_offer_to_session, build_slot_offer, offer_as_record,
+        )
+        from app.tools.receptionist_tools import (
+            _MAX_PRESENTED_DAYS, _MAX_PRESENTED_TIMES_MULTI_DAY,
+        )
+    except Exception:
+        logger.exception("[slot_followup] more-days offer unavailable")
+        return None
+
+    fresh = choose_presented_days(session, days, _MAX_PRESENTED_DAYS)
+    # `choose_presented_days` never starves a repeat -- when every day has been
+    # heard it returns the first three again, which here would re-read days he
+    # has already had. Only genuinely unheard days may be spoken as "what else".
+    try:
+        spoken = spoken_starts_for_offer(session)
+    except Exception:
+        return None
+    def _heard(day: Any) -> bool:
+        return any(
+            str((sl or {}).get("start") or "")[:19] in spoken
+            for sl in ((day or {}).get("slots") or [])
+        )
+    fresh = [d for d in fresh if not _heard(d)]
+    if not fresh:
+        logger.info(
+            "[slot_followup] 'what else' after a multi-day readout, but every "
+            "day in the sweep has been offered -- falling through"
+        )
+        return None
+
+    presented: List[Dict[str, Any]] = []
+    for day in fresh:
+        trimmed = dict(day)
+        idx = choose_presented_indices(session, trimmed, _MAX_PRESENTED_TIMES_MULTI_DAY)
+        for key in ("slot_times", "slot_times_spoken", "slots"):
+            if isinstance(trimmed.get(key), list):
+                trimmed[key] = pick_by_index(trimmed[key], idx)
+        presented.append(trimmed)
+
+    try:
+        offer = build_slot_offer(presented)
+    except Exception:
+        logger.exception(
+            "[slot_followup] more-days offer failed to build -- falling through"
+        )
+        return None
+    if not offer.chunks:
+        return None
+
+    # THE ANCHOR KEEPS ITS MEANING. `v3_last_offered_day_iso` is the PAYLOAD's
+    # first day to four readers, and the payload has not changed here -- this
+    # is a second readout of the same sweep -- so it is passed through
+    # unchanged rather than repointed at the days now being spoken.
+    _anchor = days[0].get("date") if isinstance(days[0], dict) else None
+    apply_offer_to_session(
+        session, offer_as_record(offer, day_iso=_anchor), offer.chunks
+    )
+    logger.info(
+        "[slot_followup] 'what else' answered with %d day(s) he has not heard: "
+        "%s", len(presented), [d.get("date") for d in presented],
+    )
+    return offer.text
+
+
 def try_unspoken_followup_speech(
     session: Dict[str, Any], user_text: str
 ) -> Optional[str]:
@@ -3127,6 +3227,17 @@ def try_unspoken_followup_speech(
         return apply_resolved_time_to_session(session, hit)
 
     if utterance_requests_more_slots(user_text):
+        # "What else" after a MULTI-DAY readout means more DAYS, and it is
+        # answered here rather than handed to the model -- see more_days_speech
+        # for the call that proved why. Only the unscoped case: a caller who
+        # NAMES a day, or picks one by position, still gets that day's remaining
+        # times below, which is B-103 and B-105 unchanged.
+        _payload_days = session.get("available_days") or []
+        if not day_named_by_caller(_payload_days, user_text) and not                 day_selected_by_position(_payload_days, session, user_text):
+            _more_days = more_days_speech(session)
+            if _more_days:
+                return _more_days
+
         # Scoped to the day under discussion. `remaining` above stays whole-
         # sweep on purpose: resolve_requested_time names the slot's OWN day, so
         # a caller-named time on another day cannot mislead, and refusing it
