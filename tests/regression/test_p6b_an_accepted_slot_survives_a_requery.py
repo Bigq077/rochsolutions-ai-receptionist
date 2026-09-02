@@ -134,6 +134,16 @@ async def test_the_two_live_utterances_resolve():
     ("number 3 in the afternoon",                       "2026-09-09T16:20:00+01:00"),
     ("the second one at ten past five please",          "2026-09-08T17:10:00+01:00"),
     ("wednesday 9th september in the afternoon",        "2026-09-09T16:20:00+01:00"),
+    # Moved out of test_it_declines_rather_than_guess on 2026-09-02, when the
+    # resolver learned to pin a day by a bare weekday that matches exactly one
+    # day of the offer. It sat there as "a bare weekday is not a named day
+    # here" — a true statement about `day_named_by_caller`, which needs the
+    # payload's full day_label, but a description of the limitation rather
+    # than a safety property. The row above wants this very slot from the
+    # fuller phrasing, and this is not a guess: the offer holds one Wednesday,
+    # and "twenty past four" matches exactly one time spoken on it. The
+    # deny-by-default cases that ARE load-bearing kept their place below.
+    ("wednesday at twenty past four",                   "2026-09-09T16:20:00+01:00"),
 ])
 async def test_the_other_ways_a_caller_picks(said, want):
     assert slot_accepted_by_caller(_mid_offer(NG_OFFER), said) == want
@@ -146,7 +156,13 @@ async def test_the_other_ways_a_caller_picks(said, want):
     ("the last day",                  "a day with two heard times is ambiguous"),
     ("the last one, number 2",        "two positions named — never guess"),
     ("yeah that sounds good",         "an acceptance naming nothing resolves nothing"),
-    ("wednesday at twenty past four", "a bare weekday is not a named day here"),
+    # The weekday door, kept shut where it should be. A weekday the offer does
+    # not hold pins nothing, and one that names a day whose times the caller
+    # did not narrow is ambiguous exactly as "the last day" is.
+    ("thursday at twenty past four",  "no thursday in the offer"),
+    ("wednesday works",               "one wednesday, but two heard times on it"),
+    ("wednesday in the morning, or is monday better",
+     "two weekdays named is a comparison, not a pick"),
 ])
 async def test_it_declines_rather_than_guess(said, why):
     """Deny by default. A wrong pin is read back to the caller as their booking."""

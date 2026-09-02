@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import date as _date
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -1902,6 +1903,54 @@ def _position_named(text: str, n: int) -> "int | None":
     return found.pop() if len(found) == 1 else None
 
 
+def _offered_day_by_weekday(offered: Any, text: str) -> "str | None":
+    """The one OFFERED day whose WEEKDAY the caller named, or None.
+
+    `day_named_by_caller` requires the payload's full day_label ("Saturday 5th
+    September") to appear in the speech, and records a bare weekday as a
+    PARTIAL naming that matches nothing -- Tier 2, deliberately out of scope
+    there because resolving "that wednesday" against the calendar is date
+    parsing and needs its own corpus.
+
+    This is not that. The question here is narrower and closed: of the two or
+    three days ALREADY READ OUT to this caller, does the weekday they said pick
+    exactly one? No calendar, no parsing, no ambiguity about which week -- the
+    candidates are the offer itself.
+
+    Vital Edge, 2026-09-02. Susie read out Saturday, and the caller said "the
+    saturday at 6 in the evening works". Nothing resolved it:
+    `utterance_is_slot_selection` is containment against the full spoken label
+    and the caller had dropped the date; `day_named_by_caller` saw a partial.
+    So the pick was read as a fresh time-of-day filter, check_availability ran
+    a second time and was refused, and the model -- with no tool result and no
+    scripted next step -- improvised the rest of the turn.
+
+    DENY BY DEFAULT, like every other step of the resolver:
+      * exactly ONE weekday word in the speech (two is a comparison, not a
+        pick -- "is it saturday or monday?");
+      * exactly ONE offered day falling on it. A fortnight's offer containing
+        two Saturdays declines rather than guessing the nearer.
+    """
+    try:
+        _words = [w for w in _WEEKDAY_WORDS
+                  if f" {w} " in f" {_caller_norm(text)} "]
+        if len(_words) != 1:
+            return None
+        _dates = sorted({
+            str((o or {}).get("start") or "")[:10]
+            for o in (offered or [])
+            if isinstance(o, dict)
+        } - {""})
+        _hits = [
+            d for d in _dates
+            if _date.fromisoformat(d).strftime("%A").lower() == _words[0]
+        ]
+        return _hits[0] if len(_hits) == 1 else None
+    except Exception:
+        # A caller mid-booking must never lose their turn to a resolver.
+        return None
+
+
 def slot_accepted_by_caller(
     session: Dict[str, Any], text: str
 ) -> "str | None":
@@ -1952,6 +2001,12 @@ def slot_accepted_by_caller(
         elif isinstance(named, str):
             date = named
     if not date:
+        # Last resort, and the narrowest of the three: a bare weekday that
+        # picks exactly one day out of the offer just read. See
+        # _offered_day_by_weekday -- it resolves against the offer, never
+        # against the calendar, so it is not the date parsing Tier 2 needs.
+        date = _offered_day_by_weekday(offered, text)
+    if not date:
         return None
 
     # -- 3. which time, among what was SPOKEN -----------------------------
@@ -1968,6 +2023,17 @@ def slot_accepted_by_caller(
     if not heard:
         return None
     if len(heard) == 1:
+        # One time on the day is normally the whole answer -- but not when
+        # the caller named a band it contradicts. "The last day at 6 in the
+        # evening" against a day holding only 09:10 is not an acceptance of
+        # 09:10; it is a caller whose day and time disagree, and the
+        # docstring's contract is that ambiguity declines. Pinning it would
+        # put a slot the caller never chose into the next readout and read
+        # it back as their appointment -- the one outcome this resolver is
+        # forbidden from producing.
+        _band = _band_named(text)
+        if _band and part_of_day(heard[0].get("start")) != _band:
+            return None
         return heard[0].get("start") or None
 
     phrase = _readback_norm(text)

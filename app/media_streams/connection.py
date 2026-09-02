@@ -12011,8 +12011,33 @@ class WebSocketCallHandler:
                             # latching. That caller still gets mornings on THIS
                             # turn (the model reads the utterance); what is lost
                             # is persistence across later turns.
+                            # `_is_slot_pick` is containment against the
+                            # spoken labels, so it answers False for every
+                            # pick a caller phrases in their own words --
+                            # and the resolver forty lines up has ALREADY
+                            # decided the same question properly, by day
+                            # and time, deny-by-default. It was computed
+                            # here and not read.
+                            #
+                            # Vital Edge, 2026-09-02: "the saturday at 6 in
+                            # the evening works" -- the date dropped, so
+                            # containment missed -- was banked as a HARD
+                            # evenings preference. Every later prompt then
+                            # carried "TIME OF DAY CONFIRMED (caller stated
+                            # this explicitly)" about a filter the caller
+                            # had never asked for, over an utterance that
+                            # was an acceptance.
+                            #
+                            # Safe in the direction that matters: a pinned
+                            # acceptance is the strongest evidence there is
+                            # that this was a choice and not a filter, and
+                            # per B-90 the cost of reading a selection as a
+                            # preference is a filter that silently deletes
+                            # slots, while the cost the other way is a
+                            # re-ask.
                             _tod_tier = _time_preference_tier(
-                                utterance, is_slot_pick=_is_slot_pick
+                                utterance,
+                                is_slot_pick=bool(_is_slot_pick or _accepted),
                             )
                             if (
                                 _tod_tier != "none"
