@@ -1,5 +1,90 @@
 # Open defects — hold speech & slot readouts, 2026-09-01
 
+# STATUS — 2026-09-02 01:45. Ready for the demo line.
+
+Branch **`fix/p6-slot-acceptance`**, four commits on top of `latency-eval`.
+**Nothing pushed. Nothing deployed.**
+
+| | Defect | State |
+|---|---|---|
+| step 1 | a pick made in words is not resolved | **FIXED** `65baedd0` |
+| P6 | the model's prose recovery is discarded | **FIXED** `0b0cfd03` |
+| P6b | the accepted slot is deleted from the re-read | **FIXED** `65baedd0` |
+| P7 | a correct read-back reported as a mismatch | **FIXED** `65baedd0` |
+
+## What to do in the morning
+
+1. `git push origin fix/p6-slot-acceptance:latency-eval` — demo line only.
+2. Confirm the deploy: `[build_info] running build 65baedd0…` in the Render
+   log. `/health` is hardcoded to 1.0.0 and proves nothing.
+3. Ring **+447366263180** and run the script below.
+4. If it passes, fast-forward `production`.
+
+### The call script — this shape reproduced the defect first time
+
+1. "Yeah, I'd like to book an appointment."
+2. "My left ankle, nothing serious."
+3. "Not really, more general."
+4. "Anytime next week."
+5. She reads three numbered days. Note the band word she uses for the **last**
+   day, then: **"Yeah, the last day in the afternoon works."**
+   (say "in the evening" if that is what she said)
+
+**PASS** — she confirms that slot and asks for your name.
+**FAIL** — she reads a numbered list again.
+
+Either way the log now says which path ran:
+
+```
+[ms_conn v3] caller ACCEPTED 2026-09-…T16:20 (…) — pinned into any readout this turn (P6b)
+[ms_gate5] deterministic offer STOOD DOWN — the model names the slot the caller just accepted …
+[slot_followup] pinned the accepted slot back into the readout -- … was heard, so B-116 had dropped it (P6b)
+```
+
+The first line is step 1 working. The second means she skipped the re-read
+entirely — the best outcome. The third means she did re-read but the accepted
+slot was in it — the safety net, still a pass.
+
+**Worth trying too:** *"half past 3 on the last day works"* (no band word — took
+the working path before, must still work) and *"what else have you got?"* after
+an offer (must still get a genuine second list, NOT the pin).
+
+## Verification done
+
+* 28 new tests across three files, all built from the two live transcripts.
+* Every defect test proved red-then-green — the P6b pin test was re-run with
+  `_pin_accepted_index` neutered and fails with the exact live symptom.
+* Full `tests/` failing set **byte-identical** to baseline: 119 either side,
+  same tests. Passes 7597 -> 7625 (+28, exactly the new ones).
+
+## Two things to know before reading the baseline
+
+* **The baseline moved 24 -> 25 on its own at midnight.**
+  `test_absence_is_not_unavailability.py::test_the_withheld_day_is_the_one_the_caller_asked_about`
+  is date-dependent — it asserts a day nine out is absent from a swept payload,
+  and on 2 Sep it is present. **Verified failing on clean `ebdd9759` today**,
+  so it is not from this work. It will flip back on its own, which is worse
+  than a steady failure: anyone diffing a failing set across midnight will see
+  a phantom regression. Worth pinning the clock in that test.
+* `git stash` is unreliable in this repo. Every before/after comparison here
+  used a separate worktree, never a stash.
+
+## What is NOT fixed
+
+* **The re-query itself still happens.** The model still reads a band word as a
+  fresh filter and calls `check_availability` again. Both fixes above make that
+  harmless — she either skips the re-read or keeps the accepted slot in it —
+  but the underlying tool-use decision is untouched, and it costs a second or
+  two of dead air. Suppressing it is a prompt/tool-schema change and belongs in
+  its own session.
+* **A bare weekday does not resolve.** "wednesday at twenty past four" declines,
+  because `day_named_by_caller` requires the day in full by design. Declining is
+  safe; loosening that guard at 01:00 was not worth it.
+* `GOOGLE_SERVICE_ACCOUNT_JSON` is still malformed — Sheets dead on the demo
+  service, and **the three patient services are still unchecked**.
+
+---
+
 Handover. Everything below is evidenced from the obs corpus (`demo_obs`) and the
 Render logs, with call SIDs. **Nothing here is fixed.** One related fix DID land
 today and is described at the bottom so it is not re-done.
