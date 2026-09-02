@@ -519,6 +519,10 @@ after; three pin the existing behaviour and pass in both trees. Full
 `tests/regression` failing set is **byte-identical** before and after — 24
 either side, same tests — with passes 6370 -> 6375.
 
+**Superseded in part by P6b below: `0b0cfd03` covers only the shape where
+the model recovers in PROSE. See P6b for the root cause and the fix that
+covers both.**
+
 **Still open, and now the bigger half: step 1.** Widening pick recognition to
 understand "the last day", "the second one" and a bare time is the ~27-call
 defect. Not attempted here.
@@ -527,6 +531,114 @@ defect. Not attempted here.
 reproduces the shape — read a multi-day offer, accept one in words — and
 confirms Susie moves to the name instead of re-reading. `latency-eval` is a
 live line; the revert is this one commit.
+
+---
+
+## P6b — the same defect with the recovery shaped as a LIST, and the real root
+
+**Severity: HIGH. Open. The step-4 fix on `fix/p6-slot-acceptance` does NOT
+cover this shape.** `CA5a126fe4e6addcf812836220cdf7ea44`, 2026-09-02 00:02,
+`northgate`. Nothing was deployed between this call and `ebdd9759`, so it is
+that build. `outcome=abandoned`, `dur=90s`, judge `score=2`.
+
+Deliberate reproduction, from the script in the session that found P6 — and it
+reproduced first time, which makes this shape reliably testable.
+
+### What happened
+
+```
+00:03:24  Number 1, Monday 7th September    — eight in the morning, or ten past five in the evening.
+00:03:25  Number 2, Tuesday 8th September   — ten to nine in the morning, ten past five in the evening.
+00:03:25  Number 3, Wednesday 9th September — eight in the morning, or TWENTY PAST FOUR in the afternoon.
+00:03:46  caller: 'yeah the last day in the afternoon works'
+00:03:46  [ms_llm] situational head (time_band): "Let me see what I've got in the afternoon —"
+00:03:50  [ms_llm] check_availability cache INVALIDATED — date_hint changed from
+          'any' to 'Wednesday afternoon'
+00:03:52  [ms_gate5] read-back time corrected: 'one in the afternoon' ->
+          'twenty past four in the afternoon' for Wednesday 9th September
+00:03:52  [ms_gate5] deterministic offer in force — 3 chunk(s); the model's 1
+          buffered chunk(s) are discarded
+          ('Wednesday 9th September — Number 1, twenty past four in the afternoon.')
+00:03:52  The available slots for Wednesday 9th September are — Number 1, one in
+          the afternoon. Number 2, ten to two. Number 3, twenty to three.
+          <caller hangs up>
+```
+
+### THE TRIGGER IS THE BAND WORD, and that is now established
+
+P6 fired on "the last day **at 6 in the evening** works". The 23:51 call the
+same night did NOT fire on "**half past 3** on the last day works" — cache
+kept, no second lookup, correct read-back. The difference is a part-of-day
+word (`part_of_day()`: morning / afternoon / evening), which the model reads as
+a NEW filter rather than as part of the pick: `date_hint 'any' ->
+'Wednesday afternoon'`.
+
+So a caller who picks the way most people speak — a day plus a rough time of
+day — takes the broken path, and one who names an exact clock time does not.
+
+### THE ROOT IS B-116 EXCLUSION, now observed rather than inferred
+
+The second lookup returned Wednesday 9th as
+`["13:00","13:50","14:40","15:30","16:20"]`. **`16:20` is "twenty past four in
+the afternoon" — the slot he had just accepted. It was in the payload and was
+withheld from the readout**, because `choose_presented_indices` prefers times
+the caller has not heard, and he had heard that one 21 seconds earlier.
+Confirmed by replaying that payload and spoken set through the real function:
+`16:20` is excluded.
+
+That is the whole defect in one line. A caller who accepts a slot is re-offered
+the same day with the accepted slot deleted, *because* they accepted it.
+
+### WHY THE STEP-4 FIX DOES NOT COVER THIS
+
+`0b0cfd03` stands the payload offer down when the model's buffered text carries
+no numbered option. Here the model's recovery WAS correct — it named the right
+slot — but it wrote it as `Number 1, twenty past four in the afternoon`.
+`extract_slot_options` finds an option, so the stand-down does not fire and the
+payload still wins. **The fix is inert on this call.**
+
+P6 therefore has two shapes, and they must not be conflated again:
+
+| | model's recovery | covered by `0b0cfd03` |
+|---|---|---|
+| P6 (vital_edge, 1 Sep) | prose — "…at six in the evening works. Can I just get your name" | yes |
+| P6b (northgate, 2 Sep) | a one-option list — "Number 1, twenty past four in the afternoon" | **no** |
+
+Worse, and worth keeping: Gate 5a-e **had already fixed the model's sentence**
+— it rewrote "one in the afternoon" to the accepted "twenty past four in the
+afternoon", exactly as designed — and section 1b then discarded the corrected
+sentence. A safety guard produced the right answer and the next stage threw it
+away.
+
+### The fix this actually needs
+
+**Pin the accepted slot.** When the caller has just selected a slot, that slot
+must be exempt from the unheard-preference in `choose_presented_indices` and
+must appear in the presentation. B-116's docstring is explicit that it never
+starves a *repeat* request; it has no notion of "this one was just accepted",
+and that is the gap. Suppressing the re-query for a pick would also work and is
+a larger change to the model's tool use.
+
+Keep `0b0cfd03` as the second line — a model that recovers in prose should
+still be heard — but it is the belt, not the braces.
+
+`choose_presented_indices` has four readers and is the owner of "how many, and
+which" for every readout on every clinic. This is not a midnight change. It
+needs its own test set, and the reproduction script below.
+
+### Reproduction — reliable, use it
+
+Ring the demo line **+447366263180**:
+
+1. "Yeah, I'd like to book an appointment."
+2. "My left ankle, nothing serious."
+3. "Not really, more general."
+4. "Anytime next week."
+5. After the three numbered days, using the band word she used for the LAST
+   day: **"Yeah, the last day in the afternoon works."**
+
+Pass = she confirms that slot and asks for a name. Fail = a second
+`check_availability`, and a readout that no longer contains the accepted time.
 
 ---
 
