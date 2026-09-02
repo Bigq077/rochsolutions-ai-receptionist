@@ -2,8 +2,29 @@
 
 # STATUS — 2026-09-02 11:30
 
+**Superseded 2026-09-02 evening — see the block below.**
+
 **Demo line (`latency-eval`) is at `86063ceb`. `production` is untouched at
 `f875126e` — no clinic has any of this.**
+
+# STATUS — 2026-09-02 evening
+
+`origin/latency-eval` and `origin/production` are BOTH at `0c0f60a1`;
+`git log origin/production ^origin/latency-eval` is empty, so the promotion was
+a true fast-forward. **All three clinics now have P6/P6b/P7/F1/F2/P9/P10/P11,
+and not one has been dialled.** Revert target `f875126e`, confirmed an ancestor
+of `production`, 17 commits back.
+
+Built since, on `fix/p8-availability-cause`, **committed locally and pushed
+nowhere**:
+
+| | Defect | State |
+|---|---|---|
+| P8 | a closed day is reported as "too soon to book" | **FIXED** `4179e248`, Theorem only, not deployed, not called |
+| P12 | a pick resolves on multi-day and never on single-day | **FIXED** `f1355e9e`, not deployed, not called |
+| — | Phase 1 replay harness over 819 stored calls | **BUILT** `f0d82053` + `cef99fd2` |
+
+⚠️ The line below is the OLD status and is kept for the record.
 
 | | Defect | State |
 |---|---|---|
