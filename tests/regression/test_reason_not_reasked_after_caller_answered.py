@@ -90,15 +90,58 @@ def test_latch_is_inert_for_a_clinic_that_did_not_opt_in():
 
 # ── 2. the caller's answer must be recorded ──────────────────────────────────
 
-def test_answer_is_captured_into_the_canonical_reason_slot():
-    s = _session()
+def _arm(s):
+    """Latch, then burn the arming turn the way the live call site does."""
     _latch(s, FIRST_ASK)
     assert s.get("_reason_answer_pending") is True
+    # The turn that PROVOKED the question. Must not be taken as its answer.
+    assert commit_reason_answer(s, "um yeah hi there i'd like to book an "
+                                   "appointment please") is False
+    assert "reason" not in s
 
+
+def test_the_provoking_turn_is_never_taken_as_the_answer():
+    """CA20ed370 (2 Sep 2026, live) — the whole point of the arming guard.
+
+    The question latched at 22:01:48.546 and 3ms later the "answer" recorded
+    was the caller's booking request. The real answer arrived eight seconds
+    later and was dropped, because a reason on record is never overwritten.
+    """
+    s = _session()
+    _latch(s, "Let's get you booked in — What's the appointment for?")
+    provoking = "um yeah hi there i'd like to book an appointment please"
+    assert commit_reason_answer(s, provoking) is False
+    assert "reason" not in s
+    # still armed, waiting for the real answer
+    assert s.get("_reason_answer_pending") is True
+
+    answer = "um i've been getting tightness in my hamstring after training"
+    assert commit_reason_answer(s, answer) is True
+    assert s["reason"] == answer
+
+
+def test_a_bare_booking_request_is_never_a_reason():
+    """It says what the caller wants done, not what it is for."""
+    s = _session()
+    _arm(s)
+    assert commit_reason_answer(s, "i'd like to book an appointment") is False
+    assert "reason" not in s
+
+
+def test_a_booking_request_that_also_carries_a_reason_is_kept():
+    s = _session()
+    _arm(s)
+    utt = "i'd like to book an appointment for my knee pain"
+    assert commit_reason_answer(s, utt) is True
+    assert s["reason"] == utt
+
+
+def test_answer_is_captured_into_the_canonical_reason_slot():
+    s = _session()
+    _arm(s)
     assert commit_reason_answer(s, ANSWER) is True
     assert s["reason"] == ANSWER
     assert s["collected"]["reason"] == ANSWER
-    # one-shot
     assert "_reason_answer_pending" not in s
 
 
@@ -108,7 +151,7 @@ def test_answer_containing_a_question_is_still_captured():
     This is the turn the T-7/T-11 question gate discarded wholesale.
     """
     s = _session()
-    _latch(s, FIRST_ASK)
+    _arm(s)
     utt = (
         "i'm a full-time athlete and i just need some recovery work so "
         "probably sports massage then is that what you would recommend"
@@ -127,6 +170,7 @@ def test_capture_never_overwrites_a_reason_already_on_record():
     s = _session()
     s["reason"] = "lower back pain"
     _latch(s, FIRST_ASK)
+    commit_reason_answer(s, "the provoking turn")
     assert commit_reason_answer(s, ANSWER) is False
     assert s["reason"] == "lower back pain"
 
@@ -135,7 +179,7 @@ def test_capture_never_overwrites_a_reason_already_on_record():
 def test_a_bare_affirmation_is_not_a_reason(non_answer):
     """Writing "yes" into the booking is worse than writing nothing."""
     s = _session()
-    _latch(s, FIRST_ASK)
+    _arm(s)
     assert commit_reason_answer(s, non_answer) is False
     assert "reason" not in s
 
@@ -143,7 +187,7 @@ def test_a_bare_affirmation_is_not_a_reason(non_answer):
 def test_pending_flag_is_bounded_and_cannot_drift():
     """It must not survive to capture a reply to some later question."""
     s = _session()
-    _latch(s, FIRST_ASK)
+    _arm(s)
     assert commit_reason_answer(s, "um") is False
     assert s.get("_reason_answer_pending") is True   # one filler tolerated
     assert commit_reason_answer(s, "yes") is False

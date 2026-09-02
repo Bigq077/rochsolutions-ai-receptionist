@@ -627,6 +627,24 @@ def commit_reason_answer(session: Dict[str, Any], utterance: str) -> bool:
     if not session.get("_reason_answer_pending"):
         return False
 
+    # The arming turn is NOT the answering turn. `note_reason_question_asked`
+    # fires while the reply is being composed, and this helper runs later in
+    # that SAME turn — so without this the flag is consumed against the very
+    # utterance that PROVOKED the question. Observed live on CA20ed370
+    # (2 Sep 2026): the question latched at 22:01:48.546 and 3ms later the
+    # "answer" recorded was "um yeah hi there i'd like to book an appointment
+    # please". The real answer arrived eight seconds later and was dropped,
+    # because a reason already on record is never overwritten.
+    #
+    # Keyed on the utterance rather than a turn counter so it does not depend
+    # on where in the turn this is called from. If the call order ever moves
+    # ahead of the reply, the cost is one turn of delay, never a junk capture.
+    if session.get("_reason_answer_armed_on") is None:
+        session["_reason_answer_armed_on"] = utterance or ""
+        return False
+    if (utterance or "") == session.get("_reason_answer_armed_on"):
+        return False
+
     collected = session.get("collected")
     already = bool((session.get("reason") or "").strip()) or bool(
         isinstance(collected, dict) and (collected.get("reason") or "").strip()
@@ -640,7 +658,13 @@ def commit_reason_answer(session: Dict[str, Any], utterance: str) -> bool:
 
     text = (utterance or "").strip()
     stripped = text.lower().rstrip("?.!,").strip()
-    if not text or stripped in _REASON_NON_ANSWERS:
+    # A booking REQUEST is not a reason. "I'd like to book an appointment"
+    # says what the caller wants done, not what it is for, and writing it into
+    # the booking satisfies the A2 gate with nothing — the calendar entry then
+    # reads back as the caller's own request. Both helpers are the measured
+    # ones used on the opening utterance, so this costs no new vocabulary.
+    _bare_booking = bool(_has_booking(stripped)) and not _extract_reason(stripped)
+    if not text or stripped in _REASON_NON_ANSWERS or _bare_booking:
         # Not an answer. Keep waiting, but only within the bound — a flag left
         # armed for the rest of the call would eventually capture a reply to a
         # different question entirely.
