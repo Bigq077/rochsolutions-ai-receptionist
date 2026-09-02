@@ -2328,8 +2328,49 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     _booking_step_missing = (
         not _name_known(session) or not session.get("phone_confirmed")
     )
+    # NO `booking_flow_active` here, deliberately -- it was removed
+    # 2026-09-02 after a demo call where this gate was dormant for the whole
+    # booking. That flag is not the question this gate is asking.
+    #
+    # `booking_flow_active` is a PROMPT-VISIBLE marker: it renders "BOOKING
+    # FLOW ACTIVE" into the call state, which is the sole thing that makes
+    # the model tack a booking push onto every later FAQ answer. That is
+    # BUG-7, and the arming conditions were narrowed for it in an
+    # owner-signed frozen-zone change on 2026-06-15 (see the Spec Y comment
+    # at the treatment-mention arm). So it answers "should the model be
+    # pushing a booking?" -- not "is a booking being arranged?", which is
+    # what this gate needs. The two were conflated, and the flag's narrowness
+    # silently became this gate's narrowness.
+    #
+    # CA9cc94a17, 2026-09-02, northgate. The caller opened with "I'd book an
+    # appointment" (booking intent, no treatment named yet) and said "my left
+    # ankle" on the NEXT turn (treatment, no intent word). The speculative
+    # arm needs both in ONE utterance, and the other arm needs the caller to
+    # affirm a booking offer -- which was never made, because they had asked
+    # to book already. The flag never armed. Susie then said "Before I book
+    # that in for you, I'll need your full name and mobile number" with
+    # neither on record: the exact sentence this gate exists to replace, and
+    # it went to TTS untouched.
+    #
+    # The replacement anchor is `slots_presented`: a FACT about what the
+    # caller has heard, written in one place when an offer is read out and
+    # never reset anywhere in the codebase. It was True on CA9cc94a17 from
+    # 14:46:22, so the gate that stayed dormant all call is armed by it.
+    #
+    # DROPPING THE ANCHOR ALTOGETHER WAS TRIED FIRST, ON THE ARGUMENT THAT A
+    # WRITE CTA IS ITS OWN EVIDENCE, AND IT IS WRONG. The argument holds for
+    # whether the gate SHOULD fire and ignores what firing COSTS: this
+    # pattern spans [^.!?]* on both sides, so when the readback and the CTA
+    # are joined by a dash rather than a full stop -- "So that's Sarah,
+    # Wednesday the 16th of August at ten in the morning -- shall I go ahead
+    # and book that in?" -- the substitution eats the readback with it. The
+    # caller then hears a bare request for their name where a slot
+    # confirmation should have been, and the date-enforcement block below has
+    # nothing left to correct. Twenty tests said so at once. An anchored gate
+    # keeps that blast radius inside calls that have actually reached an
+    # offer, which is the only place the trade is worth making.
     if (
-        session.get("booking_flow_active")
+        (session.get("booking_flow_active") or session.get("slots_presented"))
         and _booking_step_missing
         and _BOOKING_CTA_SENTENCE_RE.search(result)
     ):
@@ -2398,9 +2439,25 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     #
     # Everything the model asks that is not one of those two steps is left
     # alone. Nothing here can reach a slot-selection or screening question.
+    # This one DOES need a booking anchor, where Gate 5g above does not, and
+    # the difference is the trigger. A write CTA is said in exactly one
+    # situation; "can I take your name and number?" is said in two. The
+    # second is a callback -- "I can take your name and number and have
+    # someone from the team call you back" -- where asking for both at once
+    # is CORRECT and rewriting it to "could I take your first name?" would
+    # break the capture.
+    #
+    # `slots_presented` rather than `booking_flow_active`, for the reason
+    # spelled out at Gate 5g: that flag is a prompt-visible instruction kept
+    # deliberately narrow for BUG-7, and it was False for the whole of
+    # CA9cc94a17. `slots_presented` is a FACT about what the caller has
+    # heard, written in one place when an offer is read out and never reset,
+    # so it cannot go stale mid-booking the way `last_offered_slots` does
+    # (that one is cleared on a new turn and on a cache invalidation). A
+    # callback flow never reads appointment times out, so it never sets this.
     _outstanding_step = _outstanding_booking_step(session)
     if (
-        session.get("booking_flow_active")
+        (session.get("booking_flow_active") or session.get("slots_presented"))
         and _outstanding_step is not None
         and not session.get("_gate5g_step_substituted")
     ):
