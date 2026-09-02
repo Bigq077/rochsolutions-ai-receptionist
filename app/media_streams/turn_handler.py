@@ -784,14 +784,80 @@ def _split_sentences(text: str) -> List[str]:
     return _SENTENCE_RE.findall(text)
 
 
+# D3, 2026-09-02. A booking question does not have to carry a question mark.
+#
+#   "I'll need your full name and mobile number"
+#
+# asks for both steps in one breath and, until this block existed, the "?" test
+# below returned an empty set for it and Gate 5g-b never saw it. It reached a
+# caller and was caught only incidentally, because that turn also carried a
+# write CTA that Gate 5g matched one step later.
+#
+# THE "?" TEST IS NOT SIMPLY WRONG, and it is not removed here. Its reason --
+# stated in the docstring below since the gate was written -- is that a
+# statement mentioning these nouns is usually a REPORT, not a request:
+#
+#   "I've got your mobile on the booking"      <- reports, asks nothing
+#   "I'll need your full name and mobile"      <- asks for both
+#
+# Both name the same nouns. So the statement path is deliberately the narrowest
+# thing that closes D3, and it is narrower than the question path in three ways:
+#
+#   1. It requires an explicit REQUEST STEM. A report has none.
+#   2. It returns the COMBINED pair or nothing -- never a single step. This is
+#      the important one. Gate 5g-b rewrites only when both steps are asked at
+#      once; a single-step ask is deliberately KEPT (see the O-18 note at the
+#      gate). So a false positive here cannot reach the rewrite, and -- because
+#      an empty set is treated as "not a booking question" -- it also cannot
+#      consume the one-question-per-turn budget and silently delete a real
+#      question later in the same chunk. That is the failure this shape rules
+#      out by construction rather than by care.
+#   3. It stands down on callback vocabulary. The gate's own comment records
+#      why: "I can take your name and number and have someone call you back"
+#      asks for both CORRECTLY, and rewriting it to "could I take your first
+#      name?" breaks the capture. The booking anchor is what normally keeps a
+#      callback out of this gate, but `slots_presented` is never reset -- a
+#      callback offered AFTER a failed booking has it set. The question form
+#      has the same exposure and is left exactly as it is; widening the
+#      statement path is not the place to change the question path's behaviour.
+_REQUEST_STEM_RE = re.compile(
+    r"\b(?:i(?:'ll| will| just)?\s+need"
+    r"|i(?:'ll| will)?\s+just\s+need"
+    r"|i(?:'ll| will)\s+(?:just\s+)?take"
+    r"|let me (?:take|grab|get)"
+    r"|(?:can|could|may)\s+(?:i|you)\s+(?:please\s+)?(?:take|get|give|have)"
+    r"|if i (?:can|could) (?:take|get))\b",
+    re.IGNORECASE,
+)
+
+# Stand-down vocabulary for the statement path only. A callback legitimately
+# asks for both details at once.
+_CALLBACK_CONTEXT_RE = re.compile(
+    r"\b(?:call(?:ing)? you back|ring you back|get back to you"
+    r"|have someone|someone (?:from the team |will )?(?:call|ring)"
+    r"|pass (?:it|this|that|your details) on)\b",
+    re.IGNORECASE,
+)
+
+
 def _booking_detail_asked(sentence: str) -> Set[str]:
     """Which of the sequenced booking steps this sentence asks the caller for.
 
     Empty for anything that is not a question: a statement that mentions the
     caller's number ("I've got your mobile on the booking") asks for nothing
     and must not be rewritten.
+
+    D3 adds one exception, and only one: a statement that carries a request
+    stem AND asks for BOTH steps. See the note above for why it cannot return
+    a single step.
     """
     if "?" not in sentence:
+        if not _REQUEST_STEM_RE.search(sentence):
+            return set()
+        if _CALLBACK_CONTEXT_RE.search(sentence):
+            return set()
+        if _NAME_ASK_RE.search(sentence) and _PHONE_ASK_RE.search(sentence):
+            return {"name", "phone"}
         return set()
     _asked: Set[str] = set()
     if _NAME_ASK_RE.search(sentence):
