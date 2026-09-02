@@ -62,6 +62,11 @@ from datetime import datetime
 from app.media_streams.turn_handler import _scarcity_claim_is_supported
 from app.tools import receptionist_tools
 from app.tools.receptionist_tools import LONDON_TZ, _build_days_data
+from tests.harness.clinic_dates import open_days
+
+# The incident's real dates, now in the past — same rot as its sibling file.
+# See tests/harness/clinic_dates.
+_D_ONE, _D_TWO = (d.isoformat() for d in open_days(2, start_offset=4))
 
 
 def _slots(date: str, *times: str):
@@ -77,7 +82,7 @@ def _slots(date: str, *times: str):
 
 def _tuesday_1st():
     """Exactly what the live payload held: 1 September, one 09:00 slot."""
-    return _build_days_data(_slots("2026-09-01", "09:00"))
+    return _build_days_data(_slots(_D_ONE, "09:00"))
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +134,7 @@ def test_an_absent_flag_reads_as_no_change():
 
 def test_the_b97_refusal_is_untouched():
     """A band filter hiding a second slot is still refused, flag or no flag."""
-    days = _build_days_data(_slots("2026-09-02", "09:00", "14:00"),
+    days = _build_days_data(_slots(_D_TWO, "09:00", "14:00"),
                             preference="afternoon")
     for flag in (True, False):
         assert _scarcity_claim_is_supported({
@@ -139,7 +144,7 @@ def test_the_b97_refusal_is_untouched():
 
 def test_multiple_days_are_still_refused():
     days = _build_days_data(
-        _slots("2026-09-01", "09:00") + _slots("2026-09-08", "10:00")
+        _slots(_D_ONE, "09:00") + _slots("2026-09-08", "10:00")
     )
     assert _scarcity_claim_is_supported({"available_days": days}) is False
 

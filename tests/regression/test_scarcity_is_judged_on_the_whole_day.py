@@ -50,6 +50,16 @@ import pytest
 
 from app.media_streams.turn_handler import _scarcity_claim_is_supported
 from app.tools.receptionist_tools import LONDON_TZ, _build_days_data
+from tests.harness.clinic_dates import open_days
+
+# Future days the clinic is OPEN, standing in for the literal dates this file
+# was written with. It pinned 2026-09-02 and 2026-08-28, and those were the
+# live incident's real dates -- accurate on the day, and by 2 Sep 2026 they were
+# today and last Friday, so `_build_days_data` filtered the past slots out and
+# five assertions about "nothing was withheld" started failing on the calendar
+# rather than on the code. The SHAPE is what these tests are about: a day
+# holding two slots, a day holding one. See tests/harness/clinic_dates.
+_D_TWO, _D_NEXT, _D_ONE = (d.isoformat() for d in open_days(3, start_offset=4))
 
 
 def _slots(date: str, *times: str):
@@ -66,7 +76,7 @@ def _slots(date: str, *times: str):
 # ---------------------------------------------------------------------------
 def test_the_live_day_reports_both_of_its_slots():
     """Wednesday 2 September, exactly as Acuity returned it."""
-    day = _build_days_data(_slots("2026-09-02", "09:00", "14:00"),
+    day = _build_days_data(_slots(_D_TWO, "09:00", "14:00"),
                            preference="afternoon")[0]
     assert day["slot_times"] == ["14:00"], "the band filter still applies"
     assert day["times_found_on_day"] == 2
@@ -74,33 +84,33 @@ def test_the_live_day_reports_both_of_its_slots():
 
 
 def test_an_unfiltered_day_hides_nothing():
-    day = _build_days_data(_slots("2026-09-02", "09:00", "14:00"))[0]
+    day = _build_days_data(_slots(_D_TWO, "09:00", "14:00"))[0]
     assert day["times_found_on_day"] == 2
     assert day["times_not_shown"] == 0
 
 
 def test_a_day_with_one_slot_is_reported_as_one():
     """Friday 28 August — 1 raw slot. The count must not inflate."""
-    day = _build_days_data(_slots("2026-08-28", "14:00"), preference="afternoon")[0]
+    day = _build_days_data(_slots(_D_ONE, "14:00"), preference="afternoon")[0]
     assert day["times_found_on_day"] == 1
     assert day["times_not_shown"] == 0
 
 
 def test_the_count_is_per_day_not_per_payload():
     days = _build_days_data(
-        _slots("2026-09-02", "09:00", "14:00") + _slots("2026-09-04", "13:00"),
+        _slots(_D_TWO, "09:00", "14:00") + _slots(_D_NEXT, "13:00"),
         preference="afternoon",
     )
     by_date = {d["date"]: d for d in days}
-    assert by_date["2026-09-02"]["times_found_on_day"] == 2
-    assert by_date["2026-09-04"]["times_found_on_day"] == 1
+    assert by_date[_D_TWO]["times_found_on_day"] == 2
+    assert by_date[_D_NEXT]["times_found_on_day"] == 1
 
 
 def test_a_preference_that_matches_nothing_hides_nothing():
     """_filter_tuples_by_preference falls back to the full set when the band
     matches no slot. Nothing was withheld, so nothing may be reported as
     withheld."""
-    day = _build_days_data(_slots("2026-09-02", "09:00", "10:00"),
+    day = _build_days_data(_slots(_D_TWO, "09:00", "10:00"),
                            preference="evening")[0]
     assert day["times_not_shown"] == 0
     assert day["times_found_on_day"] == 2
@@ -110,7 +120,7 @@ def test_a_preference_that_matches_nothing_hides_nothing():
 # Face 1 — the explicit claim
 # ---------------------------------------------------------------------------
 def test_the_live_defect_the_claim_is_refused():
-    days = _build_days_data(_slots("2026-09-02", "09:00", "14:00"),
+    days = _build_days_data(_slots(_D_TWO, "09:00", "14:00"),
                             preference="afternoon")
     assert _scarcity_claim_is_supported({"available_days": days}) is False
 
@@ -118,13 +128,13 @@ def test_the_live_defect_the_claim_is_refused():
 def test_b92_still_works_when_the_claim_is_true():
     """The whole point of B-92 (CA45357d84): when the day really does hold one
     slot, the sentence is the answer and stripping it strands the caller."""
-    days = _build_days_data(_slots("2026-08-28", "14:00"), preference="afternoon")
+    days = _build_days_data(_slots(_D_ONE, "14:00"), preference="afternoon")
     assert _scarcity_claim_is_supported({"available_days": days}) is True
 
 
 def test_a_missing_count_fails_closed():
     """An older or hand-built payload cannot support the claim."""
-    days = [{"date": "2026-09-02", "day_label": "Wednesday 2nd September",
+    days = [{"date": _D_TWO, "day_label": "a hand-built day",
              "slot_times": ["14:00"]}]
     assert _scarcity_claim_is_supported({"available_days": days}) is False
 
@@ -146,7 +156,7 @@ def test_hidden_times_set_more_times_on_the_google_path():
     """_cap_presented_slots gates the opener for VE and JV."""
     from app.tools.receptionist_tools import _cap_presented_slots
 
-    days = _build_days_data(_slots("2026-09-02", "09:00", "14:00"),
+    days = _build_days_data(_slots(_D_TWO, "09:00", "14:00"),
                             preference="afternoon")
     out = _cap_presented_slots({"available_days": days})
     assert out["presentation_mode"] == "single_day"
@@ -159,7 +169,7 @@ def test_hidden_times_set_more_times_on_the_google_path():
 def test_a_genuinely_complete_day_keeps_more_times_off():
     from app.tools.receptionist_tools import _cap_presented_slots
 
-    days = _build_days_data(_slots("2026-08-28", "14:00"), preference="afternoon")
+    days = _build_days_data(_slots(_D_ONE, "14:00"), preference="afternoon")
     out = _cap_presented_slots({"available_days": days})
     assert not out["first_day"].get("more_times")
 

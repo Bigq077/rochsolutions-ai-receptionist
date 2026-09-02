@@ -46,6 +46,7 @@ from unittest.mock import patch
 import pytz
 
 import app.tools.receptionist_tools as rt
+from tests.harness.clinic_dates import london as _london, open_weekday_base
 
 _TZ = pytz.timezone("Europe/London")
 _HOURS = (9, 10, 11, 12, 14, 15, 16, 17, 18)
@@ -60,10 +61,7 @@ def _build(plan):
     out = []
     for d, n in plan.items():
         for hour in _HOURS[:n]:
-            out.append(_Slot(
-                _dt.datetime(d.year, d.month, d.day, hour, 0, tzinfo=_TZ),
-                _dt.datetime(d.year, d.month, d.day, hour, 50, tzinfo=_TZ),
-            ))
+            out.append(_Slot(_london(d, hour, 0), _london(d, hour, 50)))
     return out
 
 
@@ -73,7 +71,7 @@ def _the_live_shape():
     Anchored on the real today, not a fixed date: a pin that names a weekday
     dies at midnight (b55).
     """
-    base = _dt.date.today() + _dt.timedelta(days=4)
+    base = open_weekday_base(4, span_weeks=3)
     return base, {
         base: 1,
         base + _dt.timedelta(days=7): 7,
@@ -175,7 +173,7 @@ async def test_the_spoken_day_is_untouched():
 async def test_a_single_matching_date_names_nothing():
     """Only one occurrence in the window: there is no other date to offer, and
     the payload must not grow an empty promise."""
-    base = _dt.date.today() + _dt.timedelta(days=4)
+    base = open_weekday_base(4, span_weeks=3)
     result = await _availability({base: 3}, base.strftime("%A"))
     assert "other_dates_for_requested_day" not in result
 
@@ -184,7 +182,7 @@ async def test_only_the_requested_weekday_is_offered():
     """_filter_tuples_by_preference silently DROPS a day filter that matches
     nothing, so days_data can hold unrelated days. Naming one of those as
     another Tuesday is the false confidence this family exists to stop."""
-    base = _dt.date.today() + _dt.timedelta(days=4)
+    base = open_weekday_base(4, span_weeks=3)
     plan = {
         base: 1,
         base + _dt.timedelta(days=1): 5,    # the day after, NOT the weekday
@@ -196,7 +194,7 @@ async def test_only_the_requested_weekday_is_offered():
 
 
 async def test_at_most_three_dates_are_offered():
-    base = _dt.date.today() + _dt.timedelta(days=4)
+    base = open_weekday_base(4, span_weeks=3)
     plan = {base + _dt.timedelta(days=7 * i): 3 for i in range(6)}
     plan[base] = 1
     result = await _availability(plan, base.strftime("%A"))

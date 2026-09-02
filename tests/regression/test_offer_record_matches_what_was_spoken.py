@@ -255,6 +255,7 @@ from unittest.mock import patch
 import pytz
 
 import app.tools.receptionist_tools as rt
+from tests.harness.clinic_dates import london as _london, open_weekday_base
 
 _TZ = pytz.timezone("Europe/London")
 
@@ -271,16 +272,13 @@ def _three_of_one_weekday():
     weekday dies at midnight (b55), and this one has to keep meaning "the same
     weekday, three times".
     """
-    base = _dt.date.today() + _dt.timedelta(days=4)
+    base = open_weekday_base(4, span_weeks=2)
     plan = {base: 1, base + _dt.timedelta(days=7): 4,
             base + _dt.timedelta(days=14): 5}
     out = []
     for d, n in plan.items():
         for hour in (9, 10, 11, 14, 15)[:n]:
-            out.append(_Slot(
-                _dt.datetime(d.year, d.month, d.day, hour, 0, tzinfo=_TZ),
-                _dt.datetime(d.year, d.month, d.day, hour, 50, tzinfo=_TZ),
-            ))
+            out.append(_Slot(_london(d, hour, 0), _london(d, hour, 50)))
     return base, out
 
 

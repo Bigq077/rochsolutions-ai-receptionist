@@ -53,9 +53,25 @@ import pytest
 import pytz
 
 import app.tools.receptionist_tools as rt
+from tests.harness.clinic_dates import london as _london
 
 _TZ = pytz.timezone("Europe/London")
-_TODAY = _dt.date(2026, 8, 26)          # the Wednesday of the live call
+# The live call was Wednesday 26 Aug 2026 and this file pinned that date. The
+# fixture asks for "Friday", so once 26 Aug was in the past every synthetic slot
+# was behind `now` and the payload came back empty — five assertions failing on
+# the calendar rather than the code. Anchored forward instead, keeping the shape
+# that matters: four consecutive FRIDAYS, the soonest holding the fewest slots.
+def _next_friday(min_days_ahead: int = 2) -> _dt.date:
+    d = _dt.date.today() + _dt.timedelta(days=min_days_ahead)
+    while d.weekday() != 4:             # 4 = Friday
+        d += _dt.timedelta(days=1)
+    return d
+
+
+_TODAY = _next_friday()                 # offsets below are measured from here
+_FRIDAY_ISO = [
+    (_TODAY + _dt.timedelta(days=off)).isoformat() for off in (0, 7, 14, 21)
+]
 
 
 class _Slot:
@@ -69,17 +85,14 @@ def _slots(plan):
     for off, n in plan.items():
         d = _TODAY + _dt.timedelta(days=off)
         for hour in (14, 10, 11, 15, 16)[:n]:
-            out.append(_Slot(
-                _dt.datetime(d.year, d.month, d.day, hour, 0, tzinfo=_TZ),
-                _dt.datetime(d.year, d.month, d.day, hour, 50, tzinfo=_TZ),
-            ))
+            out.append(_Slot(_london(d, hour, 0), _london(d, hour, 50)))
     return out
 
 
 # Mark's diary as Acuity actually returned it: Fri 28 Aug has ONE slot, and the
 # later Fridays have more. That asymmetry is the point — the thinnest matching
 # date is the one that gets spoken.
-_FRIDAYS = {2: 1, 9: 4, 16: 5, 23: 2}
+_FRIDAYS = {0: 1, 7: 4, 14: 5, 21: 2}
 
 
 def _adapter(plan):
@@ -115,11 +128,9 @@ async def test_the_live_payload_shape_is_reproduced():
     nothing about what happened on CA390f03d2."""
     r = await _availability("Friday")
     assert r["presentation_mode"] == "single_day"
-    assert r["first_day"]["date"] == "2026-08-28"
+    assert r["first_day"]["date"] == _FRIDAY_ISO[0]
     assert r["first_day"]["slot_times"] == ["14:00"]
-    assert [d["date"] for d in r["available_days"]] == [
-        "2026-08-28", "2026-09-04", "2026-09-11", "2026-09-18",
-    ]
+    assert [d["date"] for d in r["available_days"]] == _FRIDAY_ISO
 
 
 async def test_the_hidden_fridays_are_counted():
@@ -159,7 +170,10 @@ def test_the_guidance_carries_no_em_dash():
 async def test_a_specific_date_still_says_nothing_was_hidden():
     """"the 28th" resolves to one day, so there is nothing to disclose and no
     rule to state. This is the sentence 28245401 fought to keep sayable."""
-    r = await _availability("28 August 2026")
+    # The anchor Friday, spoken the way a caller would. Was "28 August 2026",
+    # which stopped resolving to anything once it was in the past.
+    _named = "{} {} {}".format(_TODAY.day, _TODAY.strftime("%B"), _TODAY.year)
+    r = await _availability(_named)
     assert r["days_not_shown"] == 0
     assert not r.get("guidance")
 
@@ -175,7 +189,8 @@ async def test_an_asap_request_is_left_alone():
 async def test_a_multi_day_readout_keeps_its_own_count():
     """The denominator change must not touch multi_day, where _present_days is
     already the spoken set."""
-    plan = {2: 2, 3: 2, 4: 2, 5: 2, 6: 2}
+    # Offsets from a FRIDAY anchor: +3..+7 is Mon-Fri, all open.
+    plan = {3: 2, 4: 2, 5: 2, 6: 2, 7: 2}
     r = await _availability("next week", plan=plan)
     if r["presentation_mode"] == "multi_day":
         assert r["days_not_shown"] == max(
@@ -185,7 +200,8 @@ async def test_a_multi_day_readout_keeps_its_own_count():
 
 async def test_a_weekday_with_exactly_one_matching_date_stays_quiet():
     """Nothing hidden, nothing to say."""
-    r = await _availability("Friday", plan={2: 3})
+    # Offset 0 IS the Friday the anchor names; +2 was a Sunday.
+    r = await _availability("Friday", plan={0: 3})
     assert r["days_found_in_window"] == 1
     assert r["days_not_shown"] == 0
     assert not r.get("guidance")

@@ -65,6 +65,7 @@ import pytest
 
 from app.prompts.susie_system_prompt import _build_theorem_v3
 from app.tools import receptionist_tools as rt
+from tests.harness.clinic_dates import london as _london, open_days
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +79,14 @@ _TZ = ZoneInfo("Europe/London")
 # Slots on +1..+4 and +9,+10 days: the sweep finds six days, the spoken list
 # holds three, and the day the caller will name is one of the withheld ones —
 # the incident's exact shape.
-_DAY_OFFSETS = (1, 2, 3, 4, 9, 10)
+# Four open days close in, then two a week out: the sweep finds six days, the
+# spoken list holds three, and the day the caller names is one of the withheld.
+#
+# These were fixed offsets (1, 2, 3, 4, 9, 10) until 2 Sep 2026. On a Wednesday
+# two of them land on the weekend, Alcester is shut, and the sweep quietly finds
+# four days instead of six -- so the test failed on the calendar rather than on
+# the code. See tests/harness/clinic_dates.
+_DAYS = open_days(4, start_offset=1) + open_days(2, start_offset=8)
 
 
 class _Slot:
@@ -87,15 +95,10 @@ class _Slot:
 
 
 def _stub_slots():
-    today = _dt.date.today()
     out = []
-    for off in _DAY_OFFSETS:
-        d = today + _dt.timedelta(days=off)
+    for d in _DAYS:
         for hour in (10, 14, 15):
-            out.append(_Slot(
-                _dt.datetime(d.year, d.month, d.day, hour, 0, tzinfo=_TZ),
-                _dt.datetime(d.year, d.month, d.day, hour, 50, tzinfo=_TZ),
-            ))
+            out.append(_Slot(_london(d, hour, 0), _london(d, hour, 50)))
     return out
 
 
@@ -128,11 +131,11 @@ async def test_a_bypassed_sweep_admits_what_it_withheld():
     r = await _availability("evening slots")
     assert "error" not in r, r
     assert len(r["available_days"]) == 3, "the spoken cap changed; retune below"
-    assert r["days_found_in_window"] == len(_DAY_OFFSETS), (
+    assert r["days_found_in_window"] == len(_DAYS), (
         f"days_found_in_window={r['days_found_in_window']} but the sweep found "
-        f"{len(_DAY_OFFSETS)} days — the count is wired to the truncated list"
+        f"{len(_DAYS)} days — the count is wired to the truncated list"
     )
-    assert r["days_not_shown"] == len(_DAY_OFFSETS) - 3
+    assert r["days_not_shown"] == len(_DAYS) - 3
     assert r["search_narrowed_to"] is None, (
         "a bypassed sweep claims to have searched a specific day — this is the "
         "field the prompt rule trusts, so a false value here licences the "
@@ -143,7 +146,7 @@ async def test_a_bypassed_sweep_admits_what_it_withheld():
 async def test_a_named_day_is_searched_and_says_so():
     """The other side of the discriminator: when the caller names the day the
     sweep would have withheld, it is searched, presented, and marked."""
-    far = _dt.date.today() + _dt.timedelta(days=_DAY_OFFSETS[-2])
+    far = _DAYS[-2]
     r = await _availability(f"{far.strftime('%B')} {far.day}th")
     assert "error" not in r, r
     assert r["search_narrowed_to"] == far.isoformat(), (
@@ -160,7 +163,7 @@ async def test_the_withheld_day_is_the_one_the_caller_asked_about():
     """Ties the two together: the day absent from the swept payload is exactly
     the day the named-date call returns. That absence was read as 'fully
     booked' on the incident call, and it is demonstrably not."""
-    far = _dt.date.today() + _dt.timedelta(days=_DAY_OFFSETS[-2])
+    far = _DAYS[-2]
     swept = await _availability("evening slots")
     assert far.isoformat() not in [d["date"] for d in swept["available_days"]]
     assert swept["days_not_shown"] > 0, (
