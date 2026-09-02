@@ -14,6 +14,7 @@
 | F1 | Susie promises a lookup after the caller has picked | **FIXED** `e3057d03`, **confirmed on a call** |
 | F2 | "what else have you got" re-reads day one | **FIXED** `1c972167`, **confirmed on a call** |
 | P8 | a closed day is reported as "too soon to book" | **OPEN**, Theorem only, written up below |
+| P9 | after a single-day "what else", speaking and pressing mean different slots | **OPEN**, HIGH, all clinics |
 
 Deployment history today, newest first — each was a fast-forward:
 
@@ -879,6 +880,94 @@ Do NOT simply move `raw_slot_count`: the count is honest, it is the
 
 Scope note: only `_check_availability_acuity` has this. The Google Calendar
 executor returns no `lead_time_limited`, so Vital Edge and JV are unaffected.
+
+---
+
+## P9 — after a single-day "what else", speaking and pressing mean different slots
+
+**Severity: HIGH. Open.** `CA665dc0309da186874a37f30034196e33`, 2026-09-02
+10:33, `northgate`, build `ce193d95`. Found on the call that deliberately
+exercised the single-day branch — the one `1c972167` did **not** change.
+
+```
+10:33:17  offer:  "The available slots for Tuesday 8th September are —
+                   Number 1, ten to nine in the morning. Number 2, twenty past
+                   four in the afternoon. Number 3, ten past five in the evening.
+                   And I've a few others that day if none of those suit."
+          keypad: {1: ten to nine, 2: twenty past four, 3: ten past five}
+
+10:33:34  caller: "uh um yeah what else have you got that day"
+          path=slot_followup  ttfa_ms=138
+          spoken: "On Tuesday 8th September I also have twenty to ten in the
+                   morning, half past ten in the morning, twenty past eleven in
+                   the morning, …"        <- 306 chars, 15 SECONDS, no numbers
+          keypad: {1: ten to nine, 2: twenty past four, 3: ten past five}
+                                          <- UNCHANGED
+```
+
+### The record splits
+
+Reproduced against the same payload:
+
+```
+last_offered_slots BEFORE: 08:50, 16:20, 17:10
+last_offered_slots AFTER : 09:40, 10:30, 11:20, 12:10     <- moved
+v3_dtmf_slot_map   BEFORE: ten to nine, twenty past four, ten past five
+v3_dtmf_slot_map   AFTER : ten to nine, twenty past four, ten past five  <- did NOT
+```
+
+So after this turn:
+
+* **"the second one"** resolves through `last_offered_slots` → **10:30**, half
+  past ten. Correct — one of the times she just read.
+* **pressing 2** resolves through the DTMF map, whose value is injected as a
+  synthetic transcript → **16:20**, twenty past four. A real, bookable slot the
+  caller did not just hear and is not choosing.
+
+One utterance, two different appointments, decided by whether the caller speaks
+or presses. `apply_offer_to_session`'s docstring names this exact hazard —
+"an ordinal and a keypad digit must mean the same thing" — and it is live here
+because this path does not call it.
+
+The wrong-slot outcome is the bad kind: it books silently. Nothing downstream
+can tell that 16:20 was not what the caller meant, because 16:20 is genuinely
+free.
+
+### Why this branch and not the other
+
+`1c972167` made "what else" a producer **only** for the multi_day case. The
+single-day branch still runs the 24 Aug owner rule — a caller told "I've a few
+others that day" who asks for them gets ALL of them — and that rule is right;
+Susie really did make that promise on this call, and the caller really did say
+"that day", so scoping to Tuesday is B-103 working. **The defect is not what it
+said. It is that it said it without writing the record.**
+
+Same disease as the 09:43 regression, in the path left alone, found by the
+first call that went looking for it.
+
+### Also: 15 seconds of unbroken times
+
+Eight remaining times read in one breath, no numbers, nothing to press. Even
+with the record fixed, a caller cannot hold that. The owner rule ("never a slot
+silently withheld") does not require them all in ONE sentence — that is an
+implementation choice this path made, and the primary readout solved the same
+problem with a cap plus "a few others".
+
+### Fix
+
+Route it through the same two functions as every other offer: `build_slot_offer`
+for the words — which numbers them, so there is something to press — and
+`apply_offer_to_session` for the record. That makes it the third caller of the
+single writer and removes the fourth producer from the list in the plan.
+
+**Do not** fix this by clearing `v3_dtmf_slot_map`: per the recorded finding,
+`v3_awaiting_slot_selection` is derived from that map every turn, so clearing it
+also disarms the slot-selection window and its watchdog grace. The map must be
+REPLACED, not removed.
+
+Capping the batch is an owner question, not mine: all eight numbered across two
+sentences, or three plus "a few others"? The 24 Aug rule says never withhold, so
+the honest reading is all of them, numbered, in more than one breath.
 
 ---
 
