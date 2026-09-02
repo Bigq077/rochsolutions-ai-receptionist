@@ -58,7 +58,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.tools.slot_followup import (  # noqa: E402
-    _candidate_hhmm_from_text,
     day_named_by_caller,
     day_selected_by_position,
     option_label_candidates,
@@ -86,6 +85,79 @@ DAY_PHRASE_RE = re.compile(
     r"(?:\s+(\d{1,2})(?:st|nd|rd|th)?)?"
     r"(?:\s+(January|February|March|April|May|June|July|August|September|"
     r"October|November|December))?", re.I)
+
+_NUMWORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "thirteen": 13, "fourteen": 14, "fifteen": 15, "twenty": 20,
+    "twenty five": 25, "twentyfive": 25, "quarter": 15, "half": 30,
+}
+_BAND_SHIFT = {"morning": 0, "afternoon": 12, "evening": 12, "night": 12}
+
+
+def _spoken_to_hhmm(label):
+    """Parse a spoken clock label to HH:MM, or None.
+
+    `_candidate_hhmm_from_text` in the engine is a CANDIDATE GENERATOR for
+    matching against a payload that already holds the real times -- it returns
+    every reading and does not apply "to"/"past" minutes, so "ten to nine"
+    comes back as 09:00 and "twenty past four in the afternoon" leads with
+    04:00. This harness has no payload to match against; it must build one, so
+    it needs a real parser. Kept here rather than in `app/` because nothing in
+    the engine wants it: the engine always has the true time already.
+    """
+    t = re.sub(r"[^a-z0-9: ]", " ", str(label).lower())
+    t = re.sub(r"\s+", " ", t).strip()
+    if not t:
+        return None
+    band = None
+    for b in _BAND_SHIFT:
+        if b in t:
+            band = b
+            break
+    # Word boundaries matter: "afternoon" contains "noon", and a substring
+    # test turned "twenty past four in the afternoon" into 12:00.
+    if re.search(r"\b(midday|noon)\b", t):
+        return "12:00"
+    if re.search(r"\bmidnight\b", t):
+        return "00:00"
+    m = re.search(r"\b(\d{1,2}):(\d{2})\b", t)
+    if m:
+        h, mi = int(m.group(1)), int(m.group(2))
+    else:
+        words = r"(twenty five|twenty|quarter|half|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})"
+        m = re.search(words + r" (past|to) " + words, t)
+        if m:
+            a, rel, b2 = m.group(1), m.group(2), m.group(3)
+            mins = _NUMWORDS.get(a, None)
+            if mins is None:
+                mins = int(a) if a.isdigit() else None
+            hh = _NUMWORDS.get(b2, None)
+            if hh is None:
+                hh = int(b2) if b2.isdigit() else None
+            if mins is None or hh is None:
+                return None
+            if rel == "past":
+                h, mi = hh, mins
+            else:
+                h, mi = (hh - 1) % 24, (60 - mins) % 60
+        else:
+            m = re.search(r"\b" + words + r"\b", t)
+            if not m:
+                return None
+            a = m.group(1)
+            h = _NUMWORDS.get(a, int(a) if a.isdigit() else None)
+            mi = 0
+            if h is None:
+                return None
+    if band and h < 12 and _BAND_SHIFT[band]:
+        h += 12
+    if band == "morning" and h == 12:
+        h = 0
+    if not (0 <= h < 24 and 0 <= mi < 60):
+        return None
+    return "%02d:%02d" % (h, mi)
+
 
 BOT_ROLES = ("assistant", "bot", "susie", "agent")
 CALLER_ROLES = ("user", "caller", "customer", "human")
@@ -158,14 +230,21 @@ def _payload_from_readout(body):
         label = (list(labels) or [None])[0]
         if not label:
             continue
-        pos = body.find(str(label))
+        # The candidate label can run to the end of the sentence ("ten past
+        # five in the evening. Any of those work?"). Only the clock phrase is
+        # the label -- the tail would otherwise be matched against caller text.
+        label = re.split(r"[.?!]", str(label))[0].strip()
+        if not label:
+            continue
+        pos = body.find(label)
         m = day_for(pos if pos >= 0 else 0)
         date = _day_from_phrase(m)
         if not date:
             return None, None
-        hhmm = _candidate_hhmm_from_text(str(label))
+        hhmm = _spoken_to_hhmm(label)
         if not hhmm:
             continue
+        hhmm = [hhmm]
         day = days.setdefault(date, {
             "date": date,
             "day_label": m.group(0).strip(),
