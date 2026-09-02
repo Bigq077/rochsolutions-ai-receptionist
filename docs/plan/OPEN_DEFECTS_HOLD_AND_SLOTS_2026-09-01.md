@@ -14,7 +14,8 @@
 | F1 | Susie promises a lookup after the caller has picked | **FIXED** `e3057d03`, **confirmed on a call** |
 | F2 | "what else have you got" re-reads day one | **FIXED** `1c972167`, **confirmed on a call** |
 | P8 | a closed day is reported as "too soon to book" | **OPEN**, Theorem only, written up below |
-| P9 | after a single-day "what else", speaking and pressing mean different slots | **FIXED**, awaiting a call |
+| P9 | after a single-day "what else", speaking and pressing mean different slots | **FIXED**, **confirmed on a call** |
+| P10 | the follow-up repeats the primary opener, claiming completeness | **OPEN**, LOW, cosmetic but a false claim |
 
 Deployment history today, newest first — each was a fast-forward:
 
@@ -968,6 +969,40 @@ REPLACED, not removed.
 Capping the batch is an owner question, not mine: all eight numbered across two
 sentences, or three plus "a few others"? The 24 Aug rule says never withhold, so
 the honest reading is all of them, numbered, in more than one breath.
+
+---
+
+## P10 — the follow-up opens with a completeness claim it cannot support
+
+**Severity: LOW. Open. Cosmetic, but it is a false claim, which is the family
+B-97 and B-99 exist to police.** `CAfe4f7ce2bdff0c60e1667f55b9532349`,
+2026-09-02 10:57, on the P9 fix.
+
+P9 routed the follow-up through `build_slot_offer`, which is right, and it
+inherited the PRIMARY readout's opener along with everything else:
+
+```
+10:57:25  "The available slots for Tuesday 8th September are — Number 1, ten to
+           nine … And I've a few others that day if none of those suit."
+10:57:42  "The available slots for Tuesday 8th September are — Number 1, twenty
+           to ten … And I've a few others that day if none of those suit."
+10:57:59  "The available slots for Tuesday 8th September are — Number 1, half
+           past ten … And I've a few others that day if none of those suit."
+```
+
+Three times, and the second and third are the 4th-to-6th and 7th-to-9th slots
+of that day. "The available slots for Tuesday are X, Y, Z" says these are the
+day's slots; the tail in the same breath says they are not. On a repeat it is
+worse than untidy — it sounds like the same list read again, which is exactly
+the complaint that started this thread.
+
+Note the opener is mildly self-contradictory on the FIRST readout too, so this
+is not new; the follow-up just makes it audible three times in ninety seconds.
+
+**Fix:** a continuation lead-in for the follow-up — "I've also got …" — instead
+of the completeness opener. `build_slot_offer` already takes `lead_in`, so this
+is a parameter at the call site in `numbered_more_times_speech`, not a new
+sentence owner. Worth doing with the next slot change rather than on its own.
 
 ---
 
