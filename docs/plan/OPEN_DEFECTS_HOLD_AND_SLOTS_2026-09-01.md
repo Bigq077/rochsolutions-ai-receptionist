@@ -12,7 +12,7 @@
 | P6b | the accepted slot is deleted from the re-read | **FIXED** `65baedd0` + `1c972167`, live on demo, not yet seen firing |
 | P7 | a correct read-back reported as a mismatch | **FIXED** `65baedd0`, live on demo, not yet seen firing |
 | F1 | Susie promises a lookup after the caller has picked | **FIXED** `e3057d03`, **confirmed on a call** |
-| F2 | "what else have you got" re-reads day one | **FIXED** `1c972167`, awaiting a call |
+| F2 | "what else have you got" re-reads day one | **FIXED** `1c972167`, **confirmed on a call** |
 | P8 | a closed day is reported as "too soon to book" | **OPEN**, Theorem only, written up below |
 
 Deployment history today, newest first — each was a fast-forward:
@@ -22,6 +22,47 @@ Deployment history today, newest first — each was a fast-forward:
 * `fd77954e` **revert** of the F2b decline (see P6b, it made the record stale)
 * `e3057d03` F1 + F2 first attempt
 * `1c972167`'s predecessors `e6a2b58a` … `0b0cfd03`
+
+## CA9cdbccd9dad45eb922bd9c319a2bbb48 — 2026-09-02 10:29, build `ce193d95`
+
+The first end-to-end pass on the shape that has been failing since 1 Sep.
+
+```
+10:29:16  offer:  Number 1 Monday 7th | Number 2 Tuesday 8th | Number 3 Wednesday 9th
+          keypad: {1: Monday 7th, 2: Tuesday 8th, 3: Wednesday 9th}
+
+10:29:38  caller: "um do you have anything else"
+          [slot_followup] 3 of 6 days already offered -- leading with the 3 the caller has not heard
+          [slot_followup] 'what else' answered with 3 day(s) he has not heard:
+                          ['2026-09-10', '2026-09-11', '2026-09-12']
+          path=slot_followup  ttfa_ms=134          <- from cache, no tool call
+          spoken: Number 1 Thursday 10th | Number 2 Friday 11th | Number 3 Saturday 12th
+          keypad: {1: Thursday 10th, 2: Friday 11th, 3: Saturday 12th}   <- FOLLOWED
+
+10:30:03  caller: "um yeah the last day in the morning works"
+          caller ACCEPTED 2026-09-12T09:00:00+01:00                      <- the day she JUST said
+          (no situational head -- F1: she did not offer to go and look)
+
+10:30:05  "Saturday the 12th of September at nine in the morning — could I take
+           your first name and surname?"
+          v3_confirmed_slot_phrase captured
+```
+
+Every link that failed on 1-2 Sep held: the pick resolved (step 1), "what else"
+gave fresh days at 134ms (F2), **the record followed the speech** (the 09:43
+regression), the pick after it resolved against the NEW offer rather than the
+stale one, and no lookup was promised to a caller who had already chosen (F1).
+
+Worth noting: "Saturday the 12th" is the day the model HALLUCINATED at 09:43,
+when it was in the payload context but had never been offered or recorded. It
+is now a slot Susie actually put on the table, which is the difference between
+a producer and a model guess.
+
+**Still unproven:** P6, P6b's stand-down and P7 are safety nets behind this
+path. None of them fired, because the model did not re-query — which is the
+good case. They are tested, not witnessed.
+
+---
 
 ## Verification standard, learned the hard way today
 
