@@ -3127,37 +3127,6 @@ def try_unspoken_followup_speech(
         return apply_resolved_time_to_session(session, hit)
 
     if utterance_requests_more_slots(user_text):
-        # ...unless "what else" means MORE DAYS, which after a multi-day
-        # readout is what it usually means.
-        #
-        # Owner decision, 2026-09-02, from the demo call at 09:15. Susie read
-        # Monday, Tuesday and Wednesday; the caller said "uh what else have you
-        # got"; and this branch scoped to `last_offered_slots[0]` -- Monday --
-        # and read NINE of Monday's remaining times in one 20-second breath.
-        # It was answering a promise nobody made: the "I've a few others that
-        # day" rule below was written on 24 Aug for a SINGLE-day offer, where
-        # Susie really had said that, and a multi_day readout deliberately
-        # carries no such tail (B-99).
-        #
-        # Declining hands the turn to a real lookup, where
-        # `choose_presented_days` now leads with the days he has NOT been
-        # offered. That costs a tool call this path exists to avoid -- roughly
-        # two seconds -- and buys the right answer, which is the trade this
-        # whole family keeps getting backwards.
-        #
-        # Only the unscoped case. A caller who NAMES a day ("what else on
-        # Wednesday") or picks one by position still gets that day's remaining
-        # times from cache, which is B-103 and B-105 and stays exactly as it is.
-        if str(session.get("_slot_presentation_mode") or "") == "multi_day":
-            _days_payload = session.get("available_days") or []
-            if not day_named_by_caller(_days_payload, user_text) and not                     day_selected_by_position(_days_payload, session, user_text):
-                logger.info(
-                    "[slot_followup] 'more slots' after a MULTI-DAY readout and "
-                    "no day named -- declining so the lookup can offer more "
-                    "DAYS rather than re-reading day one"
-                )
-                return None
-
         # Scoped to the day under discussion. `remaining` above stays whole-
         # sweep on purpose: resolve_requested_time names the slot's OWN day, so
         # a caller-named time on another day cannot mislead, and refusing it

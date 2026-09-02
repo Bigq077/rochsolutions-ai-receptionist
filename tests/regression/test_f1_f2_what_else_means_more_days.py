@@ -184,11 +184,34 @@ async def test_two_fresh_days_are_not_padded_with_a_heard_one():
 # ── F2, the follow-up path must stand aside ─────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_the_cached_followup_declines_after_a_multi_day_readout():
-    """So the turn reaches a real lookup, where the day rule above applies."""
+async def test_the_cached_followup_still_answers_from_day_one_FOR_NOW():
+    """Documents the state after the 09:43 revert — NOT the desired behaviour.
+
+    F2b made this branch decline so a real lookup could offer more days. On the
+    demo call at 09:43 the decline worked and the consequence did not: the model
+    answered "what else" from its own context WITHOUT calling the tool, so no
+    deterministic offer was built and no record was written. The keypad map
+    still said Monday/Tuesday/Wednesday while Susie had just offered Thursday
+    the 10th, the caller said "the last day in the morning works", the resolver
+    read the stale record and pinned Wednesday, and the model confirmed
+    "Saturday the 12th at nine in the morning". Three days in play, none of them
+    agreeing.
+
+    That is worse than the nine-times-on-one-day answer it replaced: verbose but
+    coherent beats a wrong day read back as a booking. Reverted on the demo line
+    at 09:5x.
+
+    The real fix is to ANSWER this deterministically — build the more-days offer
+    from the cached payload through build_slot_offer and write the record —
+    rather than declining and hoping the model calls the tool. Handing a turn to
+    the model is what leaves the record stale, which is the disease this whole
+    family has.
+    """
     session = _after_multi_day_readout()
-    assert try_unspoken_followup_speech(session, "uh what else have you got") is None, (
-        "the cached follow-up answered 'what else' out of day one again"
+    spoken = try_unspoken_followup_speech(session, "uh what else have you got")
+    assert spoken is not None, (
+        "the decline is back without the deterministic answer behind it — "
+        "see the docstring, this is the 09:43 regression"
     )
 
 
