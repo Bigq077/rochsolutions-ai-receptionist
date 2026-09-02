@@ -283,6 +283,20 @@ def apply_offer_to_session(
         session.pop("_slot_chunks_sent", None)
         session.pop("_slot_chunks_inhibited", None)
         session.pop("_slot_readout_chunks", None)
+        # FEWER THAN TWO OPTIONS, SO NO NEW MAP -- BUT THE OLD ONE MUST DIE.
+        #
+        # A one-option offer has nothing worth numbering, which is why no map
+        # is armed. Leaving the PREVIOUS map in place is the P9 defect exactly:
+        # the caller has just been offered one time, and pressing 2 would still
+        # book something from the readout before it. Found 2026-09-02 by the
+        # P10 test walking a day down to its last slot.
+        #
+        # Marked, never cleared -- `v3_dtmf_slot_map` owns the slot window and
+        # popping it hands the next turn permission to wipe `last_offered_slots`
+        # (B-78/B-80). The window stays open for VOICE; only digits die.
+        if session.get("v3_dtmf_slot_map"):
+            from app.tools.slot_followup import _supersede_slot_map
+            _supersede_slot_map(session)
 
     # 4. The anchor.
     day_iso = record.get("day_iso")
@@ -319,6 +333,11 @@ def build_slot_offer(
     (B-116) — knowledge this function does not have and must not overrule. Given
     a pre-trimmed day it would see nothing held back and would wrongly fall
     silent about the rest of the diary, so the retrieval path's own answer wins.
+
+    `lead_in` selects the opener: "earliest" for a ranking claim (guarded by
+    `earliest_lead_in_is_true`), "also" for a CONTINUATION of a day already
+    part-read, and "" for the plain completeness opener. A continuation must
+    never use the plain one -- see P10.
 
     `other_dates` is `other_dates_for_requested_day` from the payload — the
     further dates matching the weekday the caller asked for. Section 3c of
@@ -375,11 +394,26 @@ def build_slot_offer(
             dtmf_map["1"] = only
             if lead_in == "earliest":
                 chunks = ["The earliest I have is {} — {}.".format(label, only)]
+            elif lead_in == "also":
+                chunks = ["On {} I also have {}.".format(label, only)]
             else:
                 chunks = ["The slot I have on {} is {}.".format(label, only)]
         else:
             if lead_in == "earliest":
                 opener = "The earliest I have is {} —".format(label)
+            elif lead_in == "also":
+                # P10, CAfe4f7ce2bdff0c60e1667f55b9532349 (2 Sep 2026). "The
+                # available slots for Tuesday are —" is a COMPLETENESS claim,
+                # and the follow-up path inherited it when P9 routed that path
+                # through here. On that call she said it three times in ninety
+                # seconds, twice about the 4th-6th and 7th-9th slots of the
+                # day, each time followed by "and I've a few others" in the
+                # same breath. A caller hears the same list again.
+                #
+                # The wording is the one this path already used before P9 --
+                # "On Tuesday 8th September I also have ..." -- so the voice is
+                # unchanged and only the numbering is new.
+                opener = "On {} I also have —".format(label)
             else:
                 opener = "The available slots for {} are —".format(label)
             for i, slot in enumerate(picked, start=1):

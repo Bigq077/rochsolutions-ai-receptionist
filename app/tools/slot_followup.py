@@ -3223,7 +3223,9 @@ def numbered_more_times_speech(
         # `more_times=None` lets it decide from the data -- the batch is NOT
         # pre-trimmed, so its own count is the honest one. Forced True only
         # when the nine-slot keypad ceiling already hid some.
-        offer = build_slot_offer([day], more_times=True if more else None)
+        offer = build_slot_offer(
+            [day], lead_in="also", more_times=True if more else None
+        )
     except Exception:
         logger.exception(
             "[slot_followup] numbered follow-up failed to build -- falling "
