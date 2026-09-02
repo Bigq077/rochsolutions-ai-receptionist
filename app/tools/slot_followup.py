@@ -2193,6 +2193,70 @@ def _choose_presented_indices_b116(
     return _spread(slots, list(range(n)), limit)
 
 
+def choose_presented_days(
+    session: Dict[str, Any], days: Any, max_days: int
+) -> List[Dict[str, Any]]:
+    """Which DAYS to speak, preferring days this caller has not been offered.
+
+    The day-level twin of `choose_presented_indices`, and it exists because the
+    cap above it was still doing what B-116 removed one level down:
+    `days[:max_days]` -- the first three, blind.
+
+    Owner decision, 2026-09-02, from the demo call at 09:15. Susie offered
+    Monday, Tuesday and Wednesday; the caller asked "what else have you got";
+    and the honest answer to that question after a three-day readout is THREE
+    MORE DAYS, not a second helping of Monday. Re-slicing `[:3]` would have
+    read Monday, Tuesday and Wednesday straight back at him with different
+    times on them.
+
+    Same three rules as its twin, for the same reasons:
+
+      * NEVER STARVES A REPEAT. When every day in the sweep has been offered
+        the unoffered list is empty and this returns the first `max_days`
+        chronologically -- byte-identical to the slice it replaces.
+      * IT WITHHOLDS WHILE ANYTHING IS UNOFFERED (B-119 at day level).
+        Two fresh days is the right answer to "what else"; padding back to
+        three with a day he has already heard is the defect this prevents,
+        arriving one turn later.
+      * CHRONOLOGICAL ORDER SURVIVES. The keypad map is built from this order
+        and a caller pressing 2 means the second day they heard.
+
+    A day counts as OFFERED once any of its times has been spoken. That is
+    deliberately generous: a day he heard one time from is a day he has been
+    told about, and leading with it again is what makes Susie sound like she
+    is going in circles.
+    """
+    if not isinstance(days, list) or not days or max_days <= 0:
+        return list(days or [])[:max(0, max_days)]
+    if len(days) <= max_days:
+        return list(days)
+    try:
+        spoken = spoken_starts_for_offer(session)
+    except Exception:          # a readout preference must never fail a lookup
+        return list(days)[:max_days]
+    if not spoken:
+        return list(days)[:max_days]      # first lookup of the call
+
+    def _heard(day: Any) -> bool:
+        if not isinstance(day, dict):
+            return False
+        for slot in (day.get("slots") or []):
+            if str((slot or {}).get("start") or "")[:19] in spoken:
+                return True
+        return False
+
+    unoffered = [d for d in days if not _heard(d)]
+    if unoffered:
+        logger.info(
+            "[slot_followup] %d of %d days already offered -- leading with the "
+            "%d the caller has not heard",
+            len(days) - len(unoffered), len(days),
+            min(len(unoffered), max_days),
+        )
+        return unoffered[:max_days]
+    return list(days)[:max_days]
+
+
 def pick_by_index(value: Any, indices: List[int]) -> Any:
     """Select `indices` from a parallel slot array, leaving non-lists alone."""
     if not isinstance(value, list):
@@ -3063,6 +3127,37 @@ def try_unspoken_followup_speech(
         return apply_resolved_time_to_session(session, hit)
 
     if utterance_requests_more_slots(user_text):
+        # ...unless "what else" means MORE DAYS, which after a multi-day
+        # readout is what it usually means.
+        #
+        # Owner decision, 2026-09-02, from the demo call at 09:15. Susie read
+        # Monday, Tuesday and Wednesday; the caller said "uh what else have you
+        # got"; and this branch scoped to `last_offered_slots[0]` -- Monday --
+        # and read NINE of Monday's remaining times in one 20-second breath.
+        # It was answering a promise nobody made: the "I've a few others that
+        # day" rule below was written on 24 Aug for a SINGLE-day offer, where
+        # Susie really had said that, and a multi_day readout deliberately
+        # carries no such tail (B-99).
+        #
+        # Declining hands the turn to a real lookup, where
+        # `choose_presented_days` now leads with the days he has NOT been
+        # offered. That costs a tool call this path exists to avoid -- roughly
+        # two seconds -- and buys the right answer, which is the trade this
+        # whole family keeps getting backwards.
+        #
+        # Only the unscoped case. A caller who NAMES a day ("what else on
+        # Wednesday") or picks one by position still gets that day's remaining
+        # times from cache, which is B-103 and B-105 and stays exactly as it is.
+        if str(session.get("_slot_presentation_mode") or "") == "multi_day":
+            _days_payload = session.get("available_days") or []
+            if not day_named_by_caller(_days_payload, user_text) and not                     day_selected_by_position(_days_payload, session, user_text):
+                logger.info(
+                    "[slot_followup] 'more slots' after a MULTI-DAY readout and "
+                    "no day named -- declining so the lookup can offer more "
+                    "DAYS rather than re-reading day one"
+                )
+                return None
+
         # Scoped to the day under discussion. `remaining` above stays whole-
         # sweep on purpose: resolve_requested_time names the slot's OWN day, so
         # a caller-named time on another day cannot mislead, and refusing it

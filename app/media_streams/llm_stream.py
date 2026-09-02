@@ -4709,6 +4709,27 @@ class LLMStream:
                     _hs_picking = _is_pick(_hs_utterance, session)
                 except Exception:  # pragma: no cover - defensive
                     _hs_picking = False
+                # ...and the ordinal half of the same question.
+                #
+                # `utterance_is_slot_selection` is containment against the
+                # labels just spoken, so it says False for every pick made by
+                # position. On the 2 Sep 09:09 demo call the caller said "yeah
+                # the last day in the afternoon works" -- an acceptance -- and
+                # the band word alone carried it to a TIME_BAND head:
+                #
+                #     situational head (time_band):
+                #         "Let me see what I've got in the afternoon —"
+                #
+                # She promised a lookup to a caller who had just chosen. Same
+                # root as P6/P6b, and the resolver added for those already
+                # holds the answer on the session, so this is a read rather
+                # than a second opinion.
+                if not _hs_picking:
+                    try:
+                        from app.tools.slot_followup import ACCEPTED_SLOT_KEY
+                        _hs_picking = bool(session.get(ACCEPTED_SLOT_KEY))
+                    except Exception:  # pragma: no cover - defensive
+                        pass
                 _hs_hits = _classify_intent(
                     _hs_utterance,
                     _last_assistant_text(session),

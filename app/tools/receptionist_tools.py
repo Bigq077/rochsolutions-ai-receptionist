@@ -5322,7 +5322,19 @@ def _cap_presented_slots(
     if not isinstance(days, list) or not days:
         return result
 
-    kept = days[:max_days]
+    # WHICH days, not just how many -- days this caller has not been offered
+    # come first, mirroring the same rule one level down for times (B-116).
+    # A blind `days[:max_days]` answered "what else have you got" with the
+    # same three days again. Never raises; the fallback is that slice.
+    try:
+        from app.tools.slot_followup import choose_presented_days
+        kept = choose_presented_days(session or {}, days, max_days)
+    except Exception:
+        logger.exception(
+            "[tools] day selection failed -- falling back to the "
+            "chronological slice"
+        )
+        kept = days[:max_days]
     per_day = (
         _MAX_PRESENTED_TIMES_MULTI_DAY if len(kept) > 1
         else _MAX_PRESENTED_TIMES_SINGLE_DAY
