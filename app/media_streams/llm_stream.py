@@ -1870,10 +1870,28 @@ def note_reason_question_asked(session: dict, spoken: str) -> bool:
         or re.search(r"\barea or reason\b", low)
         # "what brings you in", "what's brought you in"
         or re.search(r"\bwhat\b[^?]{0,20}\bbrings? you (?:in|to)\b", low)
+        # CAea8abdb (2 Sep 2026, Vital Edge, live): the FIRST ask was
+        # "Is there a particular area or CONCERN you're looking to
+        # address?" — a reason question by any reading, and the caller
+        # answered it in full ("I'm an athlete, I just need some recovery
+        # work"). None of the patterns above match it, so the latch stayed
+        # open and VE's own mandated wording was asked again one turn later.
+        # The docstring above claims this matches on INTENT rather than a
+        # literal; until this arm it was a list of the literals seen so far
+        # — the same defect as B-36 and the Gate 5 opener. "area or <noun>"
+        # is the shape of the question, not its wording.
+        or re.search(r"\barea or (?:reason|concern|issue|problem)\b", low)
+        or re.search(r"\blooking to address\b", low)
     )
     if not asked:
         return False
     session["_reason_question_asked"] = True
+    # One-shot: the caller's NEXT utterance is the answer to this question,
+    # and on the live path nothing else records it — `commit_reason_answer`
+    # consumes this flag. The WRITE is the safety half: suppressing a re-ask
+    # without recording a reason only moves the failure to book_appointment's
+    # A2 gate, which refuses and loops the caller (see commit_opening_reason).
+    session["_reason_answer_pending"] = True
     logger.info(
         "[ms_llm] reason question asked — latched so it cannot be re-asked: %r",
         spoken[:90],

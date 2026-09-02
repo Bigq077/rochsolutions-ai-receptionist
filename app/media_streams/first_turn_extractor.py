@@ -577,3 +577,88 @@ def opening_is_substantive(text: str) -> bool:
     if not t:
         return False
     return bool(_extract_reason(t)) or bool(_has_booking(t)) or len(t.split()) > 4
+
+
+# ── The caller's ANSWER to the reason question, read on the LIVE path ─────────
+# `commit_opening_reason` above covers the caller who states the reason in their
+# OPENING sentence. It cannot cover the caller who states it in reply to the
+# question itself, because on a free-form clinic nothing writes the canonical
+# slot mid-call: the only live writers are that helper (first turn) and the A2
+# gate inside `book_appointment` (many turns later).
+#
+# CAea8abdb (2 Sep 2026, Vital Edge, live) is what that costs. Susie asked
+# "Is there a particular area or concern you're looking to address?", the caller
+# answered "I'm a full-time athlete and I just need some recovery work", and one
+# turn later she asked the clinic's mandated reason question anyway. Nothing had
+# recorded the answer, so `_reason_already_known` was still False and the model's
+# prompt still said it did not know what the appointment was for.
+#
+# Recording it is also what makes SUPPRESSING the second ask safe. Gate 5b-r
+# will only strip a re-ask once while no reason is on record, precisely because
+# stripping without recording deadlocks `book_appointment`'s A2 gate. With the
+# answer captured, `_reason_on_record` is True and the strip is unconditional.
+
+# Replies that answer nothing. A caller who says "yes" has not told us what the
+# appointment is for, and writing that into the booking is worse than writing
+# nothing: the A2 gate would pass and the calendar entry would read "yes".
+_REASON_NON_ANSWERS: frozenset = frozenset({
+    "yes", "yeah", "yep", "yup", "no", "nope", "nah", "ok", "okay",
+    "sure", "right", "correct", "please", "thanks", "thank you",
+    "um", "uh", "erm", "hmm", "sorry", "what", "pardon", "say that again",
+    "i don't know", "i dont know", "not really", "not sure", "no idea",
+})
+
+# How many caller turns the pending flag may survive. The answer is normally the
+# very next turn; two allows for one filler ("um, hang on") without letting the
+# flag drift onto an answer to some later, unrelated question.
+_REASON_ANSWER_MAX_TURNS = 2
+
+
+def commit_reason_answer(session: Dict[str, Any], utterance: str) -> bool:
+    """Record the caller's reply to the reason question. True if a reason landed.
+
+    Armed by `note_reason_question_asked` when Susie actually ASKS, so it can
+    never fire on a turn that was answering something else. Consumes its flag.
+
+    Never overwrites a reason already on record — one the caller volunteered
+    earlier, or the model collected, was said with more deliberation than a
+    reply extracted here.
+    """
+    if not session.get("_reason_answer_pending"):
+        return False
+
+    collected = session.get("collected")
+    already = bool((session.get("reason") or "").strip()) or bool(
+        isinstance(collected, dict) and (collected.get("reason") or "").strip()
+    )
+    if already:
+        session.pop("_reason_answer_pending", None)
+        return False
+
+    turns = int(session.get("_reason_answer_turns") or 0) + 1
+    session["_reason_answer_turns"] = turns
+
+    text = (utterance or "").strip()
+    stripped = text.lower().rstrip("?.!,").strip()
+    if not text or stripped in _REASON_NON_ANSWERS:
+        # Not an answer. Keep waiting, but only within the bound — a flag left
+        # armed for the rest of the call would eventually capture a reply to a
+        # different question entirely.
+        if turns >= _REASON_ANSWER_MAX_TURNS:
+            session.pop("_reason_answer_pending", None)
+            logger.info(
+                "[first_turn] reason answer not given within %d turns — "
+                "pending flag dropped", _REASON_ANSWER_MAX_TURNS,
+            )
+        return False
+
+    session.pop("_reason_answer_pending", None)
+    reason = text[:200]
+    session["reason"] = reason
+    _collected = session.setdefault("collected", {})
+    if isinstance(_collected, dict) and not (_collected.get("reason") or "").strip():
+        _collected["reason"] = reason
+    logger.info(
+        "[first_turn] reason captured from the caller's answer: %r", reason[:60],
+    )
+    return True

@@ -13215,6 +13215,28 @@ class WebSocketCallHandler:
                                         _requeue_utt,
                                         _requeue_loc,
                                     )
+                            # ── The caller's answer to the reason question ───────────────
+                            # Runs BEFORE the T-7 / T-11 gate below, and is deliberately not
+                            # subject to it. That gate refuses to mine a NAME or a TIME
+                            # PREFERENCE out of a question turn, which is right — neither was
+                            # ever stated on one. A reason is different: it is what the caller
+                            # was just ASKED for, so a reply that also contains a question
+                            # ("...so probably sports massage, is that what you'd recommend?")
+                            # is still the answer. On CAea8abdb both of the caller's
+                            # reason-bearing turns were classified as questions — one of them
+                            # wrongly, on the substring "who" inside "who's" — and the reason
+                            # was therefore never recorded at all.
+                            try:
+                                from app.media_streams.first_turn_extractor import (
+                                    commit_reason_answer as _commit_reason_answer,
+                                )
+                                _commit_reason_answer(self.session, utterance)
+                            except Exception:
+                                # Never let a capture helper break a live booking turn.
+                                logger.debug(
+                                    "[ms_conn] reason-answer capture failed",
+                                    exc_info=True,
+                                )
 
                             # ── T-7 / T-11: never mine an ANSWER out of a
                             # turn the caller framed as a QUESTION ────────
