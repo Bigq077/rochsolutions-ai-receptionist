@@ -14,9 +14,9 @@
 | F1 | Susie promises a lookup after the caller has picked | **FIXED** `e3057d03`, **confirmed on a call** |
 | F2 | "what else have you got" re-reads day one | **FIXED** `1c972167`, **confirmed on a call** |
 | P8 | a closed day is reported as "too soon to book" | **OPEN**, Theorem only, written up below |
-| P9 | after a single-day "what else", speaking and pressing mean different slots | **FIXED**, **confirmed on a call** |
-| P10 | the follow-up repeats the primary opener, claiming completeness | **FIXED**, awaiting a call |
-| P11 | a one-option offer leaves the PREVIOUS keypad live | **FIXED** with P10 — found by a test, never by a caller |
+| P9 | after a single-day "what else", speaking and pressing mean different slots | **FIXED**, **confirmed by a real KEYPRESS** |
+| P10 | the follow-up repeats the primary opener, claiming completeness | **FIXED**, **confirmed on a call** |
+| P11 | a one-option offer leaves the PREVIOUS keypad live | **FIXED** with P10; the digit gate it relies on is **confirmed on a call** |
 
 Deployment history today, newest first — each was a fast-forward:
 

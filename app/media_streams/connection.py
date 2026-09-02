@@ -6979,7 +6979,7 @@ class WebSocketCallHandler:
                     # Stage has moved to NONE since arming — digit is not a slot
                     # selection; disarm silently and fall through to phone handling.
                     logger.info(
-                        "[ms_conn] theorem_v3: slot DTMF digit=%r ignored"
+                        "[ms_conn] slot DTMF digit=%r ignored"
                         " — stage is %s (not a slot stage)",
                         digit, self.slot_map_stage.name,
                     )
@@ -7005,14 +7005,14 @@ class WebSocketCallHandler:
                     self.session.pop("v3_awaiting_slot_selection", None)
                     if _label:
                         logger.info(
-                            "[ms_conn] theorem_v3: slot DTMF digit=%r → injecting %r"
+                            "[ms_conn] slot DTMF digit=%r → injecting %r"
                             " (stage=%s)",
                             digit, _label, self.slot_map_stage.name,
                         )
                         await self.transcript_queue.put((time.monotonic(), _label))
                     else:
                         logger.info(
-                            "[ms_conn] theorem_v3: slot DTMF digit=%r — %s,"
+                            "[ms_conn] slot DTMF digit=%r — %s,"
                             " ignored",
                             digit,
                             "map superseded by a follow-up (B-80)"
