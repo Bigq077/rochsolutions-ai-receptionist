@@ -2272,6 +2272,44 @@ def _payload_day_by_weekday(available_days: Any, text: str) -> "str | None":
         return None
 
 
+_REQUEST_FOR_SLOTS_RE = re.compile(
+    r"\b(tell|give|offer|send|list|read|repeat|show|run through|go through)\b"
+    r"[^.?!]{0,40}?\b(slots?|times?|options?|availability)\b", re.I)
+
+_NEGATED_POSITION_RE = re.compile(
+    r"\bnot\b(?:\s+\w+){0,2}?\s+"
+    r"\b(first|second|third|fourth|fifth|sixth|last|one|two|three|four|five)\b",
+    re.I)
+
+
+def utterance_is_a_request_not_a_pick(text: str) -> bool:
+    """True when a position or time appears inside a REQUEST, not a choice.
+
+    Two shapes, found by the replay harness on the stored corpus once the
+    single-day branch started resolving ordinals:
+
+      "could you offer me the slots for the first friday that you offered me"
+      "could you tell me the slots you have on the tuesday again um not the
+       first one ..."
+
+    Both name a position and neither is a pick. `utterance_requests_more_slots`
+    misses them because it is a list of literal signals ("what else", "more
+    slots") and these say the same thing in words that are not on it. Adding
+    them to that list is the trap -- the shape is what distinguishes these, not
+    the vocabulary: a REQUEST is a speech verb taking slots/times as its
+    object, and a REJECTION is a negator sitting in front of the position.
+
+    Deny-by-default is the whole point. "the first one, not the second" trips
+    this and resolves nothing, which leaves the caller exactly where they were;
+    resolving it to either slot would pin a choice they did not make.
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    return bool(_REQUEST_FOR_SLOTS_RE.search(t)
+                or _NEGATED_POSITION_RE.search(t))
+
+
 def slot_accepted_by_caller(
     session: Dict[str, Any], text: str
 ) -> "str | None":
@@ -2305,14 +2343,58 @@ def slot_accepted_by_caller(
         return None
     if utterance_requests_more_slots(text) or utterance_requests_different_day(text):
         return None
+    if utterance_is_a_request_not_a_pick(text):
+        return None
 
     offered = session.get("last_offered_slots")
     if not isinstance(offered, list) or not offered:
         return None
 
     # -- 2. which day -----------------------------------------------------
-    date = None
+    # What the offer covers. `apply_offer_to_session` writes ONE entry per DAY
+    # on multi_day and EVERY SLOT otherwise, so a named position means
+    # different things in the two modes. Reading it as a day in both is why an
+    # ordinal resolved nothing on a single-day offer: it selected the only date
+    # there was, and step 3 then demanded a time the ordinal never names.
+    # Found by the replay harness over the stored corpus, not on a call.
+    offered_dates = [d for d in
+                     (str((o or {}).get("start") or "")[:10] for o in offered)
+                     if d]
+    single_day_offer = len(set(offered_dates)) == 1
+
+    try:
+        spoken = spoken_starts_for_offer(session)
+    except Exception:
+        return None
+
     pos = _position_named(text, len(offered))
+    if pos is not None and single_day_offer:
+        # The positional entries ARE the slots here, so the position settles
+        # the pick outright. Still deny by default: a position may only select
+        # a slot this caller was actually READ.
+        start = str((offered[pos - 1] or {}).get("start") or "")
+        if not start or start[:19] not in spoken:
+            return None
+        # B-138, through the door this branch opens. That guard sits on the
+        # LAST-RESORT day branch, which this return jumps over entirely, so
+        # without repeating it here "have you got number two on wednesday?"
+        # against a Thursday-only offer books the Thursday -- the same wrong-day
+        # booking B-138 was written for, reached by ordinal instead of by time.
+        # The offer named its day once; a caller naming a different one has
+        # supplied exactly the ambiguity this branch assumes away.
+        if _names_a_different_weekday(text, start[:10]):
+            return None
+        # And the same question all three exits in step 3 ask: a position paired
+        # with a time that is not this slot's ("number two, the one at half
+        # nine") is a contradiction, not a pick. Declining costs one more "which
+        # suits?"; resolving it writes the wrong time to the diary, where every
+        # verbal read-back afterwards is generated FROM the pin and so sounds
+        # correct all the way to the calendar.
+        if _time_contradicts(text, start):
+            return None
+        return start
+
+    date = None
     if pos is not None:
         date = str((offered[pos - 1] or {}).get("start") or "")[:10] or None
     if not date:
@@ -2369,10 +2451,6 @@ def slot_accepted_by_caller(
         return None
 
     # -- 3. which time, among what was SPOKEN -----------------------------
-    try:
-        spoken = spoken_starts_for_offer(session)
-    except Exception:
-        return None
     flat = flatten_bookable_slots(session.get("available_days"))
     heard = [
         s for s in flat

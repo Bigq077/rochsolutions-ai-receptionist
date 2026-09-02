@@ -96,10 +96,26 @@ B-109, B-116, B-125 and B-126.
    got?" — expect Thursday/Friday/Monday and
    `[slot_followup] 'what else' answered with 3 day(s) he has not heard`. Then
    "the last day in the morning works" and check she confirms **that** day.
-2. P8.
-3. Phase 2 proper — the remaining producers and the single `Offer` record. See
+2. ~~P8.~~ Done, `4179e248`.
+3. **Production has still never been called.** Three live clinics took 17
+   commits on 2026-09-02 and not one has been dialled. Vital Edge first: it is
+   `google_calendar_provisional`, so bookings land as PENDING CONFIRMATION, a
+   path the demo line does not exercise at all. Revert target is `f875126e`,
+   confirmed an ancestor of `production`, 17 commits back.
+4. Phase 1 harness exists now — `scripts/replay_slot_decisions.py`. **Run it
+   on every slot change**, baseline tree vs candidate tree, and read the diff
+   by DIRECTION: a pick changing to a different slot is the dangerous one, a
+   pick lost is usually a guard working. It found P12 on its first run.
+   Its header states what it cannot do: no availability payloads are stored,
+   so `remaining_unspoken_on_current_day`, `choose_presented_indices` and
+   `all_remaining_on_next_day` are NOT covered and a green report says nothing
+   about them.
+5. Phase 2 proper — the remaining producers and the single `Offer` record. See
    the plan: seven things decide what Susie says about slots, and `1c972167`
-   removed one of them.
+   removed one of them. **Deleting `_flush_slot_buf` sections 2–6 is still
+   gated** on a harness that can prove nothing depends on them, and the one
+   built today cannot — it covers the caller-interpretation half only. That
+   gate is not green yet; do not treat today's report as permission.
 
 Nothing goes to `production` until the demo line has run the shapes in Phase 3
 of the plan.
@@ -804,7 +820,8 @@ wrong direction for this guard.
 
 ## P8 — a closed day is reported to the model as "too soon to book"
 
-**Severity: MEDIUM. Open. Theorem only (the Acuity executor).** Found
+**Severity: MEDIUM. FIXED `4179e248`, not yet deployed, not yet heard on a
+call. Theorem only (the Acuity executor).** Found
 2026-09-02 while repairing the slot regression suite — it is the warning that
 made 22 dark tests look like a lead-time problem for twenty minutes, and it
 turned out to be a real defect underneath.
@@ -1004,6 +1021,70 @@ is not new; the follow-up just makes it audible three times in ninety seconds.
 of the completeness opener. `build_slot_offer` already takes `lead_in`, so this
 is a parameter at the call site in `numbered_more_times_speech`, not a new
 sentence owner. Worth doing with the next slot change rather than on its own.
+
+---
+
+## P12 — a pick resolved on a multi-day offer and NEVER on a single-day one
+
+**Severity: HIGH. FIXED `f1355e9e`, not yet deployed, not yet heard on a
+call.** Found 2026-09-02 by `scripts/replay_slot_decisions.py` over the stored
+corpus — the first defect here found without a phone call.
+
+`apply_offer_to_session` writes ONE entry per DAY on multi_day and EVERY SLOT
+otherwise. `slot_accepted_by_caller` read that entry as a day in both modes:
+
+```python
+date = str(offered[pos - 1].get("start"))[:10]
+```
+
+On multi_day that is correct. On single_day every entry shares one date, so a
+named position selected the only day there was; step 3 then required a time,
+which an ordinal never names, and the function returned None.
+
+```
+SINGLE-DAY offer, three options        BEFORE      AFTER
+  "the first one"                      None        08:50
+  "number two"                         None        16:20
+  "the last one"                       None        17:10
+  "ten to nine in the morning"         None        08:50
+MULTI-DAY offer                        unchanged   unchanged
+```
+
+So P6 — "a caller who ACCEPTS a slot in words is read the list again" — was
+only ever fixed for multi-day offers. The single-day branch, the same one P9
+was found in, resolved **nothing**. F1 inherits it: with no pick resolved,
+`classify_intent` still gets `slot_selection=False` and promises a lookup.
+
+### The over-correction, also found by replay
+
+Once ordinals resolved, four stored turns began resolving a REQUEST or a
+REJECTION to a bookable slot:
+
+```
+"can you repeat the last day that you offered the slots please"   -> 18:15
+"could you offer me the slots for the first friday you offered"   -> 14:00
+"... again um not the not the first one ..."                      -> 10:00
+```
+
+Three of those were resolving to a slot on the UNFIXED tree too — this is a
+defect the replay found rather than one the fix caused. They book silently,
+because the slot picked is genuinely free.
+
+`utterance_requests_more_slots` misses them because it is a list of literal
+signals and these say the same thing in other words. Adding them to that list
+is the trap; the SHAPE is the discriminator, so
+`utterance_is_a_request_not_a_pick` matches a speech verb taking slots/times as
+its object, or a negator in front of the position.
+
+### Replay report
+
+```
+819 calls, 1839 turns after a readout, 1828 scored (99.4%)
+turns gained a resolution : 119
+turns LOST a resolution   :   3   <- all three were requests, correctly declined
+pick CHANGED to another   :   0   <- the dangerous direction is empty
+intent list changed       :  50   <- F1 finally firing on single-day offers
+```
 
 ---
 
