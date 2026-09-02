@@ -1,98 +1,64 @@
 # Open defects — hold speech & slot readouts, 2026-09-01
 
-# STATUS — 2026-09-02 01:45. Ready for the demo line.
+# STATUS — 2026-09-02 11:30
 
-Branch **`fix/p6-slot-acceptance`**, four commits on top of `latency-eval`.
-**Nothing pushed. Nothing deployed.**
+**Demo line (`latency-eval`) is at `86063ceb`. `production` is untouched at
+`f875126e` — no clinic has any of this.**
 
 | | Defect | State |
 |---|---|---|
-| step 1 | a pick made in words is not resolved | **FIXED** `65baedd0` |
-| P6 | the model's prose recovery is discarded | **FIXED** `0b0cfd03` |
-| P6b | the accepted slot is deleted from the re-read | **FIXED** `65baedd0` |
-| P7 | a correct read-back reported as a mismatch | **FIXED** `65baedd0` |
+| step 1 | a pick made in words is not resolved | **FIXED** `65baedd0`, live on demo, **confirmed on a call** |
+| P6 | the model's prose recovery is discarded | **FIXED** `0b0cfd03`, live on demo, not yet seen firing |
+| P6b | the accepted slot is deleted from the re-read | **FIXED** `65baedd0` + `1c972167`, live on demo, not yet seen firing |
+| P7 | a correct read-back reported as a mismatch | **FIXED** `65baedd0`, live on demo, not yet seen firing |
+| F1 | Susie promises a lookup after the caller has picked | **FIXED** `e3057d03`, **confirmed on a call** |
+| F2 | "what else have you got" re-reads day one | **FIXED** `1c972167`, awaiting a call |
+| P8 | a closed day is reported as "too soon to book" | **OPEN**, Theorem only, written up below |
 
-## What to do in the morning
+Deployment history today, newest first — each was a fast-forward:
 
-1. `git push origin fix/p6-slot-acceptance:latency-eval` — demo line only.
-2. Confirm the deploy: `[build_info] running build 65baedd0…` in the Render
-   log. `/health` is hardcoded to 1.0.0 and proves nothing.
-3. Ring **+447366263180** and run the script below.
-4. If it passes, fast-forward `production`.
+* `86063ceb` test-only: 24 dark slot regression tests repaired
+* `1c972167` "what else" becomes a producer; one writer for the offer record
+* `fd77954e` **revert** of the F2b decline (see P6b, it made the record stale)
+* `e3057d03` F1 + F2 first attempt
+* `1c972167`'s predecessors `e6a2b58a` … `0b0cfd03`
 
-### The call script — this shape reproduced the defect first time
+## Verification standard, learned the hard way today
 
-1. "Yeah, I'd like to book an appointment."
-2. "My left ankle, nothing serious."
-3. "Not really, more general."
-4. "Anytime next week."
-5. She reads three numbered days. Note the band word she uses for the **last**
-   day, then: **"Yeah, the last day in the afternoon works."**
-   (say "in the evening" if that is what she said)
+Three separate times a change looked verified and was not. What that cost, and
+the rule each produced:
 
-**PASS** — she confirms that slot and asks for your name.
-**FAIL** — she reads a numbered list again.
+1. **A test that passes is not a behaviour that works.** The 09:15 "control
+   call" was called a pass because MY change had not misfired; the actual
+   answer — nine times on one day in a 20-second breath — was wrong and I said
+   it was fine. **Judge the call, not the diff.**
+2. **A decline is not a redirect.** F2b handed "what else" to the model
+   expecting a tool call. The model answered from context, no record was
+   written, and the next pick resolved against a stale offer. **Anything that
+   speaks an offer must call `apply_offer_to_session`.**
+3. **The baseline moves on its own.** The failing set went 119 → 121 between
+   09:20 and 11:00 with no code change, because tests hard-code dates.
+   **Take the baseline in a separate worktree in the same minute**, and see
+   `tests/harness/clinic_dates.py`.
 
-Either way the log now says which path ran:
+Regression suite: **121 → 97 failures** after the test repair. That 97 is the
+number to diff against now, and it is meaningful in the slot layer for the
+first time — 22 of the recovered tests carry B-92, B-93, B-99, B-103, B-108,
+B-109, B-116, B-125 and B-126.
 
-```
-[ms_conn v3] caller ACCEPTED 2026-09-…T16:20 (…) — pinned into any readout this turn (P6b)
-[ms_gate5] deterministic offer STOOD DOWN — the model names the slot the caller just accepted …
-[slot_followup] pinned the accepted slot back into the readout -- … was heard, so B-116 had dropped it (P6b)
-```
+## Next
 
-The first line is step 1 working. The second means she skipped the re-read
-entirely — the best outcome. The third means she did re-read but the accepted
-slot was in it — the safety net, still a pass.
+1. A demo call on `1c972167`+ for F2: three days, then "what else have you
+   got?" — expect Thursday/Friday/Monday and
+   `[slot_followup] 'what else' answered with 3 day(s) he has not heard`. Then
+   "the last day in the morning works" and check she confirms **that** day.
+2. P8.
+3. Phase 2 proper — the remaining producers and the single `Offer` record. See
+   the plan: seven things decide what Susie says about slots, and `1c972167`
+   removed one of them.
 
-**Worth trying too:** *"half past 3 on the last day works"* (no band word — took
-the working path before, must still work) and *"what else have you got?"* after
-an offer (must still get a genuine second list, NOT the pin).
-
-## Verification done
-
-* 28 new tests across three files, all built from the two live transcripts.
-* Every defect test proved red-then-green — the P6b pin test was re-run with
-  `_pin_accepted_index` neutered and fails with the exact live symptom.
-* Full `tests/` failing set **byte-identical** to baseline: 119 either side,
-  same tests. Passes 7597 -> 7625 (+28, exactly the new ones).
-
-## Two things to know before reading the baseline
-
-* **The baseline moved 24 -> 25 on its own at midnight.**
-  `test_absence_is_not_unavailability.py::test_the_withheld_day_is_the_one_the_caller_asked_about`
-  is date-dependent — it asserts a day nine out is absent from a swept payload,
-  and on 2 Sep it is present. **Verified failing on clean `ebdd9759` today**,
-  so it is not from this work. It will flip back on its own, which is worse
-  than a steady failure: anyone diffing a failing set across midnight will see
-  a phantom regression. Worth pinning the clock in that test.
-* `git stash` is unreliable in this repo. Every before/after comparison here
-  used a separate worktree, never a stash.
-
-## What is NOT fixed
-
-* **The re-query itself still happens.** The model still reads a band word as a
-  fresh filter and calls `check_availability` again. Both fixes above make that
-  harmless — she either skips the re-read or keeps the accepted slot in it —
-  but the underlying tool-use decision is untouched, and it costs a second or
-  two of dead air. Suppressing it is a prompt/tool-schema change and belongs in
-  its own session.
-* **A bare weekday does not resolve.** "wednesday at twenty past four" declines,
-  because `day_named_by_caller` requires the day in full by design. Declining is
-  safe; loosening that guard at 01:00 was not worth it.
-* `GOOGLE_SERVICE_ACCOUNT_JSON` is still malformed — Sheets dead on the demo
-  service, and **the three patient services are still unchecked**.
-
----
-
-Handover. Everything below is evidenced from the obs corpus (`demo_obs`) and the
-Render logs, with call SIDs. **Nothing here is fixed.** One related fix DID land
-today and is described at the bottom so it is not re-done.
-
-Branch state at handover: `origin/latency-eval` = `0bc6ca45` (demo line only),
-`origin/production` = `1d85d13e` (the three patient lines). ADR-002 is live — see
-`RELEASE_PROMOTION_DECISION.md`. Push engine work to `latency-eval`, call
-**+447366263180**, promote by `git push origin latency-eval:production`.
+Nothing goes to `production` until the demo line has run the shapes in Phase 3
+of the plan.
 
 ---
 
@@ -789,6 +755,89 @@ wrong direction for this guard.
   Already listed below.
 * ElevenLabs `401` on `/v1/models` prewarm — documented as not predictive of
   synthesis failure, and synthesis succeeded on every chunk of this call.
+
+---
+
+## P8 — a closed day is reported to the model as "too soon to book"
+
+**Severity: MEDIUM. Open. Theorem only (the Acuity executor).** Found
+2026-09-02 while repairing the slot regression suite — it is the warning that
+made 22 dark tests look like a lead-time problem for twenty minutes, and it
+turned out to be a real defect underneath.
+
+`_check_availability_acuity` (`receptionist_tools.py:3108`) ends its filter
+chain with:
+
+```python
+if not slots:
+    if raw_slot_count > 0:
+        # Slots existed but were all too soon (within 2h lead time).
+        return {"error": "lead_time_limited", "error_detail":
+                f"There are {raw_slot_count} slot(s) available at "
+                f"{location.title()} today but all start within 2 hours — "
+                "too soon to book. …"}
+```
+
+`raw_slot_count` is captured **before** the lead-time filter, and **three**
+filters run between: lead-time, working-hours, and bank-holiday. The branch
+tests only that the list is now empty, then asserts a cause it never checked.
+
+### Reproduced
+
+Three slots on the next Sunday, Alcester (Mon–Fri in
+`location_working_hours`), stubbed adapter, nothing to do with lead time:
+
+```
+target day: 2026-09-06 Sunday | clinic open? False
+hours until the first slot: 94.6
+
+error       : lead_time_limited
+error_detail: There are 3 slot(s) available at Alcester today but all start
+              within 2 hours — too soon to book. Suggest the next available
+              day or take contact details.
+```
+
+**Three false claims in one sentence the model is asked to act on:** the day
+("today" — it is four days away), the timing ("within 2 hours" — 94.6), and
+the cause (the clinic is shut, not busy). Bank holidays reach it the same way.
+
+### What the caller hears
+
+Nothing rewrites this before the model sees it, and no prompt rule interprets
+`error` — the only consumers of the code are three sites in `flow.py`, which
+per the recorded finding is bypassed on every live deployment (verify that
+before relying on it either way). So `error_detail` goes to the model as prose
+and it will paraphrase it. A caller asking about a Sunday is told everything
+that day is too soon to book, which is both wrong and unrecoverable in the
+direction that matters: they hear "no", not "we are closed then, how about
+Monday?".
+
+### Why it stayed hidden
+
+The log line asserts the same unchecked cause —
+
+```
+_check_availability_acuity: N raw slot(s) for X all within 2h lead-time window
+```
+
+— so anyone reading the log for a real incident is pointed at lead time and
+away from working hours. That is what it did here.
+
+### Fix, not written
+
+Decide the cause from the data instead of from the position in the function.
+Count what each filter removed — the lead-time branch already computes
+`removed_lt` and the bank-holiday branch `removed_bh` — and report the one that
+actually emptied the list, with a distinct `error` code per cause so a prompt
+rule can eventually say the right sentence ("we are closed on Sundays" is a
+different answer from "that is too soon"). The working-hours filter currently
+counts nothing; it needs a before/after like its siblings.
+
+Do NOT simply move `raw_slot_count`: the count is honest, it is the
+*attribution* that is invented.
+
+Scope note: only `_check_availability_acuity` has this. The Google Calendar
+executor returns no `lead_time_limited`, so Vital Edge and JV are unaffected.
 
 ---
 
