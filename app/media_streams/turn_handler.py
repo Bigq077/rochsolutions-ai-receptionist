@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional, Set
 
 # Re-export FlowEngine and FLOW for any code that imports them from here
 from .flow import FlowEngine, FLOW  # noqa: F401
@@ -712,6 +712,106 @@ def _phone_question_for(session: Dict[str, Any]) -> str:
         "I can't see a phone number on this call — could you type the number on your "
         "keypad? You can press the star key to reset at any time."
     )
+
+
+# -- Gate 5g-b support: WHICH booking detail a question asks for -------------
+#
+# Gate 5g below governs the write CTA. It cannot govern the steps BEFORE the
+# CTA, because it triggers on the CTA vocabulary itself -- so on any turn where
+# the model improvises without reaching for a CTA, nothing constrains what it
+# asks.
+#
+# Vital Edge, 2026-09-02. The caller's pick ("the saturday at 6 in the evening
+# works") was misread as a time-of-day preference rather than a slot selection,
+# so check_availability was called a second time and refused
+# ("already_retrieved"). With no usable tool result and no scripted next step,
+# the model wrote its own turn:
+#
+#   turn 11  "Can I get your full name and mobile number, please?"
+#   turn 12  caller gives both; the name extractor sees one combined answer
+#   turn 13  the model finally reaches for a CTA -- Gate 5g fires HERE, for the
+#            first time, and asks for the name AFTER the number
+#
+# Four asks, and the caller correcting us. The prompt orders these (name step
+# 7, phone step 8) and the model asked for both at once; nothing was watching.
+#
+# So: name and phone are the two steps _next_booking_question_for already
+# sequences, and this pair of patterns exists only to recognise a question that
+# asks for one of them. Everything else the model may ask -- slot selection, a
+# screening question, an FAQ answer's follow-up -- is NOT matched and NOT
+# touched. That restraint is the whole design: booking_flow_active is armed at
+# the booking acknowledgement, which is BEFORE slots are ever read out, so a
+# gate that governed "any question asked while a booking step is outstanding"
+# would replace "which of those three works for you?" with a request for the
+# caller's name and strand the pick.
+#
+# Both patterns fail toward NOT matching, for the reason Gate 5g gives: a
+# missed phrasing degrades to today's behaviour, where the CTA gate still
+# catches the ordering one step later. An over-match deletes a question the
+# caller needed and cannot be recovered from.
+_NAME_ASK_RE = re.compile(
+    r"\b(?:your|the patient(?:'s)?) (?:full |first |last |legal )?(?:name|surname)\b"
+    r"|\bfirst name and surname\b"
+    r"|\bname and (?:your )?(?:mobile|phone|contact|telephone|number|surname)\b"
+    r"|\b(?:take|get|have) (?:your |their )?(?:full |first |last )?(?:name|surname)\b",
+    re.IGNORECASE,
+)
+
+# NB every alternative carries an explicit PHONE token. A bare "number" must
+# never be enough: slots are read out numbered ("number 1, Thursday the 2nd of
+# July...") and the question that follows them is "which number would you
+# like?". Match that and the gate eats the slot pick.
+_PHONE_ASK_RE = re.compile(
+    r"\b(?:mobile|phone|telephone|contact|cell)\s*(?:number|no\b)"
+    r"|\byour (?:mobile|phone|telephone|number)\b"
+    r"|\bbest number\b"
+    r"|\bnumber (?:you(?:'re| are) calling from)\b"
+    r"|\bnumber on your keypad\b"
+    r"|\btype (?:in )?(?:the|your) number\b",
+    re.IGNORECASE,
+)
+
+# Sentence-wise, keeping the terminator AND the leading whitespace with each
+# sentence, so "".join(_split_sentences(t)) == t exactly. The gates elsewhere
+# in this module use `[^.!?]*` spans on both sides of their trigger instead;
+# that idiom swallows whatever precedes the trigger in the same sentence, which
+# is right for a CTA tacked onto a readback and wrong here -- this gate
+# replaces ONE question among several and must leave the others byte-identical.
+_SENTENCE_RE = re.compile(r"[^.!?]+[.!?]*")
+
+
+def _split_sentences(text: str) -> List[str]:
+    return _SENTENCE_RE.findall(text)
+
+
+def _booking_detail_asked(sentence: str) -> Set[str]:
+    """Which of the sequenced booking steps this sentence asks the caller for.
+
+    Empty for anything that is not a question: a statement that mentions the
+    caller's number ("I've got your mobile on the booking") asks for nothing
+    and must not be rewritten.
+    """
+    if "?" not in sentence:
+        return set()
+    _asked: Set[str] = set()
+    if _NAME_ASK_RE.search(sentence):
+        _asked.add("name")
+    if _PHONE_ASK_RE.search(sentence):
+        _asked.add("phone")
+    return _asked
+
+
+def _outstanding_booking_step(session: Dict[str, Any]) -> Optional[str]:
+    """The one step Gate 5g-b will allow to be asked, or None when both are in.
+
+    Same order, and the same reasoning, as _next_booking_question_for: name
+    (prompt step 7) before phone (step 8).
+    """
+    if not _name_known(session):
+        return "name"
+    if not session.get("phone_confirmed"):
+        return "phone"
+    return None
 
 
 # Gate 5e — diagnostic assertions about the CALLER'S OWN case. Standard-tier
@@ -2275,6 +2375,103 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
         if not _name_known(session):
             session["_gate5g_dropped_name_ack"] = True
         result = _replaced
+
+    # -- Gate 5g-b: one booking step per turn, in the prompt's order ----------
+    # Gate 5g above holds back the write CTA. This holds back the STEPS, and it
+    # exists because Gate 5g's trigger is the CTA vocabulary itself: on a turn
+    # where the model improvises without reaching for a CTA -- which is exactly
+    # what it does when a tool call is refused and it has no scripted next step
+    # -- nothing was watching what it asked. See the pattern definitions above
+    # for the Vital Edge call this comes from.
+    #
+    # The rule is narrow on purpose: a question is governed ONLY if it asks for
+    # the name or the phone, and it is rewritten ONLY if it asks for BOTH at
+    # once. So:
+    #
+    #   name missing, "could I take your name?"           -> kept, it is correct
+    #   name missing, "your full name and mobile number?" -> name question only
+    #   name missing, "what's your mobile number?"        -> KEPT (see O-18
+    #                                                        below; the CTA gate
+    #                                                        catches the order)
+    #   a second booking question in the same chunk       -> dropped
+    #   both steps in hand                                -> gate does not run
+    #
+    # Everything the model asks that is not one of those two steps is left
+    # alone. Nothing here can reach a slot-selection or screening question.
+    _outstanding_step = _outstanding_booking_step(session)
+    if (
+        session.get("booking_flow_active")
+        and _outstanding_step is not None
+        and not session.get("_gate5g_step_substituted")
+    ):
+        _kept: List[str] = []
+        _seen_detail_q = False
+        for _sentence in _split_sentences(result):
+            _asked = _booking_detail_asked(_sentence)
+            if not _asked:
+                _kept.append(_sentence)
+                continue
+            if _seen_detail_q:
+                # One booking question a turn. A second one in the same chunk
+                # goes entirely, the way Gate 5g drops a second CTA -- two
+                # questions in a breath is the combined-answer problem again.
+                continue
+            _seen_detail_q = True
+            if _asked == {_outstanding_step}:
+                _kept.append(_sentence)         # the model got it right
+                continue
+            if len(_asked) < 2:
+                # A single question for the WRONG step -- the phone while
+                # the name is still outstanding. Deliberately left alone,
+                # and this is the one place where doing less is the whole
+                # point. That sentence is almost always the model
+                # acknowledging the name the caller just gave ("Thanks
+                # Quentin -- is oh seven five... the best number for you?"),
+                # and per O-18 the acknowledgement is the ONLY thing
+                # _v3_try_persist_name can read a first name out of: it
+                # scans the assistant reply, and the caller's own utterance
+                # yields a surname only. Replacing it with "could I take
+                # your first name?" asks for a name the caller has just
+                # given, and -- because the reply that would have taught us
+                # the name is the thing we deleted -- asks again next turn,
+                # forever. On CA041352eb the caller gave his name three
+                # times, was asked a fourth, and hung up.
+                #
+                # So mis-ORDERING degrades to today's behaviour, where Gate
+                # 5g catches it one step later at the CTA. Only the
+                # COMBINED question is rewritten here, and that one is safe
+                # to delete precisely because it ASKS for the name rather
+                # than speaking it -- there is no name in it to lose.
+                _kept.append(_sentence)
+                continue
+            # Preserve the whitespace the sentence carried, or the substitution
+            # runs into the previous sentence ("...evening.Before I"). That text
+            # becomes last_bot_prompt and conversation_history, where
+            # sentence-splitting matchers read it.
+            _lead = _sentence[: len(_sentence) - len(_sentence.lstrip())]
+            _kept.append(_lead + _next_booking_question_for(session))
+        _stepped = "".join(_kept)
+        if _stepped != result:
+            _stepped = re.sub(r"\s{2,}", " ", _stepped).strip()
+            logger.info(
+                "[ms_gate5g-b] booking question resequenced -- outstanding=%s: "
+                "%r -> %r",
+                _outstanding_step, result[:80], _stepped[:80],
+            )
+            # TURN-scoped, and it must be: sanitise_response runs once per
+            # streamed chunk, so without the latch a two-chunk turn asks the
+            # outstanding step twice. Cleared in llm_stream alongside
+            # _gate5br_substituted.
+            session["_gate5g_step_substituted"] = True
+            # Same O-18 deadlock as Gate 5g, for the same reason: the sentence
+            # being replaced may have carried the model's acknowledgement of a
+            # name the caller just gave ("Thanks Quentin -- and your number?"),
+            # and that acknowledgement is the only thing _v3_try_persist_name
+            # can read a first name out of. Tell the persist call site it may
+            # fall back to the raw generation.
+            if not _name_known(session):
+                session["_gate5g_dropped_name_ack"] = True
+            result = _stepped
 
     # ── Booking-readback DATE enforcement ────────────────────────────────────
     # The final confirmation ("So that's <name>, <slot> — shall I go ahead and

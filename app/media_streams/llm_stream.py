@@ -4111,6 +4111,11 @@ class LLMStream:
         # the reset a later turn would inherit the latch and go back to shipping
         # the silence this exists to prevent.
         session.pop("_gate5br_substituted", None)
+        # Gate 5g-b substitutes the outstanding booking step when the model
+        # asks for the wrong one, or for both at once. Identical lifetime, for
+        # the identical reason: sanitise_response runs per streamed chunk, so
+        # without the reset a two-chunk turn asks for the name twice.
+        session.pop("_gate5g_step_substituted", None)
         # The booking-outcome fallback is TURN-scoped. It is set when a booking
         # write succeeds and consumed by the deferred Gate-5 fallback in the
         # same turn. Clearing it here means a later empty turn — a farewell the
