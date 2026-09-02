@@ -3065,6 +3065,12 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         #    Prevents offering a 8:30 slot when the caller rings at 8:21 and
         #    the conversation itself takes several minutes.
         raw_slot_count = len(slots)  # count BEFORE lead-time filter
+        # Per-filter removal counts. Initialised here, not inside the branches,
+        # because the "why is the list empty" report below reads all three and
+        # each branch is guarded by `if slots`. P8: the report used to assert
+        # lead time without checking, so a closed Sunday was announced as
+        # "too soon to book".
+        removed_lt = removed_wh = removed_bh = 0
         if slots:
             now_london = datetime.now(LONDON_TZ)
             min_start  = now_london + timedelta(hours=2)
@@ -3083,7 +3089,9 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         clinic_cfg = get_clinic(session.get("clinic_id", "theorem")) or {}
         loc_wh = clinic_cfg.get("location_working_hours", {})
         if slots and loc_wh:
+            before_wh = len(slots)
             slots = _filter_slots_by_working_hours(slots, location, loc_wh)
+            removed_wh = before_wh - len(slots)
 
         # 3. Bank-holiday filter: remove slots on England/Wales bank holidays.
         #    Always applied — _fetch_uk_bank_holidays() always returns at least
@@ -3106,21 +3114,60 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                 )
 
         if not slots:
-            # Distinguish between "lead-time filtered everything" vs "genuinely no slots"
-            # so the LLM can use the appropriate message.
-            if raw_slot_count > 0:
-                # Slots existed but were all too soon (within 2h lead time).
+            # Slots existed and the filters removed them all. Decide the cause
+            # from the counts, never from position in the function.
+            #
+            # P8: this branch used to return "lead_time_limited" whenever
+            # raw_slot_count > 0, though THREE filters run above it. A caller
+            # asking about a Sunday at a Mon-Fri location was told the day's
+            # slots "all start within 2 hours — too soon to book": wrong day,
+            # wrong timing, wrong cause, and it sends the model to "no" rather
+            # than "we are closed then, how about Monday?".
+            #
+            # The primary code is the filter that removed the most, so a prompt
+            # rule has a single thing to switch on; the detail carries the whole
+            # breakdown so the model never has to trust one label. Ties break
+            # towards the more specific cause (a bank holiday and a closed
+            # weekday are both "shut", but only one has a name).
+            if raw_slot_count > 0 and (removed_lt or removed_wh or removed_bh):
+                _causes = (
+                    ("bank_holiday", removed_bh),
+                    ("closed_on_day", removed_wh),
+                    ("lead_time_limited", removed_lt),
+                )
+                _code = max(_causes, key=lambda c: c[1])[0]
+                _breakdown = ", ".join(
+                    f"{_n} {_label}"
+                    for _label, _n in (
+                        ("too soon (within 2 hours)", removed_lt),
+                        (f"outside {location.title()}'s opening hours", removed_wh),
+                        ("on a bank holiday", removed_bh),
+                    )
+                    if _n
+                )
+                _advice = {
+                    "bank_holiday": (
+                        "The clinic is closed that day. Offer the next working day."
+                    ),
+                    "closed_on_day": (
+                        f"{location.title()} is not open then. Tell the caller "
+                        "the clinic is closed that day and offer a day it IS open."
+                    ),
+                    "lead_time_limited": (
+                        "Suggest the next available day or take contact details."
+                    ),
+                }[_code]
                 logger.warning(
-                    "_check_availability_acuity: %d raw slot(s) for %s all within 2h lead-time window — "
-                    "availability is limited today.",
+                    "_check_availability_acuity: %d raw slot(s) for %s all removed "
+                    "(lead-time %d, working-hours %d, bank-holiday %d) — reporting %r",
                     raw_slot_count, location,
+                    removed_lt, removed_wh, removed_bh, _code,
                 )
                 return {
-                    "error": "lead_time_limited",
+                    "error": _code,
                     "error_detail": (
-                        f"There are {raw_slot_count} slot(s) available at {location.title()} today "
-                        "but all start within 2 hours — too soon to book. "
-                        "Suggest the next available day or take contact details."
+                        f"{raw_slot_count} slot(s) came back for {location.title()} "
+                        f"but none can be booked: {_breakdown}. {_advice}"
                     ),
                     "slots": [],
                 }
