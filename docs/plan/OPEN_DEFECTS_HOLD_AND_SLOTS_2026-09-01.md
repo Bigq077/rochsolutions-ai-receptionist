@@ -14,7 +14,7 @@
 | F1 | Susie promises a lookup after the caller has picked | **FIXED** `e3057d03`, **confirmed on a call** |
 | F2 | "what else have you got" re-reads day one | **FIXED** `1c972167`, **confirmed on a call** |
 | P8 | a closed day is reported as "too soon to book" | **OPEN**, Theorem only, written up below |
-| P9 | after a single-day "what else", speaking and pressing mean different slots | **OPEN**, HIGH, all clinics |
+| P9 | after a single-day "what else", speaking and pressing mean different slots | **FIXED**, awaiting a call |
 
 Deployment history today, newest first — each was a fast-forward:
 

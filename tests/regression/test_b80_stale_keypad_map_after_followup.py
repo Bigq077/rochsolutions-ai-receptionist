@@ -75,15 +75,44 @@ def _session_after_a_numbered_readout():
 
 # ── the defect ─────────────────────────────────────────────────────────────
 
-def test_a_followup_batch_supersedes_the_keypad_map():
-    """"Anything else that day?" -> the old numbers no longer refer to anything."""
+def test_no_digit_still_points_at_the_previous_offer():
+    """The B-80 PROPERTY: after a follow-up, no keypress books an old slot.
+
+    B-80 met this by MARKING the map superseded, because the follow-up spoke
+    its times unnumbered and there was nothing for a digit to mean. Since P9
+    (2026-09-02) that branch speaks a NUMBERED offer and rebuilds the map
+    through `apply_offer_to_session`, so the digits are live again and point at
+    what was just said — a stronger answer than invalidating them, and the
+    marking is no longer needed on this path.
+
+    The property is what matters, so it is asserted directly and both
+    mechanisms satisfy it. `test_a_resolved_specific_time_supersedes_the_map_too`
+    still covers the branch that does speak unnumbered.
+    """
     session = _session_after_a_numbered_readout()
     assert not session.get("v3_slot_map_superseded")
+    before = set((session.get("v3_dtmf_slot_map") or {}).values())
 
     speech = sf.try_unspoken_followup_speech(session, "anything else that day?")
-
     assert speech, "the follow-up must still answer deterministically"
-    assert session["v3_slot_map_superseded"] is True
+
+    if session.get("v3_slot_map_superseded"):
+        return                      # invalidated — B-80's original answer
+
+    # Otherwise it must have been REPLACED, and with what was just offered.
+    now = list((session.get("v3_dtmf_slot_map") or {}).values())
+    assert now, "the map was cleared — that re-breaks B-78, see below"
+    assert not (set(now) & before), (
+        "a digit still resolves to a time from the PREVIOUS offer: {}".format(
+            sorted(set(now) & before)
+        )
+    )
+    assert now == session["slot_labels"], (
+        "the keypad and the spoken record disagree, so speaking and pressing "
+        "book different slots (P9): keypad={} labels={}".format(
+            now, session["slot_labels"]
+        )
+    )
 
 
 def test_a_resolved_specific_time_supersedes_the_map_too():

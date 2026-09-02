@@ -3166,6 +3166,82 @@ def more_days_speech(session: Dict[str, Any]) -> Optional[str]:
     return offer.text
 
 
+def numbered_more_times_speech(
+    session: Dict[str, Any], batch: List[Dict[str, Any]], more: bool
+) -> Optional[str]:
+    """Speak "the others on that day" as a NUMBERED offer, and record it.
+
+    P9, CA665dc0309da186874a37f30034196e33 (2 Sep 2026, northgate). Susie
+    offered three numbered times on Tuesday, promised "a few others that day",
+    the caller asked for them, and this path read EIGHT more times in one
+    306-character breath with no numbers — then updated `last_offered_slots` to
+    those eight while leaving `v3_dtmf_slot_map` pointing at the original three.
+
+        "the second one"  ->  10:30, half past ten     (correct)
+        pressing 2        ->  16:20, twenty past four  (a slot he never heard)
+
+    One utterance, two appointments, decided by whether the caller spoke or
+    pressed — and the wrong one is a genuinely free slot, so it books silently.
+
+    OWNER DECISION, 2026-09-02, and it SUPERSEDES the rule in
+    `all_remaining_on_next_day`: three numbered, then "a few more after those".
+    That rule (24 Aug) said an explicit "tell me the others" gets ALL of them
+    and never a slot silently withheld, and it was written against a two-at-a-
+    time batch that made the caller ask three times to walk one Tuesday. Eight
+    in one breath overshot it. Three plus a tail is what the PRIMARY readout
+    already does with the same problem, and a caller who wants the rest asks
+    again — now from a list they can actually press.
+
+    Built and recorded through the same two functions as every other offer, so
+    the speech and the keypad cannot disagree again.
+    """
+    if not batch:
+        return None
+    try:
+        from app.tools.slot_offer import (
+            apply_offer_to_session, build_slot_offer, offer_as_record,
+        )
+    except Exception:
+        logger.exception("[slot_followup] numbered follow-up unavailable")
+        return None
+
+    first = batch[0] or {}
+    date = first.get("date") or str(first.get("start") or "")[:10]
+    day = {
+        "date": date,
+        "day_label": first.get("day_label") or "that day",
+        "slot_times": [str(s.get("start") or "")[11:16] for s in batch],
+        "slot_times_spoken": [s.get("spoken") or "" for s in batch],
+        "slots": [
+            {"start": s.get("start"), "end": s.get("end") or ""} for s in batch
+        ],
+        # Carried, not zeroed: a band filter may have hidden times on this day
+        # that no walk over `batch` can see, and B-97 counts those as "more".
+        "times_not_shown": int(first.get("times_not_shown") or 0),
+    }
+    try:
+        # `more_times=None` lets it decide from the data -- the batch is NOT
+        # pre-trimmed, so its own count is the honest one. Forced True only
+        # when the nine-slot keypad ceiling already hid some.
+        offer = build_slot_offer([day], more_times=True if more else None)
+    except Exception:
+        logger.exception(
+            "[slot_followup] numbered follow-up failed to build -- falling "
+            "back to the unnumbered sentence"
+        )
+        return None
+    if offer is None or not offer.chunks:
+        return None
+
+    apply_offer_to_session(session, offer_as_record(offer, day_iso=date), offer.chunks)
+    logger.info(
+        "[slot_followup] 'more times that day' answered with %d numbered "
+        "option(s) of %d remaining on %s (more=%s)",
+        len(offer.slots), len(batch), date, bool(offer.more_times),
+    )
+    return offer.text
+
+
 def try_unspoken_followup_speech(
     session: Dict[str, Any], user_text: str
 ) -> Optional[str]:
@@ -3249,6 +3325,12 @@ def try_unspoken_followup_speech(
         batch, more = all_remaining_on_next_day(
             remaining_unspoken_on_current_day(session, user_text)
         )
+        # P9: numbered and RECORDED, three at a time. The unnumbered sentence
+        # below stays as the fallback -- it is what ships if the builder
+        # cannot make an offer out of this batch.
+        _numbered = numbered_more_times_speech(session, batch, more)
+        if _numbered:
+            return _numbered
         if not batch:
             # This DAY is exhausted even though other days remain. Say so
             # rather than falling to the model — the same reasoning as the
