@@ -65,6 +65,50 @@ MAX_WORDS = 50
 MAX_WORDS_SENTENCE_GRACE = 12
 
 HARD_SPLIT_CHARS = frozenset({".", "!", "?"})
+
+# WS-A first chunk ONLY. `chunk_gate_ms` — first LLM token to first chunk
+# released — is floored by the time the model takes to generate a whole first
+# SENTENCE, because Condition 2 below only stops at a hard `.!?`. Measured over
+# 2,411 stored turns: p50 672ms, p90 1,975ms, and it is 17% of the caller's
+# voice-to-voice budget. A clause boundary is a natural place for the voice to
+# pause, so the first chunk can go a clause early and the caller hears the
+# answer start sooner. Later chunks are untouched, so mid-response prosody is
+# unchanged.
+#
+# Comma and semicolon only. NOT the em-dash: " — " is the head/filler
+# separator, and NOT the ellipsis, because both are already load-bearing
+# pause punctuation read by `split_tts_text` — splitting a synthesis call on
+# them is the defect that once read a phone number across two TTS calls.
+SOFT_FIRST_SPLIT_CHARS = frozenset({",", ";"})
+
+# Spoken digits. A phone number reaches TTS as WORDS, not numerals — "oh seven
+# five oh two, two one one, two oh seven" — so an `isdigit()` guard sees nothing
+# and happily splits the number in half. That was caught on the first test of
+# this change, and it is the same defect that once read a number across two
+# synthesis calls with an audible seam in the middle.
+_NUMBER_WORDS = frozenset({
+    "oh", "o", "zero", "one", "two", "three", "four", "five",
+    "six", "seven", "eight", "nine", "double", "triple",
+})
+
+
+def _carries_a_number_sequence(text: str) -> bool:
+    """True when *text* looks like it is reading digits aloud.
+
+    A RUN of two or more adjacent number-words, not a single one: prose says
+    "one of the things" and "a couple of weeks" all the time, and refusing to
+    split on those would make the guard useless. Nothing says "seven five" in a
+    row except a number being read out.
+    """
+    run = 0
+    for w in text.lower().replace(",", " ").replace("-", " ").split():
+        if w.strip(".!?;:") in _NUMBER_WORDS:
+            run += 1
+            if run >= 2:
+                return True
+        else:
+            run = 0
+    return False
 SOFT_SPLIT_CHARS = frozenset({",", ";", ":"})   # only used at MAX_WORDS
 
 # ---------------------------------------------------------------------------
@@ -226,8 +270,27 @@ class ResponseChunker:
         )
         if self._word_count >= gate:
             stripped = self._buffer.rstrip()
-            if stripped and stripped[-1] in HARD_SPLIT_CHARS:
-                if not _ends_with_abbreviation(stripped):
+            if stripped and not _ends_with_abbreviation(stripped):
+                if stripped[-1] in HARD_SPLIT_CHARS:
+                    return self._handle_candidate(self._emit())
+                # WS-A first chunk: a clause is somewhere to stop too.
+                #
+                # Gated on the text carrying NO DIGITS, which is the whole
+                # safety argument. A slot readout and a phone read-back are
+                # comma-separated by construction ("oh seven five oh two, two
+                # one one, two oh seven"), and splitting one across two
+                # synthesis calls is a known live defect — the caller hears the
+                # number in two pieces with a seam in the middle. Prose openers
+                # ("Hamstring tightness after training is really common in
+                # active people,") carry no digits and are exactly the case
+                # this is for.
+                if (
+                    self._fast_first
+                    and self._emitted_count == 0
+                    and stripped[-1] in SOFT_FIRST_SPLIT_CHARS
+                    and not any(ch.isdigit() for ch in stripped)
+                    and not _carries_a_number_sequence(stripped)
+                ):
                     return self._handle_candidate(self._emit())
 
         return None
