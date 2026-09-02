@@ -81,12 +81,48 @@ def percentile(values, p):
     return float(xs[lo])
 
 
+# No caller turn takes ten minutes. Rows written before the as_record guard
+# (latency_timing.py) stored raw time.monotonic() readings whenever t0 was never
+# stamped — 1,934 of 3,066 stored turns on 2026-09-02, concentrated on 22-23 Aug,
+# with values like ttfa_ms=5831410519 (~67 days). They are indistinguishable from
+# real readings once in the table, so every percentile taken from it was wrong.
+# The source is fixed; this is the read-side guard for the rows already stored.
+MAX_PLAUSIBLE_MS = 600_000
+
+# CLAUDE.md section 6. Read against VOICE-TO-VOICE, not TTFA.
+BAR_MS = 1500
+
+# Set by summarize() so callers can REPORT what was thrown away rather than
+# silently shrinking n — a discarded turn is not a fast turn.
+DISCARDED = {"count": 0}
+
+
+def _v2v(records, field):
+    """endpoint_wait_ms + *field*, per record, for records that have both.
+
+    Summed per TURN and only then percentiled — adding the p50 of one metric to
+    the p50 of another would be a different (and wrong) number.
+    """
+    out = []
+    for r in records:
+        w = r.get("endpoint_wait_ms", -1)
+        v = r.get(field, -1)
+        if w is not None and v is not None and w >= 0 and v >= 0:
+            out.append(w + v)
+    return out
+
+
 def summarize(values):
     vals = [v for v in values if v is not None and v >= 0]
+    absurd = [v for v in vals if v > MAX_PLAUSIBLE_MS]
+    if absurd:
+        DISCARDED["count"] += len(absurd)
+        vals = [v for v in vals if v <= MAX_PLAUSIBLE_MS]
     if not vals:
         return None
     return {
         "n": len(vals),
+        "discarded": len(absurd),
         "min": min(vals),
         "p50": percentile(vals, 50),
         "p90": percentile(vals, 90),
@@ -183,6 +219,15 @@ def main():
         # WS-C: endpoint silence before t0. Measured on ALL llm turns (incl.
         # abandoned) — it's upstream of the turn outcome.
         "endpoint_wait_ms":  [r.get("endpoint_wait_ms") for r in llm],
+        # ── The caller's actual clock ────────────────────────────────────
+        # Every metric above starts at t0, which is stamped when the endpointer
+        # DECLARES end-of-turn. The silence it imposed to reach that decision —
+        # endpoint_wait_ms, p50 1121ms across 535 stored calls — happens while
+        # the caller is already waiting, and appears in none of them. Reporting
+        # TTFA alone therefore flatters the system by roughly a second, which is
+        # why the 1.5s bar has looked closer than it is.
+        "voice_to_voice_ttfa_ms":    _v2v(completed, "ttfa_ms"),
+        "voice_to_voice_content_ms": _v2v(completed, "content_ttfa_ms"),
     }
     stats = {k: summarize(v) for k, v in pools.items()}
 
@@ -195,8 +240,11 @@ def main():
     print("=" * 74)
     print(f"  path=llm turns : {total}")
     if scripted:
+        # Same ceiling as summarize(): this note computes its own median and
+        # would otherwise print a raw monotonic reading (measured: 11855281945ms).
         _s_ttfa = [r.get("ttfa_ms") for r in scripted
-                   if r.get("ttfa_ms", -1) >= 0]
+                   if r.get("ttfa_ms", -1) >= 0
+                   and r.get("ttfa_ms", -1) <= MAX_PLAUSIBLE_MS]
         _s_note = (f" (ttfa p50≈{sorted(_s_ttfa)[len(_s_ttfa)//2]}ms)"
                    if _s_ttfa else "")
         print(f"  scripted turns : {len(scripted)}   "
@@ -209,6 +257,18 @@ def main():
         print(f"  other outcomes : {len(other)}  -> {sorted({r.get('outcome') for r in other})}")
     print(f"  filler-masked  : {len(masked)}  (content_ttfa >> perceived — WS-B filler working)")
     print(f"  tool/slot turns: {len(tool)}  (chunk_gate=-1 — no WS-A split on these)")
+    if DISCARDED["count"]:
+        print(f"  DISCARDED      : {DISCARDED['count']} sample(s) over {MAX_PLAUSIBLE_MS}ms "
+              f"— broken stamps, not slow turns (see MAX_PLAUSIBLE_MS)")
+    print()
+    print("  VOICE-TO-VOICE (ms)            what the caller actually waits")
+    print("  " + "-" * 70)
+    print(f"  to first audio           {fmt(stats['voice_to_voice_ttfa_ms'])}")
+    print(f"  to first CONTENT         {fmt(stats['voice_to_voice_content_ms'])}")
+    _v = stats.get("voice_to_voice_ttfa_ms")
+    if _v:
+        print(f"    -> bar is {BAR_MS}ms p95; measured p95 {_v['p95']:.0f}ms "
+              f"({'PASS' if _v['p95'] <= BAR_MS else 'FAIL'})")
     print()
     print("  TIMING (ms)                    completed turns, per-metric -1s dropped")
     print("  " + "-" * 70)

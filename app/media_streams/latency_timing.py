@@ -311,7 +311,31 @@ class TurnTiming:
         """
 
         def d(a: Optional[float], b: Optional[float]) -> int:
-            return int((a - b) * 1000) if (a is not None and b is not None) else -1
+            """Milliseconds between two stamps, or -1 if this is not a measurement.
+
+            A stamp of 0.0 is NOT a reading. ``t0`` is typed ``float``, not
+            ``Optional[float]``, so a caller that never had a clock reading
+            passes 0 and the old body returned ``t4 - 0`` — a raw
+            ``time.monotonic()`` value, i.e. seconds since boot, rendered as a
+            plausible-looking integer. Measured 2026-09-02: **1,934 of 3,066
+            stored turns** carried exactly that (``ttfa_ms=5831410519`` ≈ 67
+            days), concentrated on 22-23 Aug. Downstream they are
+            indistinguishable from real readings, so every percentile ever taken
+            from the obs table was wrong, silently.
+
+            The CEILING is the discriminator, deliberately — not a ``t0 <= 0``
+            test. A synthetic clock starting at 0.0 is legitimate and several
+            tests use one; what is never legitimate is the *result*, because a
+            real monotonic clock reads in the hundreds of thousands of seconds,
+            so ``t4 - 0`` lands ~450,000,000ms — three orders of magnitude past
+            any turn. No caller turn takes ten minutes, and none takes negative
+            time, so both collapse to -1: the established "stage never reached"
+            sentinel that ``summarise`` and ``lat_parse`` already filter.
+            """
+            if a is None or b is None:
+                return -1
+            ms = int((a - b) * 1000)
+            return ms if 0 <= ms <= _MAX_PLAUSIBLE_MS else -1
 
         return {
             "turn_seq":          self.turn_seq,
@@ -419,6 +443,10 @@ def _percentile(values: List[int], p: float) -> Optional[float]:
 
 
 # The CLAUDE.md §6 bar: p95 caller-perceived turn latency under 1.5 s.
+# No caller turn takes ten minutes. Any "duration" longer than this is a
+# broken stamp (see TurnTiming.as_record.d), never a slow turn.
+_MAX_PLAUSIBLE_MS = 600_000
+
 TTFA_BAR_MS = 1500
 
 
