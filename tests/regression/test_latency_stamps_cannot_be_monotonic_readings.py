@@ -43,12 +43,25 @@ def test_unstamped_t0_reads_as_not_measured():
 
 
 def test_a_real_turn_still_measures():
+    # +/-1ms, not exact equality. `now` is time.monotonic(), which on a machine
+    # that has been up a while is a large float -- 534,513s when this was
+    # found. At that magnitude float64 cannot hold `now + 1.2` exactly, so the
+    # delta comes back 1.19999999995 and as_record's int() truncation reads
+    # 1199. The assertion therefore failed as a function of MACHINE UPTIME:
+    # green after a reboot, red a week later, with no code change. It cost a
+    # baseline of 98 -> 99 and an investigation that started by suspecting an
+    # unrelated commit.
+    #
+    # The production behaviour is right and is not being changed to suit a
+    # test: losing at most 1ms off a latency figure is immaterial, and int()
+    # truncating rather than rounding is a deliberate reading of "how long did
+    # this take". The exactness was the test's mistake.
     t, now = _turn()
     t.t4 = now + 1.2
     t.content_t4 = now + 2.0
     rec = t.as_record()
-    assert rec["ttfa_ms"] == 1200
-    assert rec["content_ttfa_ms"] == 2000
+    assert abs(rec["ttfa_ms"] - 1200) <= 1
+    assert abs(rec["content_ttfa_ms"] - 2000) <= 1
 
 
 @pytest.mark.parametrize("delta", [-5.0, 601.0, 5_000_000.0])
