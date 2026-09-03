@@ -1,9 +1,6 @@
 # Slot presentation: stop circling, then finish the migration
 
-**Status 2026-09-03, 02:10.** Phase 0 items 1 and 2 are **DONE** — `f93a4d2a`
-and `021c0fc0` on `latency-eval`, both red-then-green proven, neither promoted.
-Item 3 (F1) turned out to be **already implemented**. Item 3b is the real gap
-and replaces it. Item 4 and all of Phase 1 are open.
+**Status 2026-09-03, end of day.** **PHASE 0 IS COMPLETE and PHASE 1 IS COMPLETE.** Items 1, 2 and 5 were built; items 3 (F1) and 4 (F2) turned out to be already implemented, both verified rather than assumed. Phase 1a, 1b and 1c all exist and 1a found three live defects on its first run. Phase 2 is next and its test risk has been measured — see PHASE2_TEST_SURFACE.md; it is one line, not thirty files.
 
 **Verified live on `2a8a6ee6`, 01:58:32:** `'yeah monday at 8 am works'` ->
 `caller ACCEPTED 2026-09-07T08:00:00+01:00` -> `situational head (slot_picked)`
@@ -148,7 +145,7 @@ works'` set `ACCEPTED_SLOT_KEY` and the head fired — `situational head
 **Same lesson as §1, aimed at ourselves: check the code before writing a task
 for it.** This one cost nothing because it was checked before being built.
 
-### 3b. OPEN and REPLACES F1 — a pure DAY-pick produces no pick signal at all
+### ✅ 3b. DONE — `baba63f4` — a pure DAY-pick produces no pick signal at all
 
 The real gap, and it is the case `"Monday it is -"` exists for.
 
@@ -181,25 +178,43 @@ has been wrong in that direction three times. `utterance_requests_more_slots`
 and `utterance_requests_different_day` already draw the acceptance/request line
 inside `slot_accepted_by_caller` and should be reused, not re-derived.
 
-### 4. OPEN — F2: "what else have you got" after a multi-day offer widens to DAYS
+### ✅ 4. ALREADY DONE — F2 is implemented, and this plan was wrong to list it
 
-Owner decision, 2026-09-02. `remaining_unspoken_on_current_day`
-([slot_followup.py:712](app/tools/slot_followup.py:712)) rule 3 scopes an
-unnamed "what else" to `last_offered_slots[0]`'s day. `all_remaining_on_next_day`
-then applies an owner rule written 24 Aug for *single-day* offers — a caller
-told "I've a few others that day" gets ALL of them — so after a multi-day offer
-it answers a promise nobody made, on a day nobody named, with nine times in a
-20-second breath.
+**Second time in this document.** `more_days_speech`
+([slot_followup.py:3519](app/tools/slot_followup.py:3519)) was written on
+2026-09-02 and carries the owner decision verbatim in its own docstring:
 
-When `_slot_presentation_mode == "multi_day"` and the caller named no day and
-no position, scope to the days **not yet offered** and build through
-`build_slot_offer` at the same 3 × 2 shape. Rules 1 (named day), 1b (position)
-and 2 (conflicting days) unchanged.
+> *"after a multi-day readout, 'what else have you got' means MORE DAYS.
+> Answered from the cached payload, so it costs no tool call."*
 
-F2 is also a down-payment on Phase 2: it routes a second path through the
-single producer.
+It is called at [slot_followup.py:3765](app/tools/slot_followup.py:3765),
+exactly where this plan said to put it — before the day-scoped batch, gated on
+the caller having named no day and no position, so B-103 and B-105 are
+untouched.
 
-### 5. OPEN — capture the payload into obs *(new, and it gates Phase 1)*
+Verified end to end 2026-09-03: a five-day payload with three days already
+read out returns
+
+```
+"Here's what we've got coming up — Number 1, Thursday 10th September — nine in
+ the morning, or three in the afternoon. Number 2, Friday 11th September — ten
+ in the morning, or four in the afternoon. Either of those work?"
+```
+
+— the two **unheard** days, built through `build_slot_offer` and recorded
+through `apply_offer_to_session`, and `None` on a single_day offer.
+
+> **The lesson, now that it has happened twice in one document.** F1 and F2
+> were both written from the DEFECT DOCS rather than from the code, and both
+> were already built. Neither cost anything, because both were checked before
+> being started — but a plan that says "OPEN" without a grep is a plan that
+> schedules work already done, and the third time it may not be caught. Grep
+> before writing the task, not before doing it.
+
+So it was already the down-payment on Phase 2 it was billed as: the follow-up
+path has been routing through the single producer since 2 Sep.
+
+### ✅ 5. DONE — `ae97af1e` — capture the payload into obs, and it gated Phase 1
 
 See §3. Do it here, not later, so weeks 2–3 accumulate a replayable corpus
 while the migration work happens.
@@ -235,11 +250,15 @@ Against the five intended checks:
 
 So Phase 1 splits in three. All three are cheaper than the original.
 
-**1a — utterance replay.** Real caller utterances × the text-only predicates.
+**✅ 1a — utterance replay. DONE, `05c3de1c`.** `scripts/replay_day_picks.py`. On its first run over 828 calls it found THREE requests scored as acceptances -- "yeah check for tuesday please" among them -- none of which had reached a caller.
+
+Original note: Real caller utterances × the text-only predicates.
 Extends `replay_hold_speech.py` (163 lines) and `replay_situational_heads.py`
 (260), which already do exactly this.
 
-**1b — payload synthesis.** `build_slot_offer`, `choose_presented_indices` and
+**✅ 1b — payload synthesis. DONE, `979f6fb8`.** `scripts/sweep_slot_offer.py`: 528 generated diaries, seven invariants, zero violations, and proven to fail by restoring the 8pm defect.
+
+Original note: `build_slot_offer`, `choose_presented_indices` and
 `slot_accepted_by_caller` are **pure**. They do not need historical payloads,
 they need representative ones — a clinic diary has finite structure, so
 generate the payload space (N days × M times, bands, gaps, single-slot days,
@@ -248,11 +267,13 @@ This is property-based testing, and it is **stronger** than replay: it covers
 shapes the corpus never happened to contain. Tonight's 8pm case is one the
 corpus did not contain until it did.
 
-**1c — capture the payload and the `Offer` into obs.** Phase 0 item 5. Makes
+**✅ 1c — capture the payload. DONE and IN PRODUCTION, `ae97af1e`.** `calls.slot_offers`, verified writing on 2026-09-03; the first rows show a diary holding 63 bookable times where Susie named 6.
+
+Original note: Phase 0 item 5. Makes
 every future call fully replayable and closes the gap permanently. Forward-only
 — the existing 807 stay text-only.
 
-**Gate: no change to the slot layer ships without a report from 1a and 1b.**
+**Gate: no change to the slot layer ships without a report from 1a and 1b.** Both now exist, so the gate is live rather than aspirational.
 
 ---
 
@@ -278,9 +299,29 @@ Finish the migration. Target state:
 Incremental, one consumer at a time, each step gated on a clean Phase 1 report
 and the existing suite.
 
-⚠️ `tests/auto/scenarios/regressions/` pins presentation text in ~30 files.
-**Read them, never bulk-edit — some pin a DEFECT's wording.** Classifying which
-is which is a closed ~60-minute task and good work for a tired session.
+~~⚠️ `tests/auto/scenarios/regressions/` pins presentation text in ~30 files.
+Read them, never bulk-edit — some pin a DEFECT's wording.~~
+
+✅ **MEASURED 2026-09-03, and this warning was wrong — see
+[PHASE2_TEST_SURFACE.md](docs/plan/PHASE2_TEST_SURFACE.md).**
+
+`tests/auto/scenarios/regressions/` pins **nothing**. All 61 files are
+auto-generated from real calls; presentation text sits in `transcript`, which
+is context for the evaluator, and the assertion is `expected` — which across
+all 60 is `{'no_technical_error': True}` and nothing else. They also never run
+in the ordinary suite: `tests/auto` places real outbound calls and is gated
+behind `RUN_LIVE_CALL_TESTS=1`.
+
+The real surface is 30 files in **`tests/regression/`**, of which **28 use the
+wording only as fixture input** and **2 assert it**:
+
+* `test_the_offer_and_its_record_are_built_together.py:91` — one literal pin on
+  the multi_day opener. One line to re-aim.
+* `test_p9_more_times_that_day_is_numbered_and_recorded.py` — a NEGATIVE
+  assertion carrying P10: a continuation must not use the plain completeness
+  opener. **Keep it through Phase 2** — the string may change, the rule does not.
+
+So this risk is one line plus one preserved contract, not a day of reading.
 
 ---
 
