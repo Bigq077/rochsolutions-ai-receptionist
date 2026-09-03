@@ -204,3 +204,50 @@ def test_the_predicate_is_actually_WIRED_INTO_the_head():
     assert "_hs_picking = bool(_day_picked(session, _hs_utterance))" in src, (
         "day_accepted_by_caller is imported but no longer decides _hs_picking"
     )
+
+
+# ── What the corpus said, when it was finally asked ─────────────────────────
+
+@pytest.mark.parametrize("utterance", [
+    # Every one of these is a real caller turn from the obs corpus, found by
+    # scripts/replay_day_picks.py across 828 calls. All three scored ACCEPT on
+    # the shipped predicate, because "yeah" opens them and no request pattern
+    # matched -- so each would have produced "Tuesday it is —" in front of a
+    # lookup that really was about to happen.
+    "yeah check for tuesday please",
+    "yeah i'll ask for you to present tuesday the 8th",
+    "what do you mean monday the 10th works",
+])
+def test_the_requests_the_corpus_found(utterance):
+    """Phase 1a's first catch, and the argument for Phase 1a in six words:
+    real callers phrase requests in ways test authors do not.
+
+    A generated sweep could not have found these -- it generates DIARIES, and
+    these are failures of LANGUAGE. The two halves of Phase 1 answer different
+    questions and neither substitutes for the other.
+    """
+    assert day_accepted_by_caller(_mid_offer(), utterance) is None
+
+
+@pytest.mark.parametrize("utterance", [
+    # And the acceptances from the same sweep, which must survive the fix.
+    "uh yeah monday works",
+    "yeah the monday works",
+    "monday please",
+    "tuesday please",
+    "yeah wednesday the 2nd",
+    "uh let's see that saturday slot please",
+    "tuesday the 1st yeah",
+])
+def test_the_acceptances_the_corpus_found_still_resolve(utterance):
+    """Widening the request pattern must not eat real picks. "let's see that
+    saturday slot" is the near miss: it contains "see", which is why "see" is
+    deliberately absent from the request pattern while "check" is in it."""
+    session = _mid_offer()
+    # Only the days this offer actually holds can resolve; the rest are here to
+    # prove the LANGUAGE half, so accept either a date or a decline-on-day.
+    from app.tools.slot_followup import _DAY_REQUEST_RE
+    assert not _DAY_REQUEST_RE.search(utterance), (
+        f"{utterance!r} is a real acceptance from the corpus and the request "
+        f"pattern now eats it"
+    )

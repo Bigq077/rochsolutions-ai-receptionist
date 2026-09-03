@@ -2337,7 +2337,25 @@ _DAY_REQUEST_RE = re.compile(
     r"|\bany\s+(?:slots?|times?|availability|openings?)\b"
     r"|\bcan\s+(?:i|you)\b|\bcould\s+(?:i|you)\b|\bwould\s+(?:i|you)\b"
     r"|\bwhat(?:'?s| is)\b[^?]{0,30}\b(?:free|available|open)\b"
-    r"|\bis\b[^?]{0,20}\b(?:free|available|any\s+good)\b",
+    r"|\bis\b[^?]{0,20}\b(?:free|available|any\s+good)\b"
+    # Found by scripts/replay_day_picks.py over the 828-call corpus, and none
+    # of them had reached a caller yet. Each scored ACCEPT only because "yeah"
+    # opens it and nothing above matched:
+    #
+    #   "yeah check for tuesday please"
+    #   "yeah i'll ask for you to present tuesday the 8th"
+    #   "what do you mean monday the 10th works"
+    #
+    # The first two ask for a LOOKUP, so "Tuesday it is —" in front of them is
+    # the promised-work defect. The third is a confused caller, and confidently
+    # confirming at them is its own harm.
+    #
+    # "check" is safe to take whole: a caller ACCEPTING a slot has no reason to
+    # say it, and every use of it in the corpus asks for a diary to be opened.
+    # "see" is deliberately NOT here -- "let's see that saturday slot please"
+    # is an acceptance, and a bare "see" would eat it.
+    r"|\bcheck\b|\bwhat\s+do\s+you\s+mean\b"
+    r"|\b(?:i'?ll|i\s+will|you\s+can)\s+(?:ask|look|present)\b",
     re.IGNORECASE,
 )
 
