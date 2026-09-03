@@ -1954,11 +1954,28 @@ def slot_llm_reply_can_only_be_discarded(session: "Dict[str, Any] | None") -> bo
     guards are the only reason the reply is ever read, and each has a
     precondition that can be checked without it:
 
-      * P6  -- `last_offered_slots`: an offer is already standing, so the caller
+      * P6  -- `v3_dtmf_slot_map`: an offer is already standing, so the caller
         has heard options and may be answering a pick rather than being read a
         list;
       * P6b -- `ACCEPTED_SLOT_KEY`: an acceptance resolved to a slot THIS TURN,
         so a reply naming it is a confirmation, not a presentation.
+
+    NOT `last_offered_slots`, which is what this function asked for until
+    2026-09-03 and which made it return False on 100% of the turns it targets.
+    `_exec_check_availability` writes that key on its main path
+    (`receptionist_tools.py:6385`, before the only return on its direct body;
+    the provider delegations record it themselves), so by the time this runs it
+    always describes THIS turn's lookup. A deterministic
+    offer existing implies slots were presented implies the key is set: the two
+    conditions were mutually exclusive, and the skip was unreachable. Verified
+    on CAdcd52a8a (2 Sep 2026, build 32cd187b): a textbook first lookup where
+    the model call ran anyway and its reply was discarded as always.
+
+    `v3_dtmf_slot_map` is the honest signal, and the one `connection.py:2690`
+    already instructs callers to use ("Guard on the MAP, never on
+    `v3_awaiting_slot_selection`"). It is written by `_flush_slot_buf` AFTER
+    this point in the turn, so here it still describes the PREVIOUS turn --
+    exactly "has an offer already been put to the caller and is it still open?"
 
     With a deterministic offer built and NEITHER precondition set, this is a
     first lookup: no options have been spoken, so there is no pick to confirm
@@ -1973,7 +1990,7 @@ def slot_llm_reply_can_only_be_discarded(session: "Dict[str, Any] | None") -> bo
     det = s.get("_slot_offer_prebuilt")
     if not isinstance(det, dict) or not det.get("chunks"):
         return False
-    if s.get("last_offered_slots"):
+    if s.get("v3_dtmf_slot_map"):
         return False
     if s.get(ACCEPTED_SLOT_KEY):
         return False

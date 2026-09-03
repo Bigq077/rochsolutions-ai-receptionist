@@ -3553,10 +3553,25 @@ class LLMStream:
         #   * an offer is ALREADY standing, so the caller has heard options and
         #     the model is answering a pick rather than opening the batting.
         #
-        # That second condition is what makes this safe. On a FIRST lookup
-        # `last_offered_slots` is empty, so a model that says something
-        # contentless can never cost the caller the only offer they were going
-        # to get — the deterministic sentence still wins, exactly as before.
+        # That second condition is what makes this safe -- but it was asked of
+        # the WRONG key until 2026-09-03. This block claimed "on a FIRST lookup
+        # `last_offered_slots` is empty"; it never is. `_exec_check_availability`
+        # sets it on its main path (`receptionist_tools.py:6385`, before the only
+        # return on its direct body) before this runs, so the term was ALWAYS
+        # true and P6
+        # reduced to "the model numbered no options". A first lookup whose
+        # buffered sentence happened to name no option therefore STOOD DOWN and
+        # spoke that sentence INSTEAD of the deterministic offer -- the caller
+        # getting no slot list at all, and no DTMF map, which is the exact
+        # outcome this comment promised was impossible. Not seen live only
+        # because the model usually numbers its options; on CAdcd52a8a (2 Sep
+        # 2026) it said "Number 1" and `_eso` declined for us.
+        #
+        # `v3_dtmf_slot_map` is the key that means what this needs: written by
+        # section 1b BELOW, so here it still describes the PREVIOUS turn -- an
+        # offer already put to the caller and still open. `connection.py:2690`
+        # states the rule directly: guard on the MAP, never on the derived
+        # `v3_awaiting_slot_selection` flag.
         if isinstance(_prebuilt, dict) and _prebuilt.get("chunks") and raw_chunks:
             from app.tools.slot_followup import extract_slot_options as _eso
             _stand_down = [
@@ -3593,7 +3608,7 @@ class LLMStream:
             if (
                 _model_text
                 and not _eso(_model_text)
-                and session.get("last_offered_slots")
+                and session.get("v3_dtmf_slot_map")
             ):
                 logger.warning(
                     "[ms_gate5] deterministic offer STOOD DOWN — the model "

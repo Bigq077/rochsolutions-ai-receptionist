@@ -105,12 +105,23 @@ def _prebuilt(days=None):
 
 
 def _session_mid_offer():
-    """A caller who has already been read a list and has just picked from it."""
+    """A caller who has already been read a list and has just picked from it.
+
+    `v3_dtmf_slot_map` is part of that state, not decoration: `_flush_slot_buf`
+    writes it on any turn that numbered options, so a caller who has heard a
+    list ALWAYS carries one. It was missing here until 2026-09-03, and its
+    absence is what let P6 be guarded on `last_offered_slots` -- a key the
+    availability tool sets on every lookup, first or not -- without any test
+    noticing. See test_a_first_lookup_still_speaks_the_payload below.
+    """
     return {
         "_slot_offer_prebuilt": _prebuilt(),
         "available_days": RE_READ,
         "last_offered_slots": [dict(s) for s in STANDING],
         "slot_labels": list(STANDING_LABELS),
+        "v3_dtmf_slot_map": {
+            str(i + 1): lbl for i, lbl in enumerate(STANDING_LABELS)
+        },
     }
 
 
@@ -181,8 +192,22 @@ async def test_a_first_lookup_still_speaks_the_payload():
 
     This is the condition that makes the fix safe: a contentless model turn can
     never cost a caller the only offer they were going to get.
+
+    The fixture must be a state the engine can actually reach, and until
+    2026-09-03 it was not: it omitted `last_offered_slots`, which
+    `_exec_check_availability` writes on EVERY lookup including this one. With
+    the key present -- as it always is live -- P6 was guarded on a term that was
+    always true, so this contentless turn DID stand the offer down and the
+    caller heard "Let me have a look for you" and no slots at all. The test
+    passed throughout, because the session it described could not occur.
     """
-    session = {"_slot_offer_prebuilt": _prebuilt(), "available_days": RE_READ}
+    session = {
+        "_slot_offer_prebuilt": _prebuilt(),
+        "available_days": RE_READ,
+        "last_offered_slots": [
+            {"start": s["start"], "end": ""} for s in _prebuilt()["slots"]
+        ],
+    }
     text = " ".join(await _flush(session, "Let me have a look for you -"))
 
     assert "Number 1" in text and "Monday 7th September" in text
