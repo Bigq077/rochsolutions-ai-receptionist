@@ -8,6 +8,8 @@
   "Northgate"
  ],
  "primary_phone": "+44 7366 263180",
+ "_transfer_phone_note": "Set explicitly 2026-09-03. northgate is the DEMO line and a transfer is part of the demo, so it needs a target. Until now it had none and picked up TRANSFER_FALLBACK_NUMBER, which defaulted to this same personal mobile from app/config.py for EVERY clinic that forgot the key. That default is now empty, so the number has to be named here to keep working. This is a demo destination, not a clinic's reception.",
+ "transfer_phone": "+447502211207",
  "contact_email": "hello@northgatephysio.example",
  "websites": [
   "https://northgatephysio.example"

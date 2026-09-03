@@ -62,8 +62,25 @@ def public_base_url() -> str:
 
 # --- Call transfer fallback ---
 # Dial target used when a clinic has no 'transfer_phone' configured.
-# Override via env var to avoid hardcoding a real UK number in source code.
-TRANSFER_FALLBACK_NUMBER = os.getenv("TRANSFER_FALLBACK_NUMBER", "+447502211207")
+#
+# DEFAULTS TO EMPTY, and must stay that way. The previous default was a real
+# personal mobile, so any service missing the env var sent a patient to a
+# private phone -- including a clinic whose config merely forgot the key, and
+# any Twilio number missing from TWILIO_TO_CLINIC, which falls through to the
+# "demo" clinic and carries no transfer_phone at all. The comment above this
+# line used to say the env var existed "to avoid hardcoding a real UK number
+# in source code" while the default WAS one.
+#
+# Empty is a controlled outcome, not a broken one: resolve_transfer_target
+# returns None, _handle_transfer logs "transfer ABORTED" and declines to
+# redirect, and the caller keeps talking to Susie. Emitting <Dial></Dial>
+# would drop them mid-call; dialling a stranger is worse than either.
+#
+# A clinic that WANTS a transfer target sets its own `transfer_phone` in
+# clinic.json (jv_v1, vital_edge) or clinic_config.py (theorem). northgate
+# does too, as of this change -- it is the demo line and a transfer is part
+# of the demo.
+TRANSFER_FALLBACK_NUMBER = os.getenv("TRANSFER_FALLBACK_NUMBER", "")
 
 # Safety kill-switch for outbound transfers. When truthy, Susie will NOT dial a
 # live transfer leg and will NOT fire the "transferring a patient" heads-up SMS.
