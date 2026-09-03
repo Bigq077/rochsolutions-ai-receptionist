@@ -2257,15 +2257,21 @@ def slot_accepted_by_caller(
             bare and bare != label and _time_named_in(phrase, bare)
         ):
             hits.append(s)
+    # The bare form is the hour with its band stripped off, so "eight in the
+    # morning" is matched by the digit 8 alone. "monday at 8 pm" then matches
+    # an 08:00 slot on nothing but the digit, and the meridiem the caller
+    # actually said is discarded. Live 2026-09-03 00:46:26: pinned 08:00 for
+    # "8 pm", and it survived only because the model happened to notice Monday
+    # has no evening eight and re-asked.
+    #
+    # The meridiem FILTERS rather than vetoes, which matters on a day holding
+    # both 08:00 and 20:00: both labels strip to "8", so both match on the
+    # digit and a veto would decline a slot the caller was actually offered.
+    # Filtering leaves exactly the one they named. The rule the owner stated,
+    # and the right one: a caller who names a slot from the readout gets that
+    # slot. Declining is only for a time the offer does not hold.
+    hits = [s for s in hits if not _time_contradicts(text, s.get("start"))]
     if len(hits) == 1:
-        # The bare form is the hour with its band stripped off, so "eight in
-        # the morning" is matched by the digit 8 alone. "monday at 8 pm" then
-        # matches an 08:00 slot on nothing but the digit, and the meridiem the
-        # caller actually said is discarded. Live 2026-09-03 00:46:26: pinned
-        # 08:00 for "8 pm", and it survived only because the model happened to
-        # notice Monday has no evening eight and re-asked.
-        if _time_contradicts(text, hits[0].get("start")):
-            return None
         return hits[0].get("start") or None
 
     band = _band_named(text)

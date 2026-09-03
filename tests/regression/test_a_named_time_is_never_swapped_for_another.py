@@ -140,3 +140,46 @@ def test_the_8pm_case_is_not_merely_declined_by_accident():
 def test_a_pick_the_offer_does_hold_still_resolves(utterance, expected):
     got = slot_accepted_by_caller(_mid_offer(OFFER), utterance)
     assert got == expected, f"{utterance!r} resolved to {got!r}, wanted {expected!r}"
+
+
+# ── The meridiem must FILTER, not merely veto ───────────────────────────────
+
+# A day holding both 08:00 and 20:00. Both labels strip to the bare digit "8",
+# so both match on the digit alone and the meridiem is the ONLY thing that
+# separates them.
+EVENING_OFFER = [
+    _day("2026-09-07", "Monday 7th September", ["08:00", "20:00"],
+         ["eight in the morning", "eight in the evening"]),
+]
+
+
+@pytest.mark.parametrize("utterance,expected", [
+    ("yeah monday at 8 pm works",      "2026-09-07T20:00:00+01:00"),
+    ("yeah monday at 8 am works",      "2026-09-07T08:00:00+01:00"),
+    ("monday at eight in the evening", "2026-09-07T20:00:00+01:00"),
+    ("monday at eight in the morning", "2026-09-07T08:00:00+01:00"),
+])
+def test_the_meridiem_selects_between_two_slots_an_hour_apart_in_name(
+    utterance, expected
+):
+    """Owner's rule, 2026-09-03: a caller who names a slot from the readout
+    gets THAT slot. Declining is only for a time the offer does not hold.
+
+    The first version of this guard vetoed instead of filtering, so on this
+    offer BOTH labels matched the digit, `len(hits) == 1` failed, and a caller
+    who asked for a slot they had just been read got None. Caught by the owner
+    asking the obvious question -- "if somebody asks for a specific slot from
+    the readout she should offer that slot" -- which is the right question and
+    the reason this test exists.
+    """
+    got = slot_accepted_by_caller(_mid_offer(EVENING_OFFER), utterance)
+    assert got == expected, f"{utterance!r} resolved to {got!r}, wanted {expected!r}"
+
+
+def test_a_bare_hour_with_two_readings_on_offer_still_declines():
+    """"monday at 8" when the day holds BOTH 08:00 and 20:00 names neither.
+
+    This is the standing rule -- ambiguity declines -- and it is the one case
+    where declining is right even though the caller named a real offered time.
+    """
+    assert slot_accepted_by_caller(_mid_offer(EVENING_OFFER), "monday at 8 works") is None
