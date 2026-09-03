@@ -138,7 +138,7 @@ Then `git push origin <head>:production`, revert target **`ae97af1e`**.
 
 | | |
 |---|---|
-| **1a** utterance replay | not built — `replay_hold_speech.py` and `replay_situational_heads.py` already do most of it |
+| **1a** utterance replay | **DONE** — `05c3de1c`, and it found three defects on its first run |
 | **1b** payload synthesis | **DONE** — `979f6fb8` |
 | **1c** capture the payload | **DONE and in production** — `calls.slot_offers` |
 
@@ -150,3 +150,47 @@ now.
 **Phase 2** — one producer, one record — is unchanged and is the next real
 piece of work. It is a deletion refactor across ~30 pinned test files and wants
 a full day, not a session.
+
+---
+
+## 6. Phase 1a, added after the handover was first written
+
+`scripts/replay_day_picks.py` runs the day-pick discrimination over every
+stored caller turn that follows a numbered readout. **828 calls, 157 such
+turns, 18 scored ACCEPT — and three of those were REQUESTS:**
+
+```
+"yeah check for tuesday please"
+"yeah i'll ask for you to present tuesday the 8th"
+"what do you mean monday the 10th works"
+```
+
+Each scored ACCEPT only because "yeah" opens it and no request pattern matched.
+The first two ask for a LOOKUP, so "Tuesday it is —" in front of them is the
+promised-work defect — the exact failure 3b's design exists to prevent,
+arriving through phrasings no test author reached for. **None had reached a
+caller**: 3b shipped this morning and these turns are historical.
+
+Fixed in the same commit; after it, 15 ACCEPT and all read as genuine.
+
+> **Neither half of Phase 1 could have found these alone.** The generated sweep
+> makes DIARIES; these are failures of LANGUAGE. The sweep in turn found the
+> `am_and_pm_8` case, which the corpus does not contain. They answer different
+> questions, and now that both exist it is worth not conflating them.
+
+One asymmetry, deliberate: **"check" is blocked outright, "see" is not.** A
+caller accepting a slot has no reason to say "check", but *"uh let's see that
+saturday slot please"* is a genuine acceptance in the corpus and a bare "see"
+would have eaten it. Both directions are pinned by tests taken verbatim.
+
+### And 1c is verified in production
+
+Two calls already carry `slot_offers`, captured since the 13:20 deploy:
+
+```
+mode=multi_day  payload_times=63  presented_times=6  named=6  more=True
+```
+
+The diary held **63** bookable times that week; Susie named **6**. From
+transcripts alone the visible ratio was "2 of 12" — the real one is 10:1. That
+is §2.2 quantified for the first time, and it needed no call to measure.
