@@ -2743,6 +2743,32 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     # Banned opener patterns (lovely_opener) strip the leading phrase and
     # leave the rest of the sentence starting with a lower-case continuation
     # word.  Restore sentence-initial capitalisation.
+    #
+    # D-A, CA90ccb117 (3 Sep 2026, northgate): ONLY when a strip actually
+    # happened. This ran on EVERY chunk unconditionally, and since fff61547
+    # a first chunk may break on a clause rather than a full stop. The
+    # model wrote ONE question:
+    #
+    #   "...do you have a sense of whereabouts on the knee it's bothering
+    #    you, or how it came on?"
+    #
+    # It was split at the COMMA, and chunk 2 reached TTS as "Or how it came
+    # on?" -- a capital the model never wrote, which turns a continuation
+    # into a new sentence. The caller hears a full stop mid-question.
+    #
+    # Same shape as B-120 and B-132: an operation whose safety rests on a
+    # premise -- "this chunk starts a sentence" -- that is false for a
+    # continuation chunk. The comment above ALREADY scoped it to "after
+    # opener strip"; only the code was unconditional.
+    #
+    # The test is "was anything removed from the FRONT", which covers every
+    # leading strip in this function -- the banned openers above and
+    # _LEADING_JUNK_RE -- without naming any of them, so a strip added
+    # later keeps working. Case-insensitive because a strip can leave a
+    # word starting with the same letter ("Wonderful -- we've got"), which
+    # a first-character comparison would read as untouched.
     if result:
-        result = result[0].upper() + result[1:]
+        _orig = (text or "").strip()
+        if not _orig.lower().startswith(result[:12].lower()):
+            result = result[0].upper() + result[1:]
     return result
