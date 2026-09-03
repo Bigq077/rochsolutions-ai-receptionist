@@ -248,6 +248,76 @@ _SLOT_REREAD_MIN_LOST_S: float = 2.0
 _CONTENT_REREAD_MAX_CHARS: int = 400
 
 
+# B-133. The no-input watchdog holds when the caller is audibly speaking but
+# STT has not reported it YET.
+#
+# Phase 3 already holds for speech -- WATCHDOG_ENGAGEMENT_HOLD, and the
+# `prompt_speech_detected` suppression with its 4s cap -- but every one of
+# those keys on an STT EVENT. CA51bb75fe (Theorem, 3 Sep 2026): the location
+# question ended at 17:24:18.162, the watchdog fired at 17:24:24.180 logging
+# its own problem --
+#
+#   WATCHDOG_FIRE q_gen=4 attempt=#1 voice_gap=0.0s voiced_since_prompt=True
+#
+# -- and the caller's first partial arrived 1.1s later. He was mid-answer.
+# The re-ask collided with it, cost a barge-in teardown and a 'Sorry -- go
+# ahead', and he had to name the clinic again 6s after that.
+#
+# So the gap is exactly one window: voice energy present, nothing
+# transcribed yet. Everything after an STT event was already covered.
+#
+# WHY THIS IS NOT THE 'RECOVERY OVER TRIGGER' MISTAKE. That rule comes from
+# the barge-in family, where a stricter trigger makes Susie UN-INTERRUPTIBLE
+# -- she keeps talking over someone who wants the floor. This is the other
+# axis: she is SILENT and deciding whether to start. Holding makes her more
+# patient, not less interruptible, so that failure cannot arrive this way.
+# It is the missing sibling of WATCHDOG_DTMF_HOLD, one modality over.
+#
+# THE CAP IS THE WHOLE SAFETY ARGUMENT, not a tuning detail. voice_gap comes
+# from raw inbound frame energy, so a car, a television or a busy waiting
+# room reads as 'voiced' forever. An UNBOUNDED hold would suppress the
+# watchdog entirely for that caller and turn a 12-second annoyance into a
+# dead call -- strictly worse than the defect. DTMF can hold uncapped
+# because a keypress is unambiguously the caller; energy is not.
+#
+# And the cap has a MEANING rather than a tuned value: the hold only has to
+# bridge STT's own latency, because once a partial lands the existing
+# transcript path cancels the watchdog anyway. On the live call that gap was
+# 1.2s. If 1.5s of 'voice' yields no transcript at all, it was not speech --
+# and firing is then the correct answer, which is why the cap fires rather
+# than extends.
+#
+# Gated on `voiced_since_prompt` deliberately: that predicate is the
+# echo-safe half of _reask_audio_probe (it compares against
+# _tts_audio_done_at + _ECHO_TAIL_SEC), so a speakerphone returning Susie's
+# own voice during her turn stays on the correct side of the boundary. The
+# 2026-07-25 echo lesson is enforced here, not re-litigated.
+_VOICE_HOLD_GAP_S: float = 0.30
+_VOICE_HOLD_STEP_S: float = 0.25
+_VOICE_HOLD_CAP_S: float = 1.5
+
+
+def _voice_hold_verdict(
+    voiced_since_prompt: bool, voice_gap: float, held_total: float
+) -> str:
+    """PURE. "hold", "cap" or "fire" for the no-input watchdog.
+
+    "cap" means the caller still reads as voiced but the budget is spent --
+    fire, and say so loudly, because a line that caps repeatedly has a noise
+    floor problem and no amount of waiting will fix it.
+    """
+    if not voiced_since_prompt:
+        return "fire"
+    if not voice_gap < _VOICE_HOLD_GAP_S:
+        # Includes inf and NaN -- written as `not <` so an unusable reading
+        # falls through to firing rather than holding on a comparison that
+        # silently returns False the other way round.
+        return "fire"
+    if held_total >= _VOICE_HOLD_CAP_S:
+        return "cap"
+    return "hold"
+
+
 # Clock hours as SPOKEN vs as TRANSCRIBED. The offer is generated text and
 # spells the hour ("ten in the morning"); AssemblyAI hands back the caller's
 # echo of it as a numeral ("the 10 in the morning"). Folding both onto one
@@ -4964,6 +5034,10 @@ class SilenceHandler:
 
         logger.info("[ms_watchdog] WATCHDOG_START q_gen=%d wait=%.1fs", q_gen, _wait)
         self._reask_completed = False  # new q_gen — safety net may fire if needed
+        # B-133: cumulative voice-hold budget, per question. Reset here and
+        # nowhere else -- a budget that reset inside the loop would never be
+        # spent and the hold would be unbounded.
+        _voice_hold_total = 0.0
 
         while True:
             # ── Phase 1: Roll to deadline ─────────────────────────────────
@@ -5186,6 +5260,48 @@ class SilenceHandler:
                     except asyncio.CancelledError:
                         return
                     continue
+
+            # ── B-133: voice heard, nothing transcribed yet ───────────────
+            # LAST guard in Phase 3, deliberately: every STT-driven hold
+            # above has already declined, so this is the only remaining
+            # question -- is the caller speaking RIGHT NOW with nothing
+            # through the recogniser? See _voice_hold_verdict for why this
+            # is bounded and why the bound is the safety argument.
+            if self._audio_probe is not None:
+                try:
+                    _, _vg_hold, _vsp_hold = self._audio_probe()
+                except Exception:
+                    # A probe that cannot answer must not be able to silence
+                    # the watchdog.
+                    _vg_hold, _vsp_hold = float('inf'), False
+                _verdict = _voice_hold_verdict(
+                    _vsp_hold, _vg_hold, _voice_hold_total
+                )
+                if _verdict == 'hold':
+                    _voice_hold_total += _VOICE_HOLD_STEP_S
+                    logger.info(
+                        "[ms_watchdog] WATCHDOG_VOICE_HOLD q_gen=%d "
+                        "voice_gap=%.2fs held=%.2fs/%.2fs — caller is audible, "
+                        "STT has not reported it yet",
+                        q_gen, _vg_hold, _voice_hold_total, _VOICE_HOLD_CAP_S,
+                    )
+                    try:
+                        await asyncio.sleep(_VOICE_HOLD_STEP_S)
+                        await asyncio.sleep(0)
+                    except asyncio.CancelledError:
+                        logger.info("[ms_watchdog] WATCHDOG_CANCEL q_gen=%d", q_gen)
+                        return
+                    continue
+                if _verdict == 'cap':
+                    # The counter this fix ships with. Repeated caps mean a
+                    # noisy line, not a slow caller -- and then the noise
+                    # floor is the defect, not the timing.
+                    logger.warning(
+                        "[ms_watchdog] WATCHDOG_VOICE_HOLD_CAP q_gen=%d — held "
+                        "%.2fs and the line is STILL voiced with no transcript; "
+                        "firing anyway",
+                        q_gen, _voice_hold_total,
+                    )
 
             # ── Phase 4: Fire ─────────────────────────────────────────────
             self._no_input_reask_count += 1
