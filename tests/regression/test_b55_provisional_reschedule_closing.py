@@ -222,7 +222,21 @@ UNCHANGED_CLINIC_PROMPTS = {
     # recomputing all four, not assumed. vital_edge ships no
     # condition_knowledge, so the block does not render for it at all and it
     # never carried the pressure; it stays deliberately unpinned.
-    "jv_v1": "d1c15e3d94b71986",
+    # Re-pinned 2026-09-03 (2nd time today), d1c15e3d94b71986 ->
+    # 45365575cf0a7969. BOOKING STEPS 5 gained the missing HALF of a rule it
+    # already carried. It forbade over-promising ('never imply more times
+    # exist unless the data holds them') and said nothing about the opposite
+    # error. CA91020004 (2 Sep): twelve Monday times in the tool result, two
+    # read out, caller told 'the slots I have that day are eight in the
+    # morning or ten past five'. That asymmetry was OPEN_DEFECTS §2.2.
+    # Not a change to what is SPOKEN: B-99 still suppresses the more-times
+    # tail on multi_day, and the readout gains no words -- deliberate,
+    # against the 17.9s readout in the verbosity row. Confined to
+    # clinic_template_prompt.py, so jv_v1 moves and demo / theorem /
+    # theorem_v3 are byte-identical, recomputed not assumed. vital_edge gets
+    # the rule too (every clinic reading out slots can make the claim) and
+    # stays deliberately unpinned.
+    "jv_v1": "45365575cf0a7969",
     "theorem": "8565be9a48a7a9aa",
     # Re-pinned 2026-08-25: 'Children under fifteen not seen' -> 'Children
     # under seven not seen'. Mark's minimum age is 7 (owner-confirmed

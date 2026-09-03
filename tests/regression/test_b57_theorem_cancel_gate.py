@@ -392,7 +392,22 @@ UNMOVED_PROMPTS = {
     # recomputing all four, not assumed. vital_edge ships no
     # condition_knowledge, so the block does not render for it at all and it
     # never carried the pressure; it stays deliberately unpinned.
-    "jv_v1": "d1c15e3d94b71986",
+    # Re-pinned 2026-09-03 (2nd time today), d1c15e3d94b71986 ->
+    # 45365575cf0a7969. BOOKING STEPS 5 gained the missing HALF of a rule it
+    # already carried. It forbade over-promising ('never imply more times
+    # exist unless the data holds them') and said nothing about the opposite
+    # error. CA91020004 (2 Sep): twelve Monday times in the tool result, two
+    # read out, caller told 'the slots I have that day are eight in the
+    # morning or ten past five'. That asymmetry was OPEN_DEFECTS §2.2.
+    # Not a change to what is SPOKEN: B-99 still suppresses the more-times
+    # tail on multi_day, and the readout gains no words -- deliberate,
+    # against the 17.9s readout in the verbosity row. Confined to
+    # clinic_template_prompt.py, so jv_v1 moves and demo / theorem /
+    # theorem_v3 are byte-identical, recomputed not assumed. vital_edge gets
+    # the rule too -- every clinic that reads out slots can make the claim --
+    # and THIS table pins vital_edge, unlike the b55 one, so its hash moves
+    # here and is re-pinned below.
+    "jv_v1": "45365575cf0a7969",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -472,7 +487,13 @@ UNMOVED_PROMPTS = {
     # massage services carry a 60/90 choice, so before this the length question
     # could only ever be forced by the tool-time gate, i.e. after the caller had
     # already answered a timing question.
-    "vital_edge": "f92b8c5f07d18182",
+    # Re-pinned 2026-09-03: f92b8c5f07d18182 -> 9ad7cf7ce2629f70, the same
+    # BOOKING STEPS 5 completeness rule as jv_v1 above. vital_edge did NOT
+    # move for the CONDITION FLUENCY edit earlier today -- it ships no
+    # condition_knowledge, so that block never renders for it -- and it
+    # moves for this one because the completeness rule is in the booking
+    # spine every template clinic gets.
+    "vital_edge": "9ad7cf7ce2629f70",
 }
 
 
