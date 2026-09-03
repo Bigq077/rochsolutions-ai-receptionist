@@ -7359,7 +7359,24 @@ def _may_suppress_pure_dupe(
 #: A head that was itself an apology. Read against what the caller HEARD, and
 #: it is the gate on the stripper below: no apology is removed from the model's
 #: reply unless the caller has already had one this turn.
-_APOLOGY_HEAD_RE = re.compile(r"^\s*(?:i\s*'?\s*m\s+|so\s+)?sorry\b", re.IGNORECASE)
+_APOLOGY_HEAD_RE = re.compile(
+    # A leading interjection is part of the head, not a different head.
+    # `INTENT_HEADS[Intent.SYMPTOM]` holds TWO wordings -- "Sorry to hear
+    # that -" and "Oh, sorry to hear that -" -- and the first version of this
+    # pattern matched only the first. The live call at 2026-09-03 10:11:51 drew
+    # the OTHER one, so the head was not recognised as an apology, the strip
+    # below never ran, and the caller heard "Oh, sorry to hear that -" followed
+    # two seconds later by "I'm sorry to hear that - ankle pain can really...".
+    #
+    # Matching the one wording that happened to be in last night's log, instead
+    # of the pool it is drawn from, is the mistake this codebase keeps
+    # recording. A test now asserts every entry in that pool against this
+    # pattern, so a third wording fails loudly rather than silently disarming
+    # the strip.
+    r"^\s*(?:(?:oh|ah|right|well|okay|ok)\b[\s,!]*)?"
+    r"(?:i\s*'?\s*m\s+|i\s+am\s+|so\s+)?sorry\b",
+    re.IGNORECASE,
+)
 
 #: The same apology at the START of the model's reply, in the shapes it has
 #: actually arrived in. Trailing punctuation goes with it so the payload does

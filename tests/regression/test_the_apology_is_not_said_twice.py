@@ -109,3 +109,46 @@ def test_a_reply_that_is_nothing_but_the_apology_keeps_the_old_fail_safe():
 def test_no_head_means_no_change():
     reply = "I'm sorry to hear that — a sore ankle can really get in the way."
     assert join_after_head(reply, "") == reply
+
+
+# ── The head POOL is the source of truth, not last night's log ──────────────
+
+def test_every_symptom_head_in_the_pool_is_recognised_as_an_apology():
+    """The bug this test exists for, found on a live call one push later.
+
+    `INTENT_HEADS[Intent.SYMPTOM]` holds two wordings. The first version of
+    `_APOLOGY_HEAD_RE` matched "Sorry to hear that —" and not "Oh, sorry to
+    hear that —", because the former was the one in the previous night's logs.
+    On 2026-09-03 10:11:51 the pool returned the other one, the head was not
+    recognised as an apology, the strip never ran, and the caller heard:
+
+        10:11:51  head:  'Oh, sorry to hear that —'
+        10:11:53  model: "I'm sorry to hear that — ankle pain can really…"
+
+    Matching the wording that happened to be observed, rather than the pool it
+    is drawn from, is the recurring mistake in this codebase. Reading the pool
+    here means a third wording fails this test instead of silently disarming
+    the strip on a live call.
+    """
+    from app.hold_speech import INTENT_HEADS, Intent
+    from app.media_streams.llm_stream import _APOLOGY_HEAD_RE
+
+    pool = INTENT_HEADS[Intent.SYMPTOM]
+    assert pool, "the SYMPTOM head pool is empty"
+    for head in pool:
+        assert _APOLOGY_HEAD_RE.match(head), (
+            f"{head!r} is a SYMPTOM head but is not recognised as an apology, "
+            f"so the duplicate-apology strip will not run behind it"
+        )
+
+
+def test_the_strip_runs_behind_every_symptom_head():
+    """End to end, for each pooled wording, against the live model reply."""
+    from app.hold_speech import INTENT_HEADS, Intent
+
+    reply = "I'm sorry to hear that — ankle pain can really stop you in your tracks."
+    for head in INTENT_HEADS[Intent.SYMPTOM]:
+        got = join_after_head(reply, head)
+        assert "sorry" not in got.lower(), (
+            f"behind {head!r} the duplicate survived: {got!r}"
+        )
