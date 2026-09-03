@@ -114,12 +114,58 @@ def test_the_other_hour_is_not_the_one_that_resolves():
     )
 
 
-def test_the_day_is_still_required_on_its_own():
-    """Pinned so the scope of this fix is not overstated. A bare time with no
-    day still declines -- that is step 2 of the resolver and D1 does not
-    change it. If the live call said only "20 past 12", the fold below is
-    necessary but not sufficient and the day half is a separate defect."""
-    assert slot_accepted_by_caller(_session(), "20 past 12") is None
+def test_a_bare_time_resolves_when_the_offer_holds_ONE_day():
+    """The separate defect this test used to mark as unfixed. Now fixed.
+
+    Its previous form asserted `"20 past 12"` declines, and said why: "the
+    fold below is necessary but not sufficient and THE DAY HALF IS A SEPARATE
+    DEFECT". That defect was closed on 2026-09-03, so this is the same
+    assertion pointed at the answer rather than at the gap -- not a fixture
+    rewritten to match new behaviour.
+
+    This offer holds ONE day, so a caller naming only a time has left nothing
+    ambiguous. What it cost while open, live 13:07:24 that day:
+
+        13:07:24  'um 10 past 5 in the evening works'
+        13:07:25  situational head (time_band):
+                  "Let me see what I've got in the evening —"
+        13:07:27  "So that's Monday the 7th of September at ten past five"
+
+    A promised lookup that never happened, reached by the most ordinary answer
+    a caller can give after Susie narrows to a day and re-reads its times.
+    """
+    assert slot_accepted_by_caller(_session(), "20 past 12") == f"{DATE}T12:20:00"
+
+
+def test_a_bare_time_still_declines_when_TWO_days_are_on_offer():
+    """The invariant the old test was really protecting, kept intact.
+
+    The resolver may infer the day only when there is nothing to infer. Two
+    days on offer, each holding a twenty-past-twelve, and a caller saying "20
+    past 12" has genuinely not said which -- so it declines, as step 2 has
+    always required. Guessing here would pin a slot on the wrong DAY, which is
+    the failure the whole deny-by-default ladder exists to prevent.
+    """
+    session = _session()
+    other = "2026-09-07"
+    session["available_days"] = list(session["available_days"]) + [{
+        "date": other,
+        "day_label": "Monday 7th September",
+        "slot_times": ["12:20"],
+        "slot_times_spoken": ["twenty past twelve in the afternoon"],
+        "times_not_shown": 0,
+        "slots": [{"start": f"{other}T12:20:00", "end": ""}],
+    }]
+    session["last_offered_slots"] = list(session["last_offered_slots"]) + [
+        {"start": f"{other}T12:20:00", "end": ""}
+    ]
+    record_spoken_slots(session, [
+        {"start": f"{DATE}T12:20:00", "spoken": "twenty past twelve in the afternoon",
+         "date": DATE},
+        {"start": f"{other}T12:20:00", "spoken": "twenty past twelve in the afternoon",
+         "date": other},
+    ])
+    assert slot_accepted_by_caller(session, "20 past 12") is None
 
 
 def test_b91s_table_alone_would_not_have_fixed_it():

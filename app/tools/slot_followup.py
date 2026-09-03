@@ -2218,6 +2218,37 @@ def slot_accepted_by_caller(
         # against the calendar, so it is not the date parsing Tier 2 needs.
         date = _offered_day_by_weekday(offered, text)
     if not date:
+        # THE OFFER NAMES ONE DAY, so the caller naming only a time has not
+        # left anything ambiguous -- there is nothing for the day to be.
+        #
+        # This is the shape after Susie narrows: "Monday it is —", then
+        # "Monday the 7th — I've got eight in the morning or ten past five in
+        # the evening. Which suits?". The caller answers with a TIME, because
+        # they have already said the day and she has just repeated it.
+        #
+        # Live 2026-09-03 13:07:24 on the demo line:
+        #
+        #   13:07:24  'um 10 past 5 in the evening works'
+        #   13:07:25  situational head (time_band):
+        #             "Let me see what I've got in the evening —"
+        #   13:07:27  "So that's Monday the 7th of September at ten past five"
+        #
+        # She promised a lookup and then did not do one -- she confirmed. The
+        # pick resolved to nothing, so `_hs_picking` stayed false and the
+        # TIME_BAND diary head fired. That is the promised-work defect, and it
+        # is reached by the most ordinary answer a caller can give.
+        #
+        # Deny-by-default is preserved: this only fires when the offer holds
+        # exactly ONE date, so it cannot guess between days. A multi_day offer
+        # still needs the day named, which is what the three steps above are
+        # for.
+        _dates = {
+            str((o or {}).get("start") or "")[:10]
+            for o in offered if isinstance(o, dict)
+        } - {""}
+        if len(_dates) == 1:
+            date = next(iter(_dates))
+    if not date:
         return None
 
     # -- 3. which time, among what was SPOKEN -----------------------------
