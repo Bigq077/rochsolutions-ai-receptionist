@@ -375,7 +375,24 @@ UNMOVED_PROMPTS = {
     # demo, theorem and theorem_v3 render byte-identical, and Vital Edge -
     # which opts into a reason question but ships no condition library - is
     # untouched in its static prompt too.
-    "jv_v1": "35b2ba94f4b37c33",
+    # Re-pinned 2026-09-03, 35b2ba94f4b37c33 -> d1c15e3d94b71986. CONDITION
+    # FLUENCY's THE STANDARD gained a sentence-LENGTH counterweight, placed
+    # with the instruction that creates the length instead of only in the FAQ
+    # block. CA91020004 (2 Sep 2026): a 198-character, ~35-word SINGLE
+    # sentence about a rolled ankle ran ~12s, the caller talked over it, and
+    # the barge-in recovery then asked a question he had never reached
+    # (B-132). Read at the time as non-adherence; it was not. The rules
+    # governing that turn cap sentence COUNT and one 35-word sentence
+    # satisfies them, while the ~20-word SENTENCE-LENGTH rule was real but
+    # scoped to _render_faq -- and a condition acknowledgement in the booking
+    # flow is not an FAQ answer. So this is a SCOPING fix, not a re-wording,
+    # which is why tightening the FAQ prose further would have bought
+    # nothing. Confined to clinic_template_prompt.py, so jv_v1 moves and
+    # demo / theorem / theorem_v3 are byte-identical -- verified by
+    # recomputing all four, not assumed. vital_edge ships no
+    # condition_knowledge, so the block does not render for it at all and it
+    # never carried the pressure; it stays deliberately unpinned.
+    "jv_v1": "d1c15e3d94b71986",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL

@@ -452,6 +452,26 @@ def _render_condition_fluency(clinic: Dict[str, Any], tk: Dict[str, str]) -> str
     if ck.get("how_to_use"):
         out.append(ck["how_to_use"])
     out.append("")
+    # The length counterweight lives HERE, with the instruction that creates
+    # the pressure, and not only in the FAQ block.
+    #
+    # CA91020004, 2 Sep 2026: a 198-character, ~35-word SINGLE sentence about
+    # a rolled ankle ran ~12s, the caller talked over it, and the barge-in
+    # recovery then asked a question he had never reached (B-132).
+    #
+    # It was read as non-adherence. It was not. The rules governing that turn
+    # -- "ONE short turn: one or two sentences" (BOOKING STEPS 1, condition-led
+    # exception) and "one or two sentences of SPECIFIC understanding" (step 2)
+    # -- cap sentence COUNT. One 35-word sentence satisfies both. The ~20-word
+    # SENTENCE-LENGTH rule is real but sits inside _render_faq, under the
+    # heading "FAQ", and a condition acknowledgement in the booking flow is
+    # not an FAQ answer. The model obeyed every rule that reached it.
+    #
+    # _render_faq itself already records that count alone is not enough --
+    # "one live answer was only three sentences and still ran twenty seconds,
+    # on a single 138-character middle clause". That is this defect, one
+    # block over, which is the argument for restating the rule rather than
+    # tightening the wording of a rule that was never in scope.
     out.append(
         "THE STANDARD: a caller who names a condition must hear, in your first "
         "reply, that you genuinely know that condition — one or two of its "
@@ -459,6 +479,21 @@ def _render_condition_fluency(clinic: Dict[str, Any], tk: Dict[str, str]) -> str
         "specifics (their sport, job, duration, what it's stopping them doing). "
         "Banned as a complete answer: 'that's very common', 'we see that a "
         "lot', or any reply that would fit every condition equally."
+    )
+    out.append("")
+    out.append(
+        "AND IT IS SHORT. One or two sentences, and NO sentence longer than "
+        "about twenty words — if one runs past that, split it or cut it. "
+        "Depth here means being SPECIFIC, never being longer: one hallmark "
+        "feature named in a dozen words shows more understanding than "
+        "thirty-five words of general reassurance, and it is the SPECIFICS "
+        "that are doing the work, so a long sentence spends the caller's "
+        "patience without adding any. This really happened, twice: a single "
+        "138-character clause made a three-sentence answer run twenty "
+        "seconds, and a single 198-character sentence about a rolled ankle "
+        "ran about twelve — the caller talked over it both times, and on the "
+        "second call never heard the answer to his own question at all. "
+        "Say the specific thing, then stop and ask your question."
     )
     out.append("")
     out.append("CONDITION LIBRARY (hallmarks → pathway → best-fit service):")
