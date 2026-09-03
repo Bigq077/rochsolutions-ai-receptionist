@@ -2004,6 +2004,90 @@ def _band_named(text: str) -> "str | None":
     return hits.pop() if len(hits) == 1 else None
 
 
+#: A clock hour stated with a meridiem: "8pm", "8 p.m.", "10 am".
+_MERIDIEM_RE = re.compile(r"\b(\d{1,2})\s*([ap])\.?\s?m\.?\b", re.IGNORECASE)
+
+#: A bare clock number the caller could only mean as a TIME. Ordinals are
+#: excluded by the word boundary itself -- "7th" has a word character after
+#: the 7 -- and a digit introduced as an option is excluded explicitly,
+#: because "number 2" is a position and positions resolve before any of this.
+_BARE_CLOCK_RE = re.compile(r"(?<!\bnumber )(?<!\boption )\b(\d{1,2})\b")
+
+
+def _meridiem_hour_named(text: str) -> "int | None":
+    """The 24-hour hour named as ``<digit> am/pm``, or None for 0 or 2+.
+
+    ``_band_named`` cannot answer this and must not be taught to. Its
+    vocabulary is morning/afternoon/evening and "pm" spans two of them, so
+    folding the meridiem into it would either name a band the caller did not
+    say or make the band check ambiguous. This is narrower on purpose: it
+    decides only which of the 24 hours the caller meant, and only when they
+    said so outright.
+
+    Two readings decline, which is the standing rule in this module for two
+    of anything.
+    """
+    found = set()
+    for m in _MERIDIEM_RE.finditer(text or ""):
+        h = int(m.group(1))
+        if not 1 <= h <= 12:
+            continue
+        found.add(h % 12 + (12 if m.group(2).lower() == "p" else 0))
+    return found.pop() if len(found) == 1 else None
+
+
+#: "one" as a PRONOUN, not as one o'clock. The clock fold turns every spelled
+#: number into a digit, so "the morning one" arrives here as "morning 1" and
+#: would otherwise read as a caller naming a time. Only the pronoun positions
+#: are masked: "one in the afternoon" is still a time, and so is "at one".
+_PRONOUN_ONE_RE = re.compile(
+    r"\b(?:the|that|this|which|first|last|other|either"
+    r"|morning|afternoon|evening)\s+one\b"
+    r"|\bone\s+(?=(?:works|suits|please|is|will|sounds|on|for)\b)",
+    re.IGNORECASE,
+)
+
+
+def _clock_time_named(text: str) -> bool:
+    """Did the caller name a clock time at all? Folded, so words count.
+
+    "ten past five" folds to "10 past 5" and answers True; "the morning one"
+    answers False. Used to decide whether the band fallback is allowed to
+    choose FOR the caller -- see ``slot_accepted_by_caller``.
+    """
+    return _BARE_CLOCK_RE.search(
+        _time_norm(_PRONOUN_ONE_RE.sub(" ", text or ""))
+    ) is not None
+
+
+def _time_contradicts(text: str, start: Any) -> bool:
+    """Does ``text`` name a time that ``start`` is not? PURE, and deny-biased.
+
+    Two independent readings, either of which convicts:
+
+      * the BAND -- "the last day in the afternoon" against an 09:10 slot.
+        This half already existed inline on the single-slot branch; it is
+        lifted here so all three exits ask the same question.
+      * the MERIDIEM -- "monday at 8 pm" against 08:00, which the band check
+        cannot see because "pm" is not a band word. That is the substitution
+        this guard was written for: the caller said eight in the evening, the
+        resolver pinned eight in the morning, and every verbal read-back
+        afterwards is generated FROM the pin, so it sounds correct all the way
+        to the calendar.
+    """
+    band = _band_named(text)
+    if band and part_of_day(start) != band:
+        return True
+    hour = _meridiem_hour_named(text)
+    if hour is not None:
+        try:
+            if int(str(start)[11:13]) != hour:
+                return True
+        except (TypeError, ValueError):
+            return True
+    return False
+
+
 def _position_named(text: str, n: int) -> "int | None":
     """The 1-based list position `text` names, or None when it is not exactly one.
 
@@ -2158,8 +2242,7 @@ def slot_accepted_by_caller(
         # put a slot the caller never chose into the next readout and read
         # it back as their appointment -- the one outcome this resolver is
         # forbidden from producing.
-        _band = _band_named(text)
-        if _band and part_of_day(heard[0].get("start")) != _band:
+        if _time_contradicts(text, heard[0].get("start")):
             return None
         return heard[0].get("start") or None
 
@@ -2175,10 +2258,30 @@ def slot_accepted_by_caller(
         ):
             hits.append(s)
     if len(hits) == 1:
+        # The bare form is the hour with its band stripped off, so "eight in
+        # the morning" is matched by the digit 8 alone. "monday at 8 pm" then
+        # matches an 08:00 slot on nothing but the digit, and the meridiem the
+        # caller actually said is discarded. Live 2026-09-03 00:46:26: pinned
+        # 08:00 for "8 pm", and it survived only because the model happened to
+        # notice Monday has no evening eight and re-asked.
+        if _time_contradicts(text, hits[0].get("start")):
+            return None
         return hits[0].get("start") or None
 
     band = _band_named(text)
-    if band:
+    if band and not _clock_time_named(text):
+        # The band picks FOR the caller, so it may only do so when they left
+        # the choice open. A caller who named an explicit clock time that
+        # matched nothing has not left it open -- they asked for something the
+        # offer does not contain, and the honest answer is to decline and let
+        # the turn re-ask.
+        #
+        # Live 2026-09-03 01:29:14, northgate: Monday was offered 08:00 and
+        # 17:10; the caller said "monday the 7th at 10 in the morning"; no
+        # label matched, and this fallback returned 08:00 because it was the
+        # only MORNING slot. The read-back guard caught it downstream, the
+        # caller heard a question they had already answered, and the call was
+        # abandoned with a judge score of 2.
         in_band = [s for s in heard if part_of_day(s.get("start")) == band]
         if len(in_band) == 1:
             return in_band[0].get("start") or None
