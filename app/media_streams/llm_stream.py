@@ -7356,6 +7356,39 @@ def _may_suppress_pure_dupe(
     return bool(session.get("_hold_head_spoken"))
 
 
+#: A head that was itself an apology. Read against what the caller HEARD, and
+#: it is the gate on the stripper below: no apology is removed from the model's
+#: reply unless the caller has already had one this turn.
+_APOLOGY_HEAD_RE = re.compile(r"^\s*(?:i\s*'?\s*m\s+|so\s+)?sorry\b", re.IGNORECASE)
+
+#: The same apology at the START of the model's reply, in the shapes it has
+#: actually arrived in. Trailing punctuation goes with it so the payload does
+#: not begin orphaned.
+#:
+#: TWO branches, and the difference between them is the whole precision of this:
+#:
+#:   1. "...sorry TO HEAR that" is sympathy, and may end on any punctuation.
+#:   2. A bare "sorry" is only sympathy when it ends on a DASH or an ellipsis.
+#:      A bare "sorry" followed by a COMMA is almost always an apology for our
+#:      own failure -- "I'm sorry, I didn't catch that", "Sorry, could you say
+#:      that again?" -- and removing it deletes the apology the caller is owed
+#:      while leaving the request that followed it.
+#:
+#: Anchored to the start on purpose. A "sorry" later in a sentence is doing
+#: different work again, and this must never reach into the middle of a reply.
+_APOLOGY_OPENER_RE = re.compile(
+    r"^\s*(?:i\s*'?\s*m\s+|i\s+am\s+)?(?:so\s+|really\s+|very\s+)?"
+    r"(?:sorry|apologies)"
+    r"(?:"
+    r"\s+to\s+hear(?:\s+(?:that|this|it|about\s+(?:that|this|it)))?"
+    r"\s*(?:[-–—]|…|\.{1,3}|,)"
+    r"|"
+    r"\s*(?:[-–—]|…)"
+    r")\s*",
+    re.IGNORECASE,
+)
+
+
 def join_after_head(
     chunk: str, head: str, *, suppress_pure_duplicate: bool = False
 ) -> str:
@@ -7389,6 +7422,38 @@ def join_after_head(
         return chunk
     if not head:
         return chunk
+
+    # A repeated APOLOGY. `_INTERIM_DUPE_RE` covers the lookup openers -- "Let
+    # me see", "Let me check" -- because those were the 95 stored duplicates it
+    # was built from. The symptom head is a different family and was not in it:
+    #
+    #   01:56:05  head:  'Sorry to hear that —'
+    #   01:56:08  model: "I'm sorry to hear that — shoulder pain that's really…"
+    #   02:07:04  head:  'Sorry to hear that —'
+    #   02:07:06  model: "I'm sorry to hear that — a sore ankle can really…"
+    #
+    # Two of the three symptom calls on 2026-09-03. It reads as a stutter.
+    #
+    # CONDITIONAL ON THE HEAD, which is the whole safety of it. Stripping an
+    # apology whenever one appears would delete the FIRST apology on a turn
+    # whose head was a lookup phrase -- a caller telling us what is wrong with
+    # them would get "Let me see what Monday looks like — a sore ankle can
+    # really get in the way", with the sympathy silently removed. So this only
+    # fires when the caller has ALREADY heard an apology, from this head.
+    #
+    # A chunk that is nothing BUT the apology falls through to the
+    # `if not body` branch below, which already owns that decision.
+    if _APOLOGY_HEAD_RE.match(head):
+        _deduped = _APOLOGY_OPENER_RE.sub("", chunk, count=1).lstrip()
+        if _deduped != chunk.lstrip():
+            if _deduped:
+                chunk = _deduped[0].upper() + _deduped[1:]
+            else:
+                # The chunk was NOTHING BUT the apology. Defer to the branch
+                # below rather than deciding again here: `suppress_pure_duplicate`
+                # already owns "is this caller allowed to end up with silence",
+                # and a second answer to that question is how B-121 happened.
+                return "" if suppress_pure_duplicate else chunk
 
     body = _strip_interim_opener(chunk).lstrip()
     if not body:
