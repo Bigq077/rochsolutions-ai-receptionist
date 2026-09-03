@@ -241,6 +241,7 @@ class CallLogger:
             "tone":               (s.get("_tone_state") or {}).get("tone"),
             "screening":          self._screening_summary(),
             "latency":            self._latency_block(),
+            "slot_offers":        self._slot_offers_block(),
         }
 
     def _screening_summary(self) -> Dict[str, Any]:
@@ -290,6 +291,25 @@ class CallLogger:
             "truncated":       list(truncated),
             "safety_escalation": escalated,
         }
+
+    def _slot_offers_block(self):
+        """Every availability lookup this call made, with the offer built
+        from it. See app/obs/slot_offers.py for what is stored and why.
+
+        Read straight off the session rather than drained, so unlike
+        `_latency_block` this needs no cache: `_build_record` runs three times
+        per teardown and all three must see the same list.
+
+        None when the call never looked up availability, so the column stays
+        NULL rather than filling with empty structures.
+
+        Never raises. Teardown path.
+        """
+        try:
+            from app.obs.slot_offers import offers_block
+            return offers_block(self._session_ref)
+        except Exception:  # pragma: no cover - defensive; teardown path
+            return None
 
     def _latency_block(self) -> Optional[Dict[str, Any]]:
         """Per-turn latency for this call: {"summary": {...}, "turns": [...]}.

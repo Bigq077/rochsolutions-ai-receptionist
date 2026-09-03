@@ -6747,6 +6747,26 @@ class LLMStream:
                         _det_mode, len(_offer.chunks), len(_offer.slots),
                         [s.get("start") for s in _offer.slots],
                     )
+                    # The half of the record obs has never held. `obs_turns`
+                    # stores SPEECH, so a payload-in / sentence-out replay of
+                    # this function is impossible from the corpus — which is
+                    # what blocks the harness that would have caught the three
+                    # defects found by phone call in the week to 2026-09-03.
+                    #
+                    # Captured HERE, at the one point both modes converge, so
+                    # single_day and multi_day cannot drift apart in what they
+                    # record. Never raises; a missing row is the worst case.
+                    try:
+                        from app.obs.slot_offers import record_offer as _rec_offer
+
+                        _rec_offer(
+                            session,
+                            payload_days=result.get("available_days"),
+                            offer=_offer,
+                            presented_days=result.get("presented_days"),
+                        )
+                    except Exception:  # pragma: no cover - defensive
+                        pass
                 # WHICH day this readout is about. Needed because a clinic on a
                 # fixed evening rota has the same spoken labels on every day of
                 # the week, so resolving a label against the whole sweep is

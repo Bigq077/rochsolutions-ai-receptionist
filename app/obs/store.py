@@ -151,6 +151,10 @@ _ADDED_COLUMNS = {
     # nothing else, so no historical latency can be back-filled: every row before
     # the migration is NULL by absence, not by measurement.
     "latency": "JSON",
+    # 2026-09-03 -- the availability payload and the offer built from it. The
+    # replay harness needs both and obs stored neither, so like `latency` this
+    # is NULL on every earlier row by absence and cannot be back-filled.
+    "slot_offers": "JSON",
     "outcome": "VARCHAR(32)",
     "quality_score": "INTEGER",
     "intent_resolved": "BOOLEAN",
@@ -217,6 +221,7 @@ def _row_from_record(record: Dict[str, Any], turns: List[Dict[str, str]]) -> Cal
         collected=record.get("collected"),
         screening=record.get("screening") or None,
         latency=record.get("latency") or None,
+        slot_offers=record.get("slot_offers") or None,
         transcript=list(turns or []),
         raw=record,
     )

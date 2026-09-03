@@ -102,6 +102,17 @@ class Call(Base):
     # `summary` is per-call and must not be averaged; see latency_timing.summarise.
     latency: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
+    # Every availability lookup this call made, paired with the offer built
+    # from it: [{seq, mode, payload, presented, offer}]. The half of the
+    # record `transcript` cannot hold -- obs stores SPEECH, so a payload-in /
+    # sentence-out replay of build_slot_offer was impossible from this table,
+    # which is what blocked the harness. See app/obs/slot_offers.py.
+    #
+    # FORWARD-ONLY. NULL on every call before 2026-09-03 by absence, not by
+    # measurement, and no back-fill exists: the payloads were never written
+    # anywhere, and the Render log truncates them mid-array.
+    slot_offers: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
     # The transcript — ordered [{"role","text"}] turns. The input to every
     # downstream layer (judge, regression). Never dropped.
     transcript: Mapped[list | None] = mapped_column(JSON, nullable=True)
@@ -155,6 +166,7 @@ class Call(Base):
             "collected": self.collected,
             "screening": self.screening,
             "latency": self.latency,
+            "slot_offers": self.slot_offers,
             "transcript": self.transcript or [],
             "created_at": self.created_at.isoformat() if self.created_at else None,
             # Phase 3 judge fields
