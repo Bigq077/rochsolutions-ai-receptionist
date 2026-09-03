@@ -59,9 +59,32 @@ else:
 # CREATE APP
 # ============================================================================
 
+def _service_name() -> str:
+    """What to call this service in logs and on /.
+
+    ONE branch serves three clinics since 2026-09-02 and they are told apart by
+    their Render service's env vars, so the banner said "Theorem Health AI
+    Receptionist" while answering calls for Vital Edge and Joint Venture. It
+    was wrong for two clinics out of three and read as a mis-deploy to anyone
+    who opened the log or the root endpoint expecting their own name.
+
+    CLINIC_NAME is per-service and is what the greeting builder already reads
+    (`greeting_builder.py`). Unset is not an error -- the demo service leaves it
+    alone -- so it falls back to the product name rather than to a clinic's.
+
+    Never raises: this runs inside the startup banner and a service that will
+    not start is worse than one that is vaguely named.
+    """
+    try:
+        name = (os.getenv("CLINIC_NAME") or "").strip()
+    except Exception:  # pragma: no cover - defensive; startup path
+        name = ""
+    return f"Susie AI Receptionist ({name})" if name else "Susie AI Receptionist"
+
+
 app = FastAPI(
-    title="Theorem Health AI Receptionist",
-    description="AI-powered phone receptionist for Theorem Health & Wellness",
+    title="Susie AI Receptionist",
+    description="AI-powered phone receptionist. One service = one clinic; which clinic is decided by env vars, not by this string.",
     version="1.0.0",
 )
 
@@ -152,7 +175,7 @@ def root():
     """Root endpoint - confirms service is running."""
     return {
         "status": "ok",
-        "service": "Theorem Health AI Receptionist",
+        "service": _service_name(),
         "docs": "/docs",
         "health": "/health"
     }
@@ -353,7 +376,7 @@ async def startup():
     - Starts reminder worker (only if Redis available and not on Render)
     """
     logger.info("=" * 60)
-    logger.info("🚀 Theorem Health AI Receptionist Starting...")
+    logger.info("🚀 %s Starting...", _service_name())
     logger.info("=" * 60)
     logger.info(f"Environment: {os.getenv('RENDER', 'local')}")
     logger.info(f"Twilio configured: {bool(os.getenv('TWILIO_ACCOUNT_SID'))}")
@@ -578,7 +601,7 @@ def _validate_clinic_config() -> None:
 async def shutdown():
     """Application shutdown tasks — close all async resources cleanly."""
     logger.info("=" * 60)
-    logger.info("👋 Theorem Health AI Receptionist shutting down...")
+    logger.info("👋 %s shutting down...", _service_name())
     logger.info("=" * 60)
 
     # Finish any post-booking notification still in flight (B-84). These run
