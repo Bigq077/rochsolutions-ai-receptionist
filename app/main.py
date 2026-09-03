@@ -15,6 +15,7 @@ from app.routes.avatar import router as avatar_router
 from app.routes.tts_eleven import router as tts_eleven_router
 # Admin route (temporary, for clearing google_tokens)
 from app.routes.admin import router as admin_router
+from app.routes.dev_sms import router as dev_sms_router
 # OpenAI Realtime API WebSocket bridge (active when REALTIME_ENABLED=true)
 from app.routes.realtime import router as realtime_router
 
@@ -270,6 +271,7 @@ app.include_router(google_calendar_router)
 app.include_router(redis_debug_router)
 app.include_router(avatar_router)
 app.include_router(admin_router)   # temporary admin router
+app.include_router(dev_sms_router)  # GET /dev/sms — captured test SMS
 app.include_router(realtime_router)  # OpenAI Realtime WebSocket bridge
 
 # Media Streams pipeline — always registered so Twilio routing works regardless of flag
