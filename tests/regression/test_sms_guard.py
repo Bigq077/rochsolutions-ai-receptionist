@@ -97,3 +97,129 @@ class TestBudget:
         monkeypatch.setenv("SMS_SEGMENT_LIMIT", "1")
         monkeypatch.setenv("SMS_SEGMENT_STRICT", "true")
         assert sg.check_budget("Tuesday at 9am, see you then.", "+447123456789") == 1
+
+
+# ---------------------------------------------------------------------------
+# End to end, through SMSService.send_sms
+# ---------------------------------------------------------------------------
+# NOTE: the `sg` module above is loaded by FILE PATH, so it is a DIFFERENT
+# module object from the `app.notifications.sms_guard` that send_sms imports.
+# Its cache and its inbox are not the ones the wiring uses. These tests must
+# talk to the real module or they assert on the wrong globals — which would
+# pass while proving nothing.
+# NO await ) here. pytest.ini sets asyncio_mode = auto, so an
+# `async def` test is driven by pytest-asyncio's own loop. Calling
+# await ) from a sync test creates AND CLOSES a loop underneath
+# that machinery, and later async tests then fail in ways that depend on
+# collection order while passing in isolation -- which is exactly what it
+# did here, differently on each full-suite run. Match the house style used
+# by test_sms_log_names_the_real_destination.py: async def + await.
+import pytest as _pytest
+
+from app.notifications import sms_guard as real_guard
+from app.notifications.sms import SMSService
+
+TESTER = "+447700900123"     # stands in for the developer's own handset
+CALLER = "+447476952176"     # a patient who rang in
+
+
+class _FakeMessages:
+    def __init__(self):
+        self.calls = []
+
+    def create(self, **kw):
+        self.calls.append(kw)
+        return type("_Sent", (), {
+            "sid": "SMreal000000000000000000000000001",
+            "status": "queued",
+        })()
+
+
+class _FakeClient:
+    def __init__(self):
+        self.messages = _FakeMessages()
+
+
+def _service():
+    """An SMSService with no Twilio behind it.
+
+    Built with object.__new__ so __init__'s credential check and real Client
+    construction are skipped -- the same harness shape the media-streams
+    regression tests use.
+    """
+    s = object.__new__(SMSService)
+    s.account_sid, s.auth_token = "AC" + "0" * 32, "x"
+    s.from_number = "+447380841468"
+    s.client = _FakeClient()
+    return s
+
+
+@_pytest.fixture(autouse=True)
+def _guard_state(monkeypatch):
+    real_guard.reset_cache()
+    real_guard.clear_inbox()
+    monkeypatch.setenv("SMS_ENABLED", "true")
+    monkeypatch.setenv("SMS_TEST_NUMBERS", TESTER)
+    monkeypatch.delenv("SMS_SEGMENT_STRICT", raising=False)
+    monkeypatch.delenv("EVAL_STAFF_SMS_TO", raising=False)
+    yield
+    real_guard.reset_cache()
+    real_guard.clear_inbox()
+
+
+class TestEndToEnd:
+    async def test_the_test_handset_never_reaches_twilio(self):
+        """The whole point: 83% of a month's spend went to one handset."""
+        svc = _service()
+        sid = await svc.send_sms(TESTER, "Your appointment is confirmed.")
+
+        assert sid, "a SID must come back — call sites read None as FAILURE"
+        assert sid.startswith("SMfake")
+        assert svc.client.messages.calls == [], "Twilio was billed for a test SMS"
+        assert len(real_guard.inbox()) == 1
+
+    async def test_a_real_number_still_reaches_twilio(self):
+        """The guard must not become a second SMS_ENABLED."""
+        svc = _service()
+        sid = await svc.send_sms(CALLER, "Your appointment is confirmed.")
+
+        assert sid == "SMreal000000000000000000000000001"
+        assert len(svc.client.messages.calls) == 1
+        assert svc.client.messages.calls[0]["to"] == CALLER
+        assert real_guard.inbox() == [], "a real send must not be captured"
+
+    async def test_the_body_that_reaches_twilio_is_gsm7(self):
+        """The sanitiser runs on the real path, not only the fake one — that is
+        the half of the saving that reaches patients."""
+        svc = _service()
+        await svc.send_sms(
+            CALLER,
+            "Hi Quentin 👋 — your appointment is confirmed … see you then!",
+        )
+
+        body = svc.client.messages.calls[0]["body"]
+        assert real_guard.is_gsm7(body), real_guard.offenders(body)
+        assert "—" not in body and "…" not in body and "👋" not in body
+        assert "appointment is confirmed" in body, "meaning was not preserved"
+
+    async def test_sms_enabled_false_still_suppresses_everything(self, monkeypatch):
+        """Unchanged behaviour. The kill switch runs BEFORE the guard, so a
+        suppressed run must not reach Twilio and must not be captured either --
+        capturing would make the inbox claim a message that was never sent."""
+        monkeypatch.setenv("SMS_ENABLED", "false")
+        svc = _service()
+
+        assert await svc.send_sms(CALLER, "Your appointment is confirmed.") is None
+        assert await svc.send_sms(TESTER, "Your appointment is confirmed.") is None
+        assert svc.client.messages.calls == []
+        assert real_guard.inbox() == []
+
+    async def test_an_over_long_message_warns_but_still_sends(self, monkeypatch):
+        """check_budget must not become a blocker on a live service: a fat
+        template is a cost problem, not a reason to drop a patient's text."""
+        monkeypatch.setenv("SMS_SEGMENT_LIMIT", "1")
+        svc = _service()
+        sid = await svc.send_sms(CALLER, "word " * 200)
+
+        assert sid == "SMreal000000000000000000000000001"
+        assert len(svc.client.messages.calls) == 1

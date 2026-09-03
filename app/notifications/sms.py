@@ -217,6 +217,26 @@ class SMSService:
         _requested = to
         to = redirect_staff_sms(to)
 
+        # --- SMS cost guard ------------------------------------------
+        # AFTER redirect_staff_sms: `to` must already be the E.164
+        # destination that will actually be dialled when it is matched
+        # against SMS_TEST_NUMBERS, or the match silently misses.
+        # BEFORE the truncation below: max_length must count the
+        # sanitised text, not the pre-sanitised text.
+        from app.notifications.sms_guard import (
+            to_gsm7, check_budget, is_test_number, record_fake,
+        )
+        message = to_gsm7(message)
+        segments = check_budget(message, to)
+
+        if is_test_number(to):
+            # record_fake returns a SID string, never None. Call sites in
+            # this codebase read a SID as success and None as failure, so
+            # returning None here would make the fake path change the
+            # conversation flow rather than just skip a send.
+            return record_fake(to, self.from_number, message, segments)
+        # ---------------------------------------------------------------
+
         # Truncate message if too long
         if len(message) > max_length:
             logger.warning(f"Message truncated from {len(message)} to {max_length} chars")
