@@ -509,6 +509,44 @@ _SCREEN_Q = _rx(r"\b(?:swollen|warm or red|numbness|tingl\w*|bladder|bowel|"
                 r"saddle|unexplained weight|night pain|fever|calf|"
                 r"pins and needles|give way|cauda|chest pain|breathless)\b")
 
+#: "What is the appointment for?" in every shape it has actually been asked.
+#:
+#: ONE owner. `llm_stream._note_reason_question_asked` used to carry this list
+#: inline and calls it from here now, because two copies of a matcher is two
+#: answers to "was the reason question asked", and this family has already been
+#: wrong twice for matching the literals seen so far rather than the shape:
+#: B-36, and CAea8abdb on 2 Sep where Vital Edge asked "Is there a particular
+#: area or CONCERN you're looking to address?", the caller answered it in full,
+#: and the latch stayed open so the question was asked again a turn later.
+#:
+#: PURE and text-only. The caller-facing decision about whether this clinic
+#: asks a reason at all stays in llm_stream with the clinic config.
+_REASON_Q_PATTERNS = (
+    # "what's the appointment for", "what is it for", "what's it for"
+    r"\bwhat(?:'?s| is)\b[^?]{0,40}\bfor\b[^?]{0,20}\?",
+    # "what's the reason for ...", "is there a particular reason for ..."
+    r"\breason for\b[^?]{0,60}\?",
+    # "what brings you in", "what's brought you to us"
+    r"\bwhat\b[^?]{0,20}\bbrings? you (?:in|to)\b",
+    # The SHAPE, not the wording: "area or reason / concern / issue / problem".
+    r"\barea or (?:reason|concern|issue|problem)\b",
+    r"\blooking to address\b",
+)
+_REASON_Q = tuple(re.compile(p, re.IGNORECASE) for p in _REASON_Q_PATTERNS)
+
+
+def question_asks_the_reason(spoken: str) -> bool:
+    """Did Susie just ask what the appointment is for? PURE, text only.
+
+    Says nothing about whether this clinic SHOULD ask -- that gate lives with
+    the clinic config in `llm_stream._note_reason_question_asked`, which calls
+    this for the text half.
+    """
+    if not spoken or "?" not in spoken:
+        return False
+    return any(rx.search(spoken) for rx in _REASON_Q)
+
+
 #: (intent, trigger, corroborator or None, blocker or None).
 #:
 #: A trigger alone never fires. Deny-by-default throughout: an utterance that
@@ -636,8 +674,33 @@ def classify_intent(
     # Only true disfluencies are stripped. "oh", "no", "yeah", "well" and "so"
     # stay in _BARE_ANSWER's own list because each of them CAN be the whole
     # answer; "um" and "uh" never can.
+    # A body part named in ANSWER to "what's the appointment for?" is a
+    # complaint, whether or not the caller used a word for pain.
+    #
+    # `Intent.SYMPTOM` triggers on `_HURT` and corroborates with `_BODY`, and
+    # the comment above `_HURT` already warns that "injury is often described
+    # with no word for pain at all -- 'done my ankle', 'went over on it', 'it
+    # gave way'... adding more synonyms is the trap, the SHAPE of the matcher
+    # is the bug". Requiring `_HURT` as the TRIGGER is that shape.
+    #
+    # Live 2026-09-03 01:28:16 on the demo line: "um just my left ankle nothing
+    # serious" answered the reason question, matched `_BODY` and nothing in
+    # `_HURT`, and got no head -- then 3.6s of silence and `UNKNOWN_SLOW`'s
+    # "Still with you --", which apologises for a wait instead of acknowledging
+    # what the caller just said.
+    #
+    # The question is asked of Susie's own previous turn, not guessed from the
+    # answer, so this cannot fire on a body part mentioned anywhere else in the
+    # call. Same root as the screening-trigger bigram defect.
+    _reason_answer = bool(
+        question_asks_the_reason(prev_assistant or "")
+        and re.search(_BODY, utterance, re.IGNORECASE)
+        and not re.search(r"\?\s*$", utterance)
+    )
+
     _answer_probe = _LEADING_DISFLUENCY.sub("", utterance)
-    if _BARE_ANSWER.match(_answer_probe) and len(_answer_probe.split()) <= 4:
+    if _BARE_ANSWER.match(_answer_probe) and len(_answer_probe.split()) <= 4 \
+            and not _reason_answer:
         # This used to read: "a bare answer names no day, so it cannot reach
         # SLOT_PICKED either". **That premise is false**, and it cost the fix
         # below its whole point on the night it shipped.
@@ -680,6 +743,11 @@ def classify_intent(
         if answering and intent in _DIARY_INTENTS:
             continue
         hits.append(intent)
+    if not hits and _reason_answer:
+        # Nothing matched, and the caller has just told us what is wrong with
+        # them. SYMPTOM is the only honest head here: it promises no work and
+        # acknowledges what they said, which is what the 3.5s apology does not.
+        hits.append(Intent.SYMPTOM)
     if not hits and slot_selection and re.search(_DAY, utterance, re.IGNORECASE):
         # Every diary intent this pick corroborated was just suppressed, which
         # is correct and used to leave nothing. `_kind` then fell through to

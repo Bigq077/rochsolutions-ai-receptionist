@@ -1861,29 +1861,22 @@ def note_reason_question_asked(session: dict, spoken: str) -> bool:
             return False
     except Exception:
         return False
-    low = spoken.lower()
-    asked = (
-        # "what's the appointment for", "what is it for", "what's it for"
-        re.search(r"\bwhat(?:'?s| is)\b[^?]{0,40}\bfor\b[^?]{0,20}\?", low)
-        # "is there a particular area or reason…", "what's the reason for…"
-        or re.search(r"\breason for\b[^?]{0,60}\?", low)
-        or re.search(r"\barea or reason\b", low)
-        # "what brings you in", "what's brought you in"
-        or re.search(r"\bwhat\b[^?]{0,20}\bbrings? you (?:in|to)\b", low)
-        # CAea8abdb (2 Sep 2026, Vital Edge, live): the FIRST ask was
-        # "Is there a particular area or CONCERN you're looking to
-        # address?" — a reason question by any reading, and the caller
-        # answered it in full ("I'm an athlete, I just need some recovery
-        # work"). None of the patterns above match it, so the latch stayed
-        # open and VE's own mandated wording was asked again one turn later.
-        # The docstring above claims this matches on INTENT rather than a
-        # literal; until this arm it was a list of the literals seen so far
-        # — the same defect as B-36 and the Gate 5 opener. "area or <noun>"
-        # is the shape of the question, not its wording.
-        or re.search(r"\barea or (?:reason|concern|issue|problem)\b", low)
-        or re.search(r"\blooking to address\b", low)
-    )
-    if not asked:
+    # The pattern family moved to `hold_speech.question_asks_the_reason` and is
+    # called, not copied. It had to be readable from the hold-speech classifier
+    # too — a caller answering this question with a bare body part gets no head
+    # otherwise — and two copies of this matcher would be two answers to "was
+    # the reason question asked". It has already been wrong twice for listing
+    # the literals seen so far instead of the shape: B-36, and CAea8abdb
+    # (2 Sep 2026, Vital Edge) where the first ask was "Is there a particular
+    # area or CONCERN you're looking to address?", the caller answered it in
+    # full, and the latch stayed open so VE's own mandated wording was asked
+    # again a turn later.
+    #
+    # The clinic gate above stays HERE: whether this clinic asks a reason at
+    # all is a config question, and the shared helper is deliberately pure.
+    from app.hold_speech import question_asks_the_reason as _asks_reason
+
+    if not _asks_reason(spoken):
         return False
     session["_reason_question_asked"] = True
     # One-shot: the caller's NEXT utterance is the answer to this question,
