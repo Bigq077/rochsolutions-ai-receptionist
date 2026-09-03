@@ -4662,6 +4662,17 @@ class LLMStream:
         got_first_chunk      = False
         _first_tts_emitted   = False  # tracks whether first TTS chunk has been sent
         _any_tts_emitted     = False  # True if ANY sanitised chunk actually reached the queue
+        # B-132: this turn's ordinary content chunks, in spoken order, so a
+        # barge-in that destroys them at PLAYBACK can put them back. Sibling of
+        # `_slot_readout_chunks` (B-120), which covers slot readouts only --
+        # the same teardown destroys any long answer, and on CA91020004 it
+        # destroyed one about a caller's ankle.
+        #
+        # Reset per iteration, like full_text, and deliberately so: after a
+        # tool round trip the pre-tool hold phrase is separate speech the
+        # caller already heard in full, and replaying it alongside the answer
+        # would re-speak a sentence no interruption touched.
+        session["_content_turn_chunks"] = []
         # True when the pre-tool hold latch below was set from full_text,
         # which Gate 5 has not run on yet. Per-iteration, like full_text.
         _latched_on_ungated_text = False
@@ -5265,6 +5276,14 @@ class LLMStream:
                                     # tts_loop can drop this chunk if
                                     # check_availability is detected this turn.
                                     await tts_text_queue.put(PRE_SLOT_MARKER + chunk)
+                                    # B-132: record what was queued, in
+                                    # order. Stored WITHOUT the marker --
+                                    # connection.py strips it before
+                                    # `_obs_chunk_text`, which is the form the
+                                    # staleness check compares against.
+                                    session.setdefault(
+                                        "_content_turn_chunks", []
+                                    ).append(chunk.strip())
                                     _any_tts_emitted = True
 
                         continue
@@ -5301,6 +5320,10 @@ class LLMStream:
                     if self._timing is not None:
                         self._timing.stamp("t2")
                     await tts_text_queue.put(PRE_SLOT_MARKER + final_chunk)
+                    # B-132 -- see the streaming put above.
+                    session.setdefault(
+                        "_content_turn_chunks", []
+                    ).append(final_chunk.strip())
                     _any_tts_emitted = True
 
             # ── The pre-tool hold latch, re-checked against what survived ──

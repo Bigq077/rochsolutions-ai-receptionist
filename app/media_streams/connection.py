@@ -238,6 +238,15 @@ _MAX_ECHO_RESUMES: int = 2
 # keeps this arm off every turn where Susie had in fact finished speaking.
 _SLOT_REREAD_MIN_LOST_S: float = 2.0
 
+# B-132. How much of an ordinary answer is worth re-speaking after a barge-in
+# destroyed it at playback. The lost audio is by construction a SUFFIX of what
+# was queued -- audio plays in order -- so the replay is a suffix too, and this
+# only chooses how much of it. CA91020004's three chunks totalled 295
+# characters, so an ordinary two-or-three-chunk answer is carried whole; the
+# cap exists to stop a runaway reply re-reading twenty seconds the caller
+# half-heard, which is its own annoyance.
+_CONTENT_REREAD_MAX_CHARS: int = 400
+
 
 # Clock hours as SPOKEN vs as TRANSCRIBED. The offer is generated text and
 # spells the hour ("ten in the morning"); AssemblyAI hands back the caller's
@@ -14893,6 +14902,16 @@ class WebSocketCallHandler:
                         # re-presentation above, and are un-recorded only if that
                         # path gives up.
                         _unrecord_spoken(self.session, _obs_chunk_text)
+                        # B-132: and drop it from the re-speakable answer.
+                        # It was appended the instant it was queued; this chunk
+                        # is being discarded before synthesis, so re-speaking
+                        # it later would put back words that were never said.
+                        _ct_drop = self.session.get("_content_turn_chunks")
+                        if _ct_drop:
+                            _ct_txt = _obs_chunk_text.strip()
+                            self.session["_content_turn_chunks"] = [
+                                _c for _c in _ct_drop if _c != _ct_txt
+                            ]
                     continue
 
                 # A chunk is about to play (not inhibited) — allow a future
@@ -14914,6 +14933,18 @@ class WebSocketCallHandler:
                 _ro_saved = self.session.get("_slot_readout_chunks")
                 if _ro_saved and _obs_chunk_text.strip() not in _ro_saved:
                     self.session.pop("_slot_readout_chunks", None)
+
+                # B-132: the same staleness rule for an ordinary answer. The
+                # instant a chunk from a later turn reaches the caller's ear,
+                # this turn's answer is history and re-speaking it would be
+                # gibberish. A hold head or filler playing ahead of the content
+                # also clears it, harmlessly -- the content chunks are appended
+                # after, so the list rebuilds. This can only ever LOSE a
+                # recovery, never cause a wrong one, which is the direction
+                # this family has to fail in.
+                _ct_saved = self.session.get("_content_turn_chunks")
+                if _ct_saved and _obs_chunk_text.strip() not in _ct_saved:
+                    self.session.pop("_content_turn_chunks", None)
 
                 # ── P3: a bare marker on top of a hold phrase ─────────────
                 # "Let's get you booked in —" / "Right —" / "What's the
@@ -16586,6 +16617,82 @@ class WebSocketCallHandler:
                     return
                 # ── end B-120 ──────────────────────────────────────────────
 
+                # -- B-132: an ORDINARY answer torn down at PLAYBACK -------
+                # CA91020004, northgate, 2 Sep 16:43. Three chunks synthesised
+                # inside 0.6s -- an empathy opener, a 198-character answer
+                # about the caller's ankle, and the closing question. ~20s of
+                # audio was queued; a partial of 'okay' tore the turn down 5.2s
+                # in, inside chunk 2. The teardown discarded the rest of chunk
+                # 2 AND chunk 3, and the arm below then spoke chunk 3 -- "Do
+                # you have a preference for when you would like to come in?" --
+                # a sentence the caller had never reached. Reported as "the
+                # answer to my ankle hurting gets stopped mid sentence to ask
+                # when you are coming in".
+                #
+                # Filed as B-127 in OPEN_DEFECTS_2026-09-02.md, but that
+                # number was already spent on the spoken-ordinal/keypad
+                # defect of 1 Sep (connection.py:9418, and its own
+                # regression test). Numbered B-132 here so a grep for
+                # either returns one defect.
+                #
+                # This is B-120 applied to ordinary content, and the fourth
+                # commit in a progression that has consistently chosen recovery
+                # over trigger (B-67, B-107, c65f2a1c, B-120).
+                #
+                # The arm below is right in principle -- it refuses an ack that
+                # would claim the caller spoke -- but its stated premise, that
+                # `last_question` is "by construction equal to the chunk just
+                # spoken", holds only for a SINGLE-chunk turn. On a multi-chunk
+                # turn it is the LAST chunk, which here is precisely the
+                # sentence nobody heard. So this arm requires len >= 2 and
+                # leaves the single-chunk case, where that premise is true, to
+                # the arm below untouched.
+                #
+                # After the B-120 arm, not before: a slot readout has its own
+                # recovery and its own reason to go again whole.
+                #
+                # Trigger untouched, again. Option 5 -- suppress teardown on a
+                # backchannel partial -- was investigated and CLOSED on
+                # evidence: on this very call 'yeah' was the leading edge of
+                # two GENUINE interruptions against one wordless 'okay', and
+                # B-107 records that a caller whose words STT dropped and a
+                # garbled echo leave identical evidence at the partial.
+                _content = self.session.get("_content_turn_chunks") or []
+                if (
+                    len(_content) >= 2
+                    and _lost_s >= _SLOT_REREAD_MIN_LOST_S
+                    and _echoes < _MAX_ECHO_RESUMES
+                ):
+                    # Longest suffix inside the budget, and never fewer than
+                    # one chunk -- a single over-long chunk is still the thing
+                    # the caller lost.
+                    _tail: List[str] = []
+                    _budget = _CONTENT_REREAD_MAX_CHARS
+                    for _c in reversed(_content):
+                        if _tail and len(_c) > _budget:
+                            break
+                        _tail.insert(0, _c)
+                        _budget -= len(_c)
+                    self.session["echo_resume_count"] = _echoes + 1
+                    # Marker on the first chunk only -- same reason as B-120:
+                    # it is the one that can collide with the consecutive-
+                    # duplicate guard, and marking the rest would drop them out
+                    # of the latency content-mark for nothing.
+                    for _i, _c in enumerate(_tail):
+                        await self.tts_text_queue.put(
+                            (_WATCHDOG_REASK_MARKER if _i == 0 else "") + _c
+                        )
+                    logger.warning(
+                        "[ms_conn] barge-in #%d tore down a %d-chunk answer at "
+                        "playback (partial=%r own_audio=%s lost=%.1fs) - "
+                        "re-speaking the last %d chunk(s), not the closing "
+                        "question the caller never reached (%d/%d)",
+                        self.session.get("barge_in_count", 0), len(_content),
+                        _echo_partial, _own_audio, _lost_s, len(_tail),
+                        _echoes + 1, _MAX_ECHO_RESUMES,
+                    )
+                    return
+                # -- end B-132 ---------------------------------------------
                 _resume = _interrupted_now if _own_audio else _outstanding_q
                 if _resume and _echoes < _MAX_ECHO_RESUMES:
                     self.session["echo_resume_count"] = _echoes + 1
