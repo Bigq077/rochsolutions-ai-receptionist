@@ -1,8 +1,18 @@
 # Slot presentation: stop circling, then finish the migration
 
-**Status 2026-09-03.** Phase 0 items 1 and 2 are **DONE** — `f93a4d2a` and
-`021c0fc0` on `latency-eval`, both red-then-green proven, neither promoted.
-Items 3 and 4 and all of Phase 1 are open.
+**Status 2026-09-03, 02:10.** Phase 0 items 1 and 2 are **DONE** — `f93a4d2a`
+and `021c0fc0` on `latency-eval`, both red-then-green proven, neither promoted.
+Item 3 (F1) turned out to be **already implemented**. Item 3b is the real gap
+and replaces it. Item 4 and all of Phase 1 are open.
+
+**Verified live on `2a8a6ee6`, 01:58:32:** `'yeah monday at 8 am works'` ->
+`caller ACCEPTED 2026-09-07T08:00:00+01:00` -> `situational head (slot_picked)`
+-> `"So that's Monday the 7th of September at eight in the morning"`. The
+meridiem guard correctly ALLOWS an agreeing `am`.
+
+**Still unverified live: the DECLINING case.** No call has yet said `8 pm`
+against an offer holding only `08:00`. That is the half that is wrong on
+patient lines today, and it is the one call that matters most.
 
 Supersedes nothing. Sits alongside `DETERMINISTIC_SLOT_PRESENTATION.md`
 (31 Aug), which it finishes rather than replaces, and takes its live defect
@@ -120,16 +130,56 @@ below it. Band-only and positional picks keep their silence; the 30 Aug
 decision in `test_choosing_a_slot_still_gets_silence` is untouched and now
 asserted from the new test rather than left to inspection.
 
-### 3. OPEN — F1: no lookup is promised when the caller has picked
+### ✅ 3. ALREADY DONE — F1 is implemented, and this plan was wrong to list it
 
-`classify_intent`'s `slot_selection` argument comes from
-`utterance_is_slot_selection`, which is containment against the spoken labels
-and therefore cannot see an ordinal. "The last day in the afternoon works"
-reads as a band query and Susie promises a lookup. Same root as P6/P6b.
+`slot_accepted_by_caller`'s result is **already** fed into `slot_selection`, at
+[llm_stream.py:4757](app/media_streams/llm_stream.py:4757):
 
-Feed `slot_accepted_by_caller`'s result — already on the session — into that
-argument at the call site, **[llm_stream.py:4763](app/media_streams/llm_stream.py:4763)**
-(not :4682; the anchor has drifted).
+```python
+if not _hs_picking:
+    from app.tools.slot_followup import ACCEPTED_SLOT_KEY
+    _hs_picking = bool(session.get(ACCEPTED_SLOT_KEY))
+```
+
+Verified live 2026-09-03 01:58:32 on build `2a8a6ee6`: `'yeah monday at 8 am
+works'` set `ACCEPTED_SLOT_KEY` and the head fired — `situational head
+(slot_picked): 'Monday it is -'` — followed by a correct read-back.
+
+**Same lesson as §1, aimed at ourselves: check the code before writing a task
+for it.** This one cost nothing because it was checked before being built.
+
+### 3b. OPEN and REPLACES F1 — a pure DAY-pick produces no pick signal at all
+
+The real gap, and it is the case `"Monday it is -"` exists for.
+
+`'yeah monday works'` (01:56:49, build `2a8a6ee6`) got **no head**:
+`LAT turn_seq=3 ttfa_ms=2097 content_ttfa_ms=2097` — equal, so nothing spoke.
+Both inputs to `_hs_picking` decline, each correctly:
+
+* `utterance_is_slot_selection` is containment against the spoken labels, and a
+  bare weekday matches none of them;
+* `slot_accepted_by_caller` sees **two** heard times on Monday (08:00, 17:10)
+  and the caller named neither, so it declines — which is exactly the contract.
+
+A caller who has chosen a DAY but not yet a TIME has picked something real, and
+nothing in the system says so.
+
+> ⚠️ **Note what armed the head before.** On 2026-09-02 01:29:14 it fired for
+> `'yeah monday the 7th at 10 in the morning'` — because the band fallback
+> wrongly pinned 08:00 and that set `ACCEPTED_SLOT_KEY`. **The head was being
+> armed by the defect `f93a4d2a` fixed.** Correcting the resolver removed a
+> signal that was wrong to exist. No regression — the same utterance shape got
+> no head on 09-02 01:26:49 either — but it means item 2's live-fire case is
+> narrower than it looked.
+
+**The trap, and why this is not a two-line change.** The obvious rule — "names
+exactly one offered day" — also matches `"what about monday"`, which is a
+**request**. Making `slot_selection` true for it would suppress the correct
+`NAMED_DAY` diary head and put `"Monday it is -"` in front of a lookup that
+really is happening. That is the promised-work defect inverted, and this family
+has been wrong in that direction three times. `utterance_requests_more_slots`
+and `utterance_requests_different_day` already draw the acceptance/request line
+inside `slot_accepted_by_caller` and should be reused, not re-derived.
 
 ### 4. OPEN — F2: "what else have you got" after a multi-day offer widens to DAYS
 
