@@ -421,6 +421,9 @@ class Intent(str, Enum):
     RESCHEDULE_REQ = "reschedule_req"
     REPEAT_ASK = "repeat_ask"
     TRANSFER_REQ = "transfer_req"
+    #: The caller has just CHOSEN one of the slots read out. Register, not
+    #: diary: it claims no lookup, so it is safe while they are answering.
+    SLOT_PICKED = "slot_picked"
     # Topic -- FAQ turns, where no tool runs at all.
     FAQ_PRICE = "faq_price"
     FAQ_INSURANCE = "faq_insurance"
@@ -635,6 +638,8 @@ def classify_intent(
     # answer; "um" and "uh" never can.
     _answer_probe = _LEADING_DISFLUENCY.sub("", utterance)
     if _BARE_ANSWER.match(_answer_probe) and len(_answer_probe.split()) <= 4:
+        # A bare answer names no day, so it cannot reach SLOT_PICKED either
+        # (see the end of this function). Silence, exactly as before.
         return []
     # Either route means the caller is answering rather than asking: an
     # explicit confirm question from Susie, or -- the case the readout proxy
@@ -654,6 +659,27 @@ def classify_intent(
         if answering and intent in _DIARY_INTENTS:
             continue
         hits.append(intent)
+    if not hits and slot_selection and re.search(_DAY, utterance, re.IGNORECASE):
+        # Every diary intent this pick corroborated was just suppressed, which
+        # is correct and used to leave nothing. `_kind` then fell through to
+        # UNKNOWN_SLOW, whose own comment says to prefer something specific
+        # "unless the CALLER told us what this turn is about" -- and a pick is
+        # exactly that.
+        #
+        # A DAY, specifically, for two reasons that happen to agree:
+        #
+        #   * `subject_for` capitalises a day but lower-cases a band, so
+        #     "{subject} it is -" reads as "Monday it is -" but "afternoon it
+        #     is -" -- an opener in lower case, which is not speech anyone
+        #     writes; and
+        #   * every case pinned by `test_choosing_a_slot_still_gets_silence`
+        #     (30 Aug) and `test_a_resolved_pick_silences_the_lookup_head` is a
+        #     band-only pick. Those tests decided that a pick gets SILENCE, and
+        #     their stated reason -- "a head in front of it would promise" a
+        #     lookup -- is not this head, which promises nothing. But that is a
+        #     decision to reopen deliberately, not to overturn as a side effect
+        #     of fixing a different phrase, so this stays inside it.
+        hits.append(Intent.SLOT_PICKED)
     return hits
 
 
@@ -785,6 +811,15 @@ INTENT_HEADS = {
                               f"Oh, sorry to hear that {EM_DASH}"],
     Intent.CANCEL_REQ:       [f"No problem at all {EM_DASH}",
                               f"Yes, no problem {EM_DASH}"],
+    # A caller who has just picked a slot. Neither of the two things Susie
+    # used to say here was true: the diary heads promised a lookup nobody was
+    # doing ("Let me see what I've got in the afternoon -", 2 Sep 09:09), and
+    # suppressing those dropped the turn into the UNKNOWN_SLOW fallback, which
+    # apologises for a wait the caller is not in ("Sorry, still with you -",
+    # CA3dff2f4b, 3 Sep 00:24:21, three seconds after the engine had already
+    # pinned their choice). This claims no work and names what they chose.
+    Intent.SLOT_PICKED:      [f"{{subject}} it is {EM_DASH}",
+                              f"That one works {EM_DASH}"],
     Intent.RESCHEDULE_REQ:   [f"Let's get that moved for you {EM_DASH}",
                               f"Yes, let's get that moved {EM_DASH}"],
     Intent.REPEAT_ASK:       [f"Sorry about that {EM_DASH}",
