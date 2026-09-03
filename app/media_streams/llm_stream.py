@@ -6739,6 +6739,46 @@ class LLMStream:
                             "falling back to the model's presentation"
                         )
                         _offer = None
+                # -- Diagnostic: why was NO deterministic offer built? ------
+                # CA51bb75fe (Theorem, 3 Sep 2026). A three-day readout was
+                # spoken by the model plus the repair layer and left no offer
+                # record -- "could not resolve spoken option(s) ... offer
+                # record left unchanged". NEITHER the multi_day success line
+                # nor its failure line appeared, so the gate above declined
+                # SILENTLY, and nothing said which half of it said no.
+                #
+                # The corpus cannot answer it either: the `tool result:` line
+                # truncates the payload at ~200 chars, mid-array, which is the
+                # same limitation SLOT_PRESENTATION_CONVERGENCE.md records
+                # against replaying this function. So a week of multi_day
+                # calls carries no evidence about its own producer.
+                #
+                # Reading the two cases apart:
+                #   branch=none-matched -> neither gate was entered; the mode
+                #     flag or the payload key was absent.
+                #   branch=single_day|multi_day -> the branch RAN and its
+                #     except fired, which already logs above.
+                #
+                # Log-only. It changes no behaviour, and it is a WARNING
+                # because a readout with no record disarms every downstream
+                # guard that reads one.
+                if _offer is None:
+                    logger.warning(
+                        "[ms_gate5] NO deterministic offer built — branch=%s "
+                        "mode=%r has_first_day=%s has_presented_days=%s — the "
+                        "model's presentation stands and the offer record is "
+                        "NOT written",
+                        _det_mode or "none-matched",
+                        session.get("_slot_presentation_mode"),
+                        bool(
+                            isinstance(_fd, dict)
+                            and (_fd.get("slots") or _fd.get("slot_times"))
+                        ),
+                        bool(
+                            isinstance(result, dict)
+                            and result.get("presented_days")
+                        ),
+                    )
                 if _offer is not None:
                     # A plain dict: the session is serialised to Redis.
                     session["_slot_offer_prebuilt"] = {
