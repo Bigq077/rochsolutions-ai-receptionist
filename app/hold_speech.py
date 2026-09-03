@@ -638,9 +638,30 @@ def classify_intent(
     # answer; "um" and "uh" never can.
     _answer_probe = _LEADING_DISFLUENCY.sub("", utterance)
     if _BARE_ANSWER.match(_answer_probe) and len(_answer_probe.split()) <= 4:
-        # A bare answer names no day, so it cannot reach SLOT_PICKED either
-        # (see the end of this function). Silence, exactly as before.
-        return []
+        # This used to read: "a bare answer names no day, so it cannot reach
+        # SLOT_PICKED either". **That premise is false**, and it cost the fix
+        # below its whole point on the night it shipped.
+        #
+        # "uh yeah monday works" strips to "yeah monday works" -- opens with a
+        # bare-answer word, three words, AND names a day. The early return
+        # fired and SLOT_PICKED at the end of this function was unreachable.
+        # Live 2026-09-03 01:26:49 on the demo line: no head at all. The very
+        # next call said "yeah monday the 7th at 10 in the morning" -- nine
+        # words, past the limit -- and the head fired. Same pick, same intent,
+        # opposite behaviour, decided by word count.
+        #
+        # A short pick is the COMMON way to answer a readout, so this was not
+        # an edge: it was most of them.
+        #
+        # The exemption is deliberately as narrow as the arm it feeds. Both
+        # conditions of SLOT_PICKED must already hold -- the engine's own B-90
+        # verdict that this utterance is a selection, and a named day -- so
+        # nothing reaches the loop below that would not have reached the arm
+        # at the end anyway. Band-only picks ("yeah ten in the morning") name
+        # no day, still return here, and keep the silence that
+        # `test_choosing_a_slot_still_gets_silence` decided on 30 Aug.
+        if not (slot_selection and re.search(_DAY, _answer_probe, re.IGNORECASE)):
+            return []
     # Either route means the caller is answering rather than asking: an
     # explicit confirm question from Susie, or -- the case the readout proxy
     # was reaching for and getting wrong -- this utterance being one of the
