@@ -141,14 +141,42 @@ def test_the_number_is_matched_however_it_was_typed():
 # ---------------------------------------------------------------------------
 # The demo line as it stands now
 # ---------------------------------------------------------------------------
-def test_northgate_carries_no_transfer_phone():
-    """Reverted 2026-08-29 after the live call. The guard fix above is what
-    makes setting it safe again; until someone decides the demo line needs a
-    transfer target, it has none and the fallback answers.
+def test_northgate_carries_its_own_transfer_phone_and_the_guard_still_holds():
+    """Reinstated 2026-09-03, on the condition this test's previous version set.
+
+    It read: "northgate has a transfer_phone again — that is fine now, but
+    check the ForwardedFrom guard is still in place before shipping it." So
+    this is not a fixture being rewritten to match new behaviour; it is the
+    stated precondition being checked and the decision being recorded.
+
+    WHY IT CAME BACK. `TRANSFER_FALLBACK_NUMBER` used to default to this same
+    mobile for EVERY clinic, so "northgate has none and the fallback answers"
+    meant the demo line quietly shared a global default with any clinic that
+    forgot the key, and with any Twilio number missing from TWILIO_TO_CLINIC.
+    That default is now empty. northgate names the number itself instead,
+    because it is the demo line and a transfer is part of the demo.
+
+    THE PRECONDITION, asserted rather than trusted. The 2026-08-29 defect was
+    that the demo line's transfer target IS the handset that rings it, so
+    `_is_clinic_own_number` matched every test call and blanked the caller ID —
+    "I can't see a phone number on this call", then fifteen seconds of DTMF.
+    `_suppress_forwarded_caller_id` now requires ForwardedFrom as positive
+    evidence, so a direct dial is safe and a genuine diversion still suppresses.
+    Both directions are checked below: if either flips, this defect returns on
+    the line we demo from.
     """
     from app.clinic_config import get_clinic
 
-    assert not (get_clinic("northgate").get("transfer_phone") or "").strip(), (
-        "northgate has a transfer_phone again — that is fine now, but check "
-        "the ForwardedFrom guard is still in place before shipping it"
+    clinic = get_clinic("northgate")
+    target = (clinic.get("transfer_phone") or "").strip()
+    assert target, "northgate lost its transfer_phone — the demo cannot transfer"
+
+    # A direct dial from the very number that is also the transfer target.
+    assert _suppress_forwarded_caller_id(target, clinic, "") is False, (
+        "the demo line is blanking the caller ID of a direct dial again — this "
+        "is the 2026-08-29 defect, and the DTMF ladder is back"
+    )
+    # And the guard has not been disarmed in the process.
+    assert _suppress_forwarded_caller_id(target, clinic, CLINIC_LINE) is True, (
+        "a genuinely forwarded call is no longer suppressed"
     )
