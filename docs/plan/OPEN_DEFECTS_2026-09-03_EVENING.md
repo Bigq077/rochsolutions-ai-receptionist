@@ -90,6 +90,50 @@ capitalising a continuation. (b) is smaller and keeps `fff61547`'s latency win.
 Do NOT start with the prompt — prompt edits in this area have been measured
 ineffective twice.
 
+> [OK] **FOUND AND FIXED -- `57202217`, 3 Sep 2026. Cause 2 only; cause 1 stands.**
+>
+> The capitaliser is `sanitise_response`'s last statement in
+> `app/media_streams/turn_handler.py`, labelled **"Fix A: re-capitalise after
+> opener strip"**:
+>
+> ```python
+> if result:
+>     result = result[0].upper() + result[1:]
+> ```
+>
+> Its comment scopes it to a banned-opener strip. **The code ran on every chunk
+> unconditionally.** Reproduced directly: `'or how it came on? ...'` ->
+> `'Or how it came on? ...'`.
+>
+> Third instance this week of the shape B-120 and B-132 share -- an operation
+> whose safety rests on a premise, here *"this chunk starts a sentence"*, that
+> is false for a continuation. `fff61547` made continuation chunks reachable on
+> the streaming path on 1 Sep; this line then gave them a capital.
+>
+> Fixed as **(b)**, as this document recommended: Fix A now fires only when
+> something was actually removed from the front, so `fff61547`'s latency win is
+> untouched. The check is case-insensitive over 12 characters rather than a
+> first-character comparison, because a strip can leave a word starting with
+> the same letter (*"Wonderful -- we've got"*) and a naive check would read
+> that as untouched and silently regress Fix A.
+>
+> **What this does NOT settle.** The false sentence is gone from the TEXT.
+> Whether the caller still hears a hard stop depends on ElevenLabs prosody
+> across two separate synthesis requests, and no test can decide that. This
+> document's hypothesis -- *"the split alone is a pause rather than a defect"*
+> -- is now the thing under test, and it needs a call. **If it still sounds
+> wrong, the fallback is option (a):** do not split a first chunk on a comma
+> that sits inside an unfinished question.
+>
+> **Cause 1 is untouched and needs re-scoping before anyone acts on it.** It
+> argues from `:1594` *"Keep it to ONE sentence"* -- that is
+> `_condition_families`, which renders **empty** on northgate because northgate
+> ships `treatment_guidance`. It is dead config on the very clinic this call
+> was made to. See `SESSION_2026-09-03_THREE_FIXES.md` for the same finding
+> arriving from the other direction: §5's "non-adherence" reading was wrong for
+> this reason, and the live brevity rule for that turn now sits in CONDITION
+> FLUENCY (`bea61a7f`).
+
 ---
 
 ## D-B — a named day gets a promised lookup, no lookup, and no record
