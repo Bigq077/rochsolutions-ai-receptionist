@@ -4753,6 +4753,32 @@ class LLMStream:
                         _hs_picking = bool(session.get(ACCEPTED_SLOT_KEY))
                     except Exception:  # pragma: no cover - defensive
                         pass
+                # Third and last: a caller who picked a DAY and no time.
+                #
+                # Neither reader above can see that. Containment needs a spoken
+                # label and a bare weekday is not one; `slot_accepted_by_caller`
+                # needs a TIME, and on a multi_day offer the chosen day holds
+                # two the caller chose between neither -- so it declines, which
+                # is the right answer to "which slot" and the wrong answer to
+                # "did they pick something".
+                #
+                #     01:56:49  'yeah monday works'
+                #               LAT turn_seq=3 ttfa_ms=2097 content_ttfa_ms=2097
+                #
+                # Equal, so nothing spoke, on the utterance SLOT_PICKED was
+                # written for. `day_accepted_by_caller` is deny-by-default on
+                # both sides: a request ("what about Monday") resolves to None
+                # and still gets its NAMED_DAY lookup head, because promising a
+                # lookup that IS happening is fine and promising one that is
+                # not is the defect this family keeps producing.
+                if not _hs_picking:
+                    try:
+                        from app.tools.slot_followup import (
+                            day_accepted_by_caller as _day_picked,
+                        )
+                        _hs_picking = bool(_day_picked(session, _hs_utterance))
+                    except Exception:  # pragma: no cover - defensive
+                        pass
                 _hs_hits = _classify_intent(
                     _hs_utterance,
                     _last_assistant_text(session),

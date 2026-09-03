@@ -2294,6 +2294,101 @@ def slot_accepted_by_caller(
     return None
 
 
+#: A REQUEST for a day, not an acceptance of one. The whole hazard of
+#: `day_accepted_by_caller` lives here: "what about Monday" names exactly one
+#: offered day and is a question, and treating it as a pick would put
+#: "Monday it is -" in front of a lookup that really is happening -- the
+#: promised-work defect, which this family has produced three times.
+_DAY_REQUEST_RE = re.compile(
+    r"\b(?:what|how)\s+about\b"
+    r"|\bdo\s+you\s+have\b|\bhave\s+you\s+(?:got|any)\b"
+    r"|\bis\s+there\b|\bare\s+there\b|\banything\s+(?:on|for)\b"
+    r"|\bany\s+(?:slots?|times?|availability|openings?)\b"
+    r"|\bcan\s+(?:i|you)\b|\bcould\s+(?:i|you)\b|\bwould\s+(?:i|you)\b"
+    r"|\bwhat(?:'?s| is)\b[^?]{0,30}\b(?:free|available|open)\b"
+    r"|\bis\b[^?]{0,20}\b(?:free|available|any\s+good)\b",
+    re.IGNORECASE,
+)
+
+#: An ACCEPTANCE. Deny-by-default: a day named with none of these is not a
+#: pick, it is the caller thinking out loud, and silence is the answer that
+#: has always been given.
+_DAY_ACCEPT_RE = re.compile(
+    r"\b(?:works?|working|fine|good|great|perfect|ideal|lovely|suits?|"
+    r"suitable|ok|okay|yeah|yes|yep|please|brilliant|grand|"
+    r"i'?ll\s+take|let'?s\s+do|go\s+for|happy\s+with|that'?ll\s+do)\b",
+    re.IGNORECASE,
+)
+
+
+def day_accepted_by_caller(session: Dict[str, Any], text: str) -> "str | None":
+    """The ISO DATE of the offered day the caller just accepted, or None. PURE.
+
+    The gap `slot_accepted_by_caller` cannot close, and it is not a defect in
+    that function: a caller who says "yeah Monday works" after a multi-day
+    readout has accepted a DAY and no TIME, and Monday holds two times they
+    were read and chose between neither. Declining is the correct answer to
+    "which SLOT did they accept". It is the wrong answer to "did they pick
+    something", and that second question is what the hold-speech head needs.
+
+    Live 2026-09-03 01:56:49, demo line, build 2a8a6ee6:
+
+        'yeah monday works'  ->  LAT turn_seq=3 ttfa_ms=2097 content_ttfa_ms=2097
+
+    Equal, so nothing spoke. `Intent.SLOT_PICKED` -- "Monday it is -" -- exists
+    for exactly that utterance and could not be reached, because both inputs to
+    the head's `slot_selection` argument declined: `utterance_is_slot_selection`
+    is containment against the spoken labels and a bare weekday matches none of
+    them, and `slot_accepted_by_caller` needs a time.
+
+    DENY BY DEFAULT, on BOTH sides, because the failure modes are asymmetric.
+    Returning None costs a head. Returning a day for a caller who was ASKING
+    about it costs "Monday it is -" in front of a lookup that is really
+    happening -- the promised-work defect, which this family has produced three
+    times and is the reason the 30 Aug decision gave picks silence in the first
+    place.
+
+      1. not a "more times" or "different day" request -- those have their own
+         paths and their own answers;
+      2. not shaped like a question or a request ("what about Monday", "do you
+         have Monday", a trailing "?");
+      3. carries an acceptance word. A bare "Monday" is not a pick;
+      4. names NO clock time. If they named one, `slot_accepted_by_caller`
+         owns the turn -- and if IT declined, the time did not match the offer
+         and the acceptance is not clean enough to speak to;
+      5. names exactly ONE day out of the offer just read, by weekday or by
+         full label. Positions are deliberately excluded: "number two" names no
+         day, `subject_for` has nothing to render, and the 30 Aug decision that
+         a positional pick gets silence stands untouched.
+    """
+    if not isinstance(session, dict) or not isinstance(text, str):
+        return None
+    if not text.strip():
+        return None
+
+    offered = session.get("last_offered_slots")
+    if not isinstance(offered, list) or not offered:
+        return None
+
+    if utterance_requests_more_slots(text) or utterance_requests_different_day(text):
+        return None
+    if "?" in text or _DAY_REQUEST_RE.search(text):
+        return None
+    if not _DAY_ACCEPT_RE.search(text):
+        return None
+    if _clock_time_named(text):
+        return None
+
+    date = _offered_day_by_weekday(offered, text)
+    if not date:
+        named = day_named_by_caller(session.get("available_days"), text)
+        if isinstance(named, dict):
+            date = named.get("date")
+        elif isinstance(named, str):
+            date = named
+    return date or None
+
+
 def accepted_slot_is_named_in(session: Dict[str, Any], text: str) -> bool:
     """Does `text` name the slot the caller just accepted? PURE.
 
