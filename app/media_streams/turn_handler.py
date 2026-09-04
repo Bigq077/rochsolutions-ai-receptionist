@@ -1910,6 +1910,19 @@ def _scarcity_claim_is_supported(session: Dict[str, Any]) -> bool:
 #: backtracking with the intensifier unconsumed.
 _INTENSIFIER = r"(?:(?:very|absolute|absolutely)\s+)?"
 
+#: An adverb between the COPULA and the article: "Saturday is ACTUALLY the
+#: soonest available".
+#:
+#: B-142b, CA06a26c636b3df78 at 18:17:41 -- the call that verified B-142. That
+#: sentence was TRUE, so no caller was misled by it, but the guard never judged
+#: it at all: an unverified claim is one word away from an unchecked false one.
+#:
+#: `\w+ly` rather than a word list. Guessing the vocabulary is what produced
+#: "very" and then "actually" and would produce the next one; the SHAPE is
+#: "an adverb sits here". Safe to be broad, because the superlative after it
+#: still has to close its clause before anything is stripped.
+_ADVERB = r"(?:\w+ly\s+)?"
+
 #: Words that cannot be the last thing in a sentence. If a strip left one of
 #: these standing immediately in front of the cut, the removal was MID-PHRASE
 #: and what remains is a fragment, not a sentence.
@@ -1970,7 +1983,8 @@ _EARLIEST_CLAIM_POST_RE = re.compile(
     r"\s*[\u2014\u2013-]?\s*"
     r"(?:and\s+|but\s+)?"
     r"(?:that|this|it|which)(?:\'s|\s+is|\s+would\s+be)\s+"
-    r"the\s+"
+    + _ADVERB
+    + r"the\s+"
     + _INTENSIFIER
     + r"(?:earliest|soonest|first\s+available|next\s+available|very\s+first)"
     r"(?:\s+(?:one|slot|time|appointment|opening))?"
@@ -2007,7 +2021,8 @@ _EARLIEST_CLAIM_COPULA_RE = re.compile(
     r"\s*[\u2014\u2013-]?\s*"
     r"(?:and\s+|but\s+)?"
     r"\b(?:is|are|was|were|\'s|\'re|would\s+be)\s+"
-    r"the\s+"
+    + _ADVERB
+    + r"the\s+"
     + _INTENSIFIER
     + r"(?:earliest|soonest|first\s+available|next\s+available|very\s+first)"
     r"(?:\s+(?:one|slot|time|appointment|opening|available))?"
@@ -2165,6 +2180,15 @@ def _strip_earliest_claim(text: str) -> str:
     # leaves ",." behind. The weaker mark loses.
     out = re.sub(r"[,;:]\s*([.!?])", r"\1", out)
     out = re.sub(r"\s{2,}", " ", out).strip()
+    # Punctuation is not a sentence. When the claim WAS the whole sentence the
+    # trailing frames leave their full stop behind -- "That's the earliest I've
+    # got." becomes ".", which is truthy, so the caller's `or result` fallback
+    # reads it as a successful strip and speaks it. Report the empty string the
+    # caller is actually testing for, and let it restore the original: a false
+    # ranking is the smaller fault than a turn with nothing in it, which is the
+    # same call the opener strip makes.
+    if not re.search(r"[A-Za-z0-9]", out):
+        return ""
     if out:
         out = out[0].upper() + out[1:]
     return out

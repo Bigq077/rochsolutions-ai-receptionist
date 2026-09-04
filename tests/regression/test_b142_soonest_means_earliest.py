@@ -284,3 +284,57 @@ def test_the_pronoun_frame_still_owns_its_own_sentences():
     claim = "Five past nine on Tuesday 1st September — that's the earliest I've got."
     assert not _claim_strip_would_fragment(claim)
     assert _strip_earliest_claim(claim) == "Five past nine on Tuesday 1st September."
+
+
+# -- B-142b: an adverb between the copula and the article -------------------
+
+@pytest.mark.parametrize("claim", [
+    "Monday the 7th is actually the soonest available.",
+    "Monday the 7th is really the soonest we have.",
+    "Monday the 7th is definitely the earliest I've got.",
+    "Monday the 7th - that's actually the earliest I've got.",
+])
+def test_an_adverb_after_the_copula_does_not_hide_the_claim(claim):
+    r"""B-142b, CA06a26c636b3df78 18:17:41 — "Saturday is ACTUALLY the soonest
+    available". That sentence was TRUE, so no caller was misled, but the guard
+    never judged it: one word moved and the claim stopped being checked.
+
+    Matched as a SHAPE (`\w+ly`) rather than a word list. Guessing the
+    vocabulary produced "very", then "actually", and would produce the next one.
+    """
+    assert _names_an_earliest_claim(claim), claim
+    out = sanitise_response(claim + " Would that work?", _session())
+    assert "soonest" not in out.lower(), out
+    assert "earliest" not in out.lower(), out
+    assert "Would that work?" in out, out
+
+
+@pytest.mark.parametrize("innocent", [
+    "Priya is usually the one who does the assessment.",
+    "Your appointment is at eight in the morning.",
+    "Is that the earliest you can manage?",
+])
+def test_the_adverb_slot_does_not_open_the_pattern_up(innocent):
+    r"""`\w+ly` is broad on purpose, so what keeps it safe is everything after
+    it: a superlative from the list, closing its clause."""
+    assert not _names_an_earliest_claim(innocent), innocent
+    assert sanitise_response(innocent, _session()) == innocent
+
+
+def test_a_true_claim_with_an_adverb_still_survives():
+    """Conditional here too. Saturday IS the earliest day on this payload."""
+    claim = "Saturday the 5th is actually the soonest we have."
+    assert _earliest_claim_is_supported(claim, _session())
+    assert sanitise_response(claim, _session()) == claim
+
+
+def test_a_strip_that_leaves_only_punctuation_reports_empty():
+    """When the claim was the WHOLE sentence the trailing frames leave their
+    own full stop behind. "." is truthy, so `sanitise_response`'s `or result`
+    fallback read it as a successful strip and would have spoken it.
+
+    Pre-existing, and reachable the moment a bare claim is its own chunk.
+    """
+    claim = "That's the earliest I've got."
+    assert _strip_earliest_claim(claim) == ""
+    assert sanitise_response(claim, _session()) == claim
