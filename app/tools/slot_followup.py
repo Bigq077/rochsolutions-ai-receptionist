@@ -2114,6 +2114,60 @@ def _position_named(text: str, n: int) -> "int | None":
     return found.pop() if len(found) == 1 else None
 
 
+def _names_a_different_weekday(text: Any, iso_date: Any) -> bool:
+    """Did the caller name a weekday that is NOT this date's? PURE.
+
+    B-138, CAdd64c466 (northgate, 4 Sep 2026):
+
+        11:34:44  'um do you have any do you have a 10 past 12 for wednesday
+                   for example'
+        11:34:44  caller ACCEPTED 2026-09-10T12:10:00+01:00      <- THURSDAY
+
+    A QUESTION about Wednesday resolved as an ACCEPTANCE of Thursday.
+
+    The last-resort branch below fires when the offer holds exactly one date,
+    reading that as "the caller named only a time, so nothing is ambiguous".
+    Its own comment states the premise --
+
+        "this only fires when the offer holds exactly ONE date, so it cannot
+         guess between days"
+
+    -- and the premise is FALSE whenever the caller names a day the offer does
+    not hold. Nothing checked for it. B-134 made the branch reachable by
+    writing a single-date record, and was reverted for it; the hole is older
+    than B-134 and any future single-date record re-exposes it, so the check
+    belongs here rather than there.
+
+    Declining is free -- the caller is no worse off than before the branch
+    existed -- and a wrong day is a wrong BOOKING, so this is deliberately
+    generous about when it declines:
+
+      * It declines when NO weekday the caller named is this date's. Naming
+        several ("saturday or thursday") still resolves a Thursday offer --
+        the day is among them, so the offer is not being contradicted.
+      * A stray weekday in an unrelated clause declines too. That is a
+        deliberate false decline: the cost is one extra "which day?", against
+        an appointment written on the wrong day.
+      * A date it cannot parse declines nothing, because a check that cannot
+        read its input must not be the thing that pins an appointment.
+
+    Day-of-month is NOT covered -- "the 9th" against a Thursday-10th offer
+    still resolves. That needs the ordinal vocabulary above and its own tests;
+    this closes the shape that reached a live caller.
+    """
+    words = [
+        w for w in _WEEKDAY_WORDS
+        if f" {w} " in f" {_caller_norm(text)} "
+    ]
+    if not words:
+        return False
+    try:
+        named = _date.fromisoformat(str(iso_date or "")[:10]).strftime("%A").lower()
+    except Exception:
+        return False
+    return named not in words
+
+
 def _offered_day_by_weekday(offered: Any, text: str) -> "str | None":
     """The one OFFERED day whose WEEKDAY the caller named, or None.
 
@@ -2247,7 +2301,14 @@ def slot_accepted_by_caller(
             for o in offered if isinstance(o, dict)
         } - {""}
         if len(_dates) == 1:
-            date = next(iter(_dates))
+            _only = next(iter(_dates))
+            # B-138: unless the caller named a DIFFERENT day. The branch above
+            # reads a lone offered date as "no ambiguity"; a caller who names
+            # another weekday has supplied exactly the ambiguity it assumes
+            # away, and pinning it books the wrong day.
+            if _names_a_different_weekday(text, _only):
+                return None
+            date = _only
     if not date:
         return None
 
