@@ -8,6 +8,7 @@ in llm_stream.py which still uses sanitise_response().
 """
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import re
 from typing import Any, Dict, List, Optional, Set
@@ -1894,6 +1895,35 @@ def _scarcity_claim_is_supported(session: Dict[str, Any]) -> bool:
         return False
 
 
+#: The intensifier that sits BETWEEN the article and the superlative.
+#:
+#: B-125c, CAe5c2f6e00d58 15:37:34, on the ASAP verification call. The model
+#: wrote "the very earliest I have is tomorrow, Saturday the 5th". The optional
+#: prefix was `[Tt]he\s+` alone, so "very" fell outside it, the match began at
+#: `earliest`, and the caller heard:
+#:
+#:     "The very tomorrow, Saturday the 5th."
+#:
+#: ONE owner, shared by both frames, because checking one and forgetting the
+#: other is the whole of B-125b. `very\s+first` already sits in each value
+#: alternation; this group is optional, so that form still matches by
+#: backtracking with the intensifier unconsumed.
+_INTENSIFIER = r"(?:(?:very|absolute|absolutely)\s+)?"
+
+#: Words that cannot be the last thing in a sentence. If a strip left one of
+#: these standing immediately in front of the cut, the removal was MID-PHRASE
+#: and what remains is a fragment, not a sentence.
+#:
+#: This is B-140's rule applied to the other stripper. Absorbing "very" above
+#: fixes the intensifier that reached a caller; this catches the one nobody has
+#: thought of yet. Third instance this week of a strip whose remainder is not a
+#: sentence (B-140, `_ORPHAN_LEAD`'s original six in August, this).
+_DANGLING_SEAM_RE = re.compile(
+    r"\b(?:the|a|an|very|my|our|your|his|her|their|its|this|that|these|those)"
+    r"(?:\s+(?:very|absolute|absolutely|really|single|only))*\s+$",
+    re.IGNORECASE,
+)
+
 #: A ranking claim about availability: "the earliest I have is ...", "the
 #: soonest is ...", "the first available is ...". Matches the CLAUSE only, up
 #: to and including the copula, so removing it leaves the payload standing.
@@ -1904,7 +1934,8 @@ def _scarcity_claim_is_supported(session: Dict[str, Any]) -> bool:
 #: than the one being fixed.
 _EARLIEST_CLAIM_RE = re.compile(
     r"\b(?:[Tt]he\s+)?"
-    r"(?:earliest|soonest|first\s+available|next\s+available|very\s+first)"
+    + _INTENSIFIER
+    + r"(?:earliest|soonest|first\s+available|next\s+available|very\s+first)"
     r"(?:\s+(?:one|slot|time|appointment|opening))?"
     # `\\s*` after the pronoun, not `\\s+`: "I've got" has no space between
     # them, and requiring one silently dropped the commonest contraction of
@@ -1934,7 +1965,9 @@ _EARLIEST_CLAIM_POST_RE = re.compile(
     r"\s*[\u2014\u2013-]?\s*"
     r"(?:and\s+|but\s+)?"
     r"(?:that|this|it|which)(?:\'s|\s+is|\s+would\s+be)\s+"
-    r"the\s+(?:earliest|soonest|first\s+available|next\s+available|very\s+first)"
+    r"the\s+"
+    + _INTENSIFIER
+    + r"(?:earliest|soonest|first\s+available|next\s+available|very\s+first)"
     r"(?:\s+(?:one|slot|time|appointment|opening))?"
     r"(?:\s+(?:I|we)\s*(?:\'ve\s+got|have\s+got|have|can\s+do|can\s+offer))?"
     # The claim must END its clause. Without this the pattern swallows the
@@ -1944,6 +1977,77 @@ _EARLIEST_CLAIM_POST_RE = re.compile(
     # availability closes the clause; anything that runs on is a different
     # sentence wearing the same first five words.
     r"\s*(?=[.,!?]|$)",
+    re.IGNORECASE,
+)
+
+
+def _claim_strip_would_fragment(sentence: str) -> bool:
+    """Would removing the ranking from this sentence leave a fragment? PURE.
+
+    True when a word that cannot end a sentence is left standing immediately in
+    front of the cut. Checked in BOTH frames -- checking one and forgetting the
+    other is the whole of B-125b.
+    """
+    body = sentence or ""
+    for pattern in (_EARLIEST_CLAIM_RE, _EARLIEST_CLAIM_POST_RE):
+        match = pattern.search(body)
+        if match and _DANGLING_SEAM_RE.search(body[: match.start()]):
+            return True
+    return False
+
+
+#: Ordinal suffixes for a day of the month. Only the irregulars are listed.
+_ORDINAL_SUFFIX = {1: "st", 2: "nd", 3: "rd", 21: "st", 22: "nd", 23: "rd", 31: "st"}
+
+
+def _day_is_named_in(day: Any, low: str) -> bool:
+    """Does this lowered sentence name this payload day? PURE.
+
+    `day_label` containment alone was too strict to be the only test. On
+    CAe5c2f6e00d58 the model said "Saturday the 5th" where the label read
+    "Saturday 5th September", so the day was not identified, the claim could
+    not be checked, and a TRUE sentence was stripped.
+
+    Widened to weekday + day-of-month, both required. The weekday alone repeats
+    every seven days and the number alone appears inside times ("5 past nine"),
+    so either on its own would name the wrong day.
+    """
+    label = str((day or {}).get("day_label") or "").strip().lower()
+    if label and label in low:
+        return True
+    try:
+        date = _dt.date.fromisoformat(str((day or {}).get("date") or "")[:10])
+    except Exception:
+        return False
+    if date.strftime("%A").lower() not in low:
+        return False
+    dom = date.day
+    if re.search(r"\b%d%s\b" % (dom, _ORDINAL_SUFFIX.get(dom, "th")), low):
+        return True
+    return bool(
+        date.strftime("%B").lower() in low and re.search(r"\b%d\b" % dom, low)
+    )
+
+
+#: Does the sentence name a CLOCK TIME, in any of the forms this codebase
+#: generates or the model produces? Longest alternatives first, or `twenty`
+#: matches and `twenty-five past` is never tried.
+#:
+#: This is what separates a TIME-level ranking ("the earliest is nine in the
+#: morning") from a DAY-level one ("Saturday the 5th is the soonest we have").
+#: Judging the second against the first day's first time is a category error,
+#: and it deleted a true sentence on a live call.
+_TIME_MENTION_RE = re.compile(
+    r"\b(?:"
+    r"midday|midnight|noon"
+    r"|\d{1,2}\s*[:.]\s*\d{2}"
+    r"|\d{1,2}\s*(?:am|pm|a\.m\.|p\.m\.)"
+    r"|(?:\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+    r"\s*o'?\s*clock"
+    r"|(?:quarter|half|twenty[-\s]five|twenty|five|ten)\s+(?:past|to)\b"
+    r"|(?:\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+    r"\s+in\s+the\s+(?:morning|afternoon|evening)"
+    r")",
     re.IGNORECASE,
 )
 
@@ -1967,10 +2071,28 @@ def _strip_earliest_claim(text: str) -> str:
     so deleting it would run the value into whatever follows ("Five past nine on
     Tuesday Does that work for you?").
     """
+    # A strip whose remainder is not a sentence is worse than either outcome
+    # it is choosing between. Where the claim sits MID-PHRASE -- something
+    # dangling in front of the cut that cannot end a sentence -- the whole
+    # sentence goes and the rest of the turn stands. B-140's rule; see
+    # `_DANGLING_SEAM_RE`.
+    #
+    # If that empties the text, the caller's own `or result` fallback restores
+    # the original, which is the same call the opener strip makes: a false
+    # ranking is the smaller fault than silence.
+    parts = _SENTENCE_SPLIT_RE.split(text or "")
+    kept = [s for s in parts if not _claim_strip_would_fragment(s)]
+    # Untouched when nothing was dropped: rejoining is lossy for the
+    # no-space-after-period form the model produces, and this guard has no
+    # business reformatting a turn it is not repairing.
+    body = (text or "") if len(kept) == len(parts) else " ".join(
+        s for s in kept if s.strip()
+    )
+
     # The pattern's tail is a zero-width lookahead, so any existing
     # terminator survives the cut and a full stop is added only where the
     # claim ran to the end of the string with nothing after it.
-    out = _EARLIEST_CLAIM_POST_RE.sub(".", text or "")
+    out = _EARLIEST_CLAIM_POST_RE.sub(".", body)
     out = _EARLIEST_CLAIM_RE.sub("", out).lstrip()
     # Tidy the seam the substitutions can leave: a space before the full stop,
     # a doubled stop where the sentence already had one, runs of spaces.
@@ -2020,17 +2142,46 @@ def _earliest_claim_is_supported(text: str, session: Dict[str, Any]) -> bool:
             return False
         low = (text or "").lower()
 
-        # Which day is the claim about? The sentence names it, and day_label is
-        # the string the readout used. More than one match means the claim is
+        # Which day is the claim about? More than one match means the claim is
         # not about a single day and cannot be checked -- fail closed.
         named = [
             d for d in days
-            if isinstance(d, dict)
-            and str(d.get("day_label") or "").lower() in low
-            and str(d.get("day_label") or "").strip()
+            if isinstance(d, dict) and _day_is_named_in(d, low)
         ]
         if len(named) != 1:
             return False
+
+        # The day the claim must be about if it is to be true at all. Computed
+        # from the dates rather than taken as days[0]: the ASAP path reorders
+        # what is PRESENTED, and reading position as chronology is how a
+        # readout gets judged against the wrong day.
+        dated = [
+            (str(d.get("date") or ""), d) for d in days
+            if isinstance(d, dict) and str(d.get("date") or "")
+        ]
+        if not dated:
+            return False
+        earliest_date = min(date for date, _ in dated)
+        if str(named[0].get("date") or "") != earliest_date:
+            # A later day cannot be the soonest while an earlier one is on the
+            # payload. True whichever level the claim is pitched at.
+            return False
+
+        # DAY-LEVEL vs TIME-LEVEL. B-125c, CAe5c2f6e00d58 15:37:26:
+        #
+        #   'Saturday the 5th is tomorrow - that's the soonest we have.'
+        #
+        # was stripped as false. Saturday the 5th WAS the soonest day. The
+        # sentence ranks a DAY and names no time at all, and it was being
+        # judged against a time -- so it could never be supported, and the one
+        # sentence that would have answered "I need something sooner" was the
+        # one this guard kept destroying. She then offered to look FURTHER
+        # AHEAD to a caller asking for the soonest.
+        #
+        # A claim naming no clock time is about the day, and the day test above
+        # is the whole of it.
+        if not _TIME_MENTION_RE.search(low):
+            return True
 
         spoken = named[0].get("slot_times_spoken") or []
         if not isinstance(spoken, list) or not spoken:
