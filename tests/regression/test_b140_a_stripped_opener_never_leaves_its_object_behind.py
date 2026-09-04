@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.media_streams.llm_stream import _strip_interim_opener
+from app.media_streams.llm_stream import _strip_interim_opener, join_after_head
 
 
 # ---------------------------------------------------------------------------
@@ -142,3 +142,36 @@ def test_orphan_lead_is_untouched(text):
 @pytest.mark.parametrize("text", ["", "Let me check.", "Let me check"])
 def test_a_bare_opener_still_yields_nothing_to_say(text):
     assert _strip_interim_opener(text) == ""
+
+
+# ---------------------------------------------------------------------------
+# What the CALLER ends up with -- the seam this fix moved
+# ---------------------------------------------------------------------------
+# `join_after_head` is where the fragment reached TTS. Before B-140 the
+# stripper returned a non-empty fragment, so `body` was truthy, the decap for a
+# dash-ended head fired, and "Wednesday's" became "wednesday's" -- exactly the
+# lower-case w in the stored transcript.
+#
+# B-140 makes the stripper return "", which lands in the `if not body:` branch
+# instead. That branch already owns the question and answers it two ways, so
+# BOTH are pinned here: the caller hears the whole sentence, or hears nothing.
+# Neither is the fragment, which is the only claim this fix has to make.
+HEAD = "Sorry, still with you —"
+MODEL = "Let me check Wednesday's availability properly for you."
+
+
+def test_the_caller_never_hears_the_fragment_when_duplicates_are_kept():
+    got = join_after_head(MODEL, HEAD, suppress_pure_duplicate=False)
+    assert got == MODEL
+    assert "wednesday's availability properly" not in got
+
+
+def test_the_caller_never_hears_the_fragment_when_duplicates_are_dropped():
+    assert join_after_head(MODEL, HEAD, suppress_pure_duplicate=True) == ""
+
+
+def test_a_real_answer_after_the_same_head_is_unaffected():
+    """The seam still does its job -- this is what the head exists for."""
+    assert join_after_head(
+        "Wednesday 9th September has three times.", HEAD,
+    ) == "Wednesday 9th September has three times."
