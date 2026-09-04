@@ -5356,6 +5356,121 @@ _MAX_PRESENTED_TIMES_SINGLE_DAY = 3
 _MAX_PRESENTED_TIMES_MULTI_DAY = 2
 
 
+_NUMBER_WORDS = {
+    1: "one", 2: "two", 3: "three", 4: "four",
+    5: "five", 6: "six", 7: "seven",
+}
+
+# A location running this many days a week or fewer is SPARSE: the reason a
+# caller cannot be seen soon there is the rota, not the demand, and that is a
+# different sentence from "we're busy". Two is Redditch (Mon + Thu).
+_SPARSE_ROTA_MAX_DAYS = 2
+
+# How far out the soonest appointment has to be before the rota is worth
+# mentioning. Under this, "as soon as possible" has effectively been met and
+# the offer would just be an extra question on a booking that was going fine.
+_SPARSE_ROTA_MIN_DAYS_OUT = 4
+
+
+def _sparse_rota_note(
+    result: Dict[str, Any],
+    session: Optional[Dict[str, Any]],
+    days: List[Any],
+) -> Optional[Dict[str, Any]]:
+    """Decide whether to say "these are the only days I've got, try the other clinic".
+
+    B-137. Returns the note `acknowledge_sparse_rota` renders, or None. Every
+    condition must hold, and the order is cheapest-first:
+
+      1. the caller asked for the SOONEST (captured day_preference);
+      2. the earliest day found is >= _SPARSE_ROTA_MIN_DAYS_OUT away;
+      3. this location's found days cover <= _SPARSE_ROTA_MAX_DAYS weekdays;
+      4. another configured location is open on STRICTLY more days a week.
+
+    4 is what keeps this generic. Nothing here names Redditch or Alcester: the
+    day counts come from `location_working_hours`, so a single-site clinic
+    produces no note at all and a clinic that adds a third site is handled
+    without an engine change. Per CLAUDE.md, a clinic fact belongs in config.
+
+    Never raises. A note is a sentence; failing to build one costs nothing,
+    and a traceback on a live availability lookup costs the call.
+    """
+    from app.tools.slot_followup import caller_wants_soonest, _weekday_phrase
+    if not caller_wants_soonest(session or {}):
+        return None
+
+    dated = [d for d in days if isinstance(d, dict) and d.get("date")]
+    if not dated:
+        return None
+
+    try:
+        found = sorted({
+            _date_type.fromisoformat(str(d["date"])) for d in dated
+        })
+    except (ValueError, TypeError):
+        return None
+    if not found:
+        return None
+
+    today = datetime.now(LONDON_TZ).date()
+    if (found[0] - today).days < _SPARSE_ROTA_MIN_DAYS_OUT:
+        return None
+
+    # The weekdays this location actually HAS, not the ones it advertises.
+    weekday_nums = sorted({d.weekday() for d in found})
+    if len(weekday_nums) > _SPARSE_ROTA_MAX_DAYS:
+        return None
+    # 1 Jan 2024 was a Monday, so +n lands on weekday n.
+    weekday_names = [
+        _date_type(2024, 1, 1 + n).strftime("%A") for n in weekday_nums
+    ]
+
+    location = str((session or {}).get("location") or result.get("location") or "")
+    if not location:
+        return None
+
+    from app.clinic_config import get_clinic
+    clinic = get_clinic((session or {}).get("clinic_id", "theorem")) or {}
+    loc_wh = clinic.get("location_working_hours") or {}
+    if len(loc_wh) < 2:
+        return None
+
+    def _open_days(key: str) -> int:
+        hours = loc_wh.get(key) or {}
+        return sum(1 for v in hours.values() if v)
+
+    here = _open_days(location.lower())
+    others = sorted(
+        ((_open_days(k), k) for k in loc_wh if k.lower() != location.lower()),
+        reverse=True,
+    )
+    if not others:
+        return None
+    best_n, best_key = others[0]
+    if best_n <= here or best_n not in _NUMBER_WORDS:
+        return None
+
+    def _label(key: str) -> str:
+        for loc in (clinic.get("locations") or []):
+            if isinstance(loc, dict) and str(loc.get("id", "")).lower() == key.lower():
+                return str(loc.get("name") or key).strip()
+        return key.title()
+
+    note = {
+        "location_label": _label(location),
+        "open_days_phrase": _weekday_phrase(weekday_names),
+        "other_location_label": _label(best_key),
+        "other_open_days_word": _NUMBER_WORDS[best_n],
+    }
+    logger.info(
+        "[tools] sparse-rota note built - %s has %s only and the soonest is "
+        "%s (%d days out); %s runs %d days a week (B-137)",
+        note["location_label"], note["open_days_phrase"], found[0],
+        (found[0] - today).days, note["other_location_label"], best_n,
+    )
+    return note
+
+
 def _cap_presented_slots(
     result: Dict[str, Any],
     session: Optional[Dict[str, Any]] = None,
@@ -5423,6 +5538,18 @@ def _cap_presented_slots(
     out = dict(result)
     out["available_days"] = days
     out["total_days"] = len(days)
+
+    # B-137. Whether this location's rota is the reason the caller cannot be
+    # seen soon is a fact about the diary and the config, so it is decided
+    # here and carried on the payload -- never guessed by the model. Same
+    # contract as band_spent_label.
+    try:
+        _rota = _sparse_rota_note(result, session, days)
+    except Exception:
+        logger.exception("[tools] sparse-rota note failed -- continuing silent")
+        _rota = None
+    if _rota:
+        out["sparse_rota_note"] = _rota
 
     if len(presented) == 1 and isinstance(presented[0], dict):
         first = dict(presented[0])

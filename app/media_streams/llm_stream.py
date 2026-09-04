@@ -1112,6 +1112,77 @@ def _caller_requests_different_day(
     return False
 
 
+def _re_word_search(needle: str, haystack: str) -> bool:
+    """Whole-word match, so 'alcester' does not fire inside another word."""
+    return bool(re.search(rf"\b{re.escape(needle)}\b", haystack))
+
+
+def _caller_requests_different_location(
+    messages, session: Optional[Dict[str, Any]] = None
+) -> bool:
+    """True if the caller's latest utterance asks for a DIFFERENT clinic site.
+
+    B-137, the other half. The already_retrieved guard below has exactly one
+    escape hatch -- `_caller_requests_different_day` -- and a clinic is not a
+    day. So "yes please, check Alcester" is not a different-day request,
+    `last_offered_slots` still holds the Redditch times, and the guard answers
+    with "present the existing slots": she reads the SAME Thursdays back.
+
+    That mattered the moment `acknowledge_sparse_rota` started ASKING "shall I
+    check there instead?". Inviting a request the next guard refuses is worse
+    than never offering, so the offer and this predicate ship together.
+
+    Generic, like the note that prompts it. The names come from the clinic's
+    own `locations` block, so a single-site clinic can never satisfy this and
+    a third site needs no change here.
+
+    Fails the same direction as its day-twin, and for the same reason: a false
+    positive costs one tool round trip and the caller still gets the right
+    answer, while a false negative is the caller asking four times and being
+    served the same list every time.
+    """
+    txt = _last_user_text(messages).lower()
+    if not txt:
+        return False
+
+    current = str((session or {}).get("location") or "").strip().lower()
+
+    # "the other clinic" is a request whichever site they are on, but only
+    # when there IS another site -- checked below with the names.
+    _generic = (
+        "other clinic", "other location", "other one", "other site",
+        "another clinic", "another location", "different clinic",
+    )
+
+    try:
+        from app.clinic_config import get_clinic
+        clinic = get_clinic((session or {}).get("clinic_id", "theorem")) or {}
+        sites = clinic.get("locations") or []
+    except Exception:
+        return False
+    if len(sites) < 2:
+        return False
+
+    if any(g in txt for g in _generic):
+        return True
+
+    for site in sites:
+        if not isinstance(site, dict):
+            continue
+        key = str(site.get("id") or "").strip().lower()
+        if not key or key == current:
+            continue
+        names = {key, str(site.get("name") or "").strip().lower()}
+        names |= {
+            str(a).strip().lower()
+            for a in (site.get("aliases") or site.get("spoken_aliases") or [])
+        }
+        for name in names:
+            if name and _re_word_search(name, txt):
+                return True
+    return False
+
+
 def _caller_requests_new_day_or_time(messages, session: Optional[Dict[str, Any]] = None) -> bool:
     """A different day OR a different time of day — i.e. the caller is still
     choosing when to come in, so the post-collect guard must stand down."""
@@ -3928,6 +3999,24 @@ class LLMStream:
                     "before reading times outside it (B-117)", _band_spent,
                 )
 
+        # ── 3b-iii. Say why the soonest is this far out, and offer the ──────
+        # busier clinic. B-137. The selection now leads a soonest-request with
+        # the EARLIEST days, which for a caller who has heard them is the same
+        # list again; this is the sentence that makes that repeat honest. The
+        # offer is a QUESTION about the other clinic's rota, never a claim
+        # about its slots -- nothing has queried them.
+        _rota_note = session.get("_slot_sparse_rota_note")
+        if _rota_note and _allow_append:
+            from app.tools.slot_followup import acknowledge_sparse_rota
+            _joined, _rk = acknowledge_sparse_rota(_joined, _rota_note)
+            if _rk == "applied":
+                logger.info(
+                    "[ms_gate5] slot buf: named the sparse rota at %s and "
+                    "offered %s (B-137)",
+                    _rota_note.get("location_label"),
+                    _rota_note.get("other_location_label"),
+                )
+
         # ── 3c. Name the further dates matching the caller's weekday ─────────
         # Same contract as 3b and for the same reason: which dates exist is a
         # fact about the provider's calendar, decided here from the tool
@@ -5790,6 +5879,13 @@ class LLMStream:
                     # come here: re-fetching leads with the earliest times again,
                     # which is what 368b4e0 (V5) exists to prevent.
                     and not _caller_requests_different_day(messages or [], session)
+                    # B-137. A clinic is not a day, so the hatch above cannot
+                    # see "yes, check Alcester" -- and without this the offer
+                    # `acknowledge_sparse_rota` makes is answered by re-reading
+                    # the times the caller has just been told are too far out.
+                    and not _caller_requests_different_location(
+                        messages or [], session
+                    )
                     # B-99. Everything below subtracts from available_days,
                     # which is what SURVIVED the caller's time-of-day band. If
                     # the band hid times on the day now on the table, that copy
@@ -6580,6 +6676,13 @@ class LLMStream:
                     result.get("band_spent_label")
                     if isinstance(result, dict) else ""
                 ) or ""
+                # B-137. Same contract: whether this location's rota is why
+                # the caller cannot be seen soon, and which sibling clinic
+                # runs more days, are facts the retrieval path owns.
+                session["_slot_sparse_rota_note"] = (
+                    result.get("sparse_rota_note")
+                    if isinstance(result, dict) else None
+                )
                 session["_slot_other_dates"] = (
                     result.get("other_dates_for_requested_day")
                     if isinstance(result, dict) else None

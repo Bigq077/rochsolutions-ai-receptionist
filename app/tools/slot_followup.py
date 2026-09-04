@@ -2639,6 +2639,45 @@ def _choose_presented_indices_b116(
     return _spread(slots, list(range(n)), limit)
 
 
+# ───────────────────────────────────────────────────────────────────────────
+# B-137 — "sooner" and "what else" are opposite questions.
+#
+# `choose_presented_days` below leads with the days the caller has not heard.
+# That is right for "what else have you got" and exactly inverted for "anything
+# sooner", because the day they HAVE heard is the earliest one -- so the only
+# day that could satisfy the request is the only day guaranteed to be dropped.
+#
+# CA5685a2ab (4 Sep 2026, theorem_v3, Redditch, build 4eda31f3c8c9). Redditch
+# runs Thursdays, so the sweep found 10, 17, 24 Sep and 1 Oct. She offered the
+# 10th; he said "no i need it as soon as possible i can't wait a week"; and the
+# unheard-first rule answered him with the 17th, the 24th and the 1st of
+# October. He hung up seven seconds into the readout.
+#
+# The captured `day_preference` already said "as soon as possible" and nothing
+# in the selection read it.
+# ───────────────────────────────────────────────────────────────────────────
+
+# Captured `day_preference` values that mean "the earliest you have". Only the
+# unambiguous ones: "next week" and a bare weekday scope the caller AWAY from
+# today and have their own handling, and "whenever" is the opposite request.
+_SOONEST_DAY_PREFERENCES: frozenset = frozenset({
+    "as soon as possible", "today", "tomorrow", "tonight", "this week",
+})
+
+
+def caller_wants_soonest(session: Dict[str, Any]) -> bool:
+    """True when this caller has asked for the earliest appointment available.
+
+    Read from the captured `day_preference` rather than re-parsed from speech:
+    the capture happens once, early, in connection.py, and re-deriving it here
+    would be a second matcher to keep in step with the first.
+    """
+    if not isinstance(session, dict):
+        return False
+    pref = str(session.get("day_preference") or "").strip().lower()
+    return pref in _SOONEST_DAY_PREFERENCES
+
+
 def choose_presented_days(
     session: Dict[str, Any], days: Any, max_days: int
 ) -> List[Dict[str, Any]]:
@@ -2676,6 +2715,20 @@ def choose_presented_days(
         return list(days or [])[:max(0, max_days)]
     if len(days) <= max_days:
         return list(days)
+
+    # B-137. "Anything sooner?" is answered by the earliest days there are,
+    # even when the caller has already heard them. Repeating the 10th is not
+    # circular here -- it is the true answer, and `sparse_rota_note` is the
+    # sentence that says WHY it is repeated. Withholding it to lead with three
+    # later days is what lost CA5685a2ab.
+    if caller_wants_soonest(session):
+        logger.info(
+            "[slot_followup] caller asked for the soonest (day_preference=%r)"
+            " -- leading with the %d earliest of %d days, not the unheard ones",
+            session.get("day_preference"), min(max_days, len(days)), len(days),
+        )
+        return list(days)[:max_days]
+
     try:
         spoken = spoken_starts_for_offer(session)
     except Exception:          # a readout preference must never fail a lookup
@@ -2743,6 +2796,77 @@ def acknowledge_spent_band(text: str, label: str) -> Tuple[str, str]:
     if _sentence.lower() in _t.lower():
         return text, "unchanged"
     return f"{_sentence} {_t}", "prepended"
+
+
+_SPARSE_ROTA_LEAD = "The only days I've got at {loc} are {days}."
+_SPARSE_ROTA_OFFER = "{other} runs {n} days a week. Shall I check there instead?"
+
+
+def _weekday_phrase(names: List[str]) -> str:
+    """['Thursday'] -> 'Thursdays'; ['Monday','Thursday'] -> 'Mondays and Thursdays'."""
+    plural = [f"{n}s" for n in names]
+    if not plural:
+        return ""
+    if len(plural) == 1:
+        return plural[0]
+    return ", ".join(plural[:-1]) + " and " + plural[-1]
+
+
+def acknowledge_sparse_rota(text: str, note: Any) -> Tuple[str, str]:
+    """Say WHY the soonest is this far out, and offer the busier clinic.
+
+    Returns `(text, action)`; action is "unchanged" or "applied".
+
+    B-137, the sentence half. The selection fix above makes her read the
+    EARLIEST days to a caller who asked for the soonest -- which, when they
+    have already heard those days, is the same list twice. Repeating a list
+    unexplained is what "going in circles" sounds like. The explanation is the
+    thing that makes the repeat honest:
+
+        "The only days I've got at Redditch are Thursdays."
+        "Number 1, Thursday 10th September - nine in the morning, or one..."
+        "Alcester runs five days a week. Shall I check there instead?"
+
+    Two claims, two different sources, deliberately:
+
+      * The LEAD is about slots RETRIEVED -- the weekdays actually present in
+        this payload. It is never read from configured opening hours, because
+        Theorem's config says Redditch opens Mondays and Thursdays while every
+        Monday in the 30-day sweep came back empty. Saying "we're only open
+        Thursdays" would have been false; saying "the only days I've GOT are
+        Thursdays" is what the diary supports.
+
+      * The OFFER is about the ROTA, never about slots. "Alcester runs five
+        days a week" is a fact from `location_working_hours`. "I have something
+        sooner at Alcester" would be a promise about a calendar nobody has
+        queried, and the caller most motivated to be disappointed by it is
+        exactly this one. So it ends in a question, and the answer to that
+        question is what triggers the lookup.
+
+    Sentence only. It must never change which days or times were chosen, and
+    there is a test that fails if it does.
+
+    Idempotent: a re-flush of the same buffer must not stack either half.
+    """
+    _t = (text or "").strip()
+    if not _t or not isinstance(note, dict):
+        return text, "unchanged"
+
+    loc = str(note.get("location_label") or "").strip()
+    days = str(note.get("open_days_phrase") or "").strip()
+    other = str(note.get("other_location_label") or "").strip()
+    n_word = str(note.get("other_open_days_word") or "").strip()
+    if not (loc and days and other and n_word):
+        return text, "unchanged"
+
+    lead = _SPARSE_ROTA_LEAD.format(loc=loc, days=days)
+    offer = _SPARSE_ROTA_OFFER.format(other=other, n=n_word)
+
+    low = _t.lower()
+    if lead.lower() in low or offer.lower() in low:
+        return text, "unchanged"
+
+    return f"{lead} {_t} {offer}", "applied"
 
 
 def reconcile_readback_time(
