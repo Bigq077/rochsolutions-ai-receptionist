@@ -2,7 +2,7 @@
 
 **Demo line: +447366263180** (northgate). `latency-eval` auto-deploys here.
 Before dialling, confirm the build is up: the Render log prints
-`[build_info] running build 42a4bcb2` at call cleanup. That line is the only
+`[build_info] running build 5567aafa` at call cleanup. That line is the only
 proof of what is running — `/health` returns a hardcoded 1.0.0.
 
 Everything below was written from the two calls you made this morning,
@@ -89,7 +89,7 @@ nothing canonical does not, so this is a genuine fast-forward and not a merge.
 git fetch origin && git log --oneline origin/latency-eval ^origin/production | wc -l
 ```
 
-That should print **31**. Then:
+That should print **32**. Then:
 
 ```bash
 git push origin origin/latency-eval:production
@@ -100,7 +100,7 @@ Three services, three clinics, real patients.
 
 ### After the push
 
-1. Watch for `[build_info] running build 42a4bcb2` in each service's log.
+1. Watch for `[build_info] running build 5567aafa` in each service's log.
 2. **Make one real call to one live clinic line** and take it to a booking.
    An engine change is not verified until a live line has answered.
 3. If anything is wrong:
