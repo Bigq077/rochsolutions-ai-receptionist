@@ -2411,6 +2411,56 @@ async def _fetch_uk_bank_holidays() -> frozenset:
     return combined
 
 
+def _surname_was_spoken_back(session: Dict[str, Any], name: Any):
+    """Did Susie ever SAY this surname out loud? True / False / None. PURE.
+
+    None means "cannot tell" -- no two-part name, or no assistant turns on
+    record -- and must never be reported as a failure.
+
+    §2.5. The phone has a hard gate (A1, above): `phone_confirmed is not True`
+    blocks the write outright. The surname has only a prompt instruction, which
+    records that "speech-to-text has written the wrong surname to a real
+    calendar twice". `_unconfirmed_callback_number` names the failure shape in
+    one line: "The read-back was decorative."
+
+    WARN, NOT BLOCK, and that is measured rather than assumed. Over the obs
+    corpus (851 calls, 25 Jul - 3 Sep) the surname was spoken back on 65.4% of
+    calls that ACTUALLY BOOKED with a two-part name on record, and never spoken
+    on 34.6% of them. A block would have refused roughly one booking in three.
+    So this counts the exposure and says so; promoting it to a gate is a
+    separate decision that needs the rate under about 5% first.
+
+    Expect this to fire OFTEN at first -- a third of bookings on that corpus.
+    A burst of these is the measurement working, not a new defect.
+
+    Compares a stored VALUE against what was said, never a phrase matcher --
+    the shape `accepted_slot_is_named_in` uses, and the rule
+    `write-gates-match-one-literal` records. `conversation_history` is the
+    whole-call record of Susie's turns; `_spoken_chunks` is per-turn and is
+    popped, so it is empty by the time a booking fires.
+    """
+    parts = str(name or "").split()
+    if len(parts) < 2:
+        return None
+    surname = parts[-1].strip().lower()
+    if len(surname) < 2:
+        return None
+    history = (session or {}).get("conversation_history")
+    if not isinstance(history, list) or not history:
+        return None
+    said_anything = False
+    for turn in history:
+        if not isinstance(turn, dict) or turn.get("role") != "assistant":
+            continue
+        content = str(turn.get("content") or "")
+        if not content.strip():
+            continue
+        said_anything = True
+        if surname in content.lower():
+            return True
+    return False if said_anything else None
+
+
 async def _closed_dates_for(clinic: Dict[str, Any]) -> frozenset:
     """Whole dates this clinic cannot be booked on, whatever its weekly hours.
 
@@ -7610,6 +7660,27 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         )
         session["phone_arg_corrected"] = True
         args["phone"] = _a3_fix
+
+    # ── Surname read-back exposure — COUNTED, never blocked (§2.5) ──────────
+    # Placed here for the same reason A3 is: above the backend branch, so all
+    # four executors are covered by one site.
+    #
+    # Log only. Nothing below reads this and no value is changed, deliberately:
+    # the measured block rate is ~1 booking in 3 (see the helper), which is not
+    # a rate anything can ship as a gate. This makes the exposure countable so
+    # the decision to promote it has a number behind it instead of an instinct.
+    try:
+        _sur_seen = _surname_was_spoken_back(session, args.get("name"))
+        if _sur_seen is False:
+            logger.warning(
+                "[book] SURNAME NOT READ BACK — booking %r on a surname Susie "
+                "never said aloud, so the caller cannot have corrected it "
+                "(§2.5, warn-only). clinic=%s",
+                str(args.get("name") or "")[:40], session.get("clinic_id"),
+            )
+    except Exception:
+        # A counter must never be able to stop a booking.
+        logger.debug("[book] surname read-back check failed", exc_info=True)
 
     # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
     if _resolve_clinic_id(session) in ("theorem", "theorem_v2", "theorem_v3"):
