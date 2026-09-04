@@ -2481,6 +2481,75 @@ def accepted_slot_is_named_in(session: Dict[str, Any], text: str) -> bool:
     return bool(bare and bare != label and _time_named_in(phrase, bare))
 
 
+def payload_slots_named_in(
+    session: Dict[str, Any], text: str
+) -> List[Dict[str, Any]]:
+    """Which BOOKABLE payload slots does `text` name, by DAY and TIME? PURE.
+
+    Sibling of `accepted_slot_is_named_in`, and the same idea one step wider:
+    that one asks "does this sentence name the ONE slot we pinned", this asks
+    "which slots does this sentence name at all". Both halves of every
+    comparison come from the payload -- the day label and the spoken time the
+    offer was read with -- so neither is a match against a phrase written by
+    hand, which is the rule `write-gates-match-one-literal` records.
+
+    Why it exists. CA9c39d09f (4 Sep 2026, northgate). The caller asked for
+    "around midday, 11 o'clock". The P6 stand-down spoke the model's sentence
+
+        "Monday 7th September -- twenty past eleven in the morning, or ten
+         past twelve in the afternoon. Either of those work?"
+
+    and left the record describing the offer BEFORE it: Monday at eight in the
+    morning and ten past five in the evening. Both spoken times were real
+    payload slots -- 11:20 and 12:10 were in `available_days` -- but neither
+    was recorded as heard. So when he said "oh yeah 10 past 12 works",
+    `slot_accepted_by_caller` declined, exactly as its own contract says it
+    must: it accepts a time "only among times the caller was actually READ".
+    Nothing resolved, the read-back guard warned three times, and he hung up
+    at the confirmation.
+
+    The DAY is required as well as the time, and that is the safety. A spoken
+    label repeats across days -- "eight in the morning" exists on most of them
+    -- so matching on time alone would record slots on days the sentence never
+    mentioned. Requiring both means a sentence has to name a slot the way a
+    person would before it counts.
+
+    Returns [] on anything it cannot read. Declining is free here: the caller
+    is left exactly where they were before this existed.
+    """
+    if not isinstance(session, dict) or not isinstance(text, str) or not text.strip():
+        return []
+    slots = flatten_bookable_slots(session.get("available_days"))
+    if not slots:
+        return []
+
+    phrase_time = _time_norm(text)
+    phrase_day = _readback_norm(text)
+    if not phrase_time:
+        return []
+
+    out: List[Dict[str, Any]] = []
+    for sl in slots:
+        label = str(sl.get("spoken") or "").strip()
+        if not label:
+            continue
+        named = _time_named_in(phrase_time, label)
+        if not named:
+            # P7's allowance: once the day is named, "half past three" is how a
+            # person says "half past three in the afternoon".
+            bare = _strip_part_of_day(label)
+            named = bool(bare and bare != label and _time_named_in(phrase_time, bare))
+        if not named:
+            continue
+        day_label = str(sl.get("day_label") or "").strip()
+        if day_label:
+            day_norm = _readback_norm(day_label)
+            if day_norm and day_norm not in phrase_day:
+                continue
+        out.append(sl)
+    return out
+
+
 def _pin_accepted_index(
     session: Dict[str, Any], day: Dict[str, Any], chosen: List[int], limit: int
 ) -> List[int]:

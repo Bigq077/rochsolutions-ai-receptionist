@@ -3611,11 +3611,86 @@ class LLMStream:
                     "record are left untouched (P6). model=%r",
                     _model_text[:120],
                 )
-                # Nothing is recorded. `record_spoken_slots`, `last_offered_slots`,
-                # `slot_labels` and the DTMF map all still describe the offer the
-                # caller is choosing FROM, and that offer is the one still
-                # standing. Writing the unspoken payload over it would renumber
-                # the keypad under a caller mid-sentence.
+                # The UNSPOKEN payload is still not written: writing it over the
+                # record would renumber the keypad under a caller mid-sentence,
+                # which is what this branch has always refused and still does.
+                #
+                # B-134, CA9c39d09f (4 Sep 2026, northgate). What it DOES write
+                # now is the slots the model just SPOKE, when those are real
+                # payload slots the record does not already hold.
+                #
+                # The caller asked for "around midday, 11 o'clock". This branch
+                # spoke
+                #
+                #   "Monday 7th September -- twenty past eleven in the morning,
+                #    or ten past twelve in the afternoon. Either of those work?"
+                #
+                # and left the record describing the offer BEFORE it: Monday at
+                # eight in the morning and ten past five in the evening. Both
+                # spoken times were genuine -- 11:20 and 12:10 were both in
+                # `available_days` -- but neither was recorded as heard. So
+                # "oh yeah 10 past 12 works" resolved to NOTHING, with
+                # `slot_accepted_by_caller` declining exactly as its contract
+                # requires ("only among times the caller was actually READ").
+                # The read-back guard warned three times and the caller hung up
+                # at the confirmation.
+                #
+                # The premise this branch rests on is that a model naming no
+                # numbers is ANSWERING a pick. Here it was PRESENTING two new
+                # times and simply not numbering them. The discriminator was
+                # already to hand: a sentence confirming a pick names a slot the
+                # record HOLDS, and this one named two it did not.
+                #
+                # apply_offer_to_session rather than a local write, because its
+                # own docstring states the rule being broken: "Anything that
+                # speaks an offer calls this." An empty dtmf_map arms no keypad
+                # -- the model numbered nothing, so there is nothing to press --
+                # and SUPERSEDES the stale day map rather than clearing it:
+                # digits stop resolving, the voice window stays open, and
+                # `v3_dtmf_slot_map` is left in place because popping it would
+                # hand the next turn permission to wipe `last_offered_slots`
+                # (B-78/B-80). That is apply_offer_to_session's own rule, not a
+                # new one, and it is P9's defect it prevents: pressing 2 for
+                # Tuesday after she has narrowed to Monday times.
+                try:
+                    from app.tools.slot_followup import payload_slots_named_in
+                    from app.tools.slot_offer import apply_offer_to_session
+                    _spoken_slots = payload_slots_named_in(session, _model_text)
+                    _already = {
+                        str((_s or {}).get("start") or "")[:19]
+                        for _s in (session.get("last_offered_slots") or [])
+                        if isinstance(_s, dict)
+                    }
+                    _fresh = [
+                        _s for _s in _spoken_slots
+                        if str(_s.get("start") or "")[:19] not in _already
+                    ]
+                    if _fresh:
+                        apply_offer_to_session(
+                            session,
+                            {
+                                "slots": _spoken_slots,
+                                "dtmf_map": {},
+                                "mode": "single_day",
+                            },
+                            _stand_down,
+                        )
+                        logger.warning(
+                            "[ms_gate5] B-134: the stood-down sentence named %d "
+                            "payload slot(s) the record did not hold (%r) - "
+                            "recorded them, so the caller's pick can resolve and "
+                            "the read-back guard has something true to check "
+                            "against",
+                            len(_fresh),
+                            [str(_s.get("start") or "")[:19] for _s in _fresh],
+                        )
+                except Exception:
+                    # A record that cannot be written must not stop the caller
+                    # hearing the sentence. The worst case is today's behaviour.
+                    logger.exception(
+                        "[ms_gate5] B-134: could not record the stood-down "
+                        "sentence's slots - speaking it regardless"
+                    )
                 for _c in _stand_down:
                     await tts_queue.put(_c)
                     session["_slotbuf_emitted"] = True
