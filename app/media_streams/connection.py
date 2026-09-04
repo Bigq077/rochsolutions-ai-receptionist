@@ -9496,6 +9496,41 @@ class WebSocketCallHandler:
                                 await self.tts_text_queue.put(_cs_line)
                                 self.session["last_bot_prompt"] = _cs_line
                                 self.session["last_question"] = _cs_line
+                                # B-136, CA9c39d09f (4 Sep 2026, northgate).
+                                # This branch answers the whole turn and
+                                # returns, so the caller's utterance never
+                                # reaches commit_reason_answer further down.
+                                # An utterance that ARMS a screen is very often
+                                # the same one that answers "what's the
+                                # appointment for?" -- it has to describe a
+                                # complaint to trigger a screen at all.
+                                #
+                                # On that call he said "i was playing football
+                                # ... rolled my ankle", which armed
+                                # trauma_fracture and was consumed here. The
+                                # reason flag stayed armed and caught his NEXT
+                                # utterance instead, so the call was recorded,
+                                # summarised and handed to the Sheets row as
+                                #
+                                #     reason: 'i said no you may'
+                                #
+                                # -- his reply to the screen. Nobody reading
+                                # that row learns why he rang.
+                                #
+                                # commit_reason_answer carries its own guards:
+                                # it fires only while the flag is armed, skips
+                                # the utterance that provoked the question, and
+                                # never overwrites a reason already on record.
+                                try:
+                                    from app.media_streams.first_turn_extractor import (
+                                        commit_reason_answer as _cs_commit_reason,
+                                    )
+                                    _cs_commit_reason(self.session, utterance)
+                                except Exception:
+                                    logger.debug(
+                                        "[ms_conn] reason capture on the screening "
+                                        "path failed", exc_info=True,
+                                    )
                                 self.session.setdefault(
                                     "conversation_history", []
                                 ).append(
@@ -9513,10 +9548,19 @@ class WebSocketCallHandler:
                                 self.llm_in_flight = False
                                 self._llm_busy = False
                                 self.session["llm_generation_active"] = False
+                                # Log what was SPOKEN. This printed `utterance`
+                                # -- the caller's words -- under the label
+                                # "response spoken deterministically", so the
+                                # 4 Sep log read as though Susie had said "um
+                                # yeah basically i was playing football...". It
+                                # cost real time on that read; both are named
+                                # now.
                                 logger.info(
                                     "[ms_conn] clinical screening %s — scripted "
-                                    "response spoken deterministically: %r",
-                                    _cs_result["action"], utterance[:80],
+                                    "response spoken deterministically: %r "
+                                    "(in reply to: %r)",
+                                    _cs_result["action"], _cs_line[:80],
+                                    utterance[:60],
                                 )
                                 continue
                     except Exception:
