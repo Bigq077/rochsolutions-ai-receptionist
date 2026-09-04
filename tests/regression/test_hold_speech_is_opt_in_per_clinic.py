@@ -79,6 +79,27 @@ HOLD_SPEECH_OPT_IN = {
         "situational head fired and was heard. Revert = set "
         "operational.hold_speech false and drop this entry."
     ),
+    "jv_v1": (
+        "OWNER decision (Quentin), 2026-09-04, completing the roll-out — the "
+        "holiday plan's item 4, 'port filler phrase work to joint venture and "
+        "vital edge'. THE JV PRACTITIONER HAS NOT HEARD IT. That is the same "
+        "weaker standard vital_edge was taken on three days earlier, and it is "
+        "written down here rather than smoothed over, because this list exists "
+        "to make the standard visible and not to certify it. "
+        "WHY JV IS THE LOW-RISK ONE OF THE THREE: its configuration is "
+        "identical to northgate's in the only two respects the arbiter reads — "
+        "booking_system is google_calendar so confirm_write_kind(provisional="
+        "False) returns WRITE_BOOK, and it has a named practitioner. northgate "
+        "is the shape the arbiter has run longest and the one every demo-line "
+        "call this week exercised, so JV draws the pool with the most listening "
+        "behind it. It can never draw VE's PENDING_REQUEST, which names the "
+        "practitioner and would claim a request where JV writes a real "
+        "booking. "
+        "NOT YET AUDIBLE TO PATIENTS AT THE TIME OF WRITING: JV runs on "
+        "`production`, so this reaches its callers only on the next "
+        "fast-forward. That push is the decision point, not this commit. "
+        "Revert = set operational.hold_speech false and drop this entry."
+    ),
 }
 
 
@@ -87,7 +108,9 @@ def test_no_patient_line_hears_the_arbiter_without_someone_choosing_it():
 
     northgate is the demo clinic and exists to be experimented on. jv_v1,
     vital_edge and theorem carry real patients, and each is a separate
-    conversation with a practitioner who has not yet heard it.
+    conversation with a practitioner. As of 2026-09-04 jv_v1 and
+    vital_edge are both on by OWNER decision with neither practitioner
+    having heard it; theorem is the one still off. The entries say so.
     """
     unlisted = [
         cid for cid in sorted(set(cc.TWILIO_TO_CLINIC.values()))
@@ -112,7 +135,15 @@ def test_the_demo_clinic_is_actually_on_so_it_can_be_heard():
 
 
 def test_the_switch_reads_the_clinic_and_never_raises():
-    assert hold_speech_enabled({"clinic_id": "jv_v1"}) is False
+    """`theorem` is the off example, not jv_v1.
+
+    jv_v1 was the stand-in for "a real clinic that has not opted in" until it
+    opted in on 2026-09-04. Re-aimed rather than deleted: the point of the
+    first line is that the switch reads a REAL clinic and returns False for it,
+    which an unknown id and an empty session cannot show — they would both pass
+    against a function that returned False unconditionally.
+    """
+    assert hold_speech_enabled({"clinic_id": "theorem"}) is False
     assert hold_speech_enabled({}) is False
     assert hold_speech_enabled({"clinic_id": "no_such_clinic"}) is False
 

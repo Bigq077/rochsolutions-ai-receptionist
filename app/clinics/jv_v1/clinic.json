@@ -50,6 +50,8 @@
   "operational": {
     "_note": "Flattened by get_clinic into the legacy clinic contract. working_hours end = last_appointment + slot_minutes so the last slot stays bookable (is_within_working_hours uses start <= t < end).",
     "timezone": "Europe/London",
+    "_hold_speech_note": "Routes hold phrases through app/hold_speech.py (the arbiter) instead of each producer choosing its own. Turned on 2026-09-04, last of the three, after northgate (from the start) and vital_edge (1 Sep). JV's configuration is IDENTICAL to northgate's — booking_system google_calendar so provisional is False, and a named practitioner — which is the shape the arbiter has been running longest and the one every demo-line call this week exercised. It therefore gets the WRITE_BOOK pool (\"Right, booking you in -\"), NOT VE's PENDING_REQUEST pool, which names the practitioner and would claim a request where JV makes a real booking. Reverting is this one key — no code, no branch — but it is NOT instant: get_clinic() reads this file through an mtime-keyed cache, so a change is a commit plus a Render redeploy.",
+    "hold_speech": true,
     "sms_name": "Joint Venture Physiotherapy",
     "sms_appointment_noun": "physiotherapy",
     "phone": "+44 7367 002651",
