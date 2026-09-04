@@ -516,6 +516,17 @@ _ORPHAN_MIN_EVIDENCE = 2
 #
 # test_orphan_survives_the_prompt_cap.py pins this against the literal in
 # llm_stream.py. If that test fails, the cap moved and this must follow it.
+#
+# MEASURED 4 Sep 2026 over the last 400 stored calls (4,821 assistant turns):
+# 523 turns run past the cap, and on 160 of them the '?' is the character that
+# falls off the end — 137 of the 400 calls, better than one in three. So the
+# fallback below is LOAD-BEARING, not belt-and-braces, and the same is true of
+# `_cta_asked`'s in llm_stream.py. One of the truncated screens measured was
+# "...does it look out of shape| at all?" — a fracture screen losing its mark.
+#
+# The cap itself was deliberately NOT raised: every known reader now has a
+# fallback, and widening what the write gates can see is a change that opens
+# a booking gate, which needs a live call rather than a green suite.
 _LAST_BOT_PROMPT_CAP = 200
 
 
@@ -594,6 +605,20 @@ def match_asked_screen(
             )
             raw = _q
         else:
+            if len(_bot) >= _LAST_BOT_PROMPT_CAP:
+                # Truncated AND no question left anywhere. This is the exact
+                # shape B-31 was: not a wrong answer, an EMPTY LOG. "found
+                # nothing", "never ran" and "ran and was suppressed" were the
+                # same, and a red-flag answer went ungraded for a week because
+                # of it. The recovered case above has said so since; this one,
+                # where there is nothing to recover, still returned in silence.
+                logger.warning(
+                    "[clinical_screening] last_bot_prompt truncated at %d "
+                    "chars and lost its '?', and last_question carries no "
+                    "question either — this turn CANNOT be orphan-matched "
+                    "(B-31). bot=%r question=%r",
+                    _LAST_BOT_PROMPT_CAP, _bot[-40:], _q[:120],
+                )
             return None
     last = _norm(raw)
     if not last:

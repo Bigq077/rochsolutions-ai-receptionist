@@ -288,3 +288,40 @@ def test_an_ordinary_booking_turn_logs_nothing(clinic, caplog):
     with caplog.at_level(logging.INFO, logger=cs.__name__):
         assert cs.match_asked_screen(clinic, sess) is None
     assert not any("NEAR MISS" in r.getMessage() for r in caplog.records)
+
+
+def test_a_truncated_turn_with_no_fallback_is_logged_too(clinic, caplog):
+    """B-31's real cost was an empty log, and one path still had one.
+
+    Truncated, the '?' gone, and `last_question` carrying no question either:
+    nothing can be recovered, so `match_asked_screen` returns None -- which is
+    correct. It used to do so in total silence, which is the state B-31 says is
+    indistinguishable from "never ran". A screen that cannot be graded is
+    exactly the thing an operator needs to see.
+    """
+    sess = {
+        "last_bot_prompt": "x" * cs._LAST_BOT_PROMPT_CAP,   # no '?'
+        "last_question": "Right, let me get that sorted for you.",  # no '?'
+    }
+    with caplog.at_level(logging.WARNING, logger=cs.__name__):
+        assert cs.match_asked_screen(clinic, sess) is None
+    assert any(
+        "CANNOT be orphan-matched" in r.getMessage() and "B-31" in r.getMessage()
+        for r in caplog.records
+    ), "a screen that cannot be graded must leave a trace"
+
+
+def test_a_short_turn_with_no_question_stays_quiet(clinic, caplog):
+    """The new line must fire on TRUNCATION, not on every statement turn.
+
+    connection.py has ~20 short deterministic writers (fillers, keypad
+    prompts). A warning on each of those is the same failure as no warning at
+    all -- it is why the fallback is gated on the length in the first place.
+    """
+    sess = {
+        "last_bot_prompt": "Right, let me get that sorted for you.",
+        "last_question": "",
+    }
+    with caplog.at_level(logging.WARNING, logger=cs.__name__):
+        assert cs.match_asked_screen(clinic, sess) is None
+    assert not any("orphan-matched" in r.getMessage() for r in caplog.records)
