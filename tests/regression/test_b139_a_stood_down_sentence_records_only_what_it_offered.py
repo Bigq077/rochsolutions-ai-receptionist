@@ -175,6 +175,101 @@ async def test_a_refusal_records_nothing_and_leaves_the_standing_offer():
 
 
 # ---------------------------------------------------------------------------
+# The live call, both halves in one sentence
+# ---------------------------------------------------------------------------
+# CAdd64c466, turn 12, verbatim. It REFUSES one time and OFFERS three, which is
+# the phrasing the whole clause split exists for -- and the caller's answer at
+# turn 13 died:
+#
+#   12  "I'm afraid Wednesday 9th September doesn't have ten past twelve
+#        available — but it does have ten to nine in the morning, twenty to ten
+#        in the morning, or half past three in the afternoon."
+#   13  'oh yeah 20 to 10 will work'
+#   14  "Sorry, still with you —"
+#   16  "Wednesday 9th September — Number 1, twenty to ten in the morning.
+#        Number 2, half past ten in the morning. …"
+#
+# She read the day again, with a different set of times, because nothing had
+# resolved. He had already chosen.
+WED_TIMES = [
+    "08:00", "08:50", "09:40", "10:30", "11:20",
+    "13:00", "13:50", "14:40", "15:30", "16:20", "17:10",
+]
+WED_SPOKEN = [
+    "eight in the morning", "ten to nine in the morning",
+    "twenty to ten in the morning", "half past ten in the morning",
+    "twenty past eleven in the morning", "one in the afternoon",
+    "ten to two in the afternoon", "twenty to three in the afternoon",
+    "half past three in the afternoon", "twenty past four in the afternoon",
+    "ten past five in the evening",
+]
+WEDNESDAY = {
+    "date": "2026-09-09",
+    "day_label": "Wednesday 9th September",
+    "slot_times": list(WED_TIMES),
+    "slot_times_spoken": list(WED_SPOKEN),
+    "slots": [
+        {"start": "2026-09-09T%s:00+01:00" % t, "end": ""} for t in WED_TIMES
+    ],
+}
+TURN_12 = (
+    "I'm afraid Wednesday 9th September doesn't have ten past twelve available "
+    "— but it does have ten to nine in the morning, twenty to ten in the "
+    "morning, or half past three in the afternoon. Would any of those work "
+    "for you?"
+)
+
+
+def _wednesday_session():
+    return {
+        "available_days": [WEDNESDAY],
+        "last_offered_slots": [
+            {"start": "2026-09-09T08:00:00+01:00", "end": ""},
+            {"start": "2026-09-09T16:20:00+01:00", "end": ""},
+        ],
+        "slot_labels": [
+            "eight in the morning", "twenty past four in the afternoon",
+        ],
+        "slot_starts_spoken": [
+            "2026-09-09T08:00:00", "2026-09-09T16:20:00",
+        ],
+    }
+
+
+def test_the_live_sentence_records_the_three_it_offered():
+    got = payload_slots_named_in(_wednesday_session(), TURN_12)
+    assert [str(s["start"])[:16] for s in got] == [
+        "2026-09-09T08:50", "2026-09-09T09:40", "2026-09-09T15:30",
+    ]
+
+
+def test_turn_13_now_lands():
+    """The caller's actual words. None is what he got on the call."""
+    from app.tools.slot_offer import apply_offer_to_session
+
+    session = _wednesday_session()
+    assert slot_accepted_by_caller(session, "oh yeah 20 to 10 will work") is None
+
+    apply_offer_to_session(
+        session,
+        {"slots": payload_slots_named_in(session, TURN_12), "dtmf_map": {},
+         "more_times": False, "mode": "single_day"},
+        [TURN_12],
+    )
+    assert slot_accepted_by_caller(session, "oh yeah 20 to 10 will work") == (
+        "2026-09-09T09:40:00+01:00"
+    )
+
+
+def test_the_refused_time_is_not_among_them():
+    """"ten past twelve" is in the same sentence, and Wednesday's payload does
+    not hold it either -- so this passes for two independent reasons and is
+    here to say so, not to pin the clause split."""
+    got = payload_slots_named_in(_wednesday_session(), TURN_12)
+    assert not any(str(s["start"])[11:16] == "12:10" for s in got)
+
+
+# ---------------------------------------------------------------------------
 # Wired, not merely callable
 # ---------------------------------------------------------------------------
 def test_the_matcher_reads_clauses_and_not_the_whole_sentence():

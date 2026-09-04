@@ -7549,6 +7549,36 @@ _ORPHAN_LEAD = re.compile(
 )
 
 
+# The opener took an OBJECT and the object is still there.
+#
+# B-140, CAdd64c466 (northgate, 4 Sep 2026). The caller heard, in one breath:
+#
+#     14  "Sorry, still with you —"
+#     15  "wednesday's availability properly for you."
+#
+# The model wrote "Let me check Wednesday's availability properly for you."
+# `_INTERIM_DUPE_RE` removed "Let me check " -- correctly, a hold phrase had
+# already been spoken -- and what is left is that verb's object with no verb in
+# front of it. Not a sentence, and it was said out loud.
+#
+# `_ORPHAN_LEAD` below is the same defect caught one word earlier: it fires when
+# the remainder opens with a subordinator or a wh- complement. A possessive noun
+# phrase is neither, so it walked straight through.
+#
+# The test is on what was CONSUMED, not on what is left, because that is where
+# the evidence is: an opener ending in a bare transitive verb has had its object
+# taken away from it. An opener that ended in punctuation -- "Let me check,",
+# "Let's see —", "Let me check that for you." -- closed its own clause, and the
+# remainder there is a real sentence that must still be spoken.
+_ORPHAN_OBJECT = re.compile(r"\b(?:check|see|look(?:\s+at)?)$", re.I)
+
+# ...unless the punctuation that closes the opener was left on the REMAINDER
+# rather than consumed with it. "Let's see \u2014 Friday the fourteenth works."
+# strips to "\u2014 Friday the fourteenth works.": the dash IS the boundary, the
+# clause is closed, and dropping it would delete an offer.
+_SEPARATOR_LEAD = re.compile(r"^[-\u2013\u2014,:;]")
+
+
 def _strip_interim_opener(text: str) -> str:
     """
     Remove a known interim phrase from the start of an LLM first chunk to
@@ -7557,8 +7587,18 @@ def _strip_interim_opener(text: str) -> str:
     Also removes the first sentence if it contains "check" within the first
     15 words (catches paraphrases like "Let me just check what we have…").
     """
-    stripped = _INTERIM_DUPE_RE.sub("", text).lstrip()
-    if stripped != text and _ORPHAN_LEAD.match(stripped):
+    _m = _INTERIM_DUPE_RE.match(text)
+    _consumed = _m.group(0) if _m else ""
+    stripped = text[_m.end():].lstrip() if _m else text
+    if stripped != text and (
+        _ORPHAN_LEAD.match(stripped)
+        # B-140: or the opener was a bare "check"/"see"/"look at" and this is
+        # the object it was reaching for.
+        or (
+            _ORPHAN_OBJECT.search(_consumed.rstrip())
+            and not _SEPARATOR_LEAD.match(stripped)
+        )
+    ):
         # The opener was the HEAD of a subordinate clause, not a sentence of its
         # own: "Bear with me while I look that up." Removing the phrase leaves
         # "While I look that up." — a dangling clause Susie then says out loud.
