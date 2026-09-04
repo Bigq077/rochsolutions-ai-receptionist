@@ -4090,6 +4090,150 @@ def numbered_more_times_speech(
     return offer.text
 
 
+def named_day_speech(
+    session: Dict[str, Any], user_text: str
+) -> Optional[str]:
+    """Answer "what about Wednesday" from the PAYLOAD, not from the model. Or None.
+
+    The third producer, and it exists for the same reason as the second.
+
+    D-B, `CA90ccb117`, northgate, 2026-09-03 15:41. Susie read a three-day
+    offer. The caller said "uh yeah check for tuesday please". The head fired
+    correctly -- "Let me have a look at Tuesday for you --" -- and then **no
+    `check_availability` call ran at all**. The model answered from the offer
+    already in its context and said:
+
+        "That day I've got ten to nine in the morning, or ten past five in the
+         evening -- which suits?"
+
+    Those are exactly the two Tuesday slots it had already read out. Tuesday's
+    payload held twelve. Three failures from one missing tool call:
+
+      1. the head promised a lookup that never happened -- the promised-work
+         defect arriving from the opposite direction to every previous
+         instance: not a head in front of no work, but no work behind a
+         justified head;
+      2. the caller was re-read 2 of 12 and told nothing else existed;
+      3. `v3_dtmf_slot_map` still held three DAYS while she had just spoken two
+         TIMES, so pressing 1 would have picked Monday. Speech and record
+         disagreed for the rest of the call.
+
+    `calls.slot_offers` recorded ONE entry for that call. The Tuesday reply
+    went through no producer, so every guard downstream was reading a record
+    nobody had written.
+
+    THE FIX IS NOT TO MAKE THE MODEL CALL THE TOOL. That is trigger-side, and
+    this codebase has been wrong in that direction three times (B-107's
+    "undecidable at the partial", Option 5 on B-127, Option 4 deferred). It is
+    also unnecessary: the payload is already on the session, so the honest
+    answer costs no tool call at all -- which is the same argument
+    `more_days_speech` makes, and this is that function with the scope
+    inverted. There it is the days he has NOT heard; here it is the one day he
+    just named.
+
+    Deny by default, and every step can decline:
+
+      1. a multi_day offer only. On single_day the day under discussion is
+         already the only one, `remaining_unspoken_on_current_day` owns it, and
+         re-reading it here would repeat the offer;
+      2. the caller names exactly ONE day, resolved against the OFFER rather
+         than the calendar -- `day_named_by_caller` for the full label,
+         `_offered_day_by_weekday` for a bare weekday;
+      3. that day is in the payload and holds bookable times;
+      4. it is not a "more slots" or "different day" request -- those have
+         their own paths and their own answers, and this must not steal them;
+      5. it is not a TIME pick. "Tuesday at ten past five" is an acceptance,
+         `slot_accepted_by_caller` owns it, and answering it with a readout
+         would talk over a caller who has already chosen.
+
+    Speaks AND records, through the same two functions the primary readout
+    uses -- `build_slot_offer` for the words, `apply_offer_to_session` for
+    every record of them, including the keypad map. There is no third way to
+    put an offer on the table, which is the entire point of the convergence
+    plan.
+
+    Never raises: a producer fault must leave the caller with the model's
+    answer, which is what they got before this existed.
+    """
+    try:
+        if str(session.get("_slot_presentation_mode") or "") != "multi_day":
+            return None
+        if utterance_requests_more_slots(user_text):
+            return None
+        if utterance_requests_different_day(user_text):
+            return None
+
+        days = session.get("available_days")
+        if not isinstance(days, list) or not days:
+            return None
+
+        # A caller naming a TIME has picked, not asked. Let the resolver own it.
+        if slot_accepted_by_caller(session, user_text):
+            return None
+
+        # And a caller ACCEPTING a day has picked too. "yeah monday works" is
+        # not "what about monday", and the difference is the whole subject of
+        # `day_accepted_by_caller` -- deny-by-default on both sides, built for
+        # exactly this line on 2026-09-03 and verified on a live call the same
+        # day ("Monday it is -", 13:07:12).
+        #
+        # Intercepting it here would be a REGRESSION of that verified path: the
+        # caller would be read a list instead of acknowledged, and the
+        # SLOT_PICKED head would never fire. This producer answers REQUESTS.
+        # What happens after an acceptance is already settled and is not ours
+        # to change.
+        if day_accepted_by_caller(session, user_text):
+            return None
+
+        # WHICH day, resolved against the offer. Full label first, then a bare
+        # weekday against the days actually read out -- the same ladder
+        # `slot_accepted_by_caller` uses, and for the same reason: resolving a
+        # weekday against the calendar is date parsing and needs its own corpus.
+        named = day_named_by_caller(days, user_text)
+        date = named.get("date") if isinstance(named, dict) else named
+        if not date:
+            date = _offered_day_by_weekday(
+                session.get("last_offered_slots") or [], user_text
+            )
+        if not date:
+            return None
+
+        day = next(
+            (d for d in days
+             if isinstance(d, dict) and d.get("date") == date), None
+        )
+        if not day or not (day.get("slot_times") or []):
+            return None
+
+        from app.tools.slot_offer import (
+            apply_offer_to_session, build_slot_offer, offer_as_record,
+        )
+
+        offer = build_slot_offer([day])
+        if offer is None or not offer.chunks:
+            return None
+
+        # `offer_as_record` + `apply_offer_to_session` is the ONE way an offer
+        # reaches the session -- slots, labels, keypad map, mode and the
+        # day under discussion, together. `day_iso` is passed because this
+        # answer NARROWS the conversation to a single day, and the anchor
+        # must move with it or the next follow-up scopes to the old day one.
+        apply_offer_to_session(
+            session, offer_as_record(offer, day_iso=date), offer.chunks
+        )
+        logger.info(
+            "[slot_followup] 'what about %s' answered from the payload -- "
+            "%d of %d bookable times spoken, offer and keypad recorded, no "
+            "tool call needed (D-B)",
+            day.get("day_label") or date,
+            len(offer.slots), len(day.get("slot_times") or []),
+        )
+        return offer.text
+    except Exception:  # pragma: no cover - defensive; live call path
+        logger.exception("[slot_followup] named-day offer unavailable")
+        return None
+
+
 def try_unspoken_followup_speech(
     session: Dict[str, Any], user_text: str
 ) -> Optional[str]:
@@ -4149,6 +4293,21 @@ def try_unspoken_followup_speech(
     hit = resolve_requested_time(user_text, remaining, days)
     if hit is not None:
         return apply_resolved_time_to_session(session, hit)
+
+    # "What about Wednesday" after a MULTI-DAY readout. Answered from the
+    # payload, for the same reason "what else have you got" is: on D-B the
+    # model answered it from its own context with NO tool call, re-read the
+    # two slots it had already given, and left the keypad pointing at days.
+    #
+    # BELOW resolve_requested_time on purpose. "Tuesday at ten past five" names
+    # a day AND a time; that is a pick, the resolver above owns it, and a
+    # readout here would talk over a caller who has already chosen.
+    #
+    # ABOVE the more-slots branch, and it declines when that branch applies, so
+    # neither can take the other's turn.
+    _named_day = named_day_speech(session, user_text)
+    if _named_day:
+        return _named_day
 
     if utterance_requests_more_slots(user_text):
         # "What else" after a MULTI-DAY readout means more DAYS, and it is
