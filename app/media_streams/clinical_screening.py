@@ -328,8 +328,25 @@ def match_screen_trigger(
     return None
 
 
-def _question_was_asked(session: Dict[str, Any], screen: Dict[str, Any]) -> bool:
+def _question_was_asked(
+    session: Dict[str, Any],
+    screen: Dict[str, Any],
+    *,
+    a_silent_turn_keeps_it_open: bool = False,
+) -> bool:
     """True if the last bot prompt was (or contained) this screen's question.
+
+    `a_silent_turn_keeps_it_open` is B-135 and it is OFF by default, because
+    the two callers need opposite answers and only one of them is safe.
+
+      * The PENDING-screen caller asks "is my question still the outstanding
+        one?" -- a turn that asked nothing has not replaced it, so True.
+      * The DOUBLE-ASK guard asks "did the MODEL already ask this screen?"
+        about a screen that has only just been triggered. Answering True there
+        on a silent turn would grade the caller's COMPLAINT as the screen's
+        answer and the screen would never be asked at all.
+
+    Default OFF so a future caller inherits the safe reading.
 
     The model is instructed to ask the configured question, but wording can
     drift slightly, so this matches on distinctive content words from the
@@ -345,7 +362,53 @@ def _question_was_asked(session: Dict[str, Any], screen: Dict[str, Any]) -> bool
     if not distinctive:
         return q in last
     hits = sum(1 for w in distinctive if w in last)
-    return hits >= 2
+    if hits >= 2:
+        return True
+
+    # B-135, CA9c39d09f (4 Sep 2026, northgate). A TURN THAT ASKED NOTHING
+    # CANNOT HAVE CLOSED THIS WINDOW.
+    #
+    #   07:47:43  screen asked
+    #   07:47:51  'okay'                                  -> unclear
+    #   07:47:55  "take your time — just let me know how it's feeling at
+    #              the moment."                            <- asks nothing
+    #   07:48:04  "no it's fine it's fine no nothing too serious"
+    #   07:48:04  screen STRANDED -- re-asking
+    #
+    # That is a clear negative answer to a trauma screen, discarded. The screen
+    # was then asked a THIRD time at 07:50:23, after the caller had chosen a
+    # slot and given his name, and he finally answered "no it's not you've
+    # already asked me". Three asks, ~2m50s of a 246s call.
+    #
+    # Why the match failed: `on_transcript_received` CLEARS last_question on
+    # every caller turn, and the patience line then replaced last_bot_prompt
+    # while asking nothing at all. So both halves of `last` describe a turn
+    # that put no question to the caller -- and the window shut on a sentence
+    # whose whole purpose was to say "take your time".
+    #
+    # A pending screen is the outstanding question until something else is
+    # ASKED. Deciding on the absence of a question, not on a phrase, so no
+    # wording is pinned here (`write-gates-match-one-literal`).
+    #
+    # DECLINES ON ANY DOUBT, and each of these is a way to grade a reply to the
+    # wrong question:
+    #   * last_question set -> a question WAS asked and it was not this one;
+    #   * '?' in the prompt -> likewise;
+    #   * prompt at the cap -> B-31 truncates at _LAST_BOT_PROMPT_CAP and eats
+    #     the '?', so absence proves nothing on a long turn;
+    #   * empty prompt      -> nothing to reason from.
+    if not a_silent_turn_keeps_it_open:
+        return False
+    bot = str(session.get("last_bot_prompt") or "")
+    if session.get("last_question"):
+        return False
+    if "?" in bot:
+        return False
+    if len(bot) >= _LAST_BOT_PROMPT_CAP:
+        return False
+    if not bot.strip():
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1260,7 +1323,9 @@ def update_screening_state(
         pending_id = session.get(PENDING_SCREEN_KEY)
         if pending_id:
             screen = get_screen(clinic, pending_id)
-            if screen and _question_was_asked(session, screen):
+            if screen and _question_was_asked(
+                session, screen, a_silent_turn_keeps_it_open=True
+            ):
                 return _resolve_screen_answer(
                     session, clinic, pending_id, screen, text
                 )
