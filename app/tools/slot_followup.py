@@ -3827,7 +3827,41 @@ def exhaustion_claim_is_supported(session: Dict[str, Any]) -> bool:
         for day in (session.get("available_days") or []):
             if not isinstance(day, dict) or str(day.get("date") or "") != want:
                 continue
-            return int(day.get("times_not_shown") or 0) == 0
+            if int(day.get("times_not_shown") or 0) != 0:
+                return False
+            # PRESENTED IS NOT BOOKABLE. `times_not_shown` answers "did a
+            # time-of-day band filter this day?" -- it does NOT answer "how
+            # much of this day did the caller actually hear", and this
+            # sentence is a claim about the second.
+            #
+            # The readout trims to two times per day on a multi-day offer and
+            # `available_days` keeps the FULL day, so the two numbers come
+            # apart on every multi-day call. MEASURED 4 Sep 2026 over every
+            # stored slot_offer: 102 of 102 day-entries held bookable times
+            # the caller never heard, and `times_not_shown` read 0 on all 102.
+            # Monday 7 September was twelve bookable, two spoken, and this
+            # function said the day was finished.
+            #
+            # The honest measure is SPOKEN versus BOOKABLE, which the spoken
+            # record already holds. Fails CLOSED, like everything else here:
+            # an untrusted or empty record leaves every time unheard and the
+            # claim unmade. B-95's presented-vs-bookable split, reaching the
+            # one predicate whose whole job is to be positive proof.
+            heard = spoken_starts_for_offer(session)
+            unheard = [
+                slot for slot in flatten_bookable_slots([day])
+                if str(slot.get("start") or "")[:19] not in heard
+            ]
+            if unheard:
+                logger.info(
+                    "[slot_followup] exhaustion claim DECLINED for %s -- the "
+                    "band hid nothing, but %d of %d bookable times were never "
+                    "spoken. times_not_shown says how much a FILTER removed, "
+                    "not how much the caller heard.",
+                    want, len(unheard), len(day.get("slot_times") or []),
+                )
+                return False
+            return True
         return False
     except Exception:
         return False
