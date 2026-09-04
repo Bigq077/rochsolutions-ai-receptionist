@@ -2542,6 +2542,138 @@ def accepted_slot_is_named_in(session: Dict[str, Any], text: str) -> bool:
     return bool(bare and bare != label and _time_named_in(phrase, bare))
 
 
+# A sentence, and the contrast that starts a new one in the middle of it.
+# "Monday's fully booked, BUT Tuesday has ten past twelve" is two claims, and
+# only the second is an offer.
+_CLAUSE_SPLIT = re.compile(
+    r"[.!?;]+|\s+(?:but|however|although|though|whereas)\s+", re.I
+)
+
+# A clause that says a time is NOT available. Deliberately broad -- every entry
+# costs at most one clause being ignored, which is the behaviour that existed
+# before `payload_slots_named_in` did, while a missed one records a slot Susie
+# has just told the caller she does not have.
+_NO_SLOT_IN_THIS_CLAUSE = (
+    "n't", " not ", " no ", " none", "nothing", "unfortunately", "afraid",
+    "fully booked", "booked up", "unavailable", "sorry", " gone", " taken",
+    "already booked", "no longer",
+)
+
+
+def offer_clauses(text: Any) -> List[str]:
+    """The clauses of `text` that are OFFERING something. PURE.
+
+    B-139. `payload_slots_named_in` reads the times a stood-down sentence
+    SPOKE, and the first version of it read them out of the whole sentence at
+    once -- so
+
+        "Wednesday doesn't have ten past twelve"
+
+    recorded 12:10 as an offer the caller had heard. The caller could then
+    accept a slot Susie had, in that same breath, told them she did not have.
+
+    Splitting first means the negation is judged where it applies. A clause
+    carrying any availability negator offers nothing; the rest are read as
+    before. The DAY is still matched against the whole sentence, because
+    "Monday's fully booked, but I have ten past twelve" names the day once and
+    in the clause being rejected.
+
+    Residual, recorded rather than assumed: a time named in BOTH a negated and
+    an offering clause -- "Monday's eight is gone, but Tuesday has eight in the
+    morning" -- is still recorded for both days if both days are named. It is
+    bounded by `flatten_bookable_slots`, so the worst case is a slot the
+    PAYLOAD says is free and the model says is not, and the payload is the one
+    that books.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return []
+    out: List[str] = []
+    for clause in _CLAUSE_SPLIT.split(text):
+        c = str(clause or "").strip()
+        if not c:
+            continue
+        padded = f" {c.lower()} "
+        if any(n in padded for n in _NO_SLOT_IN_THIS_CLAUSE):
+            continue
+        out.append(c)
+    return out
+
+
+def payload_slots_named_in(
+    session: Dict[str, Any], text: str
+) -> List[Dict[str, Any]]:
+    """Which BOOKABLE payload slots does `text` name, by DAY and TIME? PURE.
+
+    Sibling of `accepted_slot_is_named_in`, and the same idea one step wider:
+    that one asks "does this sentence name the ONE slot we pinned", this asks
+    "which slots does this sentence name at all". Both halves of every
+    comparison come from the payload -- the day label and the spoken time the
+    offer was read with -- so neither is a match against a phrase written by
+    hand, which is the rule `write-gates-match-one-literal` records.
+
+    Why it exists. CA9c39d09f (4 Sep 2026, northgate). The caller asked for
+    "around midday, 11 o'clock". The P6 stand-down spoke the model's sentence
+
+        "Monday 7th September -- twenty past eleven in the morning, or ten
+         past twelve in the afternoon. Either of those work?"
+
+    and left the record describing the offer BEFORE it: Monday at eight in the
+    morning and ten past five in the evening. Both spoken times were real
+    payload slots -- 11:20 and 12:10 were in `available_days` -- but neither
+    was recorded as heard. So when he said "oh yeah 10 past 12 works",
+    `slot_accepted_by_caller` declined, exactly as its own contract says it
+    must: it accepts a time "only among times the caller was actually READ".
+    Nothing resolved, the read-back guard warned three times, and he hung up
+    at the confirmation.
+
+    The DAY is required as well as the time, and that is the safety. A spoken
+    label repeats across days -- "eight in the morning" exists on most of them
+    -- so matching on time alone would record slots on days the sentence never
+    mentioned. Requiring both means a sentence has to name a slot the way a
+    person would before it counts.
+
+    Returns [] on anything it cannot read. Declining is free here: the caller
+    is left exactly where they were before this existed.
+    """
+    if not isinstance(session, dict) or not isinstance(text, str) or not text.strip():
+        return []
+    slots = flatten_bookable_slots(session.get("available_days"))
+    if not slots:
+        return []
+
+    # B-139: per CLAUSE, so a time Susie has just said she does NOT have is
+    # not recorded as one the caller was offered. The day stays whole-sentence
+    # -- it is routinely named only in the clause being rejected.
+    phrase_times = [_time_norm(c) for c in offer_clauses(text)]
+    phrase_times = [pt for pt in phrase_times if pt]
+    phrase_day = _readback_norm(text)
+    if not phrase_times:
+        return []
+
+    out: List[Dict[str, Any]] = []
+    for sl in slots:
+        label = str(sl.get("spoken") or "").strip()
+        if not label:
+            continue
+        bare = _strip_part_of_day(label)
+        named = any(
+            _time_named_in(pt, label)
+            # P7's allowance: once the day is named, "half past three" is how a
+            # person says "half past three in the afternoon".
+            or bool(bare and bare != label and _time_named_in(pt, bare))
+            for pt in phrase_times
+        )
+        if not named:
+            continue
+        day_label = str(sl.get("day_label") or "").strip()
+        if day_label:
+            day_norm = _readback_norm(day_label)
+            if day_norm and day_norm not in phrase_day:
+                continue
+        out.append(sl)
+    return out
+
+
 def _pin_accepted_index(
     session: Dict[str, Any], day: Dict[str, Any], chosen: List[int], limit: int
 ) -> List[int]:
