@@ -3126,6 +3126,12 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                     "_check_availability_acuity: removed %d slot(s) within 2h lead-time window",
                     removed_lt,
                 )
+        # Slots still standing AFTER the lead-time filter and BEFORE the
+        # working-hours and bank-holiday filters below. `raw_slot_count` is
+        # taken before all three and so cannot tell them apart: without this,
+        # a day emptied because the clinic is CLOSED reports back to the model
+        # as "too soon to book" (P8).
+        after_lead_time = len(slots)
 
         # 2. Working-hours filter: remove slots outside configured clinic hours
         #    (guards against Acuity returning slots before open / after close).
@@ -3158,8 +3164,9 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         if not slots:
             # Distinguish between "lead-time filtered everything" vs "genuinely no slots"
             # so the LLM can use the appropriate message.
-            if raw_slot_count > 0:
+            if raw_slot_count > 0 and after_lead_time == 0:
                 # Slots existed but were all too soon (within 2h lead time).
+                # This is the ONLY case worth a retry: the window moves.
                 logger.warning(
                     "_check_availability_acuity: %d raw slot(s) for %s all within 2h lead-time window — "
                     "availability is limited today.",
@@ -3171,6 +3178,31 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                         f"There are {raw_slot_count} slot(s) available at {location.title()} today "
                         "but all start within 2 hours — too soon to book. "
                         "Suggest the next available day or take contact details."
+                    ),
+                    "slots": [],
+                }
+            if raw_slot_count > 0:
+                # Acuity offered slots and the lead-time filter left some
+                # standing, so what emptied the list was the working-hours or
+                # bank-holiday filter: the clinic is CLOSED. Not booked up, and
+                # not short of notice. Reported separately because
+                # `lead_time_limited` instructs the model to re-call
+                # check_availability with identical parameters (flow.py:2799,
+                # :3284) — on a closed day that second Acuity round-trip is
+                # guaranteed to return the same thing, so it buys nothing and
+                # the caller waits through it.
+                logger.warning(
+                    "_check_availability_acuity: %d raw slot(s) for %s survived lead time (%d) but "
+                    "were removed by the working-hours/bank-holiday filters — the clinic is closed.",
+                    raw_slot_count, location, after_lead_time,
+                )
+                return {
+                    "error": "closed_that_day",
+                    "error_detail": (
+                        f"{location.title()} is closed — the times the calendar returned fall "
+                        "outside opening hours or on a bank holiday. This is NOT a shortage of "
+                        "notice and re-checking will return the same thing. Offer the next day "
+                        "the clinic is open, or take contact details."
                     ),
                     "slots": [],
                 }
