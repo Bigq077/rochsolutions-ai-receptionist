@@ -179,21 +179,17 @@ def test_a_false_day_level_claim_is_still_stripped(claim):
     assert "soonest" not in sanitise_response(claim, _session()).lower()
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "B-125d, OPEN. A third syntactic frame: the copula sits BEFORE the "
-    "superlative, so neither pattern fires and the claim is never judged. "
-    "Found while fixing B-125c; deliberately NOT fixed in the same pass. "
-    "Widening a strip guard is what over-stripped a live caller on 4 Sep, and "
-    "the repair here is not the trailing one -- replacing the match with a "
-    "full stop would delete the day along with the ranking. Needs its own "
-    "substitution and its own verification call."
-))
-def test_the_copula_first_frame_is_not_caught_yet():
+def test_the_copula_first_frame_is_caught():
     """A SHAPE IS NOT A FAMILY -- the lesson of B-125b, one frame later.
 
-    Both existing patterns put the superlative before its copula ("the soonest
+    Both original patterns put the superlative before its copula ("the soonest
     ... IS Monday") or behind a pronoun ("that's the soonest"). A bare subject
     with the copula first is neither, and it makes exactly the same assertion.
+
+    Left OPEN as a strict xfail on the evening of 4 Sep, on the reasoning that
+    widening a strip guard wanted a call first. It reached a live caller four
+    hours later. Closed as B-125d; the frame's own file is
+    test_b142_soonest_means_earliest.py.
     """
     claim = "Monday the 7th is the soonest we have."
     assert _names_an_earliest_claim(claim)

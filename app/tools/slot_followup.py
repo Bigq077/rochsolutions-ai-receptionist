@@ -2770,8 +2770,53 @@ def choose_presented_indices(
     cleverer readout.
     """
     return _pin_accepted_index(
-        session, day, _choose_presented_indices_b116(session, day, limit), limit
+        session, day, _choose_presented_times(session, day, limit), limit
     )
+
+
+def _choose_presented_times(
+    session: Dict[str, Any], day: Dict[str, Any], limit: int
+) -> List[int]:
+    """B-116's selection, with B-137's question asked one level down.
+
+    B-142, CA1c6c8360d218 (4 Sep 2026, northgate, build 3868895f). The caller
+    opened with "as soon as possible", was offered Saturday 09:00, said "no
+    that's not soon enough", and every time in the second offer moved LATER:
+
+        offer 1   Sat 09:00   Mon 08:00   Tue 08:50
+        offer 2   Sat 09:50   Mon 08:50   Tue 09:40
+
+    He asked a third time, was told "those are the soonest available", and hung
+    up. 09:00 was bookable throughout.
+
+    This is B-137 exactly, one level down, and B-137's fix did not reach here.
+    `caller_wants_soonest` was read only by `choose_presented_days`, so the DAY
+    order was corrected while the TIME order inside each day stayed inverted:
+    the unheard-first rule drops the earliest time PRECISELY BECAUSE it has
+    been spoken, and the earliest time is the only one that can answer
+    "anything sooner".
+
+    "Sooner" and "what else" are opposite questions. Repeating 09:00 is not
+    circular here -- it is the true answer, and it is what he asked for three
+    times.
+
+    The unheard filter is dropped, not the spread: `_spread` is a separate
+    owner decision (1 Sep) that two slots fifty minutes apart are not a choice,
+    and it still holds. Index 0 -- the day's real earliest -- is what `_spread`
+    always keeps, which is the whole point here.
+    """
+    if caller_wants_soonest(session):
+        slots = day.get("slots") if isinstance(day, dict) else None
+        n = len(slots) if isinstance(slots, list) else 0
+        if n and limit > 0:
+            logger.info(
+                "[slot_followup] caller asked for the soonest "
+                "(day_preference=%r) -- reading this day from its earliest "
+                "time, not from the ones they have not heard (B-142)",
+                session.get("day_preference"),
+            )
+            return _spread(slots, list(range(n)), limit)
+    return _choose_presented_indices_b116(session, day, limit)
 
 
 def _choose_presented_indices_b116(

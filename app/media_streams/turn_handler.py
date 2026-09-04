@@ -1918,9 +1918,14 @@ _INTENSIFIER = r"(?:(?:very|absolute|absolutely)\s+)?"
 #: fixes the intensifier that reached a caller; this catches the one nobody has
 #: thought of yet. Third instance this week of a strip whose remainder is not a
 #: sentence (B-140, `_ORPHAN_LEAD`'s original six in August, this).
+#: `\s*$`, not `\s+$`: the trailing frames open with `\s*`, so the match
+#: swallows the space and the dangling word ends the prefix with nothing after
+#: it. B-125d's bare-pronoun subject is the case -- "those are the soonest
+#: available" cut down to "Those.", a fragment by any reading.
 _DANGLING_SEAM_RE = re.compile(
-    r"\b(?:the|a|an|very|my|our|your|his|her|their|its|this|that|these|those)"
-    r"(?:\s+(?:very|absolute|absolutely|really|single|only))*\s+$",
+    r"\b(?:the|a|an|very|my|our|your|his|her|their|its"
+    r"|this|that|these|those|it|they)"
+    r"(?:\s+(?:very|absolute|absolutely|really|single|only))*\s*$",
     re.IGNORECASE,
 )
 
@@ -1981,6 +1986,54 @@ _EARLIEST_CLAIM_POST_RE = re.compile(
 )
 
 
+#: The SAME claim again, with the copula in front of the superlative and any
+#: subject at all in front of that: "Monday the 7th is the soonest we have",
+#: "those are the soonest available".
+#:
+#: B-125d. Found while fixing B-125c and deliberately left as a strict xfail
+#: that evening; it reached a live caller four hours later, on
+#: CA1c6c8360d218 at 17:56:14 -- "those are the soonest available" spoken while
+#: 09:00 sat bookable and unoffered. That call was abandoned.
+#:
+#: A SHAPE IS NOT A FAMILY, for the third time. The leading frame puts the
+#: superlative before its copula; the trailing frame hides it behind a pronoun;
+#: this one has neither, and makes exactly the same assertion. The subject is
+#: unconstrained on purpose -- constraining it is what produced two frames that
+#: each missed the other.
+#:
+#: Repaired like the trailing frame, with a full stop: the subject is the value
+#: and deleting outright would weld it onto the next sentence.
+_EARLIEST_CLAIM_COPULA_RE = re.compile(
+    r"\s*[\u2014\u2013-]?\s*"
+    r"(?:and\s+|but\s+)?"
+    r"\b(?:is|are|was|were|\'s|\'re|would\s+be)\s+"
+    r"the\s+"
+    + _INTENSIFIER
+    + r"(?:earliest|soonest|first\s+available|next\s+available|very\s+first)"
+    r"(?:\s+(?:one|slot|time|appointment|opening|available))?"
+    r"(?:\s+(?:I|we)\s*(?:\'ve\s+got|have\s+got|have|can\s+do|can\s+offer))?"
+    # Must END its clause, for the same reason the trailing frame must.
+    r"\s*(?=[.,!?]|$)",
+    re.IGNORECASE,
+)
+
+#: EVERY frame, with the repair it needs, IN THE ORDER THE STRIP APPLIES THEM.
+#: One owner, because three functions ask about these patterns and they must
+#: not be able to disagree -- checking one frame and forgetting another is the
+#: whole of B-125b AND of B-125d.
+#:
+#: ORDER IS LOAD-BEARING. The pronoun frame runs before the bare copula frame:
+#: both match "that's the earliest I've got", and the pronoun one consumes
+#: "that" while the bare one would cut at the apostrophe and strand it.
+_EARLIEST_CLAIM_REPAIRS = (
+    (_EARLIEST_CLAIM_POST_RE, "."),
+    (_EARLIEST_CLAIM_COPULA_RE, "."),
+    (_EARLIEST_CLAIM_RE, ""),
+)
+
+_EARLIEST_CLAIM_RES = tuple(p for p, _ in _EARLIEST_CLAIM_REPAIRS)
+
+
 def _claim_strip_would_fragment(sentence: str) -> bool:
     """Would removing the ranking from this sentence leave a fragment? PURE.
 
@@ -1989,10 +2042,17 @@ def _claim_strip_would_fragment(sentence: str) -> bool:
     other is the whole of B-125b.
     """
     body = sentence or ""
-    for pattern in (_EARLIEST_CLAIM_RE, _EARLIEST_CLAIM_POST_RE):
+    # Walk the repairs in the order the strip will apply them, against the
+    # text as the strip will actually see it. Asking every pattern about the
+    # ORIGINAL sentence reports frames that never get to cut: the bare copula
+    # frame matches the apostrophe inside "that's", whose "that" is a dangling
+    # word -- but the pronoun frame runs first and takes it, so nothing dangles.
+    # That false positive dropped four correct sentences.
+    for pattern, repl in _EARLIEST_CLAIM_REPAIRS:
         match = pattern.search(body)
         if match and _DANGLING_SEAM_RE.search(body[: match.start()]):
             return True
+        body = pattern.sub(repl, body)
     return False
 
 
@@ -2058,9 +2118,7 @@ def _names_an_earliest_claim(text: str) -> bool:
     Both frames or neither. Checking one was the whole of B-125b.
     """
     body = text or ""
-    return bool(
-        _EARLIEST_CLAIM_RE.search(body) or _EARLIEST_CLAIM_POST_RE.search(body)
-    )
+    return any(pattern.search(body) for pattern in _EARLIEST_CLAIM_RES)
 
 
 def _strip_earliest_claim(text: str) -> str:
@@ -2092,8 +2150,11 @@ def _strip_earliest_claim(text: str) -> str:
     # The pattern's tail is a zero-width lookahead, so any existing
     # terminator survives the cut and a full stop is added only where the
     # claim ran to the end of the string with nothing after it.
-    out = _EARLIEST_CLAIM_POST_RE.sub(".", body)
-    out = _EARLIEST_CLAIM_RE.sub("", out).lstrip()
+    # The same ordered table the fragment check walks, so the two cannot drift.
+    out = body
+    for pattern, repl in _EARLIEST_CLAIM_REPAIRS:
+        out = pattern.sub(repl, out)
+    out = out.lstrip()
     # Tidy the seam the substitutions can leave: a space before the full stop,
     # a doubled stop where the sentence already had one, runs of spaces.
     out = re.sub(r"\s+([.,!?])", r"\1", out)
