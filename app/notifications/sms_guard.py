@@ -89,6 +89,14 @@ def to_gsm7(text: str) -> str:
     # Emoji removal can leave doubled spaces and trailing space before newline.
     s = re.sub(r"[ \t]{2,}", " ", s)
     s = re.sub(r" +\n", "\n", s)
+    # ...and a LEADING space, which the two rules above cannot see. The live
+    # confirmation template opens three of its lines with an emoji and a space
+    # ("📅 Saturday 5th September"), so stripping the emoji left every one of
+    # them indented by one character in the patient's message. Found by
+    # rendering the real template through this function before promoting it to
+    # the clinic services; nothing in the guard's own tests covered a
+    # line-leading emoji.
+    s = re.sub(r"(?m)^[ \t]+", "", s)
     s = re.sub(r"\n{3,}", "\n\n", s)
     return s.strip()
 

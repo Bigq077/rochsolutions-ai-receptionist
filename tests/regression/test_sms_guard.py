@@ -223,3 +223,62 @@ class TestEndToEnd:
 
         assert sid == "SMreal000000000000000000000000001"
         assert len(svc.client.messages.calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# A line that OPENS with an emoji. The live confirmation template does, three
+# times, and nothing here covered it until the promotion audit of 4 Sep.
+# ---------------------------------------------------------------------------
+
+LIVE_CONFIRMATION = (
+    "Hi Jane, your appointment at Vital Edge is confirmed.\n\n"
+    "\U0001F4C5 Saturday 5th September\n"
+    "\U000023F0 9:00 am\n"
+    "\U0001F4CD 12 High St, Didsbury\n\n"
+    "Please arrive 5 minutes early \u2014 bring shorts if you can.\n"
+    "Reply CANCEL to cancel."
+)
+
+
+def test_a_line_opening_with_an_emoji_is_not_left_indented():
+    """Stripping the emoji left the space after it, so every one of those three
+    lines reached the patient indented by one character.
+
+    The two tidy rules beside this one collapse DOUBLED spaces and a space
+    BEFORE a newline; neither can see a single space AFTER one.
+    """
+    out = real_guard.to_gsm7(LIVE_CONFIRMATION)
+    for line in out.split("\n"):
+        assert line == line.lstrip(), f"line is indented: {line!r}"
+    assert "\n Saturday" not in out, out
+
+
+def test_the_live_confirmation_survives_intact_apart_from_the_emoji():
+    """Every word the patient needs must still be there — this guard rewrites
+    real patient text on three live clinics, so what it removes matters."""
+    out = real_guard.to_gsm7(LIVE_CONFIRMATION)
+    for kept in (
+        "Hi Jane, your appointment at Vital Edge is confirmed.",
+        "Saturday 5th September",
+        "9:00 am",
+        "12 High St, Didsbury",
+        "bring shorts if you can.",
+        "Reply CANCEL to cancel.",
+    ):
+        assert kept in out, f"{kept!r} was lost: {out!r}"
+
+
+def test_the_live_confirmation_becomes_gsm7_and_costs_less():
+    """The whole point: 3 segments to 2 on every confirmation SMS."""
+    assert not real_guard.is_gsm7(LIVE_CONFIRMATION)
+    assert real_guard.count_segments(LIVE_CONFIRMATION) == 3
+    out = real_guard.to_gsm7(LIVE_CONFIRMATION)
+    assert real_guard.is_gsm7(out)
+    assert real_guard.count_segments(out) == 2
+
+
+def test_the_blank_line_between_blocks_survives():
+    """The template's paragraph breaks are deliberate. Stripping leading
+    whitespace must not eat them."""
+    out = real_guard.to_gsm7(LIVE_CONFIRMATION)
+    assert "\n\n" in out, out
