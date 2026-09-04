@@ -2,8 +2,16 @@
 
 **Demo line: +447366263180** (northgate). `latency-eval` auto-deploys here.
 Before dialling, confirm the build is up: the Render log prints
-`[build_info] running build 5567aafa` at call cleanup. That line is the only
-proof of what is running — `/health` returns a hardcoded 1.0.0.
+`[build_info] running build <sha>` at call cleanup, and that `<sha>` must match
+
+```bash
+git fetch origin && git rev-parse --short origin/latency-eval
+```
+
+That log line is the only proof of what is running — `/health` returns a
+hardcoded 1.0.0. No SHA is written literally anywhere below, because this file
+is itself a commit on the branch it is describing and any literal it quoted
+would be stale the moment it was pushed.
 
 Everything below was written from the two calls you made this morning,
 `CA9c39d09f` (07:47) and `CAdd64c466` (11:33). Every fix is verified red-then-green
@@ -86,10 +94,11 @@ production before promotion = 4eda31f3
 nothing canonical does not, so this is a genuine fast-forward and not a merge.
 
 ```bash
-git fetch origin && git log --oneline origin/latency-eval ^origin/production | wc -l
+git fetch origin && git log --oneline origin/latency-eval ^origin/production
 ```
 
-That should print **32**. Then:
+Read that list. Every entry should be a commit you recognise from the appendix
+below or from a plan document. Then:
 
 ```bash
 git push origin origin/latency-eval:production
@@ -100,7 +109,8 @@ Three services, three clinics, real patients.
 
 ### After the push
 
-1. Watch for `[build_info] running build 5567aafa` in each service's log.
+1. Watch each service's log for `[build_info] running build <sha>`, with the
+   `<sha>` from `git rev-parse --short origin/latency-eval`.
 2. **Make one real call to one live clinic line** and take it to a booking.
    An engine change is not verified until a live line has answered.
 3. If anything is wrong:
@@ -133,12 +143,15 @@ git push --force-with-lease origin 4eda31f3:production
 
 ---
 
-## Appendix — the five engine commits since your last call
+## Appendix — the five engine changes since your last call
 
-| SHA | What a caller would notice |
+Named by their commit subject, so you can find them with `git log --oneline`
+whatever their SHA turns out to be.
+
+| Commit subject begins | What a caller would notice |
 |---|---|
-| `42a4bcb2` | She no longer speaks a sentence fragment after a hold phrase. |
-| `69d30b5d` | A pick on times she offered mid-conversation now lands; a time she has just refused is never recorded as offered. |
-| `9e4dc3b3` | Asking about another day is no longer read as accepting this one. |
-| `b24b1154` | A call that opens with the complaint keeps that complaint as its reason. |
-| `7eb61dd2` | "I can't wait a week" moves the offered days closer. |
+| `fix(speech): she said "wednesday's availability…` | She no longer speaks a sentence fragment after a hold phrase. |
+| `fix(slots): restore B-134…` | A pick on times she offered mid-conversation now lands; a time she has just refused is never recorded as offered. |
+| `fix(slots): a question about Wednesday…` | Asking about another day is no longer read as accepting this one. |
+| `fix(reason): the reason was None…` | A call that opens with the complaint keeps that complaint as its reason. |
+| `fix(slots): "I can't wait a week"…` | "I can't wait a week" moves the offered days closer. |
