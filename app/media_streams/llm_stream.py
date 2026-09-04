@@ -3192,16 +3192,13 @@ class LLMStream:
         # at most two such turns, then take whatever arrives - an unbounded
         # search would let a quiet caller move the "opening" to the middle of
         # the call, which is not what any reader of it expects.
-        _ou = (user_text or "").strip()
-        if _ou and not session.get("opening_utterance"):
-            from app.media_streams.first_turn_extractor import (
-                opening_is_substantive as _ou_ok,
-            )
-            _probes = int(session.get("_opening_probe_count") or 0)
-            if _ou_ok(_ou) or _probes >= 2:
-                session["opening_utterance"] = _ou
-            else:
-                session["_opening_probe_count"] = _probes + 1
+        # The rule itself now lives in first_turn_extractor, because the
+        # `ask_screen` short-circuit in connection.py needs the same one and a
+        # second copy of it would drift (B-137).
+        from app.media_streams.first_turn_extractor import (
+            note_opening_utterance as _note_opening,
+        )
+        _note_opening(session, user_text)
 
         # Commit the opening reason HERE, not only on the booking-ack path.
         # CAa23b1ed5 (demo line, first live call on this fix) is why: the

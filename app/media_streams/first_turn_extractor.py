@@ -532,6 +532,39 @@ def opening_had_booking_intent(session: Dict[str, Any]) -> bool:
     return intent
 
 
+def note_opening_utterance(session: Dict[str, Any], text: Any) -> None:
+    """Latch the caller's OPENING utterance, once. PURE apart from the write.
+
+    Extracted from llm_stream's turn loop on 2026-09-04 so it has ONE
+    definition. It had one caller and needed two: a turn that arms a clinical
+    screen is answered by the `ask_screen` short-circuit in connection.py,
+    which returns before the LLM turn ever runs -- so on a call where the
+    caller opens with their complaint, the opening was never latched and every
+    later `commit_opening_reason` had nothing to read.
+
+    CAdd64c466 (northgate, 4 Sep 2026) is the call. He opened with "i'd like to
+    book an appointment essentially i was playing football um and i rolled my
+    ankle", which armed trauma_fracture and was consumed there. The call
+    finished with `pre-summary reason: collected=None session=None` -- no
+    reason at all, on a call whose very first sentence was the reason.
+
+    Set once and never overwritten: "opening" means the first thing the caller
+    said, not the most recent. A bare "hi" is a greeting, not an opening, and
+    latching it would spend the one shot this gets on a turn that says nothing
+    -- so defer past at most two such turns, then take whatever arrives. An
+    unbounded search would let a quiet caller move the "opening" to the middle
+    of the call, which is not what any reader of it expects.
+    """
+    ou = str(text or "").strip()
+    if not ou or session.get("opening_utterance"):
+        return
+    probes = int(session.get("_opening_probe_count") or 0)
+    if opening_is_substantive(ou) or probes >= 2:
+        session["opening_utterance"] = ou
+    else:
+        session["_opening_probe_count"] = probes + 1
+
+
 def commit_opening_reason(session: Dict[str, Any]) -> bool:
     """Record the opening reason into the canonical slots. Returns True if known.
 

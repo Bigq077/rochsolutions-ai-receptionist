@@ -9524,8 +9524,35 @@ class WebSocketCallHandler:
                                 try:
                                     from app.media_streams.first_turn_extractor import (
                                         commit_reason_answer as _cs_commit_reason,
+                                        note_opening_utterance as _cs_note_opening,
+                                        commit_opening_reason as _cs_commit_opening,
                                     )
                                     _cs_commit_reason(self.session, utterance)
+                                    # B-137. The other half of B-136, and the
+                                    # half CAdd64c466 needed. commit_reason_answer
+                                    # only fires when the reason QUESTION was
+                                    # asked; that caller never asked it, because
+                                    # the caller volunteered the complaint in his
+                                    # OPENING words -- which armed the screen and
+                                    # were consumed right here.
+                                    #
+                                    # `opening_utterance` had exactly one writer,
+                                    # in llm_stream's turn loop, and this branch
+                                    # returns before that runs. So the opening was
+                                    # never latched, every later
+                                    # commit_opening_reason had nothing to read,
+                                    # and the call ended with no reason at all.
+                                    #
+                                    # Gated the same way llm_stream gates it, so a
+                                    # clinic that never asks a reason question
+                                    # (theorem, theorem_v3) keeps an empty reason
+                                    # as its own correct outcome.
+                                    _cs_note_opening(self.session, utterance)
+                                    from app.media_streams.turn_handler import (
+                                        _clinic_asks_its_own_reason_question as _cs_asks,
+                                    )
+                                    if _cs_asks(self.session):
+                                        _cs_commit_opening(self.session)
                                 except Exception:
                                     logger.debug(
                                         "[ms_conn] reason capture on the screening "
