@@ -16126,7 +16126,46 @@ class WebSocketCallHandler:
                     # cascade, which has no empty-question guard of its own.
                     # Same predicate as Spec Z Gate 2 inside _restart_timer,
                     # so the two agree by construction.
-                    _outstanding_q_w = (_sh_w.last_question or "").strip()
+                    # ── B-140: after a 999 instruction, silence is correct ──
+                    # CAe54de74b (5 Sep 2026, northgate). The emergency line
+                    # ends on a statement BY DESIGN -- B-139 removed its
+                    # trailing "would you like me to put you through to
+                    # someone now?" because offering to keep a caller on a
+                    # physiotherapy line competes with "call 999". That left
+                    # the turn asking nothing, so the T-3 nudge below armed
+                    # "Anything else you'd like to know?" against it.
+                    #
+                    # The caller hung up two seconds into the ten-second
+                    # window so it never spoke. A caller who pauses to take
+                    # in "call 999" would have been offered small talk --
+                    # worse than the sentence B-139 removed.
+                    #
+                    # All three arms are suppressed, not just the nudge. If
+                    # the emergency arrives mid-booking a question IS still
+                    # outstanding, and re-asking "do you have a preference
+                    # for when you'd like to come in?" after sending someone
+                    # to A&E is the same defect wearing the other branch.
+                    #
+                    # Silence here is deliberate. The screening branch ends
+                    # the TURN with `continue`, not the call, so the line
+                    # stays open: a caller who speaks is routed normally, and
+                    # one who hangs up to dial 999 has done the right thing.
+                    # `_silence_safety_net` is suppressed at its own guard
+                    # for the same reason -- otherwise it says "Sorry, I
+                    # can't quite hear you — how can I help today?", which is
+                    # the identical mistake in different words.
+                    _escalated_w = bool(self.session.get("safety_escalation"))
+                    if _escalated_w:
+                        logger.info(
+                            "[ms_watchdog] safety escalation — arming nothing"
+                            " (no backstop, no nudge); silence is the correct"
+                            " outcome after %r",
+                            _last_sent_w[:60],
+                        )
+                    _outstanding_q_w = (
+                        "" if _escalated_w
+                        else (_sh_w.last_question or "").strip()
+                    )
                     if _outstanding_q_w and _sh_w._prompt_contains_question(
                         _outstanding_q_w
                     ):
@@ -16184,7 +16223,11 @@ class WebSocketCallHandler:
                         # recovers them badly but does recover them. Widening
                         # this should be done on evidence, not by lowering the
                         # number.
-                        _substantive_w = len(_last_sent_w.split()) >= 4
+                        # B-140: never on a safety escalation (see above).
+                        _substantive_w = (
+                            len(_last_sent_w.split()) >= 4
+                            and not _escalated_w
+                        )
                         if _substantive_w:
                             _nudge_w = "Anything else you'd like to know?"
                             _sh_w.last_question = _nudge_w
@@ -16200,7 +16243,10 @@ class WebSocketCallHandler:
                                 " caller in silence",
                                 _last_sent_w[:60], _nudge_w,
                             )
-                        elif getattr(self, "booking_flow_active", False):
+                        elif (
+                            getattr(self, "booking_flow_active", False)
+                            and not _escalated_w  # B-140
+                        ):
                             # ── T-4: bare ack mid-booking with nothing behind it ──
                             # The comment above is right that "Right —" must not
                             # get the open invitation — but its premise is that
@@ -17469,6 +17515,36 @@ class WebSocketCallHandler:
 
                 # 4. DTMF expected — watchdog stands down in keypad mode
                 if _is_dtmf_expected(self.session):
+                    continue
+
+                # 4b. Safety escalation — the caller has been told to hang up
+                #     and call 999. B-140, CAe54de74b (5 Sep 2026).
+                #
+                #     The watchdog arms nothing on such a turn (see the
+                #     _escalated_w guard in the tts-finished path), which
+                #     leaves condition 5 below satisfied and hands the turn
+                #     to THIS net -- whose first fire is
+                #     "Sorry, I can't quite hear you — how can I help
+                #     today?" and whose second fire HANGS UP. Neither belongs
+                #     after a 999 instruction: the first invites a caller
+                #     having a cardiac event back into a booking
+                #     conversation, and the second drops the call on someone
+                #     who may be about to speak.
+                #
+                #     Dead air is the CORRECT state here, so the net's whole
+                #     premise -- that silence is a fault to recover from --
+                #     does not hold. Suppressing it does not strand anyone:
+                #     the line stays open and a caller who speaks is routed
+                #     normally, because only the arming is suppressed, never
+                #     the transcript path.
+                if self.session.get("safety_escalation"):
+                    if not self.session.get("_safety_net_silenced_logged"):
+                        self.session["_safety_net_silenced_logged"] = True
+                        logger.info(
+                            "[ms_safety_net] suppressed for the rest of the"
+                            " call — safety escalation; dead air after a 999"
+                            " instruction is the intended outcome"
+                        )
                     continue
 
                 # 5. No-input watchdog is already active
