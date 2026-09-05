@@ -647,6 +647,48 @@ _REASON_NON_ANSWERS: frozenset = frozenset({
 _REASON_ANSWER_MAX_TURNS = 2
 
 
+def utterance_is_reason_answer(session: Dict[str, Any], utterance: str) -> bool:
+    """True when `commit_reason_answer` would treat *utterance* as the reply.
+
+    Pure. Reads the three fields that helper keys on and writes none of
+    them, so merely ASKING the question cannot consume a caller's reason.
+
+    Exists because the answer to "what's the appointment for?" is the one
+    utterance in the call most likely to contain a time word that is not a
+    scheduling request -- a symptom is very often described BY its timing.
+    Callers say "stiff every morning", "worse at night", "I did it on
+    Saturday". Those are the complaint, not a preference, and the capture
+    block in connection.py had no way to tell the difference.
+
+    B-138, CA04219aeb (5 Sep 2026, northgate). Asked what the appointment
+    was for, the caller said:
+
+        "yeah my achilles is stiff for the first few minutes every morning
+         and it eases as i walk"
+
+    which banked a HARD mornings preference, sent
+    date_hint="mornings" into check_availability, and offered six slots of
+    which every one was AM. The caller had expressed no preference at all;
+    "every morning" was the diagnostic detail that makes it tendinopathy.
+
+    Deliberately spans the WHOLE pending window rather than only the very
+    next turn: `_REASON_ANSWER_MAX_TURNS` allows one filler, so a caller
+    who says "um" and then describes the complaint reaches this code on
+    the second turn, and a turn-zero gate would miss exactly that caller.
+    Kept in step with the consumer by BEING the consumer's test --
+    `commit_reason_answer` calls this, it does not restate it.
+    """
+    if not session.get("_reason_answer_pending"):
+        return False
+    armed_on = session.get("_reason_answer_armed_on")
+    if armed_on is None:
+        # The arming turn itself. `commit_reason_answer` has not yet
+        # recorded which utterance provoked the question, so nothing is
+        # pending an answer yet.
+        return False
+    return (utterance or "") != armed_on
+
+
 def commit_reason_answer(session: Dict[str, Any], utterance: str) -> bool:
     """Record the caller's reply to the reason question. True if a reason landed.
 
@@ -675,7 +717,12 @@ def commit_reason_answer(session: Dict[str, Any], utterance: str) -> bool:
     if session.get("_reason_answer_armed_on") is None:
         session["_reason_answer_armed_on"] = utterance or ""
         return False
-    if (utterance or "") == session.get("_reason_answer_armed_on"):
+    # Equivalent to the inline compare this replaces: pending is True and
+    # armed_on is non-None by the two checks above, so the predicate
+    # reduces to exactly that compare. Routed through the helper so the
+    # capture block in connection.py and this consumer can never drift to
+    # two different answers to "is this the reason answer?".
+    if not utterance_is_reason_answer(session, utterance):
         return False
 
     collected = session.get("collected")

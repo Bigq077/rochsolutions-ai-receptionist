@@ -1526,7 +1526,11 @@ def _transcript_is_question(text: str) -> bool:
     return t.endswith("?") or any(s in t for s in _QUESTION_SIGNALS)
 
 
-def _time_preference_tier(utterance: str, is_slot_pick: bool) -> str:
+def _time_preference_tier(
+    utterance: str,
+    is_slot_pick: bool,
+    is_reason_answer: bool = False,
+) -> str:
     """How much authority a time-of-day mention in *utterance* has earned.
 
     Returns "none", "soft" or "hard".
@@ -1559,6 +1563,21 @@ def _time_preference_tier(utterance: str, is_slot_pick: bool) -> str:
     if is_slot_pick:
         # Choosing option 1 says "I'll take that one", not "I only do
         # mornings" — B-90, and B-91 for the spoken form of the same thing.
+        return "none"
+    if is_reason_answer:
+        # Answering "what's the appointment for?" is describing a
+        # complaint, and complaints are very often described BY their
+        # timing — "stiff every morning", "worse at night". B-138,
+        # CA04219aeb. NONE rather than SOFT deliberately: soft still
+        # renders "Caller's time preference: mornings" into the prompt,
+        # which is what put date_hint="mornings" into check_availability
+        # on that call, so soft would not have fixed it.
+        #
+        # Safe in the documented direction — a caller who really does say
+        # "it's my knee, and mornings please" still gets mornings on THIS
+        # turn, because the model reads the raw utterance; what is lost is
+        # persistence, and the cost of that is one re-ask. The cost the
+        # other way is a filter that silently deletes real slots.
         return "none"
     return "soft" if _transcript_is_question(utterance) else "hard"
 
@@ -12231,9 +12250,30 @@ class WebSocketCallHandler:
                             # preference is a filter that silently deletes
                             # slots, while the cost the other way is a
                             # re-ask.
+                            # B-138. Is this utterance the reply to
+                            # "what's the appointment for?" Asked of the
+                            # module that OWNS the reason-answer flags, so
+                            # this and `commit_reason_answer` (which runs
+                            # later in this same turn and consumes them)
+                            # cannot disagree. Never raises: a resolver must
+                            # not cost a caller their turn.
+                            try:
+                                from app.media_streams.first_turn_extractor import (
+                                    utterance_is_reason_answer as _is_reason_ans,
+                                )
+                                _reason_answer = bool(
+                                    _is_reason_ans(self.session, utterance)
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "[ms_conn v3] reason-answer probe failed"
+                                )
+                                _reason_answer = False
+
                             _tod_tier = _time_preference_tier(
                                 utterance,
                                 is_slot_pick=bool(_is_slot_pick or _accepted),
+                                is_reason_answer=_reason_answer,
                             )
                             if (
                                 _tod_tier != "none"
@@ -12268,7 +12308,15 @@ class WebSocketCallHandler:
                             # holstered and the caller hears ~3s of silence.
                             # v3_last_presented_date_hint only exists AFTER a
                             # presentation, so it cannot arm the first lookup.
-                            if not self.session.get("day_preference"):
+                            # B-138, second door. This capture never had a
+                            # tier gate at all, and `_extract_day_preference`
+                            # bare-matches weekdays plus "today"/"tomorrow" —
+                            # so "i did my back in on saturday", a reason
+                            # answer, banks a saturday-only filter for the
+                            # rest of the call. Same defect as the band
+                            # above, same turn, five lines apart; fixing one
+                            # and shipping would leave the other live.
+                            if not self.session.get("day_preference") and not _reason_answer:
                                 _day_pref = _extract_day_preference(utterance)
                                 if _day_pref:
                                     self.session["day_preference"] = _day_pref

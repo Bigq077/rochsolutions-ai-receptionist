@@ -149,6 +149,26 @@ def test_the_capture_site_consults_the_current_offer():
 
     Asserted structurally instead: the capture site CALLS the shared
     predicate, and the shared predicate reads both sources.
+
+    FIFTH instance, 2026-09-05, and this time the SCAN was the fault. The
+    window was a fixed 8000 bytes backwards from the log line -- a byte
+    count standing in for "the capture block" -- with ~600 bytes of
+    headroom. B-138 added a reason-answer probe to that block, the call to
+    `utterance_is_slot_selection` slid to 8439 bytes away, and this test
+    reported that the capture site had grown its own copy of the rule. The
+    wiring was untouched; the ruler was too short.
+
+    Re-anchoring the window on the block's own header comment FIXED the
+    false alarm and introduced a false negative instead: the block's prose
+    names `utterance_is_slot_selection` twice, so the scan then matched a
+    COMMENT and passed with the real call deleted. Verified -- neutering
+    the call left it green.
+
+    So the text scan is gone. The question "does the capture site call the
+    shared predicate?" is a question about code, and it is now asked of
+    the parse tree: the single `_is_slot_pick` assignment must BE a call to
+    `utterance_is_slot_selection`. Comments cannot satisfy that, and no
+    window can be too short.
     """
     import ast
     import inspect
@@ -156,15 +176,32 @@ def test_the_capture_site_consults_the_current_offer():
     from app.media_streams import connection as c
 
     src = inspect.getsource(c)
-    i = src.index('"[ms_conn v3] time_of_day_preference captured: %s"')
-    window = src[i - 8000:i]
-    assert "_is_slot_pick" in window, (
-        "the preference capture does not check whether the utterance was a "
-        "selection from the offer just read out"
+    tree = ast.parse(src)
+    calls = [
+        n.value
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == "_is_slot_pick"
+            for t in n.targets
+        )
+    ]
+    assert len(calls) == 1, (
+        f"expected exactly one _is_slot_pick assignment, found {len(calls)} "
+        "-- the preference capture's selection guard has been duplicated or "
+        "removed"
     )
-    assert "utterance_is_slot_selection" in window, (
-        "the capture site no longer calls the shared selection predicate — it "
-        "has grown its own copy of the rule, which is how the two sides drift"
+    bound = calls[0]
+    assert isinstance(bound, ast.Call), (
+        "_is_slot_pick is no longer bound to a call -- the preference "
+        "capture does not ask whether the utterance was a selection from "
+        "the offer just read out"
+    )
+    called = getattr(bound.func, "id", None) or getattr(bound.func, "attr", None)
+    assert called == "utterance_is_slot_selection", (
+        f"_is_slot_pick is bound to {called!r}, not the shared selection "
+        "predicate -- the capture site has grown its own copy of the rule, "
+        "which is how the two sides drift"
     )
 
     # ...and the predicate consults BOTH sources. The keypad injects a map
