@@ -9489,12 +9489,37 @@ class WebSocketCallHandler:
                                 )
                             if _cs_result["action"] in ("emergency", "escalate", "ask_screen"):
                                 _cs_line = _cs_result["speak"] or ""
-                                if _cs_result["action"] == "emergency":
-                                    _cs_line = (
-                                        _cs_line
-                                        + " Would you like me to put you "
-                                        "through to someone now?"
-                                    )
+                                # B-139, CA2a44f165 (5 Sep 2026, northgate).
+                                # The emergency branch used to append
+                                # " Would you like me to put you through to
+                                # someone now?" to the scripted line, so a
+                                # caller who said "i've got chest pain i
+                                # can't breathe" heard, in one breath:
+                                #
+                                #   "...please hang up and call 999
+                                #    immediately, or go to your nearest A&E.
+                                #    Would you like me to put you through to
+                                #    someone now?"
+                                #
+                                # Two contradictory instructions at the worst
+                                # possible moment, and the second competes
+                                # with the first: it invites someone who may
+                                # be having a cardiac event to STAY on a
+                                # physiotherapy line instead of dialling 999.
+                                # "Someone" here is a physio receptionist,
+                                # who is not who that caller needs.
+                                #
+                                # Nothing is appended now. The configured
+                                # text is already complete and directive, and
+                                # it is the clinic's own wording -- see
+                                # `emergency_response_text`. This also makes
+                                # emergency behave like `escalate`, which has
+                                # never appended anything.
+                                #
+                                # The turn ends with `continue`, NOT with a
+                                # hang-up, so a false positive is not stranded
+                                # -- the caller simply keeps talking and the
+                                # next turn routes normally.
                                 # Mark the call as a safety escalation so the
                                 # outcome classifier can never label it
                                 # "abandoned" (which triggers the abandoned-
