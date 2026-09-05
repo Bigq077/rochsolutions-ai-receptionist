@@ -12282,9 +12282,17 @@ class WebSocketCallHandler:
                             # later in this same turn and consumes them)
                             # cannot disagree. Never raises: a resolver must
                             # not cost a caller their turn.
+                            # B-138 second attempt. The first shipped gate
+                            # asked only `utterance_is_reason_answer`, which
+                            # covers the caller ANSWERING the reason
+                            # question. CA556c7e20 (5 Sep) opened with the
+                            # complaint instead -- no reason question was
+                            # ever asked, the gate was inert, and 'every
+                            # morning' banked a hard AM filter again. The
+                            # opening door is now asked in the same call.
                             try:
                                 from app.media_streams.first_turn_extractor import (
-                                    utterance_is_reason_answer as _is_reason_ans,
+                                    utterance_is_read_as_the_reason as _is_reason_ans,
                                 )
                                 _reason_answer = bool(
                                     _is_reason_ans(self.session, utterance)

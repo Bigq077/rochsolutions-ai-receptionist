@@ -37,6 +37,23 @@ prompt, which is the sentence that produced the date_hint on this very call.
 The window is the whole pending window, not just the next turn:
 `_REASON_ANSWER_MAX_TURNS` is 2 so that one filler is tolerated, and a caller
 who says "um" before describing the complaint arrives here on turn two.
+
+SECOND ATTEMPT, same evening. The fix above shipped and the defect reproduced
+verbatim on CA556c7e20:
+
+    09:21:43.615  time_of_day_preference captured: mornings (tier=hard,
+                  from utterance 'um yeah my achilles is stiff for the first
+                  few minutes every morning and eases as i walk')
+    09:21:43.616  [first_turn] opening reason committed on the live path
+    09:22:03.078  check_availability ... date_hint="mornings"
+
+Six slots offered, every one AM. The caller had opened WITH the complaint, so
+the reason question was never asked, `_reason_answer_pending` never armed, and
+the gate was correct but inert. The reason was claimed one millisecond later by
+`commit_opening_reason` -- a different door onto the identical defect.
+
+So the capture asks `utterance_is_read_as_the_reason`, which is BOTH doors.
+Fixing one and shipping is what put the AM-only filter back on a live call.
 """
 
 import inspect
@@ -50,6 +67,8 @@ from app.media_streams.connection import (
 )
 from app.media_streams.first_turn_extractor import (
     commit_reason_answer,
+    utterance_is_opening_reason,
+    utterance_is_read_as_the_reason,
     utterance_is_reason_answer,
 )
 
@@ -185,6 +204,102 @@ def test_a_slot_pick_still_wins_over_the_reason_gate():
 
 
 # ---------------------------------------------------------------------------
+# The second door: the caller who opened with the complaint
+# ---------------------------------------------------------------------------
+# Verbatim from CA556c7e20.
+OPENING = (
+    "um yeah my achilles is stiff for the first few minutes every morning "
+    "and eases as i walk"
+)
+
+
+def test_the_opening_utterance_still_reads_as_hard_without_the_gate():
+    """Red-anchor for the second door, same purpose as the first."""
+    assert _extract_time_preference(OPENING) == "mornings"
+    assert _time_preference_tier(OPENING, is_slot_pick=False) == "hard"
+
+
+def test_an_opening_complaint_earns_no_time_authority():
+    """No reason question was asked on that call; this is the only gate."""
+    session = {}
+    assert utterance_is_opening_reason(session, OPENING) is True
+    assert utterance_is_read_as_the_reason(session, OPENING) is True
+    assert _time_preference_tier(
+        OPENING,
+        is_slot_pick=False,
+        is_reason_answer=utterance_is_read_as_the_reason(session, OPENING),
+    ) == "none"
+
+
+def test_the_predicate_reads_the_utterance_not_the_latch():
+    """`opening_utterance` is latched inside run_turn -- AFTER the capture.
+
+    A predicate keyed on the latch would be inert on turn 1, which is the
+    only turn it needs to work on. This is the mistake the first attempt
+    made one level up, so it is pinned rather than left to a comment.
+    """
+    assert utterance_is_opening_reason({}, OPENING) is True
+
+
+def test_once_an_opening_is_latched_later_turns_are_free():
+    """A latched opening means this turn is not the opening."""
+    session = {"opening_utterance": OPENING}
+    assert utterance_is_opening_reason(session, "mornings please") is False
+    assert utterance_is_read_as_the_reason(session, "mornings please") is False
+    assert _time_preference_tier(
+        "mornings please",
+        is_slot_pick=False,
+        is_reason_answer=utterance_is_read_as_the_reason(
+            session, "mornings please"
+        ),
+    ) == "hard"
+
+
+def test_a_bare_greeting_does_not_spend_the_opening():
+    """`note_opening_utterance` defers past a non-substantive turn, so the
+    complaint that follows it is still the opening and still gated.
+    """
+    session = {}  # "hi" never latched, so the latch is still empty
+    assert utterance_is_opening_reason(session, OPENING) is True
+
+
+def test_a_bare_greeting_is_not_itself_a_reason():
+    assert utterance_is_opening_reason({}, "hi") is False
+    assert utterance_is_opening_reason({}, "") is False
+
+
+@pytest.mark.parametrize(
+    "utterance",
+    [
+        OPENING,
+        "hi my lower back is worse first thing in the morning",
+        "i did my back in on saturday and it is still bad",
+    ],
+)
+def test_no_scheduling_state_is_banked_off_an_opening_complaint(utterance):
+    assert _time_preference_tier(
+        utterance,
+        is_slot_pick=False,
+        is_reason_answer=utterance_is_read_as_the_reason({}, utterance),
+    ) == "none"
+
+
+def test_the_combined_predicate_covers_both_doors():
+    """Either door alone leaves the other defect live -- proven twice."""
+    # Door 1: answering the reason question.
+    answering = _pending()
+    assert utterance_is_reason_answer(answering, LIVE) is True
+    assert utterance_is_opening_reason(answering, LIVE) is True
+    assert utterance_is_read_as_the_reason(answering, LIVE) is True
+
+    # Door 2: opened with it, question never asked.
+    opening_only = {}
+    assert utterance_is_reason_answer(opening_only, OPENING) is False
+    assert utterance_is_opening_reason(opening_only, OPENING) is True
+    assert utterance_is_read_as_the_reason(opening_only, OPENING) is True
+
+
+# ---------------------------------------------------------------------------
 # Wiring
 # ---------------------------------------------------------------------------
 def test_the_capture_site_asks_whether_this_is_the_reason_answer():
@@ -221,16 +336,20 @@ def test_the_capture_site_asks_whether_this_is_the_reason_answer():
 
     # 2. ...and the flag is derived from the module that OWNS the reason
     #    flags, rather than re-derived here from session keys.
+    # It must import the COMBINED predicate, not one door. Importing only
+    # `utterance_is_reason_answer` is not a weaker version of this fix, it IS
+    # the bug: that is exactly what shipped in the first attempt and let
+    # CA556c7e20 bank a hard AM filter off an opening complaint.
     imported = any(
         isinstance(n, ast.ImportFrom)
         and "first_turn_extractor" in (n.module or "")
-        and any(a.name == "utterance_is_reason_answer" for a in n.names)
+        and any(a.name == "utterance_is_read_as_the_reason" for a in n.names)
         for n in ast.walk(tree)
     )
     assert imported, (
-        "connection.py no longer imports utterance_is_reason_answer -- if it "
-        "has grown its own reading of the reason flags, that reading and "
-        "commit_reason_answer can disagree"
+        "connection.py does not import utterance_is_read_as_the_reason. If it "
+        "imports only one of the two doors, the other defect is live -- the "
+        "opening-complaint door is the one that reached a real caller"
     )
 
 

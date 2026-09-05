@@ -689,6 +689,62 @@ def utterance_is_reason_answer(session: Dict[str, Any], utterance: str) -> bool:
     return (utterance or "") != armed_on
 
 
+def utterance_is_opening_reason(session: Dict[str, Any], utterance: str) -> bool:
+    """True when *utterance* is the caller's opening AND carries a complaint.
+
+    The other half of [[B-138]]. `utterance_is_reason_answer` covers the
+    caller who is ANSWERING "what's the appointment for?". This covers the
+    caller who never had to be asked, because they opened with it -- and on
+    the live calls that is the commoner phrasing of the two.
+
+    B-138 second attempt, CA556c7e20 (5 Sep 2026, northgate). The first fix
+    shipped and the defect reproduced verbatim the same evening:
+
+        09:21:43.615  time_of_day_preference captured: mornings (tier=hard,
+                      from utterance 'um yeah my achilles is stiff for the
+                      first few minutes every morning and eases as i walk')
+        09:21:43.616  [first_turn] opening reason committed on the live path
+        09:22:03.078  check_availability ... date_hint="mornings"
+
+    -- six slots offered, every one AM. One millisecond separates the timing
+    capture from the reason commit claiming the SAME utterance. The reason
+    question was never asked, so `_reason_answer_pending` never armed and the
+    first gate was correct but inert. Same defect, same sentence, other door.
+
+    Reads the UTTERANCE, not a latch, and that is load-bearing:
+    `note_opening_utterance` runs inside run_turn, which is AFTER this is
+    asked, so on turn 1 `opening_utterance` is still unset when the capture
+    happens. A predicate keyed on the latch would be inert exactly when it
+    is needed -- which is the mistake this function exists to correct.
+
+    `opening_utterance` being ALREADY set is therefore the negative test: it
+    means an opening was latched on some earlier turn and this one is not it.
+    A caller who opens with a bare "hi" defers the latch (see
+    `note_opening_utterance`), so their complaint on the next turn is still
+    correctly treated as the opening.
+    """
+    if session.get("opening_utterance"):
+        return False
+    text = (utterance or "").strip()
+    if not text or not opening_is_substantive(text):
+        return False
+    return bool(_extract_reason(text.lower()))
+
+
+def utterance_is_read_as_the_reason(
+    session: Dict[str, Any], utterance: str
+) -> bool:
+    """True when this utterance is the caller telling us why they rang.
+
+    The single question the scheduling captures in connection.py ask, so a
+    complaint cannot be read as a booking preference through EITHER door.
+    Both doors are one call: fixing one and shipping is what put the AM-only
+    filter back on a live call after B-138's first attempt.
+    """
+    return utterance_is_reason_answer(session, utterance) or (
+        utterance_is_opening_reason(session, utterance)
+    )
+
 def commit_reason_answer(session: Dict[str, Any], utterance: str) -> bool:
     """Record the caller's reply to the reason question. True if a reason landed.
 
