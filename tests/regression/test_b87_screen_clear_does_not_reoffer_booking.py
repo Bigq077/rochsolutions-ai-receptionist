@@ -39,10 +39,9 @@ from app.media_streams.connection import (
     _TIMING_QUESTION_AFTER_BOOKING_ACK,
     _transcript_has_booking_intent,
 )
+from tests.screening_fixture import screening_clinic_json
 
-CLINIC = json.loads(
-    Path("app/clinics/jv_v1/clinic.json").read_text(encoding="utf-8")
-)
+CLINIC = screening_clinic_json()
 
 OPENER = "um yeah hi there i'd like to book an appointment i've hurt my ankle"
 

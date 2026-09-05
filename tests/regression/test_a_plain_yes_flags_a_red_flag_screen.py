@@ -37,10 +37,11 @@ import pytest
 
 from app.clinic_config import get_clinic
 from app.media_streams.clinical_screening import _screens, classify_screen_answer
+from tests.screening_fixture import screening_clinic, screening_clinic_json
 
 
 def _screen(clinic_id: str = "jv_v1", screen_id: str = "cauda_equina") -> dict:
-    screens = _screens(get_clinic(clinic_id))
+    screens = _screens(screening_clinic(clinic_id))
     scr = next((s for s in screens if s.get("id") == screen_id), None)
     assert scr is not None, f"{screen_id} missing from {clinic_id}"
     return scr

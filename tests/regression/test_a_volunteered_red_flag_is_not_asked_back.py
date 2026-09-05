@@ -46,6 +46,7 @@ from app.media_streams.clinical_screening import (
     _screens,
     update_screening_state,
 )
+from tests.screening_fixture import screening_clinic, screening_clinic_json
 
 # The caller's opening turn, verbatim from the call log.
 LIVE_UTTERANCE = (
@@ -55,7 +56,7 @@ LIVE_UTTERANCE = (
 
 
 def _clinic():
-    return get_clinic("jv_v1")
+    return screening_clinic()
 
 
 def _screen(screen_id: str = "cauda_equina") -> dict:

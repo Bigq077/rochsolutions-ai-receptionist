@@ -35,11 +35,12 @@ import pytest
 
 from app.clinic_config import get_clinic
 from app.media_streams import clinical_screening as cs
+from tests.screening_fixture import screening_clinic, screening_clinic_json
 
 
 @pytest.fixture()
 def jv():
-    return get_clinic("jv_v1")
+    return screening_clinic()
 
 
 # ── 1. Emergency intercept — the ~140ms life-safety path ──────────────────

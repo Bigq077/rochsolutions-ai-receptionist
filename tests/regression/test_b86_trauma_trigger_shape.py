@@ -27,10 +27,9 @@ from pathlib import Path
 import pytest
 
 from app.media_streams.clinical_screening import match_screen_trigger
+from tests.screening_fixture import screening_clinic, screening_clinic_json
 
-CLINIC = json.loads(
-    (Path("app/clinics/jv_v1/clinic.json")).read_text(encoding="utf-8")
-)
+CLINIC = screening_clinic_json()
 
 
 def _screen():

@@ -21,6 +21,7 @@ from app.clinic_config import get_clinic
 from app.media_streams import clinical_screening as cs
 from app.media_streams.clinical_screening import booking_blocked_reason
 from app.prompts.clinic_template_prompt import build_clinic_prompt, _clinical_depth
+from tests.screening_fixture import screening_clinic, screening_clinic_json
 
 
 CAUDA_QUESTION_PROMPT = (
@@ -32,7 +33,7 @@ CAUDA_QUESTION_PROMPT = (
 
 @pytest.fixture()
 def jv():
-    return get_clinic("jv_v1")
+    return screening_clinic()
 
 
 @pytest.fixture()

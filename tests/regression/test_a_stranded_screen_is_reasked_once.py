@@ -44,6 +44,7 @@ from app.media_streams.clinical_screening import (
     _screens,
     update_screening_state,
 )
+from tests.screening_fixture import screening_clinic, screening_clinic_json
 
 ARMING = "ive got really bad back pain"
 # Not gradable: no red-flag keyword, no negative, no affirmative lead.
@@ -51,7 +52,7 @@ UNGRADABLE = "wait wait wait"
 
 
 def _clinic():
-    return get_clinic("jv_v1")
+    return screening_clinic()
 
 
 def _question(screen_id: str = "cauda_equina") -> str:

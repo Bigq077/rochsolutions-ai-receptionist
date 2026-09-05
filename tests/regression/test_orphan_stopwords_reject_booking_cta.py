@@ -28,14 +28,19 @@ from app.media_streams.clinical_screening import (
     _norm,
     _screen_evidence_words,
 )
+from tests.screening_fixture import screening_clinic_json
 
 # The exact string the live clinic speaks, from jv_v1's `booking_offer`.
 BOOKING_CTA = "Would you like to book an assessment so Marcus can take a proper look?"
 
 
 def _jv_clinic():
-    p = Path(__file__).resolve().parents[2] / "app" / "clinics" / "jv_v1" / "clinic.json"
-    return json.loads(p.read_text(encoding="utf-8"))
+    """The reviewed six screens with screening forced ON.
+
+    No live clinic runs screens since 2026-09-05, so the machinery needs a
+    fixture rather than a clinic. See tests/screening_fixture.py.
+    """
+    return screening_clinic_json()
 
 
 def _hits(clinic, sentence):

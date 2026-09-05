@@ -34,6 +34,7 @@ import pytest
 
 from app.clinic_config import get_clinic
 from app.media_streams import clinical_screening as cs
+from tests.screening_fixture import screening_clinic, screening_clinic_json
 
 # Body parts a screen must never assert back at the caller. The caller's own words
 # are unknown at the point the scripted escalation is spoken — the deterministic
@@ -69,7 +70,7 @@ _SCREEN_IDS = (
 
 @pytest.fixture
 def jv():
-    return get_clinic("jv_v1")
+    return screening_clinic()
 
 
 def _body_parts_in(text: str) -> list[str]:

@@ -21,6 +21,7 @@ from __future__ import annotations
 import pytest
 
 from app.media_streams import clinical_screening as cs
+from tests.screening_fixture import screening_clinic
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -30,7 +31,7 @@ from app.media_streams import clinical_screening as cs
 @pytest.fixture
 def clinic():
     from app.clinic_config import get_clinic
-    c = get_clinic("jv_v1")
+    c = screening_clinic()
     assert cs.screening_enabled(c), "jv_v1 clinical_screening must be enabled"
     return c
 

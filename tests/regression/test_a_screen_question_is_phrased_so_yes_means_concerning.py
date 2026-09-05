@@ -40,6 +40,7 @@ import pytest
 
 from app.clinic_config import get_clinic
 from app.media_streams.clinical_screening import classify_screen_answer, get_screen
+from tests.screening_fixture import screening_clinic
 
 _SCREEN_IDS = (
     "cauda_equina", "dvt", "serious_spinal",
@@ -72,7 +73,7 @@ _QUESTION_FIELDS = (
 
 @pytest.fixture
 def jv():
-    return get_clinic("jv_v1")
+    return screening_clinic()
 
 
 def _screen(jv, sid):

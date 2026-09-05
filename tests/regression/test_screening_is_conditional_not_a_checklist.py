@@ -52,11 +52,12 @@ import pytest
 
 from app.clinic_config import get_clinic
 from app.prompts.clinic_template_prompt import _render_clinical_screening
+from tests.screening_fixture import screening_clinic
 
 
 @pytest.fixture
 def rendered():
-    clinic = get_clinic("jv_v1")
+    clinic = screening_clinic()
     out = _render_clinical_screening(clinic, {})
     assert out, "jv_v1 must render a screening block"
     return out
@@ -67,7 +68,7 @@ def how_to_use():
     # Via get_clinic, not a cwd-relative path — the value must be correct as the
     # engine actually resolves it, and the test must not depend on where pytest
     # was invoked from.
-    return get_clinic("jv_v1")["clinical_screening"]["how_to_use"]
+    return screening_clinic()["clinical_screening"]["how_to_use"]
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -136,7 +137,7 @@ def test_a_positive_answer_still_blocks_booking(how_to_use):
 
 
 def test_every_screen_still_renders_its_question_and_escalation(rendered):
-    clinic = get_clinic("jv_v1")
+    clinic = screening_clinic()
     screens = clinic["clinical_screening"]["screens"]
     assert len(screens) == 6
     for s in screens:
@@ -147,7 +148,7 @@ def test_every_screen_still_renders_its_question_and_escalation(rendered):
 def test_every_screen_still_renders_its_presentation(rendered):
     """The bound refers to 'the presentation named on that row', so every row
     must actually name one or the rule has nothing to point at."""
-    clinic = get_clinic("jv_v1")
+    clinic = screening_clinic()
     for s in clinic["clinical_screening"]["screens"]:
         assert f'when the caller describes {s["presentation"]}' in rendered, s["id"]
 

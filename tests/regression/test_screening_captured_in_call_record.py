@@ -17,12 +17,13 @@ import pytest
 
 from app.call_logger import CallLogger
 from app.media_streams import clinical_screening as cs
+from tests.screening_fixture import screening_clinic
 
 
 @pytest.fixture
 def clinic():
     from app.clinic_config import get_clinic
-    c = get_clinic("jv_v1")
+    c = screening_clinic()
     assert cs.screening_enabled(c)
     return c
 

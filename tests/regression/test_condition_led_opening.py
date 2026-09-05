@@ -41,14 +41,15 @@ import pytest
 
 from app.clinic_config import get_clinic
 from app.prompts.clinic_template_prompt import build_clinic_prompt
+from tests.screening_fixture import screening_clinic
 
 MARKER = "THE CALLER LED WITH A CONDITION"
 
 
-def _prompt(clinic_id: str) -> str:
+def _prompt(clinic_id: str, clinic=None) -> str:
     static, dynamic = build_clinic_prompt(
         {"clinic_id": clinic_id, "collected": {}, "soft_context": {}},
-        get_clinic(clinic_id),
+        clinic if clinic is not None else get_clinic(clinic_id),
     )
     return static + "\n" + dynamic
 
@@ -89,8 +90,13 @@ def test_the_branch_restates_both_prohibitions_she_broke():
 
 
 def test_safety_screening_still_outranks_the_offer():
-    """A red-flag presentation must never be answered with 'shall I book you in'."""
-    block = _block("jv_v1")
+    """A red-flag presentation must never be answered with 'shall I book you in'.
+
+    Asserted against a screens-ON fixture: no live clinic screens since
+    2026-09-05, but the ordering rule must stay correct for any clinic that
+    switches them back on.
+    """
+    block = _block("jv_v1", screening_clinic("jv_v1"))
     assert "the screen comes first and replaces the booking offer" in block
 
 
@@ -133,7 +139,7 @@ def test_the_gate_is_the_condition_library_not_a_clinic_id():
     assert '"jv_v1"' not in window, "the branch was gated on a clinic id"
 
 
-def _block(clinic_id: str) -> str:
-    p = _prompt(clinic_id)
+def _block(clinic_id: str, clinic=None) -> str:
+    p = _prompt(clinic_id, clinic)
     start = p.index(MARKER)
     return p[start:p.index("EXCEPTION — BOOKING FLOW ALREADY ACTIVE", start)]
