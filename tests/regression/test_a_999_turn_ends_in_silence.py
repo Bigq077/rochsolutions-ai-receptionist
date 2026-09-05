@@ -231,6 +231,61 @@ def test_the_dead_air_net_stays_quiet_on_an_escalation():
     )
 
 
+def test_the_escalation_decision_is_logged_unconditionally():
+    """B-140 had to be verifiable from its own log, and was not.
+
+    CAb91776fd (5 Sep 2026): the caller hung up two seconds before the
+    tts-finished callback that runs this family, so the block was never
+    reached. The guard logged only when escalated, so the ABSENCE of its line
+    was ambiguous between "the guard suppressed the nudge" and "the code never
+    ran" -- and the fix could not be confirmed from a live call.
+
+    One line on every question-less turn is cheap. An unfalsifiable safety fix
+    is not.
+    """
+    src = inspect.getsource(conn)
+    tree = ast.parse(src)
+
+    # The unconditional log must be a direct statement of the arming family,
+    # not nested inside `if _escalated_w`.
+    parents = {
+        child: node
+        for node in ast.walk(tree)
+        for child in ast.iter_child_nodes(node)
+    }
+    marker = "question-less turn reached the arming"
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and marker in (ast.get_source_segment(src, n) or "")
+    ]
+    assert calls, (
+        "the arming family does not log unconditionally -- the absence of an "
+        "escalation line cannot then be told apart from the block never being "
+        "reached, which is exactly why B-140 went unverified"
+    )
+
+    for call in calls:
+        node, guarded_by_escalation = call, False
+        while node in parents:
+            node = parents[node]
+            if isinstance(node, ast.If):
+                if "_escalated_w" in (ast.get_source_segment(src, node.test) or ""):
+                    guarded_by_escalation = True
+                    break
+        assert not guarded_by_escalation, (
+            "the unconditional log sits inside `if _escalated_w`, which makes "
+            "it conditional again and restores the ambiguity"
+        )
+
+    # ...and it must report the flag, not merely announce itself.
+    assert any(
+        "safety_escalation=%s" in (ast.get_source_segment(src, c) or "")
+        for c in calls
+    ), "the line does not report the value of the escalation flag"
+
+
 def test_only_the_arming_is_suppressed_never_the_transcript_path():
     """A caller who keeps talking must still be heard.
 

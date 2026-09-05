@@ -16210,6 +16210,19 @@ class WebSocketCallHandler:
                     # can't quite hear you — how can I help today?", which is
                     # the identical mistake in different words.
                     _escalated_w = bool(self.session.get("safety_escalation"))
+                    # Logged UNCONDITIONALLY, and that is the point. The
+                    # first cut logged only when escalated, so on CAb91776fd
+                    # (5 Sep) the absence of the line could not distinguish
+                    # "the guard suppressed the nudge" from "the block was
+                    # never reached because the caller had already hung up".
+                    # The B-140 fix could not be verified from its own log.
+                    # One line on every question-less turn is cheap; an
+                    # unfalsifiable safety fix is not.
+                    logger.info(
+                        "[ms_watchdog] question-less turn reached the arming"
+                        " family — safety_escalation=%s last_sent=%r",
+                        _escalated_w, _last_sent_w[:60],
+                    )
                     if _escalated_w:
                         logger.info(
                             "[ms_watchdog] safety escalation — arming nothing"
