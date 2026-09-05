@@ -509,14 +509,32 @@ def _render_condition_fluency(clinic: Dict[str, Any], tk: Dict[str, str]) -> str
             line += f" BOOK: {svc}."
         out.append(line)
     out.append("")
-    out.append(
+    _tail = (
         "If the condition is not in the library, apply the same standard from "
         "your general knowledge: acknowledge its recognised features "
         f"specifically, stay non-diagnostic about the caller's own case, and "
-        f"offer the {tk['first_appt_noun']} as the pathway. The CLINICAL "
-        "SAFETY SCREENING block always takes precedence when a screen matches."
+        f"offer the {tk['first_appt_noun']} as the pathway."
     )
+    if _screening_renders(clinic):
+        _tail += (" The CLINICAL SAFETY SCREENING block always takes "
+                  "precedence when a screen matches.")
+    out.append(_tail)
     return "\n".join(out)
+
+
+def _screening_renders(clinic: Dict[str, Any]) -> bool:
+    """True when the CLINICAL SAFETY SCREENING block is actually in the prompt.
+
+    `_render_clinical_screening` returns "" unless BOTH `enabled` is set and
+    `screens` is non-empty, so neither alone is sufficient. Rules elsewhere
+    defer to that block ("the screen comes first"); when it has not rendered,
+    those rules point at nothing. A conditional whose condition can never be
+    met is inert on a good day and an invitation to invent the missing block on
+    a bad one, and this codebase has been bitten by rules asserting a false
+    premise more than once — so the reference is now gated on the fact.
+    """
+    cs = clinic.get("clinical_screening") or {}
+    return bool(cs.get("enabled") and (cs.get("screens") or []))
 
 
 def _clinical_depth(clinic: Dict[str, Any]) -> str:
@@ -2143,8 +2161,11 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
             "is for — they just told you, and 1b already forbids re-asking it. "
             "Do NOT ask whether they have been seen here before — that question "
             "is banned outright everywhere in this flow. Do NOT ask two "
-            "questions. If a safety screen matches what they described, the "
-            "screen comes first and replaces the booking offer.\n"
+            "questions."
+            + (" If a safety screen matches what they described, the screen "
+               "comes first and replaces the booking offer."
+               if _screening_renders(clinic) else "")
+            + "\n"
         )
 
     if _has_fluency:
@@ -2242,6 +2263,59 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
             f"- Self-management ('ice or heat? rest or move? should I stretch?') → "
             f"'{prac} will guide that at your appointment.' No self-care advice "
             f"over the phone.\n"
+        )
+
+    if _has_fluency and not (clinic.get("condition_knowledge") or {}).get(
+        "mandatory", True
+    ):
+        # northgate, 2026-09-05. The MANDATORY wording made "specific
+        # understanding" unconditional on any NAMED BODY PART, while exempting
+        # only descriptions with no body part at all ("something feels off").
+        # A caller who names a region and describes nothing — "book me in for
+        # my ankle, it's nothing serious though" — therefore fell INSIDE the
+        # mandate with nothing in the library to be specific about, so the
+        # model asked a clinical question to manufacture the specificity the
+        # rule demanded: "is it more of a general ache, or does it catch you at
+        # certain times?" (CA3c3ca344, 2026-09-04 23:49:44 — the slowest turn
+        # of that call at 8.7s to first content). It then hit "Do NOT ask two
+        # questions" in the same turn and talked over itself: "Actually, let me
+        # get you sorted."
+        #
+        # The capability is kept and the COMPULSION dropped: be specific when
+        # the caller has given something to be specific about, and never
+        # interrogate in order to satisfy this step.
+        _step2_clinical = (
+            "2. CLINICAL COMPLAINT — be specific when they have given you "
+            "something specific, and never dig for it: "
+            "if the caller has DESCRIBED their problem (its features, how it "
+            "behaves, what set it off, how long it has been going on) OR asked "
+            "a clinical question ('what do you think', 'is it serious'), give "
+            "one or two sentences of SPECIFIC understanding using the "
+            "CONDITION FLUENCY library — reflect that condition's hallmark "
+            "features and their own details (their sport, job, duration) in "
+            "natural spoken words, never the one-size-fits-all "
+            "'physiotherapy is well-suited to that kind of problem'. "
+            "BUT IF THEY HAVE NAMED ONLY A BODY PART with no description "
+            "('my ankle', 'my shoulder's been bad'), a brief warm "
+            "acknowledgement is the RIGHT answer and this step is complete — "
+            "move on to the booking. "
+            "NEVER ASK A CLINICAL QUESTION IN ORDER TO SATISFY THIS STEP. Do "
+            "not ask what kind of pain it is, where exactly it hurts, how it "
+            "came on, or when it bothers them. You are not assessing anyone "
+            f"and {prac} will do all of that properly at the appointment; a "
+            "question asked so that you can sound knowledgeable costs the "
+            "caller a turn and gets them no closer to an appointment. If the "
+            "caller has said it is nothing serious, take them at their word. "
+            "Still NO diagnosis of the CALLER'S own case ('that kind of "
+            "problem', never 'you have X'), no prognosis, no promise of a "
+            "cure. "
+            "NEVER ENDORSE A SPECIFIC TREATMENT BEFORE ASSESSMENT: do not tell "
+            "the caller that a particular treatment or modality "
+            "'can be effective', 'will help', 'is worth trying', "
+            "or 'is suitable' for their problem — whether a given treatment "
+            f"fits is a clinical judgement only {prac} can make after "
+            "assessing (recommending the right APPOINTMENT per TREATMENT "
+            "KNOWLEDGE is expected and is not a treatment endorsement).\n"
         )
 
     booking_flow = (
