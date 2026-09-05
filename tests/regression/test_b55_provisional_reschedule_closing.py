@@ -236,7 +236,16 @@ UNCHANGED_CLINIC_PROMPTS = {
     # theorem_v3 are byte-identical, recomputed not assumed. vital_edge gets
     # the rule too (every clinic reading out slots can make the claim) and
     # stays deliberately unpinned.
-    "jv_v1": "45365575cf0a7969",
+    # Re-pinned 2026-09-05, 45365575cf0a7969 -> ca827da1b92e6b67. OWNER
+    # decision: jv_v1 takes the demo line's screening posture --
+    # clinical_screening.enabled false and condition_knowledge.mandatory
+    # false -- so the six-screen block and the fluency mandate stop
+    # rendering and the prompt loses 5,886 chars. Confined to
+    # app/clinics/jv_v1/clinic.json, so jv_v1 moves and every other clinic is
+    # byte-identical: verified by hashing all of them either side, not
+    # assumed. Recomputed with this file's own _sha, never copied between
+    # tables. See tests/regression/test_jv_mirrors_the_demo_line_screening_posture.py.
+    "jv_v1": "ca827da1b92e6b67",
     "theorem": "8565be9a48a7a9aa",
     # Re-pinned 2026-08-25: 'Children under fifteen not seen' -> 'Children
     # under seven not seen'. Mark's minimum age is 7 (owner-confirmed

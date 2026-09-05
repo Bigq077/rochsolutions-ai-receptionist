@@ -407,7 +407,16 @@ UNMOVED_PROMPTS = {
     # the rule too -- every clinic that reads out slots can make the claim --
     # and THIS table pins vital_edge, unlike the b55 one, so its hash moves
     # here and is re-pinned below.
-    "jv_v1": "45365575cf0a7969",
+    # Re-pinned 2026-09-05, 45365575cf0a7969 -> ca827da1b92e6b67. OWNER
+    # decision: jv_v1 takes the demo line's screening posture --
+    # clinical_screening.enabled false and condition_knowledge.mandatory
+    # false -- so the six-screen block and the fluency mandate stop
+    # rendering and the prompt loses 5,886 chars. Confined to
+    # app/clinics/jv_v1/clinic.json, so jv_v1 moves and every other clinic is
+    # byte-identical: verified by hashing all of them either side, not
+    # assumed. Recomputed with this file's own _sha, never copied between
+    # tables. See tests/regression/test_jv_mirrors_the_demo_line_screening_posture.py.
+    "jv_v1": "ca827da1b92e6b67",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL

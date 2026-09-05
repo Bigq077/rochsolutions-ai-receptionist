@@ -171,18 +171,33 @@ def test_the_rest_of_the_clinical_prompt_survived():
 
 # ── The scope pin ──────────────────────────────────────────────────────────
 
-def test_jv_is_deliberately_untouched():
-    """jv_v1 has the same library and the same six screens, and keeps both.
+def test_jv_now_shares_this_posture_by_a_later_decision():
+    """SUPERSEDED, deliberately rewritten rather than deleted.
 
-    If this fails, a change scoped to the demo line has reached a line with
-    real patients.
+    This test used to assert `jv_v1` was UNTOUCHED, and it was right to:
+    when northgate's screens went off on the morning of 2026-09-05 the demo
+    line's change had to stay off a line with real patients, and this is what
+    would have caught it leaking.
+
+    Later the same day the owner took the separate decision the northgate
+    config note called for, and extended the posture to jv_v1. The assertion
+    is inverted rather than removed so the SCOPE claim still has a test: what
+    it now says is that JV matches the demo line exactly, which is the thing
+    that was asked for and the thing that could silently drift.
+
+    Vital Edge and Theorem are still covered below -- neither has screens,
+    and nothing in either decision reached them.
     """
-    clinic = get_clinic("jv_v1")
-    assert screening_enabled(clinic) is True
-    assert len((clinic.get("clinical_screening") or {}).get("screens") or []) == 6
+    jv, demo = get_clinic("jv_v1"), get_clinic("northgate")
+    assert screening_enabled(jv) is False
+    assert screening_enabled(jv) == screening_enabled(demo)
+    assert len((jv.get("clinical_screening") or {}).get("screens") or []) == 6, (
+        "the six screens must be kept on file so the decision stays one key to reverse"
+    )
+    assert (jv.get("condition_knowledge") or {}).get("mandatory") is False
     text = _prompt("jv_v1")
-    assert "CLINICAL SAFETY SCREENING" in text
-    assert "MANDATORY for specific complaints" in text
+    assert "CLINICAL SAFETY SCREENING" not in text
+    assert "MANDATORY for specific complaints" not in text
 
 
 def test_vital_edge_and_theorem_keep_their_emergency_intercept():
@@ -213,6 +228,9 @@ def test_both_switches_default_to_todays_behaviour():
     kept jv_v1, vital_edge and theorem byte-identical."""
     from app.prompts.clinic_template_prompt import _render_clinical_screening
     assert _render_clinical_screening({}, {}) == ""
-    assert (get_clinic("jv_v1").get("condition_knowledge") or {}).get(
+    # vital_edge sets neither key, so it is the clinic that still
+    # demonstrates the DEFAULT. jv_v1 used to serve this purpose and no
+    # longer can -- it now sets both explicitly (2026-09-05 owner decision).
+    assert (get_clinic("vital_edge").get("condition_knowledge") or {}).get(
         "mandatory", True
     ) is True

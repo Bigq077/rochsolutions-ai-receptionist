@@ -53,9 +53,31 @@ def test_theorem_has_no_clinical_screening(clinic_id):
 
 
 def test_the_other_clinics_are_unaffected_by_that_decision():
-    """Mark's decision is Mark's. It must not be read as a house default."""
+    """Mark's decision is Mark's. It must not be read as a house default.
+
+    jv_v1 dropped out of this test on 2026-09-05. It used to be the example
+    of a clinic that had NOT followed Mark -- then the owner took the same
+    posture for JV, by a separate decision recorded in jv_v1/clinic.json and
+    pinned in test_jv_mirrors_the_demo_line_screening_posture.py.
+
+    The point of this test is unchanged and still worth having: one clinic's
+    configuration must never be inferred from another's. So it now asserts
+    what is still true -- vital_edge kept its own settings, and JV's posture
+    came from JV's own config rather than from Mark's.
+    """
     assert screening_enabled(get_clinic("vital_edge")), (
         "vital_edge lost its emergency intercept — that was baad8ab3 and is a "
         "different clinic's decision")
-    assert screening_enabled(get_clinic("jv_v1"))
-    assert len(_screens(get_clinic("jv_v1"))) > 0, "jv_v1 runs real screens"
+    jv = get_clinic("jv_v1")
+    # Read the RAW config, not `_screens()`: that helper goes through
+    # `screening_config()`, which returns nothing once `enabled` is false --
+    # so it answers "is screening running", not "are the screens on file".
+    on_file = (jv.get("clinical_screening") or {}).get("screens") or []
+    assert len(on_file) == 6, (
+        "jv_v1's six screens must stay on file — they are switched off by a "
+        "boolean, not deleted, so the decision stays reversible"
+    )
+    assert (jv.get("clinical_screening") or {}).get("enabled") is False, (
+        "jv_v1 is off by its OWN recorded decision (2026-09-05); if that key "
+        "has gone, the posture is being inherited rather than chosen"
+    )
