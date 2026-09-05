@@ -458,9 +458,24 @@ _BODY = (r"(?:knee|ankle|shoulder|hip|back|neck|wrist|elbow|foot|feet|calf|"
 # "went over on it", "it gave way". The screening triggers learned the same
 # lesson the hard way (a caller saying "my ankle ... I twisted it" armed no
 # screen): adding more synonyms is the trap, the SHAPE of the matcher is the bug.
+# The symptom vocabulary. Mechanical complaints were covered; the NEUROLOGICAL
+# class was absent entirely, and it is the clinically weightiest one.
+#
+# B-143, CA6b241e20 / CAcb51bc27 (5 Sep 2026, northgate). "my lower back's
+# been really bad and my leg's gone numb" corroborated on _BODY (back, leg)
+# and matched no trigger, so classify_intent returned [] and the caller got
+# the arbiter's contentless 'Sorry, still with you —' instead of the symptom
+# head 'Sorry to hear that —'. A caller reporting a numb leg heard a STALL
+# PHRASE as the first thing back, three calls running.
+#
+# Adding a missing CLASS, not lengthening a phrase list. Every term below is
+# a sensory/neurological sign; each still needs a body part to corroborate
+# and is still blocked by a trailing '?', so "is numbness normal after
+# surgery?" does not arm a sympathy head.
 _HURT = (r"(?:pain|painful|injur\w*|sprain\w*|strain\w*|ache|aching|stiff\w*|"
          r"sore|tension|pulled|tight\w*|hurt\w*|niggl\w*|twist\w*|roll\w*|"
-         r"went over|gave way|done (?:my|in)|popped|locked|swollen|seized)")
+         r"went over|gave way|giving way|done (?:my|in)|popped|locked|swollen|"
+         r"seized|numb\w*|tingl\w*|pins and needles|shooting)")
 _SERVICE = (r"(?:acupuncture|massage|shockwave|physio\w*|sports|dry.?needl\w*|"
             r"laser|rehab\w*|pilates|osteo\w*|treatment|therapy|service)")
 _WANT = r"(?:like to|want to|need to|can i|could i|looking to|wanting to|make|get|do)"
