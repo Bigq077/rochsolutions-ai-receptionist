@@ -13995,7 +13995,54 @@ class WebSocketCallHandler:
                                         self.session.get("used_fillers") or []
                                     ),
                                 )
-                                if _faq_q_gen >= 5 and _hs_bridge.speak:
+                                # ...but only when there IS a gap to bridge.
+                                #
+                                # B-142, CAcb51bc27 (5 Sep 2026, northgate).
+                                # This filler exists to cover the 1-2s pause
+                                # before the booking question. When the LLM's
+                                # own turn already ended on a question, no
+                                # next question is queued -- the two guards
+                                # further down set `_next_q = None` for
+                                # exactly these two conditions -- so there is
+                                # no gap, and the filler lands AFTER a
+                                # complete question instead of before one:
+                                #
+                                #   timing Q suppressed — LLM response
+                                #     already contains a question this turn
+                                #   synthesise: "Do you have a preference for
+                                #     when you'd like to come in?"
+                                #   synthesise: "Still with you —"   head=True
+                                #   BACKSTOP armed — turn asked nothing
+                                #     ('Still with you —') but a question is
+                                #     still outstanding
+                                #
+                                # The caller heard "...come in? Still with
+                                # you —" and then silence, and the turn ended
+                                # on a non-question so the backstop had to
+                                # re-arm. Keyed on the SAME two conditions as
+                                # the `_next_q` suppressions rather than a
+                                # copy of the idea, so a bridge is played if
+                                # and only if something is being bridged to.
+                                _bridge_has_nothing_to_cover = (
+                                    "?" in _last_bot
+                                    or bool(
+                                        self.session.get(
+                                            "v3_awaiting_slot_selection"
+                                        )
+                                    )
+                                )
+                                if _bridge_has_nothing_to_cover:
+                                    logger.info(
+                                        "[ms_conn v3] booking ack filler"
+                                        " suppressed — the turn already ends"
+                                        " on a question, so there is no gap"
+                                        " to bridge (B-142)"
+                                    )
+                                if (
+                                    _faq_q_gen >= 5
+                                    and _hs_bridge.speak
+                                    and not _bridge_has_nothing_to_cover
+                                ):
                                     await self.tts_text_queue.put(
                                         _hs_bridge.head
                                     )
