@@ -167,8 +167,42 @@ _ARM_ANATOMICAL = tuple(re.compile(p) for p in (
 
 
 def _part_stem(word: str) -> str:
-    """Lowercase and strip trailing punctuation/possessive. Unchanged semantics."""
-    return word.rstrip(".,!?;:'s").lower()
+    """Lowercase, strip trailing punctuation, then the possessive/plural.
+
+    `rstrip` takes a CHARACTER SET, not a suffix, so the original
+    `rstrip(".,!?;:'s")` also ate a terminal 's' that is part of the word.
+    Two entries of `_BODY_PARTS` were therefore unreachable:
+
+        'achilles' -> 'achille'   'pelvis' -> 'pelvi'
+
+    Neither stem is in the set, so Pass 1 never anchored on them. B-141,
+    CA60cb41a0 (5 Sep 2026, northgate): "my achilles is stiff the first few
+    minutes every morning" fell through to the injury-verb pass, which
+    anchors on 'stiff', and the call record read
+
+        reason: 'stiff the first few minutes every'
+
+    -- a complaint with no body part in it at all.
+
+    The vocabulary is consulted BEFORE the possessive strip, so this can only
+    ADD matches: a word that already names a part is returned as it stands,
+    and everything else strips exactly as before ("back's" -> "back",
+    "knees" -> "knee").
+    """
+    w = word.rstrip(".,!?;:").lower()
+    if w in _BODY_PARTS:
+        return w
+    return w.rstrip("'s")
+
+
+# Spinal loci, and the signs that a limb is being named as REFERRAL from one
+# rather than as a second complaint. Both halves are required -- a spinal part
+# alone, or a limb with numbness alone, changes nothing.
+_SPINAL_PARTS: frozenset = frozenset({"back", "spine", "neck"})
+_REFERRAL_SIGNS: tuple = (
+    "numb", "numbness", "tingling", "tingle", "pins and needles",
+    "shooting", "radiating", "radiates", "sciatica", "sciatic",
+)
 
 
 def _usable_body_parts(text_low: str, words: list) -> set:
@@ -183,6 +217,29 @@ def _usable_body_parts(text_low: str, words: list) -> set:
             found.discard("back")
     if "arm" in found and not any(p.search(text_low) for p in _ARM_ANATOMICAL):
         found.discard("arm")
+    # A limb named alongside the spine, with a referral sign, is ONE locus.
+    #
+    # `_extract_reason` fails open on two distinct complaints because picking
+    # the first-mentioned is a coin toss -- that guard is deliberate and stays.
+    # But back-pain-with-leg-numbness is not two complaints, it is lumbar
+    # radiculopathy: the spine is the locus and the leg is the referral. The
+    # same distinction this function already makes for "the back of my legs",
+    # which is one locus spelled with two part words.
+    #
+    # B-141, CA6b241e20 (5 Sep 2026, northgate) and CAcb51bc27 before it. The
+    # caller opened with "my lower back's been really bad and my leg's gone
+    # numb"; parts resolved to {back, leg}; the two-complaint guard fired; and
+    # the call ended `pre-summary reason: collected=None session=None`. No
+    # reason at all, on a call whose first sentence was the reason -- which
+    # also empties the Sheets row, the follow-up SMS, and starves
+    # `book_appointment`'s A2 gate.
+    #
+    # Both halves are required, so a genuine pair ("my knee and my ankle are
+    # both sore") is untouched and still captures nothing.
+    _spinal = found & _SPINAL_PARTS
+    if len(_spinal) == 1 and len(found) > 1:
+        if any(sign in text_low for sign in _REFERRAL_SIGNS):
+            found = set(_spinal)
     return found
 
 
