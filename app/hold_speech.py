@@ -847,6 +847,88 @@ def is_closing(text: str) -> bool:
     return bool(_CLOSING_MARKER.search(utterance))
 
 
+#: A clock time, spoken the way a caller says one back. Bands are deliberately
+#: NOT here -- see `utterance_accepts_an_offer` for why "mornings work better"
+#: must stay outside this.
+_CLOCKISH = re.compile(
+    r"\b(?:"
+    r"\d{1,2}[:.]\d{2}"                                    # 8:30
+    r"|\d{1,2}\s*(?:am|pm)\b"                              # 8 am
+    r"|\d{1,2}\s*o'?\s*clock"                              # 5 o'clock
+    r"|(?:half|quarter|five|ten|twenty|twenty[-\s]five)\s+(?:past|to)\s+\S+"
+    r"|(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+    r"\s+(?:in\s+the\s+)?(?:morning|afternoon|evening)"
+    r"|\d{1,2}\s+(?:in\s+the\s+)?(?:morning|afternoon|evening)"
+    r")",
+    re.IGNORECASE,
+)
+
+#: The caller saying yes to something on the table.
+_ACCEPTS = re.compile(
+    r"\b(?:works?|suits?|suitable|i'?ll\s+take|i'?ll\s+have|let'?s\s+do|"
+    r"go\s+for|happy\s+with|that'?ll\s+do|perfect|ideal|lovely|brilliant|"
+    r"grand|great|fine|that'?s\s+(?:good|fine|great|perfect))\b",
+    re.IGNORECASE,
+)
+
+#: Any negator at all. Same wholesale rule, and for the same reason, as
+#: `_DAY_REFUSE_RE` in slot_followup: every word in `_ACCEPTS` can be carrying
+#: a refusal ("that doesn't work", "not great"), and a negated acceptance is
+#: never clean enough to act on.
+_REFUSES = re.compile(
+    r"\b(?:no|nope|nah|not|none|never|cannot|rather)\b|n'?t\b",
+    re.IGNORECASE,
+)
+
+
+def utterance_accepts_an_offer(text: str) -> bool:
+    """Is the caller plainly ACCEPTING something already offered? PURE.
+
+    A backstop for `slot_selection`, not a replacement for it. B-145b,
+    `CAa0389cae`, northgate, 2026-09-05 23:10:24:
+
+        caller: 'um 10 past 5 in the evening suits'
+        Susie:  situational head (time_band): "Let me see what I've got in the
+                evening -"
+        Susie:  "so that's Monday the 7th of September at ten past five in the
+                evening"
+
+    She promised a lookup to a caller who had just chosen, and then did not do
+    one -- she confirmed. Fourth instance of the promised-work defect on a pick.
+
+    Every existing reader of `slot_selection` RESOLVES: containment against the
+    spoken labels, `slot_accepted_by_caller`, `day_accepted_by_caller`. Each can
+    decline for a reason that has nothing to do with whether the caller picked
+    -- here all three did, because the offer still held three dates. Resolving
+    is the right way to decide WHICH slot; it is the wrong way to decide whether
+    to promise a lookup, because the cost of a decline is a false promise.
+
+    So this asks the cheaper question and answers it deny-by-default:
+
+      1. an acceptance word, and NO negator anywhere;
+      2. corroborated by a DAY or a CLOCK TIME -- something concrete from the
+         offer, echoed back.
+
+    A BAND alone is deliberately excluded. "mornings work better" is a
+    PREFERENCE, the lookup it asks for really does happen, and suppressing
+    "Let me see what I've got in the morning -" there would remove a head that
+    is telling the truth. That is the direction this family must not fail in.
+
+    The caller of this decides WHEN to ask it -- only while an offer is on the
+    table. Guard on the MAP, per the rule `connection.py` already states.
+    """
+    utterance = (text or "").strip()
+    if not utterance:
+        return False
+    if _REFUSES.search(utterance):
+        return False
+    if not _ACCEPTS.search(utterance):
+        return False
+    return bool(
+        re.search(_DAY, utterance, re.IGNORECASE) or _CLOCKISH.search(utterance)
+    )
+
+
 def subject_for(text: str) -> str:
     """The noun a head may name, or "" when nothing is safe to say. PURE.
 

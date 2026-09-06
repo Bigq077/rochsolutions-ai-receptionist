@@ -4901,6 +4901,7 @@ class LLMStream:
                 hold_speech_enabled as _hs_enabled,
                 render_intent_head as _render_intent_head,
                 subject_for as _subject_for,
+                utterance_accepts_an_offer as _accepts_an_offer,
             )
             if _hs_enabled(session):
                 _hs_utterance = _last_user_text(messages or [])
@@ -4966,6 +4967,32 @@ class LLMStream:
                             day_accepted_by_caller as _day_picked,
                         )
                         _hs_picking = bool(_day_picked(session, _hs_utterance))
+                    except Exception:  # pragma: no cover - defensive
+                        pass
+                # Fourth, and the backstop the three above cannot be.
+                #
+                # Every reader so far RESOLVES -- which slot, which day. Each
+                # can decline for a reason that has nothing to do with whether
+                # the caller picked, and on 2026-09-05 23:10:24 all three did:
+                #
+                #     'um 10 past 5 in the evening suits'
+                #     situational head (time_band):
+                #         "Let me see what I've got in the evening -"
+                #     "so that's Monday the 7th of September at ten past five"
+                #
+                # The offer still held three dates, so `slot_accepted_by_
+                # caller`'s lone-date branch declined -- the branch written for
+                # this exact sentence two days earlier. B-145 stops that state
+                # arising; this stops the next decline, whatever produces it,
+                # from promising a lookup again. Fourth instance in the family,
+                # so the guard belongs on the QUESTION ("did they accept?")
+                # rather than on any one answer to it.
+                #
+                # Gated on the MAP, per connection.py's own rule -- only while
+                # numbered options are actually on the table.
+                if not _hs_picking and session.get("v3_dtmf_slot_map"):
+                    try:
+                        _hs_picking = _accepts_an_offer(_hs_utterance)
                     except Exception:  # pragma: no cover - defensive
                         pass
                 _hs_hits = _classify_intent(
