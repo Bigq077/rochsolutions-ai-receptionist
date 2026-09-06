@@ -2216,6 +2216,62 @@ def _offered_day_by_weekday(offered: Any, text: str) -> "str | None":
         return None
 
 
+def _payload_day_by_weekday(available_days: Any, text: str) -> "str | None":
+    """The one PAYLOAD day whose WEEKDAY the caller named, or None. PURE.
+
+    B-148, `CAdf1e02ca`, northgate, 2026-09-06 10:15:23. Susie had just narrowed
+    to Monday. The caller said "um check for tuesday please" and D-B did not
+    fire at all:
+
+        situational head (named_day): 'Let me have a look at Tuesday for you -'
+        second filler phrase (genuine stall, 10.0s since dispatch)
+        LAT turn_seq=12 llm_ttft_ms=12876 content_ttfa_ms=13700
+        "from the data I already have for Tuesday the 8th - I've got ten past
+         nine in the morning, or twenty past five in the evening"
+
+    Two of Tuesday's times, thirteen seconds, and the model's internal phrasing
+    ("from the data I already have") spoken to a caller. The head was right and
+    nothing was behind it -- D-B's own defect, arriving again because the
+    producer could not resolve the day.
+
+    `_offered_day_by_weekday` resolves a bare weekday against the OFFER, which
+    is correct for a PICK: you can only choose from what was read out. It is the
+    wrong scope for a REQUEST. Once the conversation narrows -- and B-145 makes
+    narrowing commoner, because a day acceptance now narrows too -- the offer
+    holds one day, and every other day the clinic actually has becomes
+    unreachable by name.
+
+    NOT the calendar, and therefore not the date parsing Tier 2 needs: the
+    candidates are the payload this caller's own lookup returned. Same
+    deny-by-default rules as its sibling, and the second one matters more here
+    because a payload can span more than a week:
+
+      * exactly ONE weekday word in the speech -- two is a comparison;
+      * exactly ONE payload day falling on it. A fortnight holding two Tuesdays
+        declines rather than guessing the nearer, which is the rule
+        `weekday names repeat every seven days` exists for.
+
+    Never raises: a caller mid-booking must not lose their turn to a resolver.
+    """
+    try:
+        _words = [w for w in _WEEKDAY_WORDS
+                  if f" {w} " in f" {_caller_norm(text)} "]
+        if len(_words) != 1:
+            return None
+        _dates = sorted({
+            str((d or {}).get("date") or "")
+            for d in (available_days or [])
+            if isinstance(d, dict) and (d.get("slot_times") or [])
+        } - {""})
+        _hits = [
+            d for d in _dates
+            if _date.fromisoformat(d).strftime("%A").lower() == _words[0]
+        ]
+        return _hits[0] if len(_hits) == 1 else None
+    except Exception:
+        return None
+
+
 def slot_accepted_by_caller(
     session: Dict[str, Any], text: str
 ) -> "str | None":
@@ -4284,6 +4340,13 @@ def named_day_speech(
             date = _offered_day_by_weekday(
                 session.get("last_offered_slots") or [], user_text
             )
+        if not date:
+            # B-148. The two steps above resolve against what was READ OUT, and
+            # once the conversation narrows to one day that is every other day
+            # the clinic has. A REQUEST is not a pick: "check for Tuesday" names
+            # a day the caller wants looked at, not one they are choosing from,
+            # so the candidate set is the payload their own lookup returned.
+            date = _payload_day_by_weekday(days, user_text)
         if not date:
             return None
 
