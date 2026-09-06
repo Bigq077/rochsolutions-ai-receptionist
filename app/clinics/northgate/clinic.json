@@ -213,6 +213,179 @@
   "if_unsure": "Default to the Initial Assessment (Musculoskeletal) as the safe starting point — it's where Priya assesses the problem and agrees the plan. This never overrides a caller who names the service they want.",
   "safety": "Anything acute or severe — sudden severe pain, numbness or loss of function, a recent serious injury, or anything medically unclear — should be assessed, not booked blindly, and a genuine emergency needs urgent medical care, not us. Never diagnose and never promise an outcome or a set number of sessions."
  },
+ "region_knowledge": {
+  "_note": "MARK_REVIEW: the rung BELOW condition_knowledge. That library needs the caller to have described something; measured over 400 stored calls, 110 of 171 complaint openings named a body part and nothing else and had nothing to reach for. This is what those turns say instead.",
+  "how_to_use": "When a caller names ONLY a body part and describes nothing about it ('my ankle', 'my shoulder's been bad'), this is what you reach for instead of a bare 'that sounds uncomfortable'. Find the region and say ONE short sentence, in your own words, that gives them a REASON it is worth looking at — never a description of the anatomy, and never a recital of the entry. Then go straight to your next booking question. ASK NOTHING CLINICAL. This step exists so that you do not have to dig for detail: a caller who wanted to describe it would have. NEVER ARGUE WITH 'nothing serious' or 'it's only minor' — take them at their word. 'Worth a look even when it feels minor' respects it; 'it might be more than you think' is you overruling them. Name the practitioner where it falls naturally, and leave the name out entirely if there is none. If the line you are about to say would fit any body part equally, it has failed — say the one that is true of THEIRS, or say nothing and move on.",
+  "regions": [
+   {
+    "name": "Ankle",
+    "keywords": [
+     "ankle",
+     "ankles"
+    ],
+    "understanding": "Ankles are often under-rehabbed after a knock, so they grumble on or feel a bit unsteady months later — which is why one that feels minor is still worth a proper look."
+   },
+   {
+    "name": "Foot, heel and toes",
+    "keywords": [
+     "foot",
+     "feet",
+     "heel",
+     "heels",
+     "arch",
+     "toe",
+     "toes",
+     "plantar",
+     "big toe"
+    ],
+    "understanding": "Foot pain is usually as much about load and footwear as the foot itself, and pain that bites on the first few steps in the morning is a particularly recognisable pattern."
+   },
+   {
+    "name": "Knee",
+    "keywords": [
+     "knee",
+     "knees",
+     "kneecap"
+    ],
+    "understanding": "Knees behave quite differently depending on where it's coming from — front, inside, or the outer side — so pinning that down is the first job and it changes the whole plan."
+   },
+   {
+    "name": "Hip and groin",
+    "keywords": [
+     "hip",
+     "hips",
+     "groin"
+    ],
+    "understanding": "Hip pain often isn't the joint at all — it's frequently the tendons on the outside or the muscles around it, and those are handled quite differently."
+   },
+   {
+    "name": "Low back",
+    "keywords": [
+     "back",
+     "lower back",
+     "low back",
+     "spine",
+     "lumbar",
+     "spinal"
+    ],
+    "understanding": "Most backs settle well once you know what's actually driving them, and staying gently on the move usually does more good than resting up."
+   },
+   {
+    "name": "Neck",
+    "keywords": [
+     "neck",
+     "necks"
+    ],
+    "understanding": "Necks are very often about position and load through the day rather than anything structural, and they respond well once that's sorted out."
+   },
+   {
+    "name": "Upper back and ribs",
+    "keywords": [
+     "upper back",
+     "mid back",
+     "middle back",
+     "thoracic",
+     "rib",
+     "ribs",
+     "shoulder blade"
+    ],
+    "understanding": "Upper back and rib pain is usually about how the area is moving rather than any damage, and it tends to ease off faster than people expect."
+   },
+   {
+    "name": "Shoulder",
+    "keywords": [
+     "shoulder",
+     "shoulders",
+     "rotator",
+     "cuff"
+    ],
+    "understanding": "Shoulders stiffen up quickly if they're left alone, so catching one early makes a real difference to how long it takes to come good."
+   },
+   {
+    "name": "Elbow",
+    "keywords": [
+     "elbow",
+     "elbows"
+    ],
+    "understanding": "Elbow pain is nearly always a tendon that's been asked to do too much, and the fix is about how it's loaded rather than resting it completely."
+   },
+   {
+    "name": "Wrist, hand and thumb",
+    "keywords": [
+     "wrist",
+     "wrists",
+     "hand",
+     "hands",
+     "thumb",
+     "finger",
+     "fingers"
+    ],
+    "understanding": "Wrists and hands are hard to rest because you use them for everything, so the plan has to work around your day rather than against it."
+   },
+   {
+    "name": "Calf and Achilles",
+    "keywords": [
+     "calf",
+     "calves",
+     "achilles",
+     "heel cord"
+    ],
+    "understanding": "Calf and Achilles problems respond really well to the right loading, and that stiffness for the first few minutes in the morning is a classic sign."
+   },
+   {
+    "name": "Hamstring, thigh and quad",
+    "keywords": [
+     "hamstring",
+     "hamstrings",
+     "thigh",
+     "thighs",
+     "quad",
+     "quads"
+    ],
+    "understanding": "Hamstrings and thighs need building back up properly or they have a habit of going again, which is why the rehab matters more than the rest does."
+   },
+   {
+    "name": "Shin",
+    "keywords": [
+     "shin",
+     "shins",
+     "shin splints"
+    ],
+    "understanding": "Shin pain is usually a training-load story — how much, how quickly, and on what surface — so that's where we start looking."
+   },
+   {
+    "name": "Glutes and buttock",
+    "keywords": [
+     "glute",
+     "glutes",
+     "buttock",
+     "backside",
+     "bum"
+    ],
+    "understanding": "Pain around the buttock can come from the tendon, the joint, or a nerve referring down from the back, and telling those apart is the first thing to do."
+   },
+   {
+    "name": "Jaw",
+    "keywords": [
+     "jaw",
+     "jaws",
+     "tmj"
+    ],
+    "understanding": "Jaw pain is often tied up with clenching and how the neck's sitting, and it responds well once that side of it is addressed."
+   },
+   {
+    "name": "Arm or leg, unspecified",
+    "keywords": [
+     "arm",
+     "arms",
+     "leg",
+     "legs",
+     "limb"
+    ],
+    "understanding": "Arms and legs cover a lot of ground, so exactly where it sits tells us most of the story — that's the first thing to work out."
+   }
+  ]
+ },
  "condition_knowledge": {
   "_note": "MARK_REVIEW: Per-condition clinical fluency, rendered by _render_condition_fluency. Each 'understanding' names the condition's HALLMARK features in spoken style so Susie demonstrates genuine comprehension — never a generic 'that's very common'. All content is educational about the condition in general; Susie never asserts the caller HAS it (clinical_depth=standard). 'pathway' is what Priya specifically does for it; 'service' is the best-fit booking.",
   "_mandatory_note": "OWNER decision (Quentin), 2026-09-05, DEMO LINE ONLY. `mandatory: false` keeps the condition library and drops the COMPULSION to use it. The MANDATORY wording made specific understanding unconditional on any NAMED BODY PART while exempting only descriptions with no body part at all, so 'book me in for my ankle, it's nothing serious though' fell inside the mandate with nothing in the library to be specific about — and the model asked a clinical question to manufacture the specificity the rule demanded ('is it more of a general ache, or does it catch you at certain times?'), then hit 'do NOT ask two questions' in the same turn and talked over itself with 'Actually, let me get you sorted.' Seen on CA3c3ca344, 2026-09-04 23:49:44; that turn was the slowest of the call at 8.7s to first content. THIS IS NOT A SAFETY SETTING — the fluency block is warmth and perceived expertise, and it is kept for callers who actually describe something. What is removed is the compulsion and, explicitly, permission to interrogate in order to satisfy it. Default is true, so every other clinic is byte-identical. Reverse by deleting this key.",

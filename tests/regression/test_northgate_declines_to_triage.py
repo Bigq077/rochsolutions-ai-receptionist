@@ -143,10 +143,29 @@ def test_the_mandate_no_longer_compels_specific_understanding():
 
 
 def test_interrogating_to_satisfy_the_step_is_banned():
-    """The actual defect, stated as a rule rather than hoped for."""
+    """The actual defect, stated as a rule rather than hoped for.
+
+    The second assertion used to pin the exact 5 Sep wording — "brief warm
+    acknowledgement is the RIGHT answer". That sentence was HOW the ban was
+    honoured, not the ban itself, and on 2026-09-07 northgate got something
+    better to say in its place (the region library). Re-aimed at the PROPERTY,
+    which has not changed and is now asserted more strictly: a caller who names
+    only a body part completes this step, and does so without being asked a
+    clinical question.
+
+    Both halves matter. Dropping the second assertion entirely would leave the
+    ban asserted with nothing saying the step can be finished, which is exactly
+    the state that made the model interrogate in the first place.
+    """
     text = _prompt("northgate")
     assert "NEVER ASK A CLINICAL QUESTION IN ORDER TO SATISFY THIS STEP" in text
-    assert "brief warm acknowledgement is the RIGHT answer" in text
+    assert "NAMED ONLY A BODY PART" in text
+    assert "this step is complete" in text
+    for interrogation in (
+        "is it more of a general ache",
+        "does it catch you at certain times",
+    ):
+        assert interrogation not in text
 
 
 def test_the_condition_library_is_kept():

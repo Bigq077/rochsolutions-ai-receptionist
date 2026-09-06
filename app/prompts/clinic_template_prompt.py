@@ -435,6 +435,69 @@ def _render_treatment_knowledge(clinic: Dict[str, Any], tk: Dict[str, str]) -> s
     return "\n".join(out)
 
 
+def _render_region_knowledge(clinic: Dict[str, Any]) -> str:
+    """The rung BELOW condition fluency: what to say for a bare body part.
+
+    `condition_knowledge` needs the caller to have DESCRIBED something. Measured
+    over 400 stored calls on 2026-09-07, 171 complaint openings named a body
+    part and **110 of them named nothing else** — "book me in for my ankle, it's
+    nothing serious". Those turns had no anchor at all, so the wording was free
+    generation and the quality wandered: "that left ankle's been giving you
+    trouble", "a bit of a dodgy ankle", "got it".
+
+    That was the deliberate outcome of dropping `condition_knowledge.mandatory`
+    (northgate, 2026-09-05), which stopped the model INTERROGATING to
+    manufacture specificity it had no library entry for — 8.7s to first content
+    on CA3c3ca344, then it talked over itself. The compulsion had to go. What
+    was missing was something honest to say instead, and this is it.
+
+    A REASON TO COME IN, NOT A DESCRIPTION OF THE ANATOMY. "Ankles are usually
+    the joint or the tendons around it" is a leaflet; a receptionist who knows
+    physiotherapy tells you why it is worth looking at. That distinction is what
+    keeps the line short, warm and non-diagnostic, and it is stated as the test
+    rather than left to taste: a line that would fit any body part equally has
+    failed.
+
+    Content is anchored here; WORDING is not. A fixed phrase pool would say the
+    same words every call, which is the canned sound this exists to avoid — the
+    condition library already proves the model renders an anchored fact
+    naturally ("that first-few-steps stiffness that warms up as you get going").
+
+    Clinics without the block are unaffected, byte-for-byte.
+    """
+    rk = clinic.get("region_knowledge") or {}
+    regions = rk.get("regions") or []
+    if not regions:
+        return ""
+    out = ["BODY PART NAMED, NOTHING DESCRIBED — WHAT TO SAY INSTEAD"]
+    if rk.get("how_to_use"):
+        out.append(rk["how_to_use"])
+    out.append("")
+    out.append(
+        "ONE sentence, under about twenty words, then your next booking "
+        "question. This turn is the caller's first, it is the turn they are "
+        "most likely to talk over, and a second thought stacked on top costs "
+        "more than it adds."
+    )
+    out.append("")
+    out.append("REGION LIBRARY (what makes this area worth looking at):")
+    for r in regions:
+        nm = r.get("name", "")
+        und = r.get("understanding", "")
+        kws = ", ".join(r.get("keywords") or [])
+        line = f"- {nm}"
+        if kws:
+            line += f" ({kws})"
+        out.append(f"{line}: {und}")
+    out.append("")
+    out.append(
+        "If they named a region that is not listed, hold the same standard from "
+        "your own knowledge: one true, specific reason it is worth assessing, "
+        "nothing about their own case, and no clinical question."
+    )
+    return "\n".join(out)
+
+
 def _render_condition_fluency(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     """Per-condition clinical fluency, rendered from `condition_knowledge` in
     clinic.json. This is what makes Susie's clinical responses SPECIFIC: each
@@ -2295,11 +2358,30 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
             "features and their own details (their sport, job, duration) in "
             "natural spoken words, never the one-size-fits-all "
             "'physiotherapy is well-suited to that kind of problem'. "
-            "BUT IF THEY HAVE NAMED ONLY A BODY PART with no description "
-            "('my ankle', 'my shoulder's been bad'), a brief warm "
-            "acknowledgement is the RIGHT answer and this step is complete — "
-            "move on to the booking. "
-            "NEVER ASK A CLINICAL QUESTION IN ORDER TO SATISFY THIS STEP. Do "
+            # A rule may only point at a block that actually renders for THIS
+            # clinic. Without this gate jv_v1 -- which ships no region library
+            # -- was told to "use the REGION LIBRARY" that its prompt does not
+            # contain: the false-premise pattern this file has been bitten by
+            # three times, most recently when the screening block stopped
+            # rendering and three sentences went on deferring to it. Caught by
+            # rendering all three clinics rather than by review.
+            + (
+                "BUT IF THEY HAVE NAMED ONLY A BODY PART with no description "
+                "('my ankle', 'my shoulder's been bad'), do NOT dig for more — "
+                "use the REGION LIBRARY under 'BODY PART NAMED, NOTHING "
+                "DESCRIBED': one short sentence giving them a reason that area "
+                "is worth looking at, in your own words, and this step is "
+                "complete — move on to the booking. A bare 'that sounds "
+                "uncomfortable' is the answer this replaces: it is warm and it "
+                "tells them nothing, and it is what they got on 110 of the 171 "
+                "complaint openings in the stored corpus. "
+                if (clinic.get("region_knowledge") or {}).get("regions")
+                else "BUT IF THEY HAVE NAMED ONLY A BODY PART with no "
+                "description ('my ankle', 'my shoulder's been bad'), a brief "
+                "warm acknowledgement is the RIGHT answer and this step is "
+                "complete — move on to the booking. "
+            )
+            + "NEVER ASK A CLINICAL QUESTION IN ORDER TO SATISFY THIS STEP. Do "
             "not ask what kind of pain it is, where exactly it hurts, how it "
             "came on, or when it bothers them. You are not assessing anyone "
             f"and {prac} will do all of that properly at the appointment; a "
@@ -3437,6 +3519,7 @@ def build_clinic_prompt(session: Dict[str, Any], clinic: Dict[str, Any]) -> Tupl
         _render_service_mapping(clinic, tk),
         _render_treatment_knowledge(clinic, tk),
         _render_condition_fluency(clinic, tk),
+        _render_region_knowledge(clinic),
         _render_clinical_screening(clinic, tk),
         _render_identity(clinic, tk),
         _render_provisional_booking(clinic, tk),
