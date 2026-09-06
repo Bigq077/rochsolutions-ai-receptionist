@@ -171,6 +171,40 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         "display_name": "Theorem Health and Wellness",
         "timezone": "Europe/London",
 
+        # ── Hold speech: route waiting phrases through the arbiter ───────────
+        # OWNER decision (Quentin), 2026-09-06 — the last of the four lines,
+        # after northgate (from the start), vital_edge (1 Sep) and jv_v1
+        # (4 Sep). MARK HAS NOT HEARD IT: the same weaker standard the other
+        # two patient lines were taken on, recorded rather than smoothed over.
+        #
+        # ⚠️ TOP LEVEL HERE, AND ONLY HERE — THE OPPOSITE OF THE JSON CLINICS.
+        # jv_v1 and vital_edge put this under `operational`, because
+        # `_map_json_to_clinic_contract` BUILDS the top-level value from it and
+        # a top-level key in clinic.json is overwritten with False. Theorem is
+        # a legacy CLINICS entry: `get_clinic` returns `dict(CLINICS[cid])`
+        # verbatim (line ~1651) and never calls that mapper, so an
+        # `operational` key here would be the dead config instead. The two
+        # mechanisms want the key in opposite places, and the failure is
+        # inaudible either way — `hold_speech_enabled` fails to False, the
+        # clinic keeps its pre-arbiter behaviour, and nothing logs.
+        # Pinned by test_hold_speech_is_on_for_every_patient_line.
+        #
+        # Inherited by theorem_v2 and theorem_v3 through the deepcopies below
+        # (~line 1242), which is what actually reaches Mark's line: +447380841468
+        # maps to theorem_v3, and it is NOT a clinic.json.
+        #
+        # Theorem draws the WRITE_BOOK pool, not PENDING_REQUEST:
+        # `booking_system` is "acuity", so `clinic_facts` reports
+        # provisional=False and the write head is "Right, booking you in —" —
+        # true, because Theorem writes a real Acuity appointment. It could
+        # never draw "Sending that over to {practitioner} —", which is Vital
+        # Edge's wording and would be doubly wrong here: it claims a request
+        # Theorem does not make, and Theorem carries no `practitioner` key to
+        # render.
+        #
+        # Revert = set this False. It is one key and a redeploy.
+        "hold_speech": True,
+
         # Branding / contact — used in SMS messages
         "sms_name": "Theorem Health and Wellness",
         "phone":    "07870 166861",

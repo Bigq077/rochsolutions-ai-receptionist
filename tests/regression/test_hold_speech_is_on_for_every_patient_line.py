@@ -7,9 +7,26 @@ wait, so each clinic was switched on only once someone had listened to it.
 
   northgate   from the start — the demo line, and every call this week
   vital_edge  2026-09-01
-  jv_v1       2026-09-04  <- this file
+  jv_v1       2026-09-04
+  theorem_v2  2026-09-06  <- this file
+  theorem_v3  2026-09-06     (Mark's live line, +447380841468)
 
-⚠️ THE KEY GOES UNDER `operational`, AND ONLY THERE. `hold_speech_enabled`
+⚠️⚠️ THERE ARE TWO CONFIG MECHANISMS AND THEY WANT THIS KEY IN OPPOSITE
+PLACES. Everything below about `operational` is true of the clinic.json
+clinics — jv_v1, vital_edge, northgate — and is EXACTLY WRONG for Theorem.
+Theorem is a legacy `CLINICS` entry in clinic_config.py, and `get_clinic`
+returns `dict(CLINICS[cid])` verbatim (~line 1651) without ever calling
+`_map_json_to_clinic_contract`. So Theorem's key is TOP-LEVEL, and an
+`operational.hold_speech` there would be the dead one.
+
+Both failures are inaudible: `hold_speech_enabled` fails to False, the clinic
+keeps its pre-arbiter behaviour, and nothing logs. That is why every assertion
+here goes through `get_clinic` — the resolved value is the only thing that
+means anything, and it is asserted for all five live ids regardless of which
+mechanism they come from.
+
+⚠️ THE KEY GOES UNDER `operational`, AND ONLY THERE — FOR A clinic.json CLINIC.
+`hold_speech_enabled`
 reads `get_clinic(...).get("hold_speech")` — top level — but that top-level
 value is BUILT by `app/clinic_config.py:1582`:
 
@@ -38,8 +55,17 @@ import pytest
 from app.clinic_config import get_clinic
 from app.hold_speech import clinic_facts, hold_speech_enabled
 
-#: Clinics answering a real patient line.
-PATIENT_LINES = ["northgate", "jv_v1", "vital_edge"]
+#: Every clinic id that answers a real Twilio number. Derived, not typed out:
+#: a hand-written list is how a new line gets added and silently skipped, and
+#: `TWILIO_TO_CLINIC` is the thing the router actually reads.
+PATIENT_LINES = sorted(set(__import__(
+    "app.clinic_config", fromlist=["TWILIO_TO_CLINIC"]
+).TWILIO_TO_CLINIC.values()))
+
+#: Of those, the ones configured by `app/clinics/<id>/clinic.json`. Theorem's
+#: three ids are legacy `CLINICS` entries in clinic_config.py and have no such
+#: file, so the `operational` assertions below cannot be asked of them.
+JSON_BACKED = ["jv_v1", "northgate", "vital_edge"]
 
 
 @pytest.mark.parametrize("clinic_id", PATIENT_LINES)
@@ -59,7 +85,7 @@ def test_the_key_is_under_operational_and_survives_the_loader():
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[2] / "app" / "clinics"
-    for clinic_id in PATIENT_LINES:
+    for clinic_id in JSON_BACKED:
         raw = json.loads(
             (root / clinic_id / "clinic.json").read_text(encoding="utf-8")
         )
@@ -112,10 +138,74 @@ def test_jv_draws_the_booking_pool_and_not_the_provisional_one():
 
 
 def test_a_clinic_with_no_key_still_defaults_off():
-    """The default is the safety property. Theorem has not been listened to on
-    the arbiter, so it must keep the behaviour it runs today — and an unknown
-    clinic must too."""
-    assert not hold_speech_enabled({"clinic_id": "theorem"})
+    """The default is the safety property, and it must stay demonstrable.
+
+    Theorem held this role until 2026-09-06. `demo` takes it: it answers no
+    Twilio number and is `get_clinic`'s fallback for an unrecognised id, so it
+    is the last real config that is genuinely off.
+    """
+    assert not hold_speech_enabled({"clinic_id": "demo"})
     assert not hold_speech_enabled({"clinic_id": "a-clinic-that-does-not-exist"})
     assert not hold_speech_enabled({})
     assert not hold_speech_enabled(None)
+
+
+# ---------------------------------------------------------------------------
+# Theorem: the legacy mechanism, and the pool it draws
+# ---------------------------------------------------------------------------
+
+THEOREM_IDS = ["theorem", "theorem_v2", "theorem_v3"]
+
+
+@pytest.mark.parametrize("clinic_id", THEOREM_IDS)
+def test_theorems_key_is_top_level_and_reaches_every_id(clinic_id):
+    """The inverse trap, asserted as behaviour.
+
+    `CLINICS['theorem_v2'] = deepcopy(CLINICS['theorem'])` and `_v3` copies
+    `_v2`, so one key moves all three — and +447380841468, Mark's live line,
+    resolves to `theorem_v3`. If the key were written under `operational` here
+    it would resolve to None on all three and nothing would say so.
+    """
+    assert hold_speech_enabled({"clinic_id": clinic_id}), (
+        f"{clinic_id} is not routing hold phrases through the arbiter — for "
+        f"Theorem the key is TOP-LEVEL in CLINICS['theorem'], not under "
+        f"`operational`, because get_clinic returns legacy entries verbatim"
+    )
+
+
+def test_theorem_has_no_clinic_json_to_put_the_key_in():
+    """Pins WHY the mechanism differs, so the next person does not 'fix' it by
+    creating the file and splitting the config across two sources."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "app" / "clinics"
+    for clinic_id in ("theorem_v2", "theorem_v3"):
+        assert not (root / clinic_id / "clinic.json").exists(), (
+            f"{clinic_id} now has a clinic.json as well as a CLINICS entry — "
+            f"two sources for one clinic, and get_clinic prefers the CLINICS "
+            f"one, so the file would be dead config"
+        )
+
+
+def test_theorem_draws_the_booking_pool_and_names_nobody():
+    """The one way turning Theorem on could have said something untrue.
+
+    PENDING_REQUEST is "Sending that over to {practitioner} —": right for Vital
+    Edge, which makes a request Jonathan confirms, and wrong twice over for
+    Theorem, which writes a real Acuity appointment AND carries no
+    `practitioner` key to render. Asserted on the discriminator, not the
+    wording.
+    """
+    provisional, practitioner = clinic_facts({"clinic_id": "theorem_v3"})
+    assert provisional is False, "Theorem would draw PENDING_REQUEST"
+
+    from app.hold_speech import HEADS, WorkKind, render_head
+
+    head = render_head(WorkKind.WRITE_BOOK, practitioner=practitioner)
+    assert head and "{" not in head, head
+    assert head in HEADS[WorkKind.WRITE_BOOK], head
+
+    # And the empty practitioner cannot leak a brace even on the pool that
+    # wants one — `render_head` falls back to a head that needs no name.
+    pending = render_head(WorkKind.PENDING_REQUEST, practitioner=practitioner)
+    assert "{" not in pending and "practitioner" not in pending, pending

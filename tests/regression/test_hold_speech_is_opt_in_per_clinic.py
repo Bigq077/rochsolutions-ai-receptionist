@@ -86,7 +86,8 @@ HOLD_SPEECH_OPT_IN = {
         "weaker standard vital_edge was taken on three days earlier, and it is "
         "written down here rather than smoothed over, because this list exists "
         "to make the standard visible and not to certify it. "
-        "WHY JV IS THE LOW-RISK ONE OF THE THREE: its configuration is "
+        "WHY JV IS THE LOW-RISK ONE OF THE THREE AT THE TIME OF WRITING: its "
+        "configuration is "
         "identical to northgate's in the only two respects the arbiter reads — "
         "booking_system is google_calendar so confirm_write_kind(provisional="
         "False) returns WRITE_BOOK, and it has a named practitioner. northgate "
@@ -100,6 +101,37 @@ HOLD_SPEECH_OPT_IN = {
         "fast-forward. That push is the decision point, not this commit. "
         "Revert = set operational.hold_speech false and drop this entry."
     ),
+    "theorem_v2": (
+        "OWNER decision (Quentin), 2026-09-06, completing the roll-out — the "
+        "last of the four lines. MARK HAS NOT HEARD IT, the same weaker "
+        "standard vital_edge and jv_v1 were taken on, recorded here rather "
+        "than smoothed over. "
+        "⚠️ THE KEY IS TOP-LEVEL FOR THEOREM AND ONLY FOR THEOREM. Theorem is "
+        "a legacy CLINICS entry in clinic_config.py; `get_clinic` returns "
+        "`dict(CLINICS[cid])` verbatim and never calls "
+        "`_map_json_to_clinic_contract`, so `operational.hold_speech` here "
+        "would be dead config — the exact inverse of jv_v1 and vital_edge, "
+        "where a TOP-LEVEL key is overwritten with False. Two mechanisms, "
+        "opposite answers, and both fail inaudibly. "
+        "WHICH POOL IT DRAWS: `booking_system` is 'acuity', so `clinic_facts` "
+        "reports provisional=False and the write head is WRITE_BOOK, 'Right, "
+        "booking you in -' — true, because Theorem writes a real Acuity "
+        "appointment. It can never draw PENDING_REQUEST, which would be doubly "
+        "wrong here: it claims a request Theorem does not make, and Theorem "
+        "carries no `practitioner` key to render into it. "
+        "Revert = set CLINICS['theorem']['hold_speech'] False and drop this "
+        "entry and theorem_v3's."
+    ),
+    "theorem_v3": (
+        "OWNER decision (Quentin), 2026-09-06 — Mark's LIVE line, "
+        "+447380841468. Not a separate decision from theorem_v2: "
+        "`CLINICS['theorem_v3'] = deepcopy(CLINICS['theorem_v2'])`, itself a "
+        "deepcopy of `CLINICS['theorem']`, so all three ids move together on "
+        "one key and cannot be opted in separately. Listed separately anyway "
+        "because this list is read as the record of who chose what, and a "
+        "reader looking up the id that answers Mark's phone must find it. "
+        "Same standard, same pool, same revert as theorem_v2."
+    ),
 }
 
 
@@ -107,10 +139,11 @@ def test_no_patient_line_hears_the_arbiter_without_someone_choosing_it():
     """Opting in is a real change to what a caller hears, so it is recorded.
 
     northgate is the demo clinic and exists to be experimented on. jv_v1,
-    vital_edge and theorem carry real patients, and each is a separate
-    conversation with a practitioner. As of 2026-09-04 jv_v1 and
-    vital_edge are both on by OWNER decision with neither practitioner
-    having heard it; theorem is the one still off. The entries say so.
+    vital_edge and theorem_v2/_v3 carry real patients, and each is a separate
+    conversation with a practitioner. As of 2026-09-06 all four are on by OWNER
+    decision, and NOT ONE of the three practitioners has heard the arbiter
+    first. That is the standard actually used, and the entries say so —
+    this list exists to make it visible, not to certify it.
     """
     unlisted = [
         cid for cid in sorted(set(cc.TWILIO_TO_CLINIC.values()))
@@ -135,17 +168,44 @@ def test_the_demo_clinic_is_actually_on_so_it_can_be_heard():
 
 
 def test_the_switch_reads_the_clinic_and_never_raises():
-    """`theorem` is the off example, not jv_v1.
+    """`demo` is the off example now — jv_v1, then theorem, then this.
 
     jv_v1 was the stand-in for "a real clinic that has not opted in" until it
-    opted in on 2026-09-04. Re-aimed rather than deleted: the point of the
-    first line is that the switch reads a REAL clinic and returns False for it,
-    which an unknown id and an empty session cannot show — they would both pass
-    against a function that returned False unconditionally.
+    opted in on 2026-09-04; theorem took the role until 2026-09-06. Re-aimed
+    each time rather than deleted, because the point of the first line is that
+    the switch reads a REAL config and returns False for it — an unknown id and
+    an empty session cannot show that, since both would pass against a function
+    that returned False unconditionally.
+
+    `demo` is the last one left and is not going to opt in: it answers no
+    Twilio number (`TWILIO_TO_CLINIC` has no entry for it) and is `get_clinic`'s
+    fallback for an unrecognised id. If it ever does, this line needs a
+    different real clinic, not deleting.
     """
-    assert hold_speech_enabled({"clinic_id": "theorem"}) is False
+    assert "demo" not in set(cc.TWILIO_TO_CLINIC.values()), (
+        "demo now answers a real line — pick a different off example"
+    )
+    assert hold_speech_enabled({"clinic_id": "demo"}) is False
     assert hold_speech_enabled({}) is False
     assert hold_speech_enabled({"clinic_id": "no_such_clinic"}) is False
+
+
+def test_every_live_line_is_accounted_for():
+    """The list must cover the lines, not merely agree with them.
+
+    `test_no_patient_line_hears_the_arbiter_without_someone_choosing_it` only
+    catches a clinic that is ON and unlisted. It would say nothing if a new
+    Twilio number were added and left off — which is the shape of the next
+    mistake, now that all four existing lines are on and the check has no
+    negative case left to fire on.
+    """
+    live = set(cc.TWILIO_TO_CLINIC.values())
+    unaccounted = sorted(live - set(HOLD_SPEECH_OPT_IN))
+    assert not unaccounted, (
+        f"{unaccounted} answer a real number and are in neither state anyone "
+        "recorded. Either opt them in with who and when, or — if they are "
+        "deliberately keeping the pre-arbiter behaviour — say so here."
+    )
 
 
 # ---------------------------------------------------------------------------
