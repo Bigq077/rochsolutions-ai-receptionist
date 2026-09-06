@@ -4902,6 +4902,7 @@ class LLMStream:
                 render_intent_head as _render_intent_head,
                 subject_for as _subject_for,
                 utterance_accepts_an_offer as _accepts_an_offer,
+                utterance_refuses_an_offer as _refuses_an_offer,
             )
             if _hs_enabled(session):
                 _hs_utterance = _last_user_text(messages or [])
@@ -4995,6 +4996,22 @@ class LLMStream:
                         _hs_picking = _accepts_an_offer(_hs_utterance)
                     except Exception:  # pragma: no cover - defensive
                         pass
+                # And the same question with the opposite sign. A caller ruling
+                # a day OUT is not asking for it to be looked up -- B-149,
+                # 2026-09-06 22:07:59, where "um tuesday doesn't work" drew
+                # `named_day`, "Let me see what Tuesday looks like -", and was
+                # answered about Monday.
+                #
+                # Kept OUT of `_hs_picking`, deliberately: that flag also
+                # enables the SLOT_PICKED head, and "Tuesday it is -" over a
+                # refusal would be worse than the lie. It feeds `offer_refused`,
+                # which only suppresses.
+                _hs_refused = False
+                if session.get("v3_dtmf_slot_map"):
+                    try:
+                        _hs_refused = _refuses_an_offer(_hs_utterance)
+                    except Exception:  # pragma: no cover - defensive
+                        pass
                 # Did the caller name a SERVICE this clinic sells? The engine
                 # decides that one line before this one -- the same detector
                 # that writes `v3_treatment_mentioned` -- and the verdict is
@@ -5018,6 +5035,7 @@ class LLMStream:
                     screen_pending=bool(session.get("pending_screen")),
                     slot_selection=_hs_picking,
                     service_named=_hs_service,
+                    offer_refused=_hs_refused,
                 )
                 if _hs_hits:
                     _hs_intent = _hs_hits[0]

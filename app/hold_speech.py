@@ -675,6 +675,7 @@ def classify_intent(
     screen_pending=False,
     slot_selection=False,
     service_named=False,
+    offer_refused=False,
 ):
     """Every intent this utterance corroborates, most specific first. PURE.
 
@@ -764,7 +765,11 @@ def classify_intent(
     # explicit confirm question from Susie, or -- the case the readout proxy
     # was reaching for and getting wrong -- this utterance being one of the
     # slot labels just offered.
-    answering = bool(slot_selection) or bool(
+    # `offer_refused` suppresses the diary intents exactly as answering does,
+    # and DELIBERATELY does not touch `slot_selection`: that argument also
+    # enables the SLOT_PICKED arm below, and "Tuesday it is -" spoken over
+    # "tuesday doesn't work" would be worse than the lie it replaces (B-149).
+    answering = bool(slot_selection) or bool(offer_refused) or bool(
         _CONFIRM_Q.search(prev_assistant or "")
     )
     hits = []
@@ -984,6 +989,46 @@ def utterance_accepts_an_offer(text: str) -> bool:
     if _REFUSES.search(utterance):
         return False
     if not _ACCEPTS.search(utterance):
+        return False
+    return bool(
+        re.search(_DAY, utterance, re.IGNORECASE) or _CLOCKISH.search(utterance)
+    )
+
+
+def utterance_refuses_an_offer(text: str) -> bool:
+    """Is the caller plainly RULING OUT something already offered? PURE.
+
+    The mirror of `utterance_accepts_an_offer`, and needed for the same reason
+    from the opposite direction. B-149, `CA176b7a0d`, northgate, 2026-09-06
+    22:07:59, on the call that verified B-147:
+
+        caller: 'um tuesday doesn't work'
+        Susie:  situational head (named_day): "Let me see what Tuesday looks
+                like -"
+        Susie:  "So sticking with Monday, I've got eight in the morning or ten
+                past five in the evening"
+
+    She promised a Tuesday lookup and then talked about Monday. Fifth instance
+    of the promised-work defect, and the first on a refusal: `_DAY` triggers
+    NAMED_DAY on any weekday, and naming a day to rule it out is the one case
+    where the caller wants LESS of that day, not a lookup of it.
+
+    `utterance_accepts_an_offer` correctly says False here -- a refusal is not
+    an acceptance -- so the backstop added for B-145b could not cover it. Same
+    shape, opposite sign, kept as a separate predicate rather than folded in,
+    because the two must feed DIFFERENT arguments: an acceptance sets
+    `slot_selection`, which also enables the SLOT_PICKED head, and rendering
+    "Tuesday it is -" over "tuesday doesn't work" would be far worse than the
+    lie it replaced.
+
+    Deny by default: a refusal marker, corroborated by a DAY or a CLOCK TIME so
+    it is about something concrete that was on the table. A bare "no" or "that
+    doesn't work" names nothing and is left alone.
+    """
+    utterance = (text or "").strip()
+    if not utterance:
+        return False
+    if not _REFUSES.search(utterance):
         return False
     return bool(
         re.search(_DAY, utterance, re.IGNORECASE) or _CLOCKISH.search(utterance)
