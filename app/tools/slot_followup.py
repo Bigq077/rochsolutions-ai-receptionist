@@ -2623,7 +2623,54 @@ def day_refused_by_caller(session: Dict[str, Any], text: str) -> "str | None":
             date = named.get("date")
         elif isinstance(named, str):
             date = named
+    if not date:
+        # B-150, CA176b7a0d, northgate, 2026-09-06 22:07:59. Susie had narrowed
+        # to Monday one turn earlier, so `last_offered_slots` held Monday's
+        # times and nothing else. The caller said "um tuesday doesn't work" and
+        # this declined -- Tuesday could not be resolved -- so the refusal fell
+        # through to the model instead of being answered by `more_days_speech`.
+        #
+        # The rule is right and the SCOPE was too narrow: a caller can only
+        # refuse a day they were read, but "were read" is a fact about the
+        # CALL, not about the current offer. Tuesday was read out three turns
+        # earlier in the multi_day offer, and the cumulative record
+        # (`slot_starts_spoken`, B-78b) has held it ever since.
+        #
+        # NOT widened to the payload the way `named_day_speech` is (B-148).
+        # A REQUEST may name a day the caller has never heard -- that is the
+        # point of asking. A refusal of a day nobody offered rules out nothing,
+        # and resolving it would let `more_days_speech` be steered by a day the
+        # caller was never told about.
+        date = _spoken_day_by_weekday(session, text)
     return date or None
+
+
+def _spoken_day_by_weekday(session: Dict[str, Any], text: str) -> "str | None":
+    """The one day READ OUT AT ANY POINT this call whose weekday was named. PURE.
+
+    Reads `slot_starts_spoken` directly rather than through `_spoken_key_set`,
+    which resets the record when availability moves -- this must not mutate the
+    session, and `remaining_unspoken` has already refreshed it earlier in
+    `try_unspoken_followup_speech` on every turn that reaches here.
+
+    Deny by default, the same two rules as its siblings: exactly ONE weekday
+    word in the speech, and exactly ONE spoken day falling on it.
+    """
+    try:
+        _words = [w for w in _WEEKDAY_WORDS
+                  if f" {w} " in f" {_caller_norm(text)} "]
+        if len(_words) != 1:
+            return None
+        _dates = sorted({
+            str(s or "")[:10] for s in (session.get(_SPOKEN_KEY) or [])
+        } - {""})
+        _hits = [
+            d for d in _dates
+            if _date.fromisoformat(d).strftime("%A").lower() == _words[0]
+        ]
+        return _hits[0] if len(_hits) == 1 else None
+    except Exception:  # pragma: no cover - defensive; live call path
+        return None
 
 
 def accepted_slot_is_named_in(session: Dict[str, Any], text: str) -> bool:
