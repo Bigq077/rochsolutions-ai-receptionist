@@ -290,9 +290,48 @@ def _reason_window(words: list, start: int, end: int) -> str:
     return " ".join(out)
 
 
+#: The caller's own verdict on how bad it is, which is not the reason.
+#:
+#: "an ankle, it's nothing serious" is one complaint and one disclaimer, and
+#: only the first half belongs in `collected["reason"]` -- that field is quoted
+#: verbatim into the call-summary row and the owner SMS, so on JV it is what
+#: Marcus reads. Recorded live twice on 2026-09-06: "ankle it's nothing
+#: serious" and "left ankle it's nothing serious though".
+#:
+#: Deliberately NARROW. "not bad" and "not much" are excluded because they are
+#: as often DESCRIPTION as dismissal -- "not bad in the morning but terrible by
+#: the evening" is the shape of a real complaint, and cutting at "not bad"
+#: would throw away the half that matters. Only phrasings that can be nothing
+#: but a disclaimer are listed.
+_DISMISSAL_TAIL = re.compile(
+    r"[,\s]*\b(?:but|and|though|although)?\s*"
+    r"(?:it'?s|it\s+is|its)?\s*"
+    r"(?:nothing\s+(?:serious|major|urgent|drastic|too\s+bad|to\s+worry\s+about)"
+    r"|not\s+(?:serious|urgent)"
+    r"|no\s+big\s+deal)"
+    r"\b.*$",
+    re.IGNORECASE,
+)
+
+#: Intensifiers that carry no clinical information and should not be quoted
+#: back to a clinic. Same class as the "really" / "very" that
+#: `_REASON_TRAIL_WORDS` already drops, but these are stripped ANYWHERE in the
+#: phrase rather than only at the end: "for my um fucking ankle" was recorded
+#: as 'fucking ankle' on 2026-09-06 and would have gone out in an owner SMS.
+#:
+#: "bloody" and "damn" are deliberately NOT here. "bloody" is a real clinical
+#: word before it is an intensifier, and a reason field that silently deletes
+#: it is worse than one that quotes a swear.
+_EXPLETIVES = frozenset({
+    "fucking", "fuckin", "fuckin'", "effing", "friggin", "frigging", "sodding",
+})
+
+
 def _trim_reason(phrase: str) -> str:
-    """Drop leading run-up and trailing dangle from a reason phrase."""
-    w = phrase.split()
+    """Drop leading run-up, trailing dangle, the caller's disclaimer and any
+    expletive from a reason phrase."""
+    phrase = _DISMISSAL_TAIL.sub("", phrase)
+    w = [x for x in phrase.split() if _bare(x) not in _EXPLETIVES]
     while w and _bare(w[0]) in _REASON_LEAD_WORDS:
         w.pop(0)
     while w and _bare(w[-1]) in _REASON_TRAIL_WORDS:
@@ -327,6 +366,32 @@ def _extract_reason(t: str) -> Optional[str]:
         for i, w in enumerate(words):
             if _part_stem(w) in parts:
                 start = max(0, i - 3)
+                # The look-back must never swallow a transactional word, and
+                # `_reason_window` BREAKS on one rather than skipping it — so a
+                # stop word sitting between the run-up and the anchor killed the
+                # window before it reached the anchor at all.
+                #
+                # CA9fbb1aee, northgate, 2026-09-06 23:28:
+                #
+                #   "can i book an appointment my achilles is stiff for the
+                #    first few minutes every morning it eases as i walk"
+                #
+                # "achilles" is at index 8, so the look-back opened at "an"(5)
+                # and broke on "appointment"(6). Pass 1 returned "" and Pass 2
+                # anchored on the SYMPTOM instead, recording the reason as
+                # 'stiff for the first few minutes' -- a complaint with no
+                # anatomy in it, which is what the clinic reads in the summary
+                # row and the owner SMS.
+                #
+                # A window built around an anchor must contain the anchor. The
+                # backward and forward scans are different jobs: forward, a stop
+                # word ENDS the reason ("...my ankle, can i book"); backward, it
+                # only marks where the run-up stopped, so it moves the start
+                # rather than emptying the window.
+                for j in range(i - 1, start - 1, -1):
+                    if _bare(words[j]) in _REASON_STOP_WORDS:
+                        start = j + 1
+                        break
                 end   = min(len(words), i + 10)
                 snippet = _trim_reason(
                     _TRAILING_JUNK.sub("", _reason_window(words, start, end))
