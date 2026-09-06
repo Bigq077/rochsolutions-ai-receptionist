@@ -649,12 +649,32 @@ _INTENT_RULES = [
 ]
 
 
+#: Asking the clinic ABOUT a service. Blocks the arm below outright: "Let's get
+#: you booked in -" in front of a price question is a head promising the wrong
+#: work, which is this family's oldest failure.
+_SERVICE_ENQUIRY = _rx(
+    r"\b(?:ask(?:ing)?|know|enquir\w*|inquir\w*|find\s+out|wonder(?:ing)?|"
+    r"question|price[sd]?|cost[s]?|how\s+much|how\s+long|worth\s+it|"
+    r"do\s+you\s+(?:do|offer|have)|d'?you|does\s+it|is\s+it|what\s+is)\b"
+)
+
+#: The caller asking FOR something, in the first person. Second- and
+#: third-person framings are questions about the clinic and stay out: "can I
+#: have a sports massage" is a request, "can you do sports massage" is not.
+_SERVICE_REQUEST = _rx(
+    r"\b(?:(?:can|could|may)\s+i\b|i(?:'?d)?\s+(?:like|want|need|fancy)\b|"
+    r"i'?m\s+after\b|(?:book|get)\s+me\b|i\s+wanted\b|"
+    r"(?:like|want|need)\s+(?:a|an|some)\b)"
+)
+
+
 def classify_intent(
     text,
     prev_assistant="",
     *,
     screen_pending=False,
     slot_selection=False,
+    service_named=False,
 ):
     """Every intent this utterance corroborates, most specific first. PURE.
 
@@ -758,6 +778,47 @@ def classify_intent(
         if answering and intent in _DIARY_INTENTS:
             continue
         hits.append(intent)
+    if (
+        service_named
+        and not answering
+        and Intent.BOOK_NEW not in hits
+        and _SERVICE_REQUEST.search(utterance)
+        and not _SERVICE_ENQUIRY.search(utterance)
+        and not _NEGATED.search(utterance)
+        and not _rx(r"\b(?:cancel|reschedul|rebook|move|change)\w*\b").search(utterance)
+    ):
+        # B-146, CA5c65cb4b, northgate, 2026-09-05 23:13:07. The caller's FIRST
+        # sentence was "yeah can i have a good sports massage please".
+        #
+        #     treatment mention (FAQ, no booking intent)
+        #     filler phrase triggered: 'Sorry, still with you -'   <- no head
+        #     LAT turn_seq=19 llm_ttft_ms=4606 content_ttfa_ms=5328
+        #
+        # `Intent.BOOK_NEW` triggers on `book|booking|appointment`. The caller
+        # named a SERVICE and a want verb and never said "book", so nothing
+        # matched, nothing spoke at 600ms, the model took 4.6s and UNKNOWN_SLOW
+        # apologised for a wait -- on the opening turn of the call.
+        #
+        # Adding "massage" to the trigger is the trap this file warns about
+        # twice already: the matcher SHAPE is the bug. The shape is right --
+        # a request verb corroborated by what is being asked for -- and the
+        # corroborator was the half that could only see the word "appointment".
+        # So the SERVICE half is asked of the engine, which already decided it
+        # one line earlier (`_is_treatment_specific_booking`), exactly as
+        # `slot_selection` asks it for B-90's verdict rather than guessing.
+        #
+        # Deny by default, in FIRST PERSON only, because the head asserts what
+        # happens next. "can I have a sports massage" is a request; "can you do
+        # sports massage", "how much is a sports massage" and "i'd like to know
+        # about sports massage" are questions, and "Let's get you booked in -"
+        # in front of any of them promises work nobody asked for.
+        #
+        # `answering` is honoured like every other diary intent, so this cannot
+        # fire while the caller is answering a confirm question or picking a
+        # slot. It changes only what is SAID while they wait: it does not touch
+        # `booking_flow_active`, which reaches the write gates and whose FAQ
+        # false-positive is BUG-7, an owner-signed decision in connection.py.
+        hits.append(Intent.BOOK_NEW)
     if not hits and _reason_answer:
         # Nothing matched, and the caller has just told us what is wrong with
         # them. SYMPTOM is the only honest head here: it promises no work and

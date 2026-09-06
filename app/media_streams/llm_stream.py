@@ -4995,11 +4995,29 @@ class LLMStream:
                         _hs_picking = _accepts_an_offer(_hs_utterance)
                     except Exception:  # pragma: no cover - defensive
                         pass
+                # Did the caller name a SERVICE this clinic sells? The engine
+                # decides that one line before this one -- the same detector
+                # that writes `v3_treatment_mentioned` -- and the verdict is
+                # asked for rather than re-derived, exactly as B-90's is above.
+                #
+                # Read off the UTTERANCE, never off `v3_treatment_mentioned`:
+                # that key is a call-scoped latch, so a head keyed on it would
+                # fire on every later turn of a call in which a service was
+                # once mentioned. B-138 is what happens when a predicate is
+                # keyed on a latch instead of the words in front of it.
+                try:
+                    from .connection import (
+                        _is_treatment_specific_booking as _names_service,
+                    )
+                    _hs_service = bool(_names_service(_hs_utterance or ""))
+                except Exception:  # pragma: no cover - defensive
+                    _hs_service = False
                 _hs_hits = _classify_intent(
                     _hs_utterance,
                     _last_assistant_text(session),
                     screen_pending=bool(session.get("pending_screen")),
                     slot_selection=_hs_picking,
+                    service_named=_hs_service,
                 )
                 if _hs_hits:
                     _hs_intent = _hs_hits[0]
