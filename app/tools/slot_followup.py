@@ -2519,6 +2519,57 @@ def day_accepted_by_caller(session: Dict[str, Any], text: str) -> "str | None":
     return date or None
 
 
+def day_refused_by_caller(session: Dict[str, Any], text: str) -> "str | None":
+    """The ISO DATE of the offered day the caller just RULED OUT, or None. PURE.
+
+    B-147, `CAdf1e02ca`, northgate, 2026-09-06 10:15:06. The caller said
+    "monday doesn't work" and heard Monday's times read out:
+
+        [slot_followup] 'Monday 7th September' answered from the payload --
+        3 of 17 bookable times spoken, offer and keypad recorded (D-B)
+
+    Both day producers resolve the weekday the caller NAMED, and neither can
+    tell refusal from interest by the day alone. `day_accepted_by_caller`
+    already declines a negated utterance; `named_day_speech` did not, and it is
+    the louder failure — it does not mis-acknowledge, it reads out the day the
+    caller has just ruled out and renumbers the keypad onto it.
+
+    Deny by default. The bar is the same as the acceptance door's, inverted:
+
+      1. the utterance names exactly ONE offered day, resolved against the
+         OFFER and never the calendar;
+      2. it carries a refusal;
+      3. it is not a "more slots" request — that path already answers well and
+         must not be stolen ("monday doesn't work, what else have you got" is
+         answered identically either way, but by ONE owner).
+
+    Returns the date rather than a bool so a caller of this can say which day
+    was ruled out if it ever needs to. `try_unspoken_followup_speech` answers
+    it with `more_days_speech` — the days he has not heard.
+    """
+    if not isinstance(session, dict) or not isinstance(text, str):
+        return None
+    if not text.strip():
+        return None
+    if not _DAY_REFUSE_RE.search(text):
+        return None
+    if utterance_requests_more_slots(text):
+        return None
+
+    offered = session.get("last_offered_slots")
+    if not isinstance(offered, list) or not offered:
+        return None
+
+    date = _offered_day_by_weekday(offered, text)
+    if not date:
+        named = day_named_by_caller(session.get("available_days"), text)
+        if isinstance(named, dict):
+            date = named.get("date")
+        elif isinstance(named, str):
+            date = named
+    return date or None
+
+
 def accepted_slot_is_named_in(session: Dict[str, Any], text: str) -> bool:
     """Does `text` name the slot the caller just accepted? PURE.
 
@@ -4182,6 +4233,24 @@ def named_day_speech(
             return None
         if utterance_requests_different_day(user_text):
             return None
+        if _DAY_REFUSE_RE.search(user_text or ""):
+            return None
+        # B-147, CAdf1e02ca, northgate, 2026-09-06 10:15:06. The caller said
+        # "monday doesn't work" and was read Monday's times:
+        #
+        #     'Monday 7th September' answered from the payload -- 3 of 17
+        #     bookable times spoken ... (D-B)
+        #
+        # Naming a day is not the same as ASKING about it, and this producer
+        # answers requests. `utterance_requests_different_day` returns False
+        # for that sentence -- it looks for "another day", not for a refusal --
+        # so the day resolved and the readout ran. The acceptance door already
+        # declines here (`_DAY_REFUSE_RE`, same commit family); the REQUEST
+        # door had no such guard, and it is the louder of the two: it does not
+        # merely mis-acknowledge, it reads out the day the caller just ruled
+        # out. Same wholesale rule, same reason -- a refusal anywhere in the
+        # utterance declines, and `try_unspoken_followup_speech` answers it
+        # with the days he has NOT heard instead.
 
         days = session.get("available_days")
         if not isinstance(days, list) or not days:
@@ -4446,6 +4515,20 @@ def try_unspoken_followup_speech(
     #
     # ABOVE the more-slots branch, and it declines when that branch applies, so
     # neither can take the other's turn.
+    # "Monday doesn't work" — a day REFUSED. Above the two day producers,
+    # because both of them resolve the weekday the caller named and neither
+    # can tell refusal from interest by the day alone (B-147). The honest
+    # answer is the one "what else have you got" already gets: the days he has
+    # NOT heard, spoken and recorded by the same producer.
+    if day_refused_by_caller(session, user_text):
+        _more_days = more_days_speech(session)
+        if _more_days:
+            logger.info(
+                "[slot_followup] a day was REFUSED -- answering with the days "
+                "the caller has not heard rather than re-reading it (B-147)"
+            )
+            return _more_days
+
     _named_day = named_day_speech(session, user_text)
     if _named_day:
         return _named_day
@@ -4472,7 +4555,19 @@ def try_unspoken_followup_speech(
         # NAMES a day, or picks one by position, still gets that day's remaining
         # times below, which is B-103 and B-105 unchanged.
         _payload_days = session.get("available_days") or []
-        if not day_named_by_caller(_payload_days, user_text) and not                 day_selected_by_position(_payload_days, session, user_text):
+        # B-147, the same defect wearing the more-slots hat. Naming a day here
+        # SCOPES the answer to it -- which is right for "what else have you got
+        # on Monday" and exactly wrong for "monday doesn't work, what else have
+        # you got", where the day is named in order to RULE IT OUT. The second
+        # sentence was answered with more Monday times.
+        #
+        # A refusal therefore un-scopes: the caller who ruled a day out is
+        # asking about the others, so they get the days they have not heard.
+        _day_ruled_out = bool(_DAY_REFUSE_RE.search(user_text or ""))
+        if _day_ruled_out or (
+            not day_named_by_caller(_payload_days, user_text)
+            and not day_selected_by_position(_payload_days, session, user_text)
+        ):
             _more_days = more_days_speech(session)
             if _more_days:
                 return _more_days
