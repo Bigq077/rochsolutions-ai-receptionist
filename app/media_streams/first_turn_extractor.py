@@ -882,7 +882,28 @@ def commit_volunteered_reason(session: Dict[str, Any], utterance: str) -> bool:
         # utterance, earlier in this same turn. Nothing left to do.
         return True
 
-    reason = (utterance or "").strip()[:200]
+    # Write the EXTRACTED complaint, not the raw utterance -- the same choice
+    # `commit_opening_reason` makes, and for the same reason. This door reads
+    # a VOLUNTEERED complaint, which unlike a reply to "what's the appointment
+    # for?" is usually only part of the sentence it arrives in, so the raw
+    # form drags the run-up and any dangling booking clause into the row and
+    # the calendar entry:
+    #
+    #     "okay uh yeah essentially my lower back's been really bad and my
+    #      legs gone numb"        -> "essentially my lower back's ... numb"
+    #     "okay and my shoulder's been sore, can i come in tuesday"
+    #                             -> "okay and my shoulder's been sore"
+    #
+    # The first is verbatim from the verification call (northgate, 6 Sep
+    # 2026, build 4fc3676bcc81) -- the row read back the caller clearing
+    # their throat. `commit_reason_answer` keeps its whole utterance and is
+    # right to: there, the entire reply IS the answer.
+    #
+    # Falls back to the raw utterance if the extractor returns nothing, which
+    # the predicate above has already ruled out. Belt and braces: an empty
+    # reason here would reach the A2 gate as no reason at all.
+    _extracted = _extract_reason((utterance or "").strip().lower())
+    reason = (_extracted or (utterance or "").strip())[:200]
     session["reason"] = reason
     session["_volunteered_reason_from"] = utterance or ""
     collected = session.setdefault("collected", {})

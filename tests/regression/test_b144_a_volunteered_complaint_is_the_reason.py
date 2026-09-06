@@ -76,6 +76,12 @@ T3_COMPLAINT = (
     "okay um yeah essentially my lower back's been really bad and "
     "my leg's gone numb"
 )
+# What lands in the record. `_extract_reason` drops the run-up, so the row
+# says what is wrong rather than quoting the caller clearing their throat --
+# the same text `commit_opening_reason` would have written had this been the
+# opening. Pinned literally: computing it from the extractor would make this
+# assertion vacuous.
+T3_RECORDED = "essentially my lower back's been really bad and my leg's gone numb"
 
 
 def _live_call():
@@ -124,8 +130,8 @@ def test_the_complaint_is_not_an_opening_on_this_call():
 # ---------------------------------------------------------------------------
 def test_the_volunteered_complaint_reaches_the_call_record():
     session = _live_call()
-    assert session["reason"] == T3_COMPLAINT
-    assert session["collected"]["reason"] == T3_COMPLAINT
+    assert session["reason"] == T3_RECORDED
+    assert session["collected"]["reason"] == T3_RECORDED
 
 
 def test_the_recorded_reason_still_contains_the_complaint():
@@ -183,7 +189,7 @@ def test_it_fires_at_most_once_per_call():
     session: dict = {}
     assert commit_volunteered_reason(session, T3_COMPLAINT) is True
     assert commit_volunteered_reason(session, "my shoulder is sore as well") is False
-    assert session["reason"] == T3_COMPLAINT
+    assert session["reason"] == T3_RECORDED
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +216,40 @@ def test_a_volunteered_complaint_described_by_its_timing_banks_no_filter():
     assert _time_preference_tier(
         volunteered, is_slot_pick=False, is_reason_answer=True
     ) == "none"
+
+
+def test_the_row_is_not_the_caller_clearing_their_throat():
+    """northgate, 6 Sep 2026, build 4fc3676bcc81 -- the verification call.
+
+    The door fired correctly and the record read
+
+        reason: "okay uh yeah essentially my lower back's been really bad
+                 and my legs gone numb"
+
+    Not wrong, but not what Marcus should be reading either, and NOT what the
+    opening door would have written for the identical sentence. The two doors
+    now agree.
+    """
+    session: dict = {}
+    assert commit_volunteered_reason(session, T3_COMPLAINT) is True
+    assert not session["reason"].startswith("okay")
+    assert session["reason"] == T3_RECORDED
+
+
+def test_a_trailing_booking_clause_does_not_reach_the_calendar():
+    """The case the raw utterance would have got wrong on a call that BOOKS.
+
+    "can i come in tuesday" is not part of why they are coming in, and this
+    string is written into the booking. `_extract_reason` already drops it --
+    `test_reason_text_quality` pins that behaviour -- so this door has to use
+    it rather than the raw sentence.
+    """
+    session: dict = {}
+    assert commit_volunteered_reason(
+        session, "okay and my shoulder's been sore, can i come in tuesday"
+    ) is True
+    assert "tuesday" not in session["reason"]
+    assert "shoulder" in session["reason"]
 
 
 def test_the_predicate_does_not_flip_once_the_reason_is_committed():
