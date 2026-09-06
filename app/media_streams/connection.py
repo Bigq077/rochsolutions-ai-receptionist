@@ -9570,6 +9570,7 @@ class WebSocketCallHandler:
                                         commit_reason_answer as _cs_commit_reason,
                                         note_opening_utterance as _cs_note_opening,
                                         commit_opening_reason as _cs_commit_opening,
+                                        commit_volunteered_reason as _cs_commit_volunteered,
                                     )
                                     _cs_commit_reason(self.session, utterance)
                                     # B-137. The other half of B-136, and the
@@ -9596,7 +9597,33 @@ class WebSocketCallHandler:
                                         _clinic_asks_its_own_reason_question as _cs_asks,
                                     )
                                     if _cs_asks(self.session):
-                                        _cs_commit_opening(self.session)
+                                        if not _cs_commit_opening(self.session):
+                                            # B-144, the third door. This
+                                            # branch is where the volunteered
+                                            # complaint USED to be captured by
+                                            # accident on jv_v1 -- an utterance
+                                            # has to describe a complaint to
+                                            # arm a screen at all -- and the
+                                            # two committers above only cover
+                                            # the caller whose complaint is
+                                            # their opening words or a reply to
+                                            # the question. A caller who opens
+                                            # with an FAQ and describes the
+                                            # complaint three turns later
+                                            # reaches neither, and this branch
+                                            # answers the whole turn and
+                                            # returns before llm_stream's copy
+                                            # of this decision can run.
+                                            #
+                                            # Inert today: all four live lines
+                                            # run screens off. It is here so
+                                            # that reversing that one boolean
+                                            # -- which the config is written to
+                                            # allow -- cannot quietly reopen
+                                            # the gap on this path alone.
+                                            _cs_commit_volunteered(
+                                                self.session, utterance
+                                            )
                                 except Exception:
                                     logger.debug(
                                         "[ms_conn] reason capture on the screening "

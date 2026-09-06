@@ -788,18 +788,133 @@ def utterance_is_opening_reason(session: Dict[str, Any], utterance: str) -> bool
     return bool(_extract_reason(text.lower()))
 
 
+def _reason_on_record(session: Dict[str, Any]) -> bool:
+    """True when this call already has a booking reason recorded.
+
+    The same pair of slots `commit_reason_answer` consults before it declines
+    to overwrite. Named here so the volunteered-complaint door below and that
+    consumer cannot drift to two different answers to "do we know yet?".
+    """
+    if (session.get("reason") or "").strip():
+        return True
+    collected = session.get("collected")
+    return bool(
+        isinstance(collected, dict) and (collected.get("reason") or "").strip()
+    )
+
+
+def utterance_is_volunteered_reason(
+    session: Dict[str, Any], utterance: str
+) -> bool:
+    """True when the caller has just VOLUNTEERED their complaint mid-call.
+
+    The third door. The first two -- `utterance_is_opening_reason` and
+    `utterance_is_reason_answer` -- between them cover the caller who leads
+    with the complaint and the caller who is replying to "what's the
+    appointment for?". Neither covers the caller who does neither, and until
+    5 Sep 2026 nothing had to: the clinical-screening short-circuit in
+    connection.py captured that caller as a side effect, because an utterance
+    describing a complaint is exactly what arms a screen (B-136/B-137).
+
+    Turning the screens off on jv_v1 (`ed7f5c0c`) removed that capture path,
+    and the gap became reachable on a patient line the same night.
+
+    5 Sep 2026, JV, build ed7f5c0ce1c0. The caller opened with "um yeah i'd
+    like to know about pricing at your clinic" -- so `opening_utterance`
+    latched the FAQ, one-shot and never overwritten, and carried no
+    complaint. On turn 3 he said
+
+        "okay um yeah essentially my lower back's been really bad and my leg's
+         gone numb"
+
+    Susie went straight from empathy to the booking offer, so the reason
+    question was never asked and `_reason_answer_pending` never armed. Both
+    existing doors were correct and both were inert. The call ended
+
+        pre-summary reason: collected=None session=None -> None
+
+    and, JV's Sheets credentials working where the demo line's do not, Marcus
+    got a 101-second row with a name, a number and no reason on it.
+
+    Two conditions, and the second is what bounds this. There must be no
+    reason on record -- so this fires at most ONCE per call and cannot
+    overwrite a reason stated with more deliberation -- and `_extract_reason`
+    must actually find a complaint. Requiring an extraction is also what
+    excludes the bare booking request: "i'd like to book an appointment" says
+    what the caller wants done, not what it is for, and `_has_booking`
+    without `_extract_reason` is precisely that shape.
+
+    Deliberately NOT gated on the turn number. The whole failure is that the
+    complaint arrived on a turn nobody was watching.
+    """
+    if _reason_on_record(session):
+        # ...unless this very utterance is the one that put it there. The
+        # scheduling capture in connection.py asks this predicate BEFORE
+        # run_turn commits (12295 vs 12829), so on the live ordering the
+        # slot is still empty here. The latch makes the answer independent
+        # of that ordering rather than quietly dependent on it -- the same
+        # shape `_reason_answer_armed_on` uses for the same reason.
+        return (utterance or "") == (session.get("_volunteered_reason_from") or "")
+    text = (utterance or "").strip()
+    if not text:
+        return False
+    return bool(_extract_reason(text.lower()))
+
+
+def commit_volunteered_reason(session: Dict[str, Any], utterance: str) -> bool:
+    """Record a complaint the caller volunteered mid-call. True if one landed.
+
+    Calls the predicate rather than restating it, so the capture that
+    SUPPRESSES the timing read and the write that RECORDS the reason can
+    never disagree about which utterance was the reason -- the drift that
+    made B-138 reproduce verbatim the evening its first fix shipped.
+
+    The write is the point, not a nicety: `book_appointment`'s A2 gate
+    refuses any booking carrying no reason, and jv_v1 opts into the reason
+    question (`clinic.json` `prompt_facts.reason_question`), so on that line
+    a reasonless call is a booking that can only be rescued by the model
+    passing `args["reason"]` itself. Recording it here removes the coin toss.
+    """
+    if not utterance_is_volunteered_reason(session, utterance):
+        return False
+    if _reason_on_record(session):
+        # The latch arm above matched -- already recorded, on this same
+        # utterance, earlier in this same turn. Nothing left to do.
+        return True
+
+    reason = (utterance or "").strip()[:200]
+    session["reason"] = reason
+    session["_volunteered_reason_from"] = utterance or ""
+    collected = session.setdefault("collected", {})
+    if isinstance(collected, dict) and not (collected.get("reason") or "").strip():
+        collected["reason"] = reason
+    logger.info(
+        "[first_turn] reason captured from a volunteered complaint: %r",
+        reason[:60],
+    )
+    return True
+
+
 def utterance_is_read_as_the_reason(
     session: Dict[str, Any], utterance: str
 ) -> bool:
     """True when this utterance is the caller telling us why they rang.
 
     The single question the scheduling captures in connection.py ask, so a
-    complaint cannot be read as a booking preference through EITHER door.
-    Both doors are one call: fixing one and shipping is what put the AM-only
-    filter back on a live call after B-138's first attempt.
+    complaint cannot be read as a booking preference through ANY door.
+    All three doors are one call: fixing one and shipping is what put the
+    AM-only filter back on a live call after B-138's first attempt.
     """
-    return utterance_is_reason_answer(session, utterance) or (
-        utterance_is_opening_reason(session, utterance)
+    return (
+        utterance_is_reason_answer(session, utterance)
+        or utterance_is_opening_reason(session, utterance)
+        # The third door. Widens this to "any complaint-bearing utterance
+        # while no reason is on record", which suppresses at most ONE turn's
+        # timing latch per call. Safe in the direction B-90 measured and
+        # `_time_preference_tier` documents: the cost of declining a
+        # preference is one re-ask, the cost of banking one the caller never
+        # stated is a filter that silently deletes real slots.
+        or utterance_is_volunteered_reason(session, utterance)
     )
 
 def commit_reason_answer(session: Dict[str, Any], utterance: str) -> bool:

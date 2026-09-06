@@ -3224,8 +3224,25 @@ class LLMStream:
             if _asks_reason(session):
                 from app.media_streams.first_turn_extractor import (
                     commit_opening_reason as _commit_reason,
+                    commit_volunteered_reason as _commit_volunteered,
                 )
-                _commit_reason(session)
+                # The third door, and the only one that can catch the caller
+                # whose complaint is neither their opening words nor a reply
+                # to a question. Runs on EVERY turn, after the opening door
+                # has had its say, and no-ops the moment a reason is on
+                # record — so the ordering between the two is "opening
+                # first, and it wins", which is the deliberate one: an
+                # opening was said before anything we did could shape it.
+                #
+                # This used to be covered by accident. The clinical-screening
+                # short-circuit in connection.py captures the same utterance
+                # (B-136/B-137) because describing a complaint is what arms a
+                # screen — so switching jv_v1's screens off in `ed7f5c0c`
+                # deleted a capture path nobody had listed as one, and JV had
+                # a reasonless 101-second row in Marcus's sheet the same
+                # night. Screens on or off, this door does not move.
+                if not _commit_reason(session):
+                    _commit_volunteered(session, user_text)
         except Exception:
             logger.debug("[ms_llm] opening-reason commit failed", exc_info=True)
 
