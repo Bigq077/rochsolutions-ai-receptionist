@@ -2430,6 +2430,24 @@ _DAY_ACCEPT_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: A REFUSAL, which every word in `_DAY_ACCEPT_RE` can be carrying.
+#:
+#: "monday doesn't work" matched `works?` and was read as an acceptance. While
+#: the only consumer was the hold-speech head that cost "Monday it is -" in
+#: front of a caller who had just said the opposite; with a producer behind it
+#: it costs Monday READ OUT to a caller who has just refused Monday, which is
+#: the duplicate-write family's shape -- speech that contradicts what the
+#: caller said, generated from a record that agrees with the speech.
+#:
+#: Deny by default and deny WHOLESALE: any negator anywhere in the utterance
+#: declines. `day_accepted_by_caller`'s own docstring already states which way
+#: this must fail -- "returning None costs a head", and that is the cheap side.
+#: A negated acceptance is never clean enough to act on.
+_DAY_REFUSE_RE = re.compile(
+    r"\b(?:no|nope|nah|not|none|never|cannot|rather)\b|n'?t\b",
+    re.IGNORECASE,
+)
+
 
 def day_accepted_by_caller(session: Dict[str, Any], text: str) -> "str | None":
     """The ISO DATE of the offered day the caller just accepted, or None. PURE.
@@ -2485,6 +2503,8 @@ def day_accepted_by_caller(session: Dict[str, Any], text: str) -> "str | None":
     if "?" in text or _DAY_REQUEST_RE.search(text):
         return None
     if not _DAY_ACCEPT_RE.search(text):
+        return None
+    if _DAY_REFUSE_RE.search(text):
         return None
     if _clock_time_named(text):
         return None
@@ -4198,39 +4218,160 @@ def named_day_speech(
         if not date:
             return None
 
-        day = next(
-            (d for d in days
-             if isinstance(d, dict) and d.get("date") == date), None
-        )
-        if not day or not (day.get("slot_times") or []):
-            return None
-
-        from app.tools.slot_offer import (
-            apply_offer_to_session, build_slot_offer, offer_as_record,
-        )
-
-        offer = build_slot_offer([day])
-        if offer is None or not offer.chunks:
-            return None
-
-        # `offer_as_record` + `apply_offer_to_session` is the ONE way an offer
-        # reaches the session -- slots, labels, keypad map, mode and the
-        # day under discussion, together. `day_iso` is passed because this
-        # answer NARROWS the conversation to a single day, and the anchor
-        # must move with it or the next follow-up scopes to the old day one.
-        apply_offer_to_session(
-            session, offer_as_record(offer, day_iso=date), offer.chunks
-        )
-        logger.info(
-            "[slot_followup] 'what about %s' answered from the payload -- "
-            "%d of %d bookable times spoken, offer and keypad recorded, no "
-            "tool call needed (D-B)",
-            day.get("day_label") or date,
-            len(offer.slots), len(day.get("slot_times") or []),
-        )
-        return offer.text
+        return speak_one_day_from_payload(session, days, date, why="D-B")
     except Exception:  # pragma: no cover - defensive; live call path
         logger.exception("[slot_followup] named-day offer unavailable")
+        return None
+
+
+def speak_one_day_from_payload(
+    session: Dict[str, Any],
+    days: Any,
+    date: str,
+    *,
+    why: str,
+) -> Optional[str]:
+    """Narrow the conversation to ONE day, speaking and recording it. Or None.
+
+    Extracted from `named_day_speech` on 2026-09-06 because a SECOND caller
+    turn needs exactly this and copying it would have made two answers to
+    "what did she just offer?" -- the failure `apply_offer_to_session` was
+    itself extracted to prevent.
+
+    `build_slot_offer` for the words, `offer_as_record` + `apply_offer_to_
+    session` for every record of them, including the keypad map. `day_iso` is
+    passed because this NARROWS the conversation to a single day, and the
+    anchor must move with it or the next follow-up scopes to the old day.
+
+    `why` names the caller turn in the log line, so the two producers stay
+    distinguishable in a Render log without being distinguishable in code.
+    """
+    day = next(
+        (d for d in (days or [])
+         if isinstance(d, dict) and d.get("date") == date), None
+    )
+    if not day or not (day.get("slot_times") or []):
+        return None
+
+    from app.tools.slot_offer import (
+        apply_offer_to_session, build_slot_offer, offer_as_record,
+    )
+
+    offer = build_slot_offer([day])
+    if offer is None or not offer.chunks:
+        return None
+
+    apply_offer_to_session(
+        session, offer_as_record(offer, day_iso=date), offer.chunks
+    )
+    logger.info(
+        "[slot_followup] '%s' answered from the payload -- %d of %d bookable "
+        "times spoken, offer and keypad recorded, no tool call needed (%s)",
+        day.get("day_label") or date,
+        len(offer.slots), len(day.get("slot_times") or []), why,
+    )
+    return offer.text
+
+
+def _acknowledge_day_pick(session: Dict[str, Any], user_text: str) -> str:
+    """"Monday it is -", or "" when this clinic does not do hold speech.
+
+    The head normally fires inside `llm_stream`'s streaming call. This producer
+    answers BEFORE that call and returns, so the head has to be spoken here or
+    not at all -- and losing it is exactly the regression `named_day_speech`'s
+    own comment refuses to cause. Never raises: an acknowledgement is a nicety
+    and the offer behind it is the answer.
+    """
+    try:
+        from app.hold_speech import (
+            Intent, hold_speech_enabled, render_intent_head, subject_for,
+        )
+        if not hold_speech_enabled(session):
+            return ""
+        subject = subject_for(user_text)
+        if not subject:
+            return ""
+        return render_intent_head(
+            Intent.SLOT_PICKED,
+            subject=subject,
+            index=len(session.get("used_fillers") or []),
+        )
+    except Exception:  # pragma: no cover - defensive
+        return ""
+
+
+def day_acceptance_speech(
+    session: Dict[str, Any], user_text: str
+) -> Optional[str]:
+    """Acknowledge an accepted DAY and put that day's offer on the table. Or None.
+
+    B-145, `CAa0389cae`, northgate, 2026-09-05 23:10. Susie read a three-day
+    offer. The caller said "oh yeah monday works". The head was right --
+    `situational head (slot_picked): 'Monday it is -'` -- and then the MODEL
+    narrowed the day in prose:
+
+        "that day I've got eight in the morning or ten past five in the evening"
+
+    Those are the two Monday slots it had already read out. Monday's payload
+    held TWELVE. One missing producer, four consequences, all on the same turn:
+
+      1. 2 of 12 times spoken, and no lookup behind the acknowledgement;
+      2. no "and I've a few others that day" tail -- that tail is single_day
+         only by construction (`slot_offer.py`, the B-97/B-99 comment), and no
+         single_day offer was ever built, so it could not be said;
+      3. `v3_dtmf_slot_map` still held three DAYS, so pressing 1 would have
+         re-picked Monday rather than a time;
+      4. and the NEXT turn broke on the same state. "um 10 past 5 in the
+         evening suits" could not be resolved, because `slot_accepted_by_
+         caller`'s lone-date branch requires the offer to hold exactly ONE
+         date and three were still on it -- so `_hs_picking` stayed false and
+         a TIME_BAND head promised a lookup in front of a confirmation.
+
+    `named_day_speech` declines an acceptance on purpose, and that stays right:
+    a caller who accepts must be ACKNOWLEDGED, not read a list as though they
+    had asked a question. This is the other half of that decision rather than a
+    reversal of it -- the acknowledgement leads, and the day behind it comes
+    from the producer instead of from the model.
+
+    Deny by default, and every step can decline:
+
+      1. a multi_day offer only. On single_day the accepted day is already the
+         only one and re-reading it would repeat the offer;
+      2. NOT a time pick. "Tuesday at ten past five" is a slot acceptance,
+         `slot_accepted_by_caller` owns it, and narrowing a day underneath a
+         caller who has chosen a time would talk over them;
+      3. `day_accepted_by_caller` resolves the day, and it is deny-by-default
+         on both sides already -- a request ("what about Monday") resolves to
+         None here and is answered by `named_day_speech` above;
+      4. the day is in the payload and holds bookable times.
+
+    Never raises: a producer fault must leave the caller with the model's
+    answer, which is what they got before this existed.
+    """
+    try:
+        if str(session.get("_slot_presentation_mode") or "") != "multi_day":
+            return None
+
+        days = session.get("available_days")
+        if not isinstance(days, list) or not days:
+            return None
+
+        # A caller who named a TIME has picked a SLOT, not a day.
+        if slot_accepted_by_caller(session, user_text):
+            return None
+
+        date = day_accepted_by_caller(session, user_text)
+        if not date:
+            return None
+
+        offer = speak_one_day_from_payload(session, days, date, why="B-145")
+        if not offer:
+            return None
+
+        head = _acknowledge_day_pick(session, user_text)
+        return f"{head} {offer}".strip() if head else offer
+    except Exception:  # pragma: no cover - defensive; live call path
+        logger.exception("[slot_followup] day-acceptance offer unavailable")
         return None
 
 
@@ -4308,6 +4449,21 @@ def try_unspoken_followup_speech(
     _named_day = named_day_speech(session, user_text)
     if _named_day:
         return _named_day
+
+    # "yeah Monday works" after the same readout. The mirror image of the line
+    # above and the reason that one declines an acceptance: a caller who ASKS
+    # gets a list, a caller who ACCEPTS gets acknowledged AND a list. Below it
+    # so the two cannot take each other's turn, and both decline on the other's
+    # utterance shape rather than on ordering (B-145).
+    _accepted_day = day_acceptance_speech(session, user_text)
+    if _accepted_day:
+        return _accepted_day
+
+    # "yeah Monday works" after the same readout. The mirror image of the line
+    # above and the reason that one declines an acceptance: a caller who ASKS
+    # gets a list, a caller who ACCEPTS gets acknowledged AND a list. Below it
+    # so the two cannot take each other's turn, and both decline on the other's
+    # utterance shape rather than on ordering (B-145).
 
     if utterance_requests_more_slots(user_text):
         # "What else" after a MULTI-DAY readout means more DAYS, and it is
