@@ -154,6 +154,52 @@ def _cap(piece: str) -> str:
     return piece[:1].upper() + piece[1:] if piece else piece
 
 
+# A surname the caller SPELLED, which STT writes as one hyphen-joined token.
+#
+# CA8d5b2e3e, northgate, 7 Sep 2026, 10:43:12. The caller answered
+#
+#     "um yes that'll be quentin and then my surname is r-o-c-h roch"
+#
+# and the record was written as `Quentin R-O-C-H`. The surname sanitiser keeps
+# hyphens -- it has to, for Smith-Jones -- so `r-o-c-h` survived as a single
+# ordinary-looking token, cleared every name stoplist, and was title-cased
+# straight into the calendar and the confirmation SMS.
+#
+# It is invisible on the call. The SPOKEN readback that turn said "So that's
+# Quentin Roch", because the model read the sentence rather than the stored
+# field, and the surname is never read back for confirmation
+# ([[surname-never-read-back]]). So the caller hears the right name and the
+# clinic gets the wrong one.
+#
+# `backfill_surname` already understands spelling, but only as separate
+# single-letter WORDS ("r o c h"), which is what AssemblyAI emits when the
+# caller pauses between letters. Spell them briskly and the same speech arrives
+# hyphen-joined, hitting a path that had never seen a spelling. Hence one
+# normaliser both entry points run first, rather than a second spelling parser.
+#
+# A run of single letters joined by hyphens or dots is a SPELLING and nothing
+# else -- a real double-barrelled name has WORDS on both sides of the hyphen,
+# so Smith-Jones and Al-Sayed have no single-letter segments and are untouched.
+# Two segments is enough, because Li, Ng, Wu and Ho are surnames people spell;
+# the cost is that initials given as "J-P" would collapse to "Jp", which is a
+# trade this slot is happy to make.
+_SPELLED_RUN_RE = re.compile(r"\b(?:[a-z][-.‐-―])+[a-z]\b", re.IGNORECASE)
+
+
+def collapse_spelled_runs(text: str) -> str:
+    """"my surname is r-o-c-h" -> "my surname is roch". PURE.
+
+    Run BEFORE any surname parsing, so every pattern below sees the word the
+    caller spelled rather than the spelling. Where the caller says both --
+    "r-o-c-h roch", the commonest shape -- the two collapse to the same word
+    and the existing first-plausible-token rule picks it up unchanged.
+    """
+    if not text:
+        return text
+    return _SPELLED_RUN_RE.sub(
+        lambda m: re.sub(r"[^A-Za-z]", "", m.group(0)), text)
+
+
 def titlecase_surname(raw: str) -> str:
     """Title-case a surname the way a clinic form would write it.
 
@@ -303,7 +349,10 @@ def extract_surname(caller_utterance: str, first_name: str) -> str:
     """
     if not caller_utterance:
         return ""
-    text = caller_utterance.lower()
+    # A spelled surname first, so the patterns below read the WORD and not the
+    # spelling. Without this the hyphen the sanitiser deliberately keeps for
+    # Smith-Jones lets "r-o-c-h" through as an ordinary token.
+    text = collapse_spelled_runs(caller_utterance).lower()
     text = re.sub(r"[^a-z'\-\s]", " ", text)   # punctuation/digits → space
     text = re.sub(r"\s+", " ", text).strip()
     if not text:
@@ -446,6 +495,13 @@ def backfill_surname(
     """
     if not caller_utterance:
         return ""
+    # NOT normalised here, deliberately. Rule 1 delegates to
+    # `extract_surname`, which collapses a spelled run itself; rule 2's own
+    # sanitiser below already turns the hyphens into spaces, so it has always
+    # read "r-o-c-h" as the run "r o c h". Collapsing first destroys exactly
+    # the run it looks for -- measured over the stored corpus, it silently lost
+    # the surname on seven turns that resolve correctly today, among them
+    # "that'll be roch r-o-c-h" and "green g-r-e-e-n like the color".
     low = caller_utterance.lower()
 
     # 1) Explicit marker → reuse the conservative extractor.
