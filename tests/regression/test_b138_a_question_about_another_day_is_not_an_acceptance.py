@@ -180,11 +180,55 @@ def test_the_fallback_consults_the_predicate():
 
 
 def test_it_guards_the_one_date_branch_and_not_something_else():
-    """The predicate belongs to the last-resort branch only. Applied higher up
-    it would start declining picks the three steps above resolve correctly --
-    a bare weekday against a multi-day offer is exactly what
-    `_offered_day_by_weekday` is for."""
+    """The predicate may only sit where the offer names exactly ONE day.
+
+    Originally `count == 1`, pinned to the last-resort branch. P12 added a
+    second, legitimate site and that count became the wrong way to say this.
+
+    The invariant was never the number. It is that the guard must not reach
+    the steps that resolve a day for a MULTI-DAY offer, where a bare weekday
+    is exactly what `_offered_day_by_weekday` is for and declining it would
+    start refusing picks those steps get right.
+
+    So each site is checked for the property that makes it safe -- its
+    ENCLOSING branch must test that the offer covers one day:
+
+      * the last-resort branch, under `if len(_dates) == 1:`;
+      * P12's positional early return, under `single_day_offer`, which is
+        False for every multi-day offer and so cannot reach that path at all.
+
+    Found by walking indentation rather than counting characters, because a
+    proximity window passes or fails on how long the comments are.
+    """
     src = inspect.getsource(slot_followup.slot_accepted_by_caller)
-    assert src.count("_names_a_different_weekday") == 1
-    at = src.index("_names_a_different_weekday")
-    assert "if len(_dates) == 1:" in src[at - 400:at]
+    lines = src.split("\n")
+    sites = [i for i, l in enumerate(lines)
+             if "_names_a_different_weekday" in l and not l.lstrip().startswith("#")]
+    assert len(sites) == 2, (
+        "expected exactly the two one-day sites, found %d" % len(sites))
+
+    _ONE_DAY = ("len(_dates) == 1", "single_day_offer")
+
+    for i in sites:
+        indent = len(lines[i]) - len(lines[i].lstrip())
+        for k in range(i - 1, -1, -1):
+            l = lines[k]
+            if not l.strip() or l.lstrip().startswith("#"):
+                continue
+            if len(l) - len(l.lstrip()) < indent and l.lstrip().startswith("if "):
+                assert any(t in l for t in _ONE_DAY), (
+                    "_names_a_different_weekday on line %d is enclosed by %r, "
+                    "which does not establish a single-day offer; on a multi-day "
+                    "offer it declines picks _offered_day_by_weekday resolves "
+                    "correctly" % (i, l.strip())
+                )
+                break
+        else:
+            raise AssertionError(
+                "no enclosing `if` found for the call on line %d" % i)
+
+    # And the multi-day weekday step itself must stay unguarded by it.
+    ob = src.index("_offered_day_by_weekday")
+    assert "_names_a_different_weekday" not in src[ob:ob + 400], (
+        "the guard has crept onto the multi-day weekday step"
+    )
