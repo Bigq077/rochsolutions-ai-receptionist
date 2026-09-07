@@ -13,7 +13,7 @@ The lists were costing more than they were worth. This replaces them.
 
 ## 1. GENUINELY OPEN
 
-### 1.1 A second callback lead in one call is silently dropped — **NEW, found by this audit**
+### 1.1 A second callback lead in one call is silently dropped — **NEW, found by this audit, now FIXED**
 
 `receptionist_tools.py:9665`. The owner-SMS dedup is keyed **per CALL**, not per
 LEAD:
@@ -36,6 +36,13 @@ Same family as the wrong-surname defects: nothing sounds wrong on the call, and
 it surfaces only when somebody is not rung back.
 
 **Severity: MEDIUM–HIGH.** Rare shape, silent, and a missed patient.
+
+> **FIXED 7 Sep, `9461388c`**, on `latency-eval` and awaiting a call. The dedup
+> is now per LEAD and reads a list, sharing `callback_lead_matches` with
+> `_same_callback_lead` so the two halves of the rule cannot disagree again.
+> Bounded at `_MAX_CALLBACK_LEADS = 3`, because the latch that was removed was
+> also the only thing bounding an owner-billed SMS on a path a model can
+> re-enter.
 
 ### 1.2 §2.5 — the surname has no code gate
 
