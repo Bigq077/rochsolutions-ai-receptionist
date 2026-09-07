@@ -474,6 +474,122 @@ def has_surname_marker(caller_utterance: str) -> bool:
     return any(mk in (caller_utterance or "").lower() for mk in SURNAME_MARKERS)
 
 
+
+# ---------------------------------------------------------------------------
+# The booking read-back must name the caller from the RECORD
+# ---------------------------------------------------------------------------
+# Measured over the obs corpus on 7 Sep 2026 -- 273 calls carrying a real
+# booking read-back ("So that's <Name>, <Weekday> the ..."):
+#
+#     spoken == stored              199
+#     model said the FIRST NAME only 67    25%
+#     DISAGREE                        6     2.2%   (3 of them booked)
+#
+# The read-back is composed by the model from conversation history. The stored
+# name is a passive `name=` fact in CALL STATE, so nothing reconciles the two,
+# and either can be the wrong one -- three of the six had a wrong STORE and
+# right speech, two a right store and wrong SPEECH. A caller therefore confirms
+# a sentence that is not derived from what gets written.
+#
+# There IS an injection that uses the record (`_rb_name`, llm_stream.py), but it
+# is delivered as a blocked-tool RESULT and so is gated on
+# `tool_name == "check_availability"`. On the ordinary path the model goes
+# straight from the phone confirmation to the read-back, no tool call is
+# attempted, and it never runs. `CA8d5b2e3e` is exactly that: CALL STATE said
+# `name=Quentin R-O-C-H` and Susie still said "Quentin Roch".
+#
+# So this is a STEER, rendered into CALL STATE in the read-back state, where the
+# model will read it as an instruction rather than as a fact. It has one owner
+# here because both prompt engines need it -- `clinic_template_prompt` for
+# jv_v1 / vital_edge / northgate and `susie_system_prompt` for theorem_v3 --
+# and two copies of a rule is two answers to it.
+#
+# IT DELIBERATELY MAKES A WRONG RECORD AUDIBLE. Where the store is wrong,
+# Susie now says the wrong name and the caller corrects her; today she says a
+# plausible one and the wrong name reaches the diary in silence. That trade is
+# the point, and `name_is_plausible` bounds its cost: 3 of 319 stored names
+# (0.9%) fail the project's own stoplists, and on those the steer stands down
+# rather than broadcasting a parse failure.
+
+#: A surname must be present before the steer fires. With only a first name
+#: stored, asserting "the booking will be written as 'Quentin'" would contradict
+#: the standing rule that `patient_name` is always the FULL name, and could talk
+#: the model into booking without a surname -- a worse defect than the one this
+#: closes, on the same field.
+_STEER_MIN_TOKENS = 2
+
+
+def name_is_plausible(name: str) -> bool:
+    """Is `name` safe to SPEAK back to the caller as their name? PURE.
+
+    Deny-by-default, and deliberately stricter than the parsers that produce
+    the value: this decides whether Susie reads it aloud, so a parse failure
+    caught here costs a fallback to today's behaviour, and one missed here is
+    spoken to a caller.
+
+    Every token must clear the project's own name stoplists -- the same lists
+    the capture path uses, so the two cannot disagree about what a name is.
+    """
+    if not name or not isinstance(name, str):
+        return False
+    toks = [t for t in re.split(r"[\s]+", name.strip().lower()) if t]
+    if len(toks) < _STEER_MIN_TOKENS or len(toks) > 5:
+        return False
+    for t in toks:
+        bare = t.strip("'-")
+        if not bare or not re.fullmatch(r"[a-z][a-z'\-]*", bare):
+            return False
+        if bare in NAME_FALSE_POSITIVES or bare in SURNAME_STOPWORDS:
+            return False
+        # A token that is itself a SPELLING ("r-o-c-h"). `collapse_spelled_runs`
+        # stops these being stored, but this decides what is SPOKEN, and the
+        # two guards protect different things: that one is a parser, this one
+        # is the last thing between a parse failure and the caller's ear.
+        if _SPELLED_RUN_RE.fullmatch(bare):
+            return False
+    return True
+
+
+def readback_name_steer(session) -> str:
+    """The CALL STATE line that pins the read-back name, or "". PURE.
+
+    Renders ONLY in the read-back state -- a slot agreed, the phone confirmed,
+    and a plausible full name on record -- because that is the one turn where
+    the model composes "So that's <Name>, <day> ... shall I go ahead and book
+    that in?". Outside it the line would be noise competing with the step the
+    model is actually on.
+
+    Never raises: a caller mid-booking must not lose their turn to a steer.
+    """
+    try:
+        if not isinstance(session, dict):
+            return ""
+        collected = session.get("collected") or {}
+        name = (collected.get("full_name") or collected.get("name") or "")
+        name = name.strip() if isinstance(name, str) else ""
+        if not name_is_plausible(name):
+            return ""
+        # The read-back moment: the caller has agreed a slot AND confirmed a
+        # number. Same two signals the PHONE STEP steer uses, read the other
+        # way round -- that one fires while the phone is outstanding, this one
+        # once it is in.
+        if not session.get("phone_confirmed"):
+            return ""
+        if not (session.get("v3_confirmed_slot_phrase")
+                or session.get("booking_flow_active")):
+            return ""
+        return (
+            "NAME ON RECORD — the booking will be written as \"" + name + "\". "
+            "Use that name, in full and exactly as written, when you read the "
+            "booking back. Do NOT shorten it to the first name and do NOT "
+            "substitute a spelling or a version you remember from earlier in "
+            "the call. If it is wrong the caller will correct you, which is "
+            "the point of reading it back."
+        )
+    except Exception:
+        return ""
+
+
 def backfill_surname(
     caller_utterance: str,
     first_name: str,

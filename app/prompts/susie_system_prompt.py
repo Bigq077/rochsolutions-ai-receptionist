@@ -426,6 +426,7 @@ def build_system_prompt(session: dict) -> str:
     if known_lines:
         state_lines.append("Already known — do NOT ask again: " + ", ".join(known_lines))
 
+
     # Active slot selection interrupted by a FAQ — show the pending days
     # so the LLM re-prompts them after answering rather than starting fresh.
     _v3_slot_map = session.get("v3_dtmf_slot_map", {})
@@ -4124,6 +4125,19 @@ def _build_theorem_v3(session: dict) -> str:
             f"CTA COUNT: {_cta_count} — booking has been offered "
             f"twice already; do NOT add another booking CTA"
         )
+    # NAME ON RECORD. One owner in `name_capture`, because template_v1 renders
+    # the same rule from a different builder and two copies of it would be two
+    # answers to "which name does the read-back use". `name=` above is a passive
+    # FACT and the model reads it as one: on CA8d5b2e3e CALL STATE carried
+    # `name=Quentin R-O-C-H` and Susie still read back "Quentin Roch".
+    try:
+        from app.name_capture import readback_name_steer
+        _nm_steer = readback_name_steer(session)
+    except Exception:
+        _nm_steer = ""
+    if _nm_steer:
+        state.append(_nm_steer)
+
     b7 = ("CALL STATE: " + "; ".join(state)) if state else ""
 
     # DATE AWARENESS — injected fresh every call so the LLM can correctly
