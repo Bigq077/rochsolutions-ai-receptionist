@@ -20,6 +20,7 @@ model produces it anyway.
 import pytest
 
 from app.tools.slot_followup import (
+    MORE_TIMES_TAIL,
     MORE_TIMES_TAIL_MANY,
     MORE_TIMES_TAIL_ONE,
     reconcile_extra_slots_claim,
@@ -258,22 +259,45 @@ async def test_flush_defaults_to_stripping_when_ground_truth_is_absent():
     assert "few others" not in spoken.lower()
 
 
-@pytest.mark.parametrize(
-    "n_offered,expected",
-    [
-        (1, "if that doesn't suit."),
-        (2, "if neither suits."),
-        (3, "if none of those suit."),
-    ],
-)
-def test_tail_agrees_with_the_number_of_options(n_offered, expected):
-    """"neither" means two. A single day's spoken times cap at THREE."""
+@pytest.mark.parametrize("n_offered", [1, 2, 3])
+def test_the_tail_no_longer_depends_on_the_number_of_options(n_offered):
+    """The count-agreement rule is gone, and its absence is the assertion.
+
+    The tail used to end in a conditional that had to agree with the count --
+    "if that doesn't suit" / "if neither suits" / "if none of those suit" --
+    because the two-option wording had once been read out over a three-option
+    list. Dropping the clause for LAT-1 removes the disagreement it guarded
+    against, so one string is now correct for every count.
+
+    Asserted across all three counts rather than deleted, because a future
+    edit that reintroduces a count-dependent clause has to face this test and
+    either restore the agreement or change this file deliberately.
+    """
     reply = "Tuesday 25th August — Number 1, nine. Number 2, ten. Number 3, eleven. Any of those work?"
     out, action = reconcile_extra_slots_claim(reply, more_times=True, n_offered=n_offered)
 
     assert action == "appended"
-    assert expected in out, out
+    assert MORE_TIMES_TAIL in out, out
     assert out.rstrip().endswith("Any of those work?"), out
+    # The clause and its grammar are gone in every direction.
+    for stale in ("if that doesn't suit", "if neither suits", "if none of those suit"):
+        assert stale not in out, stale
+
+
+def test_the_shortened_tail_is_still_an_extra_slots_claim():
+    """The wording may shrink; what it MEANS to the guard may not.
+
+    `_is_extra_slots_claim` needs an extra-quantity word AND a further-times
+    noun at DIFFERENT offsets. That predicate is load-bearing twice over: it
+    strips a model-invented claim when `more_times` is false, and it stops the
+    append path adding a SECOND claim when one is already present. A tail
+    trimmed past those two words would silently disable both.
+    """
+    from app.tools.slot_followup import _is_extra_slots_claim
+
+    assert _is_extra_slots_claim(MORE_TIMES_TAIL), MORE_TIMES_TAIL
+    # and the referent B-99 requires is still there
+    assert "that day" in MORE_TIMES_TAIL
 
 
 def test_multi_day_never_gets_the_that_day_tail():

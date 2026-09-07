@@ -1197,25 +1197,58 @@ def _reject_if_caller_named_another_day(
 # model emits it anyway. See reconcile_extra_slots_claim below.
 # ───────────────────────────────────────────────────────────────────────────
 
-MORE_TIMES_TAIL_ONE = "And I've a few others that day if that doesn't suit."
-MORE_TIMES_TAIL_MANY = "And I've a few others that day if neither suits."
-MORE_TIMES_TAIL_SEVERAL = "And I've a few others that day if none of those suit."
+#: The claim that the day holds more than was just read out.
+#:
+#: SHORTENED 7 Sep 2026. It was three sentences differing only in a trailing
+#: conditional that had to agree with the count -- "if that doesn't suit" /
+#: "if neither suits" / "if none of those suit" -- because the grammar had once
+#: been read out over the wrong number of options. Dropping the clause removes
+#: the disagreement it was built to avoid, so the three collapse to one string
+#: and `more_times_tail` no longer has a count-dependent answer to give.
+#:
+#: The reason for shortening is LAT-1, and the evidence is a live call.
+#: CA8b40d1ed, northgate, 7 Sep 2026 11:49:07 -- the caller barged in while
+#: this sentence was playing, having already heard all three options:
+#:
+#:     barge-in start
+#:     interrupted_text="Number 3, ten past five in the evening. And I've a few other"
+#:
+#: It was 12 of the 47 words in that read-back: 26%, ~3.1 s of a measured 12.7 s.
+#: The same sentence is also what pushes `last_bot_prompt` past its 200-char cap
+#: (B-31) -- the truncation on that call cut at "And I've a few others tha", so
+#: the prompt lost its "?" and clinical screening fell back to `last_question`.
+#:
+#: WHAT MUST NOT CHANGE: the sentence has to keep reading as an extra-slots
+#: claim to `_is_extra_slots_claim`, which needs an "extra quantity" word AND a
+#: "further times" noun at DIFFERENT offsets ("a few" + "others"). That
+#: predicate is how a model-invented claim gets stripped when `more_times` is
+#: false, and how the append path knows a claim is already present and does not
+#: add a second. "that day" stays because B-99 requires the claim to have a
+#: referent, and the referent is the one day this tail is allowed on.
+MORE_TIMES_TAIL = "And I've a few others that day."
+
+#: Kept as names because callers and tests import them; they no longer differ.
+MORE_TIMES_TAIL_ONE = MORE_TIMES_TAIL
+MORE_TIMES_TAIL_MANY = MORE_TIMES_TAIL
+MORE_TIMES_TAIL_SEVERAL = MORE_TIMES_TAIL
 
 
 def more_times_tail(n_offered: int) -> str:
     """The canonical tail for `n_offered` times just read out.
 
-    "neither" means two. _check_availability_acuity caps a single day's spoken
-    times at THREE before setting more_times, so the two-option wording would
-    have been read out over a three-option list — the grammar-does-not-match-
-    the-data snag already logged against this sentence. Now that code emits it,
-    code agrees with the count.
+    `n_offered` no longer changes the answer, and the parameter is kept
+    deliberately rather than removed. It existed because the tail used to end
+    in a conditional that had to agree with the count -- "if that doesn't
+    suit" / "if neither suits" / "if none of those suit" -- after the
+    two-option wording was once read out over a three-option list. Dropping
+    that clause for LAT-1 removed the disagreement, so there is nothing left
+    for the count to decide.
+
+    The signature stays because three call sites pass a real count, and a tail
+    that needs to agree with it again is one edit away; taking the argument
+    out now would mean putting it back with every call site to re-find.
     """
-    if n_offered <= 1:
-        return MORE_TIMES_TAIL_ONE
-    if n_offered == 2:
-        return MORE_TIMES_TAIL_MANY
-    return MORE_TIMES_TAIL_SEVERAL
+    return MORE_TIMES_TAIL
 
 
 # A sentence claiming further availability beyond what was just listed.

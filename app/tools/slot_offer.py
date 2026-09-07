@@ -389,6 +389,12 @@ def build_slot_offer(
         if len(all_slots) > len(picked) or _hidden(day):
             more = True
         label = day.get("day_label") or "that day"
+        # The effective more-times verdict, needed BEFORE the opener is chosen.
+        # `more_times` (when passed) is the retrieval path's own answer and wins
+        # over the local count -- see the docstring -- but that override lands
+        # after the chunks are built, which is too late for a sentence whose
+        # truth depends on it.
+        _more_now = bool(more_times) if _more_is_given else more
         if len(picked) == 1:
             only = picked[0]["spoken"]
             dtmf_map["1"] = only
@@ -396,6 +402,10 @@ def build_slot_offer(
                 chunks = ["The earliest I have is {} — {}.".format(label, only)]
             elif lead_in == "also":
                 chunks = ["On {} I also have {}.".format(label, only)]
+            elif _more_now:
+                # More times exist, so "THE slot I have" is false. Same rule as
+                # the numbered branch below.
+                chunks = ["On {} I have {}.".format(label, only)]
             else:
                 chunks = ["The slot I have on {} is {}.".format(label, only)]
         else:
@@ -414,6 +424,24 @@ def build_slot_offer(
                 # "On Tuesday 8th September I also have ..." -- so the voice is
                 # unchanged and only the numbering is new.
                 opener = "On {} I also have —".format(label)
+            elif _more_now:
+                # The completeness opener is only true when the list IS
+                # complete. `SLOT_FORMATTER_SYSTEM_PROMPT` has said so since it
+                # was written -- case 3 is the "are —" wording for
+                # more_times FALSE, case 4 is a bare label for TRUE -- and this
+                # builder used case 3 for both, so on every day holding times it
+                # had not read out it claimed completeness and then took it
+                # straight back with "And I've a few others that day."
+                #
+                # The P10 note above already calls this sentence a COMPLETENESS
+                # claim; it suppressed the claim on the CONTINUATION path and
+                # left the first reading of a day making it wrongly.
+                #
+                # It is also where the LAT-1 seconds are. On CA8b40d1ed the
+                # opener was 51 of 247 characters and ~2.4 s of a measured
+                # 12.7 s, and dropping it here is what brings that read-back
+                # under the 200-char `last_bot_prompt` cap that B-31 trips on.
+                opener = "{} —".format(label)
             else:
                 opener = "The available slots for {} are —".format(label)
             for i, slot in enumerate(picked, start=1):
