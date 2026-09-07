@@ -133,11 +133,26 @@ def test_a_multi_day_offer_never_claims_a_few_others_that_day():
 # ── single_day ───────────────────────────────────────────────────────────────
 
 def test_a_single_day_offer_caps_at_three_and_says_so():
+    """WED holds SEVEN times and three are read, so more_times is true.
+
+    This used to assert the opener "The available slots for Wednesday 9th
+    September are — Number 1, …" alongside `"others that day" in offer.text`.
+    Both, in one reply: the list is the day's availability, and also it is not.
+    The test pinned the contradiction rather than catching it.
+
+    `SLOT_FORMATTER_SYSTEM_PROMPT` case 4 is the wording for a capped day, and
+    the builder now uses it. The completeness opener is still asserted where it
+    is true — see
+    `test_the_opener_only_claims_completeness_when_it_is_true.py`.
+    """
     offer = build_slot_offer([WED])
     assert offer.mode == "single_day"
     assert len(offer.slots) == 3
     assert offer.chunks[0].startswith(
-        "The available slots for Wednesday 9th September are — Number 1,"
+        "Wednesday 9th September — Number 1,"
+    )
+    assert "The available slots for" not in offer.text, (
+        "a capped day may not claim to be showing the day's availability"
     )
     assert offer.more_times is True
     assert "others that day" in offer.text
