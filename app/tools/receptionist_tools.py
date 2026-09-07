@@ -9654,6 +9654,47 @@ def _unconfirmed_callback_number(session: dict, tool_name: str) -> Optional[dict
     }
 
 
+#: How many DISTINCT callback leads one call may text the owner about.
+#: A bound, not a rule about callers: `_queue_owner_callback_sms` is an
+#: owner-billed SMS on a path a model can re-enter, and the per-call latch that
+#: used to cap it at one is exactly what this change removes. Three is more
+#: than any real call has needed and small enough that a loop cannot become a
+#: bill.
+_MAX_CALLBACK_LEADS = 3
+
+
+def callback_lead_matches(prev, patient_name, phone) -> bool:
+    """Is (`patient_name`, `phone`) the lead `prev` already records? PURE.
+
+    One owner for "is this the same lead", because two answers to it is how a
+    real second lead gets called a repeat. `_same_callback_lead` in llm_stream
+    delegates here; so does the SMS queue.
+
+    Phones compare on their last ten digits so "+447383262949" and
+    "07383 262949" are one number; names case- and space-insensitively.
+
+    FAILS TOWARDS SENDING. With neither a shared phone nor a shared name this
+    returns False -- an unknown lead is not a repeat. The cost of being wrong
+    that way is a duplicate owner SMS; the other way it is a patient nobody
+    rings back, which is the defect this exists for.
+    """
+    if not isinstance(prev, dict):
+        return False
+
+    def _ph(v):
+        d = "".join(ch for ch in str(v or "") if ch.isdigit())
+        return d[-10:] if len(d) >= 10 else d
+
+    def _nm(v):
+        return " ".join(str(v or "").lower().split())
+
+    new_ph, old_ph = _ph(phone), _ph(prev.get("phone"))
+    new_nm, old_nm = _nm(patient_name), _nm(prev.get("patient_name"))
+    if not (new_ph and old_ph) and not (new_nm and old_nm):
+        return False
+    return (new_ph == old_ph) and (new_nm == old_nm)
+
+
 def _queue_owner_callback_sms(
     session: dict,
     *,
@@ -9662,13 +9703,52 @@ def _queue_owner_callback_sms(
     notes: str,
     kind: str = "callback",
 ) -> bool:
-    """Queue one owner SMS about a callback/waitlist lead. Deduped per call.
+    """Queue one owner SMS about a callback/waitlist lead. Deduped per LEAD.
 
-    Returns True when a send was queued (or already queued earlier this call).
-    Sets `_waitlist_pinged` so teardown staff-notify / drop-off ping do not
-    double-text the same number about the same caller.
+    Returns True when a send was queued (or this same lead was queued earlier
+    this call). Sets `_waitlist_pinged` so teardown staff-notify / drop-off
+    ping do not double-text the same number about the same caller.
+
+    PER LEAD, NOT PER CALL. Until 7 Sep 2026 the first line here was
+
+        if session.get("_waitlist_pinged"):
+            return True
+
+    so a caller who asked for a SECOND, DIFFERENT person to be rung back had
+    that lead dropped -- and `return True` reports success, so the tool told
+    the model "Clinic notified" and the call ended normally. Nothing sounded
+    wrong; it surfaced only when somebody was not rung back.
+
+    Flagged on 1 Sep inside the P4 write-up as "Pre-existing and untouched by
+    this fix", never given a row of its own, and so never carried forward.
+
+    `_same_callback_lead` (llm_stream, B-121) had ALREADY decided this, in
+    these words: "A caller may legitimately ask for a second, different person
+    to be rung back, and refusing that would be the B-62 mistake in a new
+    place." That gate let the second lead through and this line then swallowed
+    the SMS behind it, so the two halves of one rule disagreed. They now share
+    `callback_lead_matches`.
+
+    `_waitlist_pinged` keeps its meaning EXACTLY -- "a lead was texted on this
+    call" -- because the drop-off ping (connection.py:975), teardown
+    (connection.py:18071) and the no-lead fallback (:9847 below) all read it,
+    and none of them is asking about a particular lead.
     """
-    if session.get("_waitlist_pinged"):
+    _prev_leads = session.get("callback_leads")
+    if not isinstance(_prev_leads, list):
+        _prev_leads = []
+    if any(callback_lead_matches(_p, patient_name, phone) for _p in _prev_leads):
+        return True
+    if len(_prev_leads) >= _MAX_CALLBACK_LEADS:
+        # Bound reached. Report success rather than failure -- earlier leads
+        # DID reach the owner, and telling the model the write failed would
+        # send it round again on a path that is already looping.
+        logger.warning(
+            "[callback] %d distinct leads already texted this call - refusing "
+            "a further one for %r. If a real call needs this, the cap is the "
+            "thing to change, not the dedup.",
+            len(_prev_leads), str(patient_name)[:40],
+        )
         return True
     try:
         from app.clinic_config import get_clinic
@@ -9710,6 +9790,13 @@ def _queue_owner_callback_sms(
             "patient_name": patient_name,
             "phone": phone,
         }
+        # Every lead, not only the latest. `callback_lead` stays the LAST one
+        # because `_same_callback_lead` reads it and a farewell-turn re-fire
+        # repeats the most recent lead; the list is what stops lead A being
+        # texted twice when the caller goes A, B, A. A list rather than a set
+        # because the session is serialised.
+        _prev_leads.append({"patient_name": patient_name, "phone": phone})
+        session["callback_leads"] = _prev_leads
         logger.info(
             "owner callback SMS queued (%s) to ***%s",
             kind,

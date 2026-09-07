@@ -1502,22 +1502,19 @@ def _same_callback_lead(session: dict, args: dict) -> bool:
     """
     if not session.get("callback_write_confirmed"):
         return False
-    prev = session.get("callback_lead")
-    if not isinstance(prev, dict):
-        return False
+    # The comparison itself lives with the SMS queue, which needs the same
+    # question answered the same way. Two copies of "is this the same lead" is
+    # how a real second lead gets called a repeat -- and that is precisely what
+    # happened: this gate let the second lead through and the queue's own
+    # per-CALL latch then swallowed the SMS behind it, so the two halves of one
+    # rule disagreed for six days.
+    from app.tools.receptionist_tools import callback_lead_matches
 
-    def _ph(v: str) -> str:
-        d = "".join(ch for ch in str(v or "") if ch.isdigit())
-        return d[-10:] if len(d) >= 10 else d
-
-    def _nm(v: str) -> str:
-        return " ".join(str(v or "").lower().split())
-
-    new_ph, old_ph = _ph(args.get("phone")), _ph(prev.get("phone"))
-    new_nm, old_nm = _nm(args.get("patient_name")), _nm(prev.get("patient_name"))
-    if not (new_ph and old_ph) and not (new_nm and old_nm):
-        return False
-    return (new_ph == old_ph) and (new_nm == old_nm)
+    return callback_lead_matches(
+        session.get("callback_lead"),
+        args.get("patient_name"),
+        args.get("phone"),
+    )
 
 
 # What the model is told when the gate above refuses. Deliberately shaped like
