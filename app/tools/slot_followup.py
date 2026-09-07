@@ -1941,6 +1941,37 @@ def _spread(slots: Any, pool: List[int], limit: int) -> List[int]:
 
 _LAST_POSITION_RE = re.compile(r"\b(?:last|final|latest)\b", re.IGNORECASE)
 _FIRST_POSITION_RE = re.compile(r"\b(?:first|earliest|soonest)\b", re.IGNORECASE)
+
+# Where those two words are NOT naming a position in the offer. Both shapes were
+# found by scripts/replay_slot_decisions.py over the stored corpus once P12 made
+# a position on a single-day offer settle the pick outright: until then the
+# looseness was masked, because a position selected a DAY and step 3 then failed
+# to find a time, so these turns resolved to nothing by accident.
+#
+# Vocabulary is not the discriminator and a longer word list is the trap. Both
+# rules are about the SHAPE the word sits in:
+#
+#   1. part of a compound noun. "um yeah quentin roch um the last name is
+#      spelled r-o-c-h" -- a caller SPELLING THEIR SURNAME resolved to a
+#      bookable slot, because "last" was read as the end of the list. Nobody
+#      chooses an appointment by saying "first name".
+#
+#   2. the object of a question about what the clinic HAS, rather than a choice
+#      from what was read out: "actually what's the soonest you've got"
+#      resolved to the first slot in the offer. Seven stored turns, every one
+#      of them asking to be shown something else. `classify_intent` already
+#      reads these correctly as Intent.EARLIEST; only this resolver took them
+#      for a pick.
+#
+# Deny-by-default, as everywhere else here: "I'll take the first one you have"
+# trips rule 2 and resolves nothing, which costs one more "which suits?" and
+# cannot pin a slot the caller did not choose.
+_POSITION_IS_NOT_A_POSITION_RE = re.compile(
+    r"\b(?:first|last)\s+name\b"
+    r"|\b(?:first|earliest|soonest|last|final|latest)\b(?:\s+\w+){0,3}?\s+"
+    r"(?:you(?:'ve|\s+have|\s+ve)?\s+(?:got|have)\b"
+    r"|you\s+got\b|(?:is|are)\s+available\b)",
+    re.IGNORECASE)
 _BAND_WORDS = ("morning", "afternoon", "evening")
 
 ACCEPTED_SLOT_KEY = "_accepted_slot_iso"
@@ -2107,9 +2138,15 @@ def _position_named(text: str, n: int) -> "int | None":
     if n <= 0:
         return None
     found = {p for p in _positions_named(text) if 1 <= p <= n}
-    if _LAST_POSITION_RE.search(text or ""):
+    # The relative-end words only, because that is where the looseness is: they
+    # are ordinary English ("last name", "the soonest you've got") in a way that
+    # "number two" is not. Masked rather than rejecting the whole utterance, so
+    # a sentence that names a real position AND happens to contain one of these
+    # shapes still resolves on the part that IS a position.
+    _relative = _POSITION_IS_NOT_A_POSITION_RE.sub(" ", text or "")
+    if _LAST_POSITION_RE.search(_relative):
         found.add(n)
-    if _FIRST_POSITION_RE.search(text or ""):
+    if _FIRST_POSITION_RE.search(_relative):
         found.add(1)
     return found.pop() if len(found) == 1 else None
 
@@ -2282,6 +2319,36 @@ _NEGATED_POSITION_RE = re.compile(
     re.I)
 
 
+# A caller who did not HEAR is asking for the readout again, not choosing from
+# it. Found by the replay harness once P12 let a position settle a single-day
+# pick outright:
+#
+#   "i didn't catch that last bit can you repeat yourself"  ->  the LAST slot
+#
+# "last bit" is the same compound-noun shape as "last name", but the honest
+# discriminator is not the noun -- the whole utterance is a request to repeat.
+#
+# NOT `Intent.REPEAT_ASK` from hold_speech, though it covers this exactly and
+# reusing it was the first attempt. That intent also matches "i said", which
+# there means the caller is RESTATING -- and restating is how a caller re-asserts
+# a pick Susie missed the first time. Replay measured the cost: four stored turns
+# stopped resolving, every one of them a real pick from an audibly impatient
+# caller --
+#
+#   "yeah i said 9 in the morning works"
+#   "i said quarter past six please"
+#
+# -- who would have been read the list a second time. That is the P6 symptom
+# this whole resolver exists to remove, and it would have landed on precisely
+# the callers who had already hit it once. So the narrow half is spelled out
+# here: not hearing is a request, repeating yourself is not.
+_DID_NOT_HEAR_RE = re.compile(
+    r"\b(?:did\s?n'?o?t\s+(?:hear|catch|get)"
+    r"|missed\s+that|come\s+again|pardon"
+    r"|say\s+(?:that\s+)?again"
+    r"|repeat\s+(?:that|yourself|it))\b",
+    re.IGNORECASE)
+
 def utterance_is_a_request_not_a_pick(text: str) -> bool:
     """True when a position or time appears inside a REQUEST, not a choice.
 
@@ -2307,7 +2374,32 @@ def utterance_is_a_request_not_a_pick(text: str) -> bool:
     if not t:
         return False
     return bool(_REQUEST_FOR_SLOTS_RE.search(t)
-                or _NEGATED_POSITION_RE.search(t))
+                or _NEGATED_POSITION_RE.search(t)
+                or _DID_NOT_HEAR_RE.search(t))
+    if _REQUEST_FOR_SLOTS_RE.search(t) or _NEGATED_POSITION_RE.search(t):
+        return True
+    # A caller who says they did not HEAR is asking for the readout again, not
+    # choosing from it. Found by the replay harness once P12 let a position
+    # settle a single-day pick outright:
+    #
+    #   "i didn't catch that last bit can you repeat yourself"  ->  the LAST slot
+    #
+    # "last bit" is the same compound-noun shape as "last name", but the honest
+    # discriminator is not the noun -- it is that the whole utterance is a
+    # request to repeat. `classify_intent` already owns that question and reads
+    # this correctly as REPEAT_ASK, so it is asked rather than answered a second
+    # time here: two matchers for one intent is two answers to it, and the one
+    # that drifts is the copy.
+    #
+    # Lazy and defensive, like every other exit in this resolver: a caller
+    # mid-booking must never lose their turn because a classifier raised.
+    try:
+        from app.hold_speech import Intent, classify_intent
+        if Intent.REPEAT_ASK in (classify_intent(t) or []):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def slot_accepted_by_caller(
