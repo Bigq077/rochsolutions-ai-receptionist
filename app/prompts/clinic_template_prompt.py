@@ -480,7 +480,11 @@ def _render_region_knowledge(clinic: Dict[str, Any]) -> str:
         "more than it adds."
     )
     out.append("")
-    out.append("REGION LIBRARY (what makes this area worth looking at):")
+    out.append(
+        "REGION LIBRARY — NOTES, NOT LINES TO SAY. Each entry is a fragment "
+        "list. Take the idea and say it your own way; if the words you are "
+        "about to speak appear in the entry, you are reading it out."
+    )
     for r in regions:
         nm = r.get("name", "")
         und = r.get("understanding", "")

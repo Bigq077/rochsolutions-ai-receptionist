@@ -216,3 +216,78 @@ def test_the_copy_is_marked_for_review():
          / "clinic.json").read_text(encoding="utf-8")
     )
     assert "MARK_REVIEW" in (raw["region_knowledge"].get("_note") or "")
+
+
+# ── The entries are NOTES, and must stay notes ──────────────────────────────
+#
+# The first version was written as finished, speakable sentences. Two live
+# calls on 2026-09-06 (build 004f838d) read them out almost verbatim:
+#
+#   entry   "Ankles are often under-rehabbed after a knock, so they grumble
+#            on or feel a bit unsteady months later…"
+#   spoken  "ankles are often under-rehabbed after a knock, so it's worth
+#            getting it properly looked at even when it feels minor"
+#
+#   entry   "Shoulders stiffen up quickly if they're left alone, so catching
+#            one early makes a real difference…"
+#   spoken  "shoulders stiffen up quickly if they're left alone, so it's good
+#            you're getting it looked at"
+#
+# Hand a model a good sentence and it says the sentence. The condition library
+# escapes this by accident — its entries are long and dense enough that they
+# MUST be compressed, and compression forces paraphrase. These are short, so
+# the shape has to do that work instead.
+
+SEPARATOR = "·"
+
+
+@pytest.mark.parametrize("region", _regions(), ids=lambda r: r["name"])
+def test_an_entry_is_not_a_speakable_sentence(region):
+    """Fragment lists, so there is no sentence available to lift."""
+    und = region["understanding"]
+    assert SEPARATOR in und, (
+        f"{region['name']}: written as prose again. Entries are notes — "
+        f"fragments joined by '{SEPARATOR}' — precisely so they cannot be read "
+        f"out. A sentence here WILL be spoken verbatim; it happened twice."
+    )
+    assert not und.rstrip().endswith("."), region["name"]
+    assert not und[:1].isupper(), (
+        f"{region['name']}: starts like a sentence, which invites reciting it"
+    )
+
+
+#: Words a receptionist would never say to a patient. Kept out of the ENTRIES
+#: as well as banned in the block, so that even a lazy lift is harmless —
+#: belt and braces, because "under-rehabbed" reached a caller once already.
+_CLINICAL_REGISTER = (
+    "under-rehabbed", "rehabbed", "rehab", "loading", "overloaded",
+    "tendinopathy", "presentation", "pathology", "biomechanic", "modality",
+    "conservative management",
+)
+
+
+@pytest.mark.parametrize("region", _regions(), ids=lambda r: r["name"])
+def test_no_entry_uses_clinical_register(region):
+    low = region["understanding"].lower()
+    found = [w for w in _CLINICAL_REGISTER if w in low]
+    assert not found, (
+        f"{region['name']}: {found} is a word you would only ever see written "
+        f"down. Say 'built back up', 'how much you're on it', 'a tendon that's "
+        f"had too much'."
+    )
+
+
+def test_the_block_bans_the_clinical_register_out_loud():
+    """Belt: the entries avoid it. Braces: the block forbids saying it."""
+    text = _prompt("northgate")
+    assert "PLAIN WORDS ONLY" in text
+    assert "under-rehabbed" in text, (
+        "the ban must NAME the word that actually reached a caller — a general "
+        "instruction to 'avoid jargon' is what was already in force"
+    )
+
+
+def test_the_block_says_the_entries_are_notes():
+    text = _prompt("northgate")
+    assert "NOTES, NOT SENTENCES" in text
+    assert "NOTES, NOT LINES TO SAY" in text
