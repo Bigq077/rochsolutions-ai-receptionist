@@ -69,10 +69,21 @@ def _success_returns(func):
 # If this ever stops being true, the tests below are asking the wrong question.
 # ---------------------------------------------------------------------------
 def test_theorem_short_circuits_to_the_acuity_cancel_executor():
+    """The route is now taken on the PROVIDER, not the clinic's name.
+
+    This used to grep `_exec_cancel_appointment` for the literal "theorem".
+    That literal is gone -- the dispatch asks `uses_acuity(session)` -- but the
+    property this file depends on is unchanged and is asserted directly
+    instead: Theorem still reaches the Acuity cancel executor.
+    """
     src = inspect.getsource(rt._exec_cancel_appointment)
     assert "_cancel_appointment_acuity" in src
+    assert "uses_acuity(session)" in src, (
+        "the cancel path no longer routes on the provider — re-check whether "
+        "this file still describes the live cancel path"
+    )
     for cid in THEOREM_IDS:
-        assert f'"{cid}"' in src, (
+        assert rt.uses_acuity({"clinic_id": cid}), (
             f"{cid} no longer routes to the Acuity executor — re-check whether "
             f"this file still describes the live cancel path"
         )

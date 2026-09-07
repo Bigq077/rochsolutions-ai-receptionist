@@ -135,11 +135,18 @@ async def test_lookup_still_populates_the_name_either_way(_acuity):
         assert session["returning_plan_lookup_type"] == "Physiotherapy"
 
 
-async def test_guard_is_theorem_only_by_construction(_acuity):
+async def test_guard_is_acuity_only_by_construction(_acuity):
     """Recorded so the blast radius is not re-derived later: the whole function
-    returns early for any non-Theorem clinic, so neither the defect nor this
-    guard can affect jv_v1 or vital_edge."""
+    returns early for any clinic that does not book through Acuity, so neither
+    the defect nor this guard can affect jv_v1 or vital_edge.
+
+    The refusal used to name Theorem. It now names the PROVIDER, because that
+    is what it was always testing -- the lookup is an Acuity call, and the
+    tenant was standing in for its backend. Asserted on the REFUSAL rather than
+    on the sentence, so re-wording it does not fail this again.
+    """
     session = _session(clinic_id="jv_v1", phone_confirmed=True)
     result = await rt._exec_lookup_recent_appointment({"phone": ON_FILE}, session)
     assert result["found"] is False
-    assert "Theorem" in result["message"]
+    assert not rt.uses_acuity(session), "jv_v1 must not be an Acuity clinic"
+    assert result.get("message"), "a refusal must say why"

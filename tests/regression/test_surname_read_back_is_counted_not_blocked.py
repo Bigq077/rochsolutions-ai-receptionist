@@ -136,5 +136,9 @@ def test_the_counter_is_wired_above_the_executor_branch():
 
     src = inspect.getsource(receptionist_tools)
     warn_at = src.index("SURNAME NOT READ BACK")
-    dispatch_at = src.index('if _resolve_clinic_id(session) in ("theorem"', warn_at)
+    # The dispatch used to read `_resolve_clinic_id(session) in ("theorem", ...)`.
+    # It now asks the PROVIDER instead (`uses_acuity`), on the same line and in
+    # the same place -- the ORDERING is the invariant here, not the wording of
+    # the condition. See tests/tenancy/test_provider_routing_reads_the_provider.
+    dispatch_at = src.index("if uses_acuity(session):", warn_at)
     assert warn_at < dispatch_at
