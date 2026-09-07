@@ -578,13 +578,18 @@ def readback_name_steer(session) -> str:
         if not (session.get("v3_confirmed_slot_phrase")
                 or session.get("booking_flow_active")):
             return ""
+        # Instruction only. An earlier draft closed with "...if it is wrong the
+        # caller will correct you, which is the point of reading it back" --
+        # true, and the most narratable line in the block. Sonnet paraphrases
+        # CALL STATE into speech (the defect `internal_call_state_leak` exists
+        # for), and Susie explaining her own confirmation ritual to a patient is
+        # the one leak this steer could produce. The rationale belongs in the
+        # docstring above, which the model never sees.
         return (
             "NAME ON RECORD — the booking will be written as \"" + name + "\". "
-            "Use that name, in full and exactly as written, when you read the "
-            "booking back. Do NOT shorten it to the first name and do NOT "
-            "substitute a spelling or a version you remember from earlier in "
-            "the call. If it is wrong the caller will correct you, which is "
-            "the point of reading it back."
+            "Use that name in the read-back, in full and exactly as written. "
+            "Do NOT shorten it to the first name, and do NOT substitute a "
+            "spelling or a version you remember from earlier in the call."
         )
     except Exception:
         return ""

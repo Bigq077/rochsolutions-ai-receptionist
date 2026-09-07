@@ -225,6 +225,26 @@ def test_the_corpus_stand_downs_keep_todays_behaviour(stored):
 # A deliberate non-change, recorded so it is not "fixed" later by accident
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize("phrase", [
+    "the point of", "correct you", "reading it back", "which is the",
+])
+def test_the_steer_carries_no_narratable_rationale(phrase):
+    """The steer is an INSTRUCTION and nothing else.
+
+    An earlier draft closed with "...if it is wrong the caller will correct
+    you, which is the point of reading it back" — true, and the most
+    narratable line in the block. Sonnet paraphrases CALL STATE into speech
+    (`internal_call_state_leak` exists for exactly that), and Susie explaining
+    her own confirmation ritual to a patient is the one leak this steer could
+    plausibly produce. The reasoning lives in the docstring, which the model
+    never sees.
+    """
+    steer = readback_name_steer(_readback_session())
+    assert steer, "the steer must fire, or this asserts nothing"
+    assert phrase not in steer.lower(), (
+        "%r reads as narration rather than instruction" % phrase)
+
+
 def test_the_label_is_not_added_to_the_call_state_leak_stripper():
     """`internal_call_state_leak` strips sentences containing "booking flow",
     "call state" or "cta count" — machine vocabulary a caller must never hear.
