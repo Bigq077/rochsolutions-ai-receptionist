@@ -96,6 +96,19 @@ Every call already writes one:
 It needs somebody to fetch a file off the disk, not a new capability. It has sat
 behind a false blocker since at least 3 Sep.
 
+**CORRECTED, same day — the wav was not the only constraint.** The keyterm list
+has a hard API cap and northgate is already at it:
+
+```python
+_KEYTERMS_MAX = 100          # "jv_v1: 100 terms, at the cap"
+[ms_stt] keyterms_prompt: 100 terms for clinic='northgate'
+```
+
+So adding numerals EVICTS existing terms, and the incumbents include `cancer`,
+`bladder`, `bowel`, `numb`, `saddle` — red-flag screening vocabulary. This is a
+zero-sum allocation with a safety dimension, not a missing file. Anyone who
+"just adds numerals" will silently weaken the screens.
+
 ---
 
 ## 4. Open, small, unglamorous
@@ -103,8 +116,13 @@ behind a false blocker since at least 3 Sep.
 * **multi-day lead-in** — ~1.8 s, and the last untouched piece of LAT-1.
 * **`UNKNOWN_SLOW` apologises on a slow turn that ANSWERED** the question. A
   change to the fallback itself, not a matcher.
-* **B-31's cap** in general — the read-out no longer trips it; other long turns
-  still can.
+* ~~**B-31's cap**~~ — **not a defect, corrected 7 Sep.** The warning is the
+  FALLBACK SUCCEEDING: `match_asked_screen` recovers from `last_question`
+  (`raw = _q`) and logs loudly on purpose. The cap was deliberately not raised —
+  "every known reader now has a fallback, and widening what the write gates can
+  see is a change that opens a booking gate, which needs a live call rather than
+  a green suite." Measured there over 400 calls: 523 turns run past the cap and
+  160 lose the '?', so the fallback is load-bearing and working.
 
 ---
 
