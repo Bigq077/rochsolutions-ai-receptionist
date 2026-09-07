@@ -66,7 +66,43 @@ _HOUR_WORDS = {
 }
 
 
-def _spoken_slot_time(hhmm: str) -> str:
+def speaks_part_of_day(session: Any) -> bool:
+    """Does this clinic append "in the morning" to a spoken slot time?
+
+    `operational.speak_part_of_day`, DEFAULT TRUE -- every clinic keeps
+    today's wording until its own clinic.json opts out, because a wording
+    change is heard by patients and belongs to the clinic, not to the engine.
+
+    LAT-1. The suffix is 3 of every spoken time and about 27% of a multi-day
+    read-out: measured 4.7 s of 17.3 s on CA8d5b2e3e, and 2.4 s of the
+    single-day read-out.
+
+    WHAT THE EVIDENCE SAYS, so a future reader does not have to re-derive it:
+    over 236 real day-offers carrying 2262 spoken labels in the obs store,
+    dropping the suffix created ZERO pairs that sound alike, and no clinic
+    offers an hour together with its twelve-hour twin -- measured spreads are
+    northgate 08-18 and theorem 09-18, both narrower than twelve hours, so a
+    clock face names exactly one time inside a working day.
+
+    The resolver never needed it either: `slot_accepted_by_caller` already
+    strips the suffix before matching, so a caller saying "ten to nine" has
+    always resolved. What is lost is the caller's CONFIRMATION that eight
+    means the morning, and no corpus can measure that -- which is why this is
+    a clinic's decision behind a flag rather than an engine default.
+
+    Never raises: a missing or malformed config keeps the wording it has.
+    """
+    try:
+        from app.clinic_config import get_clinic
+        cid = (session or {}).get("clinic_id") if isinstance(session, dict) else None
+        cfg = get_clinic(cid or "") or {}
+        val = (cfg.get("operational") or {}).get("speak_part_of_day")
+        return True if val is None else bool(val)
+    except Exception:
+        return True
+
+
+def _spoken_slot_time(hhmm: str, part_of_day: bool = True) -> str:
     """Convert a 24-hour 'HH:MM' slot time into its natural spoken label.
 
     Deterministic source of truth for slot wording ("nine in the morning",
@@ -87,22 +123,26 @@ def _spoken_slot_time(hhmm: str) -> str:
         return "midday"
     if h == 0 and m == 0:
         return "midnight"
+    # The suffix, or nothing. Blanked rather than branched at every return
+    # below, so the twelve wordings underneath stay one shape: a trailing
+    # "{part}" that is either the band or empty. `midday` and `midnight`
+    # return above this and never carried a band anyway.
     part = (
-        "in the morning" if h < 12
-        else "in the afternoon" if h < 17
-        else "in the evening"
-    )
+        " in the morning" if h < 12
+        else " in the afternoon" if h < 17
+        else " in the evening"
+    ) if part_of_day else ""
     hour_word = _HOUR_WORDS[h % 12 or 12]
     next_word = _HOUR_WORDS[(h + 1) % 12 or 12]
     if m == 0:
-        return f"{hour_word} {part}"
+        return f"{hour_word}{part}"
     if m == 15:
-        return f"quarter past {hour_word} {part}"
+        return f"quarter past {hour_word}{part}"
     if m == 30:
-        return f"half past {hour_word} {part}"
+        return f"half past {hour_word}{part}"
     if m == 45:
         # "quarter to" the NEXT hour, keeping the reading's time-of-day label.
-        return f"quarter to {next_word} {part}"
+        return f"quarter to {next_word}{part}"
     # Every other on-grid minute: natural clock-face phrasing ("five past
     # five", "twenty to six"), matching :00/:15/:30/:45 above. This replaces
     # the digital "[hour] [minutes]" forms ("five oh five", "five forty") —
@@ -115,13 +155,13 @@ def _spoken_slot_time(hhmm: str) -> str:
     _PAST_MIN = {5: "five", 10: "ten", 20: "twenty", 25: "twenty-five"}
     _TO_MIN   = {35: "twenty-five", 40: "twenty", 50: "ten", 55: "five"}
     if m in _PAST_MIN:
-        return f"{_PAST_MIN[m]} past {hour_word} {part}"
+        return f"{_PAST_MIN[m]} past {hour_word}{part}"
     if m in _TO_MIN:
         # "to" the NEXT hour, keeping the reading's time-of-day label
         # (same convention as the :45 "quarter to" case above).
-        return f"{_TO_MIN[m]} to {next_word} {part}"
+        return f"{_TO_MIN[m]} to {next_word}{part}"
     # Off-grid minute (never on a 5-minute grid) — unambiguous digit fallback.
-    return f"{hour_word} {m:02d} {part}"
+    return f"{hour_word} {m:02d}{part}"
 
 
 # An explicit clock time in the caller's preference ("12 o'clock", "half past
@@ -400,6 +440,7 @@ def _build_days_data(
     slot_tuples: list, max_days: int = 30, preference: str = "",
     spoken_starts: Optional[set] = None,
     out: Optional[Dict[str, Any]] = None,
+    part_of_day: bool = True,
 ) -> list:
     """
     Group (start_dt, end_dt) tuples into per-day summaries for the day-first
@@ -454,7 +495,7 @@ def _build_days_data(
             # Ready-made spoken labels, aligned 1:1 with slot_times. The slot
             # formatter must use these verbatim — never re-convert the 24h times
             # itself (it dropped/invented slots when it did, booking phantoms).
-            "slot_times_spoken": [_spoken_slot_time(t) for t in _times],
+            "slot_times_spoken": [_spoken_slot_time(t, part_of_day) for t in _times],
             "slots":             [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in day_slots],
             # What this day really holds, and how much of it the preference
             # filter hid. slot_times is the SURVIVORS; these two are the day.
@@ -3400,7 +3441,8 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         # keeps available_days consistent with slot_labels (bug C5-5): a
         # "Thursday afternoon" request no longer yields non-Thursday days.
         _band_out: Dict[str, Any] = {}
-        days_data   = _build_days_data(slot_tuples, preference=preference, spoken_starts=_spoken, out=_band_out)
+        days_data   = _build_days_data(slot_tuples, preference=preference, spoken_starts=_spoken, out=_band_out,
+                                      part_of_day=speaks_part_of_day(session))
 
         # Drop TODAY at the source — same-day bookings are never offered (min lead
         # = next working day).  Doing it here (not only in the post-return
@@ -6339,7 +6381,8 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         presented  = _select_presented_tuples(candidates, preference=_pref, spoken_starts=_spoken)
         # Build from preference-matching candidates so available_days honours
         # the requested day/time.  Mirrors the Acuity path fix (bug C5-5).
-        days_data  = _build_days_data(candidates, preference=_pref, spoken_starts=_spoken)
+        days_data  = _build_days_data(candidates, preference=_pref, spoken_starts=_spoken,
+                              part_of_day=speaks_part_of_day(session))
         pres_raw   = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented]
         pres_labels = [format_slot(s) for s in presented]
         session["last_offered_slots"] = pres_raw
@@ -6405,7 +6448,8 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         presented  = _select_presented_tuples(free_slots, preference=_pref, spoken_starts=_spoken)
         # Build from preference-matching free_slots so available_days honours
         # the requested day/time.  Mirrors the Acuity path fix (bug C5-5).
-        days_data  = _build_days_data(free_slots, preference=_pref, spoken_starts=_spoken)
+        days_data  = _build_days_data(free_slots, preference=_pref, spoken_starts=_spoken,
+                              part_of_day=speaks_part_of_day(session))
         pres_raw   = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented]
         pres_labels = [format_slot(s) for s in presented]
         session["last_offered_slots"] = pres_raw
@@ -6481,7 +6525,8 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
                 # is the date it got wrong on two live calls.
                 session["requested_day_iso"] = _requested_iso
                 presented   = _select_presented_tuples(free_slots, preference=_pref, spoken_starts=_spoken)
-                days_data   = _build_days_data(free_slots, preference=_pref, spoken_starts=_spoken)
+                days_data   = _build_days_data(free_slots, preference=_pref, spoken_starts=_spoken,
+                              part_of_day=speaks_part_of_day(session))
                 pres_raw    = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented]
                 pres_labels = [format_slot(s) for s in presented]
                 session["last_offered_slots"] = pres_raw
@@ -6621,7 +6666,8 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     presented  = _select_presented_tuples(free_slots, preference=_pref, spoken_starts=_spoken)
     # Build from preference-matching free_slots so available_days honours the
     # requested day/time.  Mirrors the Acuity path fix (bug C5-5).
-    days_data  = _build_days_data(free_slots, preference=_pref, spoken_starts=_spoken)
+    days_data  = _build_days_data(free_slots, preference=_pref, spoken_starts=_spoken,
+                              part_of_day=speaks_part_of_day(session))
     pres_raw   = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented]
     pres_labels = [format_slot(s) for s in presented]
     session["last_offered_slots"] = pres_raw
@@ -7063,7 +7109,8 @@ async def _check_availability_diary(
         }
 
     presented = _select_presented_tuples(free_slots, preference=_pref, spoken_starts=_spoken)
-    days_data = _build_days_data(free_slots, preference=_pref, spoken_starts=_spoken)
+    days_data = _build_days_data(free_slots, preference=_pref, spoken_starts=_spoken,
+                              part_of_day=speaks_part_of_day(session))
     session["last_offered_slots"] = [
         {"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented
     ]
@@ -7230,7 +7277,8 @@ async def _check_availability_published(
         }
 
     presented = _select_presented_tuples(candidates, preference=_pref, spoken_starts=_spoken)
-    days_data = _build_days_data(candidates, preference=_pref, spoken_starts=_spoken)
+    days_data = _build_days_data(candidates, preference=_pref, spoken_starts=_spoken,
+                              part_of_day=speaks_part_of_day(session))
     # Provisional model: each published slot is a START-TIME marker only. The
     # caller chooses 60 or 90 minutes and the practitioner confirms, so a slot's
     # own published window length is NOT the session length (same reason as the

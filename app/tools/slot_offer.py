@@ -375,6 +375,11 @@ def build_slot_offer(
 
     spoken_days = days[:max_days]
     more = len(days) > len(spoken_days)
+    #: Days the sweep found and this readout will NOT name. Kept separate from
+    #: `more`, which the single-day branch goes on to overload with "this day
+    #: holds times we are not reading". The multi-day opener is a claim about
+    #: DAYS, so it has to ask the question it is actually making.
+    _more_days = more
     _more_is_given = more_times is not None
 
     named: List[Dict[str, Any]] = []
@@ -460,10 +465,23 @@ def build_slot_offer(
             dtmf_map[str(i)] = label
             series = _spoken_series([s["spoken"] for s in picked])
             piece = "Number {}, {} — {}.".format(i, label, series)
-            chunks.append(
-                "Here's what we've got coming up — {}".format(piece)
-                if i == 1 else piece
-            )
+            if i == 1:
+                # Same rule the single-day opener follows: only claim to be
+                # showing everything when everything is what is being shown.
+                # "Here's what we've got coming up" reads as the diary's
+                # upcoming days; with a fourth day sitting unnamed behind it,
+                # that is not what it is.
+                #
+                # The multi_day path has no counterweight either -- B-99
+                # suppresses the "a few others that day" tail here, correctly,
+                # because "that day" has no referent after three days are
+                # named. So this sentence is the ONLY thing the caller has to
+                # go on, and it was the confident version.
+                _lead = ("I've got a few days —" if _more_days
+                         else "Here's what we've got coming up —")
+                chunks.append("{} {}".format(_lead, piece))
+            else:
+                chunks.append(piece)
         mode = "multi_day"
 
     if not named:
