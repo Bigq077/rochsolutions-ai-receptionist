@@ -2619,6 +2619,61 @@ def location_from_appointment_type(appt_type: str) -> str:
     return loc if loc in ("alcester", "redditch") else ""
 
 
+#: Clinic ids whose Acuity CREDENTIALS the engine actually holds.
+#:
+#: `_make_acuity_adapter` builds ONE module-level singleton from
+#: `get_acuity_config("theorem")` and un-prefixed env vars (ACUITY_USER_ID,
+#: ACUITY_API_KEY, ACUITY_CALENDAR_ID_*). Routing a clinic to the Acuity
+#: executors is therefore not the same as being able to SERVE it: a second
+#: Acuity tenant would book into Theorem's diary.
+#:
+#: `uses_acuity` routes on the provider; this list is what stops that
+#: generalisation running ahead of the credentials. `tests/tenancy/` asserts
+#: that every clinic declaring `booking_system: acuity` appears here, so the
+#: mismatch fails a suite rather than a patient's booking.
+#:
+#: Phase B of docs/plan/MULTITENANCY_SCOPE_2026-09-07.md removes it: per-clinic
+#: ACUITY_CONFIG with prefixed env vars, and a per-clinic adapter rather than
+#: one singleton.
+_ACUITY_CREDENTIALLED_CLINICS = ("theorem", "theorem_v2", "theorem_v3")
+
+
+def uses_acuity(session: Any) -> bool:
+    """Does this clinic book through Acuity?
+
+    Reads `booking_system`, which is what the question is actually about.
+    EIGHT places used to ask `clinic_id in ("theorem", "theorem_v2",
+    "theorem_v3")` instead -- the engine held the answer in config and asked
+    the name -- and CLAUDE.md's own rule is that `if clinic == "..."` in `app/`
+    IS the bug, not the fix.
+
+    Behaviour is unchanged the day this lands: the only clinics reporting
+    `acuity` are exactly those three, and no other clinic does. A test asserts
+    that equivalence over every clinic rather than trusting this sentence.
+
+    NOT CONVERTED, deliberately: the service-catalogue gate at `_is_theorem_gate`
+    ("the ONLY valid service is 'physiotherapy assessment'", which names Mark).
+    That is Theorem's business rule and has nothing to do with the provider --
+    a second Acuity clinic may sell a dozen services. Guards, screens and write
+    rules stay on the clinic id for the same reason, and because safety nets
+    gated on `booking_system ==` have silently excluded clinics before.
+
+    WHAT THIS DOES NOT DO: make a second Acuity clinic work. Routing
+    generalises here; credentials do not -- see `_ACUITY_CREDENTIALLED_CLINICS`.
+
+    Never raises. An unreadable config returns False, which routes to the
+    Google path, whose own guards refuse on a missing calendar id -- a refusal,
+    not a booking into someone else's diary.
+    """
+    try:
+        from app.clinic_config import get_clinic
+        cfg = get_clinic(_resolve_clinic_id(session) or "") or {}
+        bs = (cfg.get("operational") or {}).get("booking_system") \
+            or cfg.get("booking_system")
+        return str(bs or "").strip().lower() == "acuity"
+    except Exception:
+        return False
+
 def _make_acuity_adapter():
     """
     Create a fresh AcuityAdapter using Theorem clinic credentials.
@@ -6225,7 +6280,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         session["_checked_service"] = _raw_service
 
     # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
-    if _gate_cid in ("theorem", "theorem_v2", "theorem_v3"):
+    if uses_acuity(session):
         _acuity_result = await _check_availability_acuity(args, session)
         return _filter_same_day_slots(_acuity_result, session)
 
@@ -7923,7 +7978,7 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         logger.debug("[book] surname read-back check failed", exc_info=True)
 
     # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
-    if _resolve_clinic_id(session) in ("theorem", "theorem_v2", "theorem_v3"):
+    if uses_acuity(session):
         return await _book_appointment_acuity(args, session)
 
     from app.clinic_config import get_clinic
@@ -8401,7 +8456,7 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
 async def _exec_lookup_appointment(
     args: Dict[str, Any], session: Dict[str, Any]
 ) -> Dict[str, Any]:
-    if _resolve_clinic_id(session) in ("theorem", "theorem_v2", "theorem_v3"):
+    if uses_acuity(session):
         return await _lookup_appointment_acuity(args, session)
     return {"found": False, "error": "Appointment lookup not supported for this clinic type."}
 
@@ -8436,7 +8491,7 @@ async def _exec_confirm_appointment_found(
 
 async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
-    if _resolve_clinic_id(session) in ("theorem", "theorem_v2", "theorem_v3"):
+    if uses_acuity(session):
         return await _cancel_appointment_acuity(args, session)
 
     from app.tools.calendar_google import list_upcoming_events, delete_event
@@ -8657,7 +8712,7 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
 
 async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
-    if _resolve_clinic_id(session) in ("theorem", "theorem_v2", "theorem_v3"):
+    if uses_acuity(session):
         return await _reschedule_appointment_acuity(args, session)
 
     from app.tools.calendar_google import list_upcoming_events, patch_event_time
@@ -9316,8 +9371,8 @@ async def _exec_log_call_outcome(args: Dict[str, Any], session: Dict[str, Any]) 
 
 async def _exec_get_patient_history(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     """Look up a patient's recent appointment history in Acuity to identify their treatment."""
-    if session.get("clinic_id") not in ("theorem", "theorem_v2", "theorem_v3"):
-        return {"found": False, "message": "Patient history lookup only available for Theorem clinic"}
+    if not uses_acuity(session):
+        return {"found": False, "message": "Patient history lookup is only available on an Acuity-backed clinic"}
 
     adapter = _get_acuity_adapter()
     if not adapter:
@@ -9444,8 +9499,8 @@ async def _exec_lookup_recent_appointment(
         found=True  → first_name, last_name, full_name, last_appointment_type, phone
         found=False → message explaining why
     """
-    if _resolve_clinic_id(session) not in ("theorem", "theorem_v2", "theorem_v3"):
-        return {"found": False, "message": "Recent appointment lookup only available for Theorem clinic"}
+    if not uses_acuity(session):
+        return {"found": False, "message": "Recent appointment lookup is only available on an Acuity-backed clinic"}
 
     adapter = _get_acuity_adapter()
     if not adapter:
@@ -10427,7 +10482,7 @@ async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) ->
         session[LOOKUP_PURPOSE_KEY] = purpose
 
     # cancel / reschedule: look up upcoming appointment
-    if session.get("clinic_id") not in ("theorem", "theorem_v2", "theorem_v3"):
+    if not uses_acuity(session):
         return await _lookup_patient_gcal(args, session)
 
     adapter = _get_acuity_adapter()
