@@ -116,3 +116,43 @@ the store agree on the *same* wrong name, the readback is consistent, the caller
 hears their own name wrong and confirms it, and everything downstream matches.
 The only defence against that is asking the caller to confirm a spelling, which
 is a product decision about call length rather than an engineering one.
+
+---
+
+## 5. What was actually built — a correction to §4
+
+Section 4 proposed extracting the `_rb_name` injection out of the blocked-tool
+branch and calling it from the phone-confirm transition. **That is not what
+shipped, and the scope was wrong in a way worth recording.**
+
+Two things were missed when it was written:
+
+1. **`_b7_call_state` already carries the stored name** — `name={nm}`,
+   `clinic_template_prompt.py:3348` — and already hosts two steers of exactly
+   the shape needed (`SLOT ALREADY AGREED`, `PHONE STEP OUTSTANDING`). So the
+   model was *already being told the name* and read it as a passive fact. The
+   missing piece was the instruction form, not the delivery mechanism. Building
+   a second delivery path would have added a mechanism the codebase already had.
+
+2. **theorem_v3 renders from a different builder.** `_build_theorem_v3` in
+   `susie_system_prompt.py`, not `clinic_template_prompt.py`. Section 4 named
+   two call sites in `llm_stream`/`connection` and would have reached all four
+   clinics by accident; the steer needed **two** prompt call sites, and a fix in
+   either alone reaches three clinics and misses the fourth. Mark's line is the
+   one that would have been missed, which is the same blind spot recorded in
+   [[theorem-v3-prompt-is-hardcoded-python]].
+
+Shipped instead (`d206b72f`): one owner in `app/name_capture.py`
+(`readback_name_steer` + `name_is_plausible`), rendered by both
+`_b7_call_state` and `_build_theorem_v3`. `scripts/replay_readback_names.py`
+(`9fde85de`) makes the measurement repeatable.
+
+Result against the 273 stored read-backs: 268 fire, 199 unchanged, **66 gain
+the surname**, **3 change the name spoken** — the three wrong-name bookings —
+and 5 stand down on an implausible stored name. All 109 prompt-hash pins are
+byte-identical, because the steer renders only in the read-back state. Suite:
+failing set identical to a same-day `406310a3` baseline, +133 passing.
+
+**Still unproven, and only a call can prove it:** this scores what the steer
+*instructs* against what was said. Whether the model obeys it is a live-call
+question.
