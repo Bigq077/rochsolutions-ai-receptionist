@@ -33,7 +33,7 @@ THE FIX
 
 Record `after_lead_time = len(slots)` immediately after the lead-time filter and
 before the other two, then split the branch: `lead_time_limited` only when the
-lead-time filter is what emptied the list, and a new `closed_that_day`
+lead-time filter is what emptied the list, and `closed_on_day` / `bank_holiday`
 otherwise. Theorem-only in practice — this function is the Acuity path, which
 Theorem short-circuits to — but the fix is in the shared classifier, not behind
 a clinic check.
@@ -138,7 +138,7 @@ async def test_a_day_outside_opening_hours_is_not_called_too_soon(
         "a two-hour lead-time problem — which also tells the model to re-call "
         "check_availability for an answer that cannot change"
     )
-    assert result.get("error") == "closed_that_day"
+    assert result.get("error") == "closed_on_day", result.get("error")
 
 
 async def test_the_detail_the_model_reads_does_not_claim_a_lead_time(
@@ -172,12 +172,17 @@ async def test_a_closed_weekday_is_reported_the_same_way(
     result = await rt._check_availability_acuity(
         {"location": LOCATION}, {"clinic_id": "theorem"}
     )
-    assert result.get("error") == "closed_that_day"
+    assert result.get("error") == "closed_on_day", result.get("error")
 
 
-async def test_a_bank_holiday_is_reported_the_same_way(monkeypatch):
+async def test_a_bank_holiday_is_named_as_a_bank_holiday(monkeypatch):
     """The third filter. Same misattribution, and the one that produced the
-    original bank-holiday report."""
+    original bank-holiday report.
+
+    Reported under its OWN code rather than the generic closure. "That's a
+    bank holiday" and "we're not open on Sundays" are different sentences to
+    a caller, and the model can only choose between them if the tool result
+    distinguishes them."""
     day = _a_weekday_well_past_the_lead_time_window()
     _install(monkeypatch, _slots_on(day, 10), OPEN_9_TO_5)
 
@@ -187,7 +192,8 @@ async def test_a_bank_holiday_is_reported_the_same_way(monkeypatch):
     result = await rt._check_availability_acuity(
         {"location": LOCATION}, {"clinic_id": "theorem"}
     )
-    assert result.get("error") == "closed_that_day"
+    assert result.get("error") == "bank_holiday", result.get("error")
+    assert "bank holiday" in (result.get("error_detail") or "").lower()
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +221,53 @@ async def test_a_real_lead_time_squeeze_still_says_so(
     )
     assert result.get("error") == "lead_time_limited"
     assert "too soon" in result.get("error_detail", "")
+
+
+async def test_a_closed_day_is_closed_even_when_lead_time_removed_more(
+    monkeypatch, _no_bank_holidays
+):
+    """The case that decides between the two P8 fixes written for this branch.
+
+    A caller rings on a day the clinic is SHUT and asks about today. Acuity
+    returns the day's slots; the two-hour lead-time filter takes most of them
+    because it is already late morning, and the working-hours filter takes the
+    rest because the clinic never opens that day.
+
+    Attributing the cause to whichever filter removed the MOST -- the shape of
+    the 2 Sep fix (4179e248) -- reports `lead_time_limited` here, because
+    lead time removed four and opening hours removed one. That is P8 exactly:
+    the wrong cause, the wrong sentence, and the retry instruction on a day
+    where the second Acuity round-trip cannot return anything different.
+
+    The count that settles it is `after_lead_time`: slots SURVIVED the
+    lead-time filter, so lead time is not what emptied the list, whatever the
+    totals say. Lead time is the cause only when nothing got past it.
+    """
+    now = dt.datetime.now(LONDON_TZ)
+    day = now.date()
+    within_2h = [
+        _Slot(now + dt.timedelta(minutes=m), now + dt.timedelta(minutes=m + 60))
+        for m in (20, 40, 60, 80)
+    ]
+    # One slot well outside the window, so the lead-time filter provably leaves
+    # something standing and only the closure filter can empty the list.
+    later = now + dt.timedelta(hours=6)
+    survives_lead_time = [_Slot(later, later + dt.timedelta(minutes=60))]
+
+    shut_today = dict(OPEN_9_TO_5)
+    shut_today[("mon", "tue", "wed", "thu", "fri", "sat", "sun")[day.weekday()]] = None
+    _install(monkeypatch, within_2h + survives_lead_time, shut_today)
+
+    result = await rt._check_availability_acuity(
+        {"location": LOCATION}, {"clinic_id": "theorem"}
+    )
+
+    assert result.get("error") != "lead_time_limited", (
+        "lead time removed the most, but a slot SURVIVED it and the clinic is "
+        "shut — reporting a lead-time squeeze here is P8, and it sends the "
+        "model back to Acuity for an answer that cannot change"
+    )
+    assert result.get("error") == "closed_on_day", result.get("error")
 
 
 async def test_no_slots_at_all_is_still_no_availability(

@@ -3115,6 +3115,10 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         #    Prevents offering a 8:30 slot when the caller rings at 8:21 and
         #    the conversation itself takes several minutes.
         raw_slot_count = len(slots)  # count BEFORE lead-time filter
+        # Per-filter removal counts. Initialised HERE, outside the `if slots:`
+        # guards below, because the "why is the list empty" branch reads all
+        # three and each filter only assigns its own when it actually runs.
+        removed_lt = removed_wh = removed_bh = 0
         if slots:
             now_london = datetime.now(LONDON_TZ)
             min_start  = now_london + timedelta(hours=2)
@@ -3139,7 +3143,9 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         clinic_cfg = get_clinic(session.get("clinic_id", "theorem")) or {}
         loc_wh = clinic_cfg.get("location_working_hours", {})
         if slots and loc_wh:
+            before_wh = len(slots)
             slots = _filter_slots_by_working_hours(slots, location, loc_wh)
+            removed_wh = before_wh - len(slots)
 
         # 3. Bank-holiday filter: remove slots on England/Wales bank holidays.
         #    Always applied — _fetch_uk_bank_holidays() always returns at least
@@ -3181,7 +3187,7 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                     ),
                     "slots": [],
                 }
-            if raw_slot_count > 0:
+            if raw_slot_count > 0 and (removed_wh or removed_bh):
                 # Acuity offered slots and the lead-time filter left some
                 # standing, so what emptied the list was the working-hours or
                 # bank-holiday filter: the clinic is CLOSED. Not booked up, and
@@ -3191,18 +3197,45 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                 # :3284) — on a closed day that second Acuity round-trip is
                 # guaranteed to return the same thing, so it buys nothing and
                 # the caller waits through it.
+                #
+                # WHICH closure is named separately, because "that's a bank
+                # holiday" and "we're not open on Sundays" are different
+                # sentences to a caller and only one of them is worth an
+                # apology. The tie goes to the bank holiday: it is the more
+                # specific claim, and a bank holiday that also falls outside
+                # opening hours is still best described as the bank holiday.
+                _code = "bank_holiday" if removed_bh >= removed_wh else "closed_on_day"
+                _breakdown = ", ".join(
+                    f"{_n} {_label}"
+                    for _label, _n in (
+                        ("too soon (within 2 hours)", removed_lt),
+                        (f"outside {location.title()}'s opening hours", removed_wh),
+                        ("on a bank holiday", removed_bh),
+                    )
+                    if _n
+                )
+                _advice = {
+                    "bank_holiday": (
+                        "It is a bank holiday and the clinic is closed. Offer the "
+                        "next working day."
+                    ),
+                    "closed_on_day": (
+                        f"{location.title()} is not open then. Tell the caller the "
+                        "clinic is closed that day and offer a day it IS open."
+                    ),
+                }[_code]
                 logger.warning(
                     "_check_availability_acuity: %d raw slot(s) for %s survived lead time (%d) but "
-                    "were removed by the working-hours/bank-holiday filters — the clinic is closed.",
+                    "were removed (lead-time %d, working-hours %d, bank-holiday %d) — reporting %r",
                     raw_slot_count, location, after_lead_time,
+                    removed_lt, removed_wh, removed_bh, _code,
                 )
                 return {
-                    "error": "closed_that_day",
+                    "error": _code,
                     "error_detail": (
-                        f"{location.title()} is closed — the times the calendar returned fall "
-                        "outside opening hours or on a bank holiday. This is NOT a shortage of "
-                        "notice and re-checking will return the same thing. Offer the next day "
-                        "the clinic is open, or take contact details."
+                        f"{raw_slot_count} slot(s) came back for {location.title()} but "
+                        f"none can be booked: {_breakdown}. This is NOT a shortage of "
+                        f"notice and re-checking will return the same thing. {_advice}"
                     ),
                     "slots": [],
                 }
