@@ -2935,33 +2935,37 @@ def accepted_slot_is_named_in(session: Dict[str, Any], text: str) -> bool:
         return False
 
     phrase = _time_norm(text)
-    if _time_named_in(phrase, label):
+
+    def _names(candidate: str) -> bool:
+        """Does the text name this label, with B-114's question asked?
+
+        A BARE NUMBER IS NOT A TIME. `_time_norm` folds a clock word to a
+        digit -- "three" -> "3" -- and every numbered read-out contains
+        "Number 3", so an unguarded match makes a three o'clock slot "named"
+        by any list with a third option.
+
+        Applied to BOTH candidates, not only the bare fallback. A clinic with
+        `speak_part_of_day: false` has labels that are ALREADY bare ("three",
+        not "three in the afternoon"), so for those the full label IS the bare
+        number and it reaches this by the first call, never the second.
+        Guarding only the fallback left exactly those clinics exposed -- and
+        they are the ones the wording change was made for.
+        """
+        if not candidate:
+            return False
+        if candidate in _BARE_HOUR_WORDS and not _bare_hour_word_is_a_clock_reference(
+            text, candidate
+        ):
+            return False
+        return _time_named_in(phrase, candidate)
+
+    if _names(label):
         return True
 
     bare = _strip_part_of_day(label)
     if not bare or bare == label:
         return False
-    # THE BARE LABEL OF AN O'CLOCK TIME IS JUST A NUMBER, and `_time_norm`
-    # folds it to a digit: "three in the afternoon" -> "three" -> "3". Every
-    # numbered read-out contains "Number 3", which normalises to "number 3",
-    # and `\b3\b` matched it. So accepting a 3 o'clock slot made this function
-    # true of ANY list with a third option -- the guard against a re-read was
-    # the thing causing one.
-    #
-    # B-114 settled this rule for the caller-facing resolver a fortnight ago
-    # ("a core that is a bare number word has to be USED as a time") and this
-    # function never adopted it. Same helper, so the two cannot drift.
-    #
-    # Tested on the RAW text, not the folded phrase, because the markers that
-    # make a number a time -- "at", "o'clock", a part of day -- are words. A
-    # confirmation written in digits ("at 3 in the afternoon") therefore fails
-    # this and the payload offer wins, which is today's behaviour and the safe
-    # direction.
-    if bare in _BARE_HOUR_WORDS and not _bare_hour_word_is_a_clock_reference(
-        text, bare
-    ):
-        return False
-    return _time_named_in(phrase, bare)
+    return _names(bare)
 
 
 # A sentence, and the contrast that starts a new one in the middle of it.

@@ -205,3 +205,54 @@ def test_a_re_read_of_the_SAME_day_is_still_not_a_confirmation():
 def test_a_stray_number_three_is_not_the_accepted_time(stray):
     """Any bare "3" in the sentence used to name a three o'clock slot."""
     assert accepted_slot_is_named_in(_session(), stray) is False, stray
+
+
+# ---------------------------------------------------------------------------
+# A clinic whose labels are ALREADY bare
+#
+# `speak_part_of_day: false` (northgate, 7 Sep) makes every o'clock label a
+# bare number: "three", not "three in the afternoon". For those clinics the
+# FULL label is the bare number, so it is matched by the first comparison and
+# never reaches the bare fallback.
+#
+# The first version of this fix guarded only the fallback, which left exactly
+# those clinics exposed -- and they are the ones the wording change was made
+# for. Caught by asking "is this bug on latency-eval too?", which it was, and
+# worse there.
+# ---------------------------------------------------------------------------
+
+def _bandless_session():
+    times = ["09:00", "10:00", "15:00"]
+    day = {
+        "date": _DAY, "day_label": "Wednesday 9th September",
+        "slot_times": list(times),
+        "slot_times_spoken": [_spoken_slot_time(t, False) for t in times],
+        "slots": [{"start": "%sT%s:00+01:00" % (_DAY, t), "date": _DAY,
+                   "day_label": "Wednesday 9th September", "time": t,
+                   "spoken": _spoken_slot_time(t, False)} for t in times],
+    }
+    return {ACCEPTED_SLOT_KEY: _ACCEPTED, "available_days": [day]}
+
+
+def test_the_bandless_label_is_the_bare_number_itself():
+    """The premise, asserted so the rest of this block cannot quietly stop
+    testing what it says it tests."""
+    slot = _bandless_session()["available_days"][0]["slots"][-1]
+    assert slot["spoken"] == "three", slot
+
+
+@pytest.mark.parametrize("text", [
+    "Wednesday 9th September — Number 3, four. Any of those work?",
+    "Number 1, nine. Number 2, ten. Number 3, four. Any of those work?",
+    "I've got 3 others that day.",
+])
+def test_a_bandless_clinic_is_guarded_on_the_full_label_too(text):
+    assert accepted_slot_is_named_in(_bandless_session(), text) is False, text
+
+
+def test_a_bandless_confirmation_still_stands_the_offer_down():
+    """The guard must not cost these clinics P6b. "at three" is a clock
+    reference; "Number 3" is not."""
+    assert accepted_slot_is_named_in(
+        _bandless_session(), "So that's Wednesday 9th September at three."
+    ) is True
