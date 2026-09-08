@@ -4767,6 +4767,57 @@ class LLMStream:
                 transfer_initiated = True
                 break
 
+            # ── Cover the no-availability round trip (LAT-3) ──────────────
+            # The happy path never reaches this: a check that RETURNED slots
+            # builds its offer deterministically and skips iteration 2
+            # entirely ("slot LLM call SKIPPED"). A zero-slot check
+            # deliberately falls through to Sonnet on the full prompt (see the
+            # re-arm above) — and that round trip has no cover. `with_filler`
+            # ends when the tool returns, and the situational head played
+            # before iteration 1.
+            #
+            # Measured on Theorem, build d4c9a850, 2026-09-08 10:24: the caller
+            # heard the head at :32.1, it finished at :34.5, and the next audio
+            # was "nothing free this Thursday I'm afraid" at :45.9 — 11.5 s of
+            # silence, against a 3 s bar. The C8-5 catch-all below guarantees
+            # the turn is not SILENT; nothing guaranteed it was not SLOW.
+            #
+            # Contentless wording on purpose. All that is known here is that
+            # the requested day was empty — not what Sonnet will offer instead
+            # — so the hold phrase must neither promise nor deny availability.
+            # THINKING_FILLERS_SECONDARY is reused rather than adding a list:
+            # it is already the >4 s escalation copy and already vetted against
+            # SILENCE_RULE, which the deterministic lists have broken twice.
+            if (
+                _ran_check_av
+                and not _last_check_avail
+                and tts_text_queue is not None
+            ):
+                from app.filler_phrases import (
+                    THINKING_FILLERS_SECONDARY,
+                    note_filler_played,
+                    pick_filler,
+                    should_play_filler,
+                )
+                if should_play_filler(session):
+                    _na_filler = pick_filler(
+                        THINKING_FILLERS_SECONDARY,
+                        session.setdefault("used_fillers", []),
+                    )
+                    logger.info(
+                        "[ms_llm] no-availability hold phrase: %r", _na_filler,
+                    )
+                    await tts_text_queue.put(ACK_FILLER_MARKER + _na_filler)
+                    # Same bookkeeping as every other producer: arms the
+                    # duplicate-opener stripper and the shared cooldown, so
+                    # Sonnet's reply does not restate the hold.
+                    note_filler_played(session, text=_na_filler)
+                else:
+                    logger.info(
+                        "[ms_llm] no-availability hold phrase suppressed — a "
+                        "filler is still in the caller's ear",
+                    )
+
         else:
             logger.warning("[ms_llm] hit MAX_TOOL_ITERATIONS")
             await tts_text_queue.put(SAFE_FALLBACK_PHRASE)
