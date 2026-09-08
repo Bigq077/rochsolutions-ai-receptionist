@@ -384,6 +384,7 @@ def offered_slot_labels(session: Any) -> set:
 
 from app.tools.slot_followup import (                     # noqa: E402
     ACCEPTED_SLOT_KEY as _ACCEPTED_SLOT_KEY,
+    _SOONEST_DAY_PREFERENCES,
     slot_accepted_by_caller as _slot_accepted_by_caller,
 )
 
@@ -12376,13 +12377,58 @@ class WebSocketCallHandler:
                             # rest of the call. Same defect as the band
                             # above, same turn, five lines apart; fixing one
                             # and shipping would leave the other live.
-                            if not self.session.get("day_preference") and not _reason_answer:
+                            # ...and a NAMED DAY supersedes a vague one.
+                            #
+                            # This capture was write-once, so the first
+                            # day-ish phrase of the call won for the rest of
+                            # it. CAffe1e087 (northgate, 8 Sep 2026): "uh what
+                            # have you got this week" banked `this week` at
+                            # 07:51:23; nine turns later the caller said
+                            # "an appointment on tuesday around 10 am" and the
+                            # readout still logged
+                            #
+                            #   caller asked for the soonest
+                            #   (day_preference='this week') -- reading this
+                            #   day from its earliest time (B-142)
+                            #
+                            # so `caller_wants_soonest` stayed true for the
+                            # whole call and every later readout led with the
+                            # earliest days rather than the day they asked for.
+                            # They got Tuesday at twenty to ten and ten past
+                            # five when they had asked for around ten.
+                            #
+                            # ONE DIRECTION ONLY, and the existing vocabulary
+                            # decides it: a concrete weekday replaces a stored
+                            # preference that means "soonest", and nothing
+                            # replaces a concrete day. Re-arming "soonest" from
+                            # a later vague phrase is the direction that makes
+                            # readouts lead with the earliest again, which is
+                            # the behaviour being corrected -- so it is refused.
+                            #
+                            # `_reason_answer` still gates the whole thing.
+                            # B-138 is five lines up and records what happens
+                            # without it: "i did my back in on saturday" banks
+                            # a saturday-only filter for the rest of the call.
+                            # Allowing a refresh widens that blast radius, so
+                            # the reason gate is what keeps this safe.
+                            if not _reason_answer:
                                 _day_pref = _extract_day_preference(utterance)
-                                if _day_pref:
+                                _prev_pref = str(
+                                    self.session.get("day_preference") or ""
+                                ).strip().lower()
+                                _supersedes = bool(_day_pref) and (
+                                    not _prev_pref
+                                    or (_prev_pref in _SOONEST_DAY_PREFERENCES
+                                        and _day_pref
+                                        not in _SOONEST_DAY_PREFERENCES)
+                                )
+                                if _supersedes:
                                     self.session["day_preference"] = _day_pref
                                     logger.info(
-                                        "[ms_conn v3] day_preference captured: %s"
+                                        "[ms_conn v3] day_preference %s: %s"
                                         " (from utterance %r)",
+                                        ("captured" if not _prev_pref
+                                         else "SUPERSEDED %r ->" % _prev_pref),
                                         _day_pref,
                                         utterance,
                                     )
