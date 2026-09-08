@@ -33,6 +33,8 @@ it.
 | 4 | **`197e0bae`** | **the actual root cause** — the guard that blocks a repeat `check_availability` was gated on a phrase list that misses every specific pick | all four clinics |
 | 5 | `7aa07f4a` | the model is now TOLD the caller has picked (both prompt builders), plus a dispatch-level backstop | all four clinics |
 | 6 | `49b72699` | "monday doesn't work" no longer resolves to a slot on Monday | all four clinics |
+| 7 | **`0f6dd055`** | **a garbled surname flipped Susie into cancelling a real booking** — found by the 07:52 demo call | all four clinics |
+| 8 | `f7e26b9`+ | the first day-ish phrase of the call no longer orders every later readout | all four clinics |
 
 All six come out of one call: `CA4215ab7f` (theorem_v3, 01:15, build
 `08e99fab`), the one reported as horrible behaviour.
@@ -121,7 +123,14 @@ Turn 3 exists to *create* the collision on purpose.
 | 3 | **pick the THIRD option by its time** — if she offers three, say e.g. "three works" or "four works", naming the time of option 3 | #1 and #2: the number of the option and the hour of the slot are the same digit |
 | 4 | **listen** | PASS = she confirms it. FAIL = she reads a new list of days |
 | 5 | *if* she does read a new list: **"the last one"** | #3: it must resolve to the last slot she just READ, not to the one you picked before |
-| 6 | give a name, confirm, book | nothing new, but it ends the call cleanly |
+| 6 | **give the name as "Quentin Roch"** and let STT mangle it | **`0f6dd055`** — a garbled surname must NOT start a cancellation |
+| 7 | confirm, book | ends the call cleanly |
+
+### The line that proves turn 6
+
+There must be **no** `situational head (cancel_req)` after the name question.
+If one appears, the gate did not arm — send me the `capture_phase` value from
+the `[LAT]` line for that turn, because that is what decides it.
 
 Turn 3 is the whole test and it needs the digits to line up: **option N whose
 time is N o'clock**. If the offer does not give you one, ask "anything in the
