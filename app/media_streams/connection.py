@@ -384,7 +384,7 @@ def offered_slot_labels(session: Any) -> set:
 
 from app.tools.slot_followup import (                     # noqa: E402
     ACCEPTED_SLOT_KEY as _ACCEPTED_SLOT_KEY,
-    _SOONEST_DAY_PREFERENCES,
+    day_preference_supersedes as _day_preference_supersedes,
     slot_accepted_by_caller as _slot_accepted_by_caller,
 )
 
@@ -12416,11 +12416,8 @@ class WebSocketCallHandler:
                                 _prev_pref = str(
                                     self.session.get("day_preference") or ""
                                 ).strip().lower()
-                                _supersedes = bool(_day_pref) and (
-                                    not _prev_pref
-                                    or (_prev_pref in _SOONEST_DAY_PREFERENCES
-                                        and _day_pref
-                                        not in _SOONEST_DAY_PREFERENCES)
+                                _supersedes = _day_preference_supersedes(
+                                    _prev_pref, _day_pref
                                 )
                                 if _supersedes:
                                     self.session["day_preference"] = _day_pref

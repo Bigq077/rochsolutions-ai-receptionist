@@ -60,17 +60,19 @@ from app.media_streams.connection import _extract_day_preference
 from app.tools.slot_followup import (
     _SOONEST_DAY_PREFERENCES,
     caller_wants_soonest,
+    day_preference_supersedes,
 )
 
 
 def _supersedes(prev, said):
-    """The rule as the source states it."""
-    new = _extract_day_preference(said)
-    prev = str(prev or "").strip().lower()
-    return bool(new) and (
-        not prev
-        or (prev in _SOONEST_DAY_PREFERENCES and new not in _SOONEST_DAY_PREFERENCES)
-    )
+    """The ENGINE's rule, not a copy of it.
+
+    The first version of this file reimplemented the comparison here. Neutering
+    the real one to `or True` left nineteen of these twenty green -- only the
+    source-inspection test noticed. So the rule was given one owner in
+    `slot_followup` and this calls it, which is the whole point of every
+    call-site test in this directory."""
+    return day_preference_supersedes(prev, _extract_day_preference(said))
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +165,8 @@ def test_the_capture_is_no_longer_write_once():
         not in body
 
 
-def test_the_rule_reads_the_shared_vocabulary():
-    """Stated in `_SOONEST_DAY_PREFERENCES`, not a second list. Two lists drift,
-    and `caller_wants_soonest` reads that one."""
-    assert "_SOONEST_DAY_PREFERENCES" in _capture_source()
+def test_the_capture_calls_the_shared_rule():
+    """Stated once, in `slot_followup`, beside `_SOONEST_DAY_PREFERENCES` and
+    `caller_wants_soonest` -- the two things it is expressed in. An inline copy
+    here is what let a neutered rule keep this file green."""
+    assert "day_preference_supersedes" in _capture_source()

@@ -3423,6 +3423,34 @@ _SOONEST_DAY_PREFERENCES: frozenset = frozenset({
 })
 
 
+def day_preference_supersedes(previous: Any, candidate: Any) -> bool:
+    """Should a newly heard day preference replace the stored one? PURE.
+
+    ONE DIRECTION: a concrete day replaces a preference that means "soonest";
+    nothing replaces a concrete day. Re-arming "soonest" from a later vague
+    phrase is what makes readouts lead with the earliest again, which is the
+    behaviour this exists to correct.
+
+    Lives here, next to `_SOONEST_DAY_PREFERENCES` and `caller_wants_soonest`,
+    because those two are what the rule is stated in -- and because the first
+    version of it lived inline in `connection.py` with the tests keeping their
+    own copy. That copy stayed green when the rule was neutered, which is the
+    failure mode this codebase keeps paying for: a test that exercises a
+    reimplementation cannot see the call site change.
+
+    Day-to-day changes deliberately return False. `caller_wants_soonest` is
+    false either way, so they reorder nothing; that is a different rule with a
+    different blast radius and it is not this one.
+    """
+    prev = str(previous or "").strip().lower()
+    new = str(candidate or "").strip().lower()
+    if not new:
+        return False
+    if not prev:
+        return True
+    return prev in _SOONEST_DAY_PREFERENCES and new not in _SOONEST_DAY_PREFERENCES
+
+
 def caller_wants_soonest(session: Dict[str, Any]) -> bool:
     """True when this caller has asked for the earliest appointment available.
 
