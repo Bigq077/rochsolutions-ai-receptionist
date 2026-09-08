@@ -1,8 +1,7 @@
 # Call sheet — 8 September 2026
 
 `production` = **`08e99fab`** (the revert target — write it down before any
-promotion). `latency-eval` = **`73a8c973`** on the remote; local `night-work` is
-two commits ahead and unpushed.
+promotion). `latency-eval` carries all six fixes below.
 
 Two calls. **Do them in this order** — the first one is the only one that
 touches a line real patients ring.
@@ -16,10 +15,22 @@ touches a line real patients ring.
 | 1 | `8b97f1e4` | Gate 5 stood down on a fresh three-day list because the caller's THREE o'clock folded to a bare `3` and matched `"Number 3"` | all four clinics |
 | 2 | `88e0df08` | the same bug through a second door — clinics with `speak_part_of_day: false`, i.e. **northgate**, where the o'clock label IS a bare number | northgate |
 | 3 | `4efbdc95` | the P6b stand-down never recorded the slots its sentence spoke, so the caller's next pick resolved against the previous offer | all four clinics |
+| 4 | **`197e0bae`** | **the actual root cause** — the guard that blocks a repeat `check_availability` was gated on a phrase list that misses every specific pick | all four clinics |
+| 5 | `7aa07f4a` | the model is now TOLD the caller has picked (both prompt builders), plus a dispatch-level backstop | all four clinics |
+| 6 | `49b72699` | "monday doesn't work" no longer resolves to a slot on Monday | all four clinics |
 
-All three come out of one call: `CA4215ab7f` (theorem_v3, 01:15, build
-`08e99fab`), the one reported as horrible behaviour. #1 and #3 are separate
-defects that happened to fire together, and **#3 survives #1** — see below.
+All six come out of one call: `CA4215ab7f` (theorem_v3, 01:15, build
+`08e99fab`), the one reported as horrible behaviour.
+
+> **#4 is the one that matters, and #1–#3 nearly weren't worth the trip.**
+> `calls.slot_offers` for that call holds two entries with an **identical**
+> twenty-day payload, and the deterministic offer Gate 5 would have spoken is
+> **91% token-identical** to what the caller actually heard. So #1–#3 only
+> change which *wording* of the wrong list gets spoken. The list existed because
+> the model called `check_availability` a second time after the pick had already
+> resolved, and the guard that exists to stop exactly that was wired to a reader
+> that misses every specific pick. Full write-up:
+> `docs/plan/RE_QUERY_AFTER_A_PICK_2026-09-08.md`.
 
 ---
 
@@ -38,6 +49,7 @@ no new code in the way names its own cause.
 | 3 | "What have you got?" | P8 + `uses_acuity` → `_check_availability_acuity` |
 | 4 | pick a slot **by its time**, e.g. "three in the afternoon works" | the defect above, on the clinic it happened to |
 | 5 | **listen** | see the pass/fail line below |
+| 5b | if she confirms, say **"actually, that doesn't work"** | `49b72699` — she must go and look again, NOT treat it as a pick |
 | 6 | "Quentin, surname R-O-C-H, Roch" | surname parse + read-back steer |
 | 7 | confirm the number, then **"Yes, book it"** | `_book_appointment_acuity` — a REAL write |
 | 8 | "Actually, can you cancel that?" | `_cancel_appointment_acuity` |
@@ -67,9 +79,16 @@ closed. Loud, by design.
 
 ## CALL B — the demo line  ·  +447366263180
 
-Push `night-work` to `latency-eval` first (it is the demo line and nothing
-else). This call proves all three fixes, and northgate is the **worst** case for
-#2, not the safest.
+The demo line, and nothing else, so it is safe to push to. This call proves all
+six.
+
+**One honest caveat on #2.** I described northgate as the *worst* case for it.
+That is a claim about the code — the guard genuinely had a hole there, proven by
+test — and **not** an observed risk: the stand-down defect fires zero times on
+northgate across 921 stored calls, and `speak_part_of_day: false` is barely a day
+old with one numbered readout since. Today's northgate offers were 08:50, 12:10,
+17:10 — no o'clock times, so the digit collision was arithmetically impossible.
+Turn 3 exists to *create* the collision on purpose.
 
 | turn | say | what it exercises |
 |---|---|---|
@@ -92,15 +111,24 @@ one/two/three o'clock.
 [ms_conn v3] caller ACCEPTED 2026-09-..T15:00:00+01:00 — pinned ... (P6b)
 ```
 
-and then **no** `[ms_gate5] deterministic offer STOOD DOWN` line naming P6b.
-If one appears anyway, the next line should now be
+and then, on the turn after the pick, **this line is the one that matters**:
 
 ```
-[ms_gate5] B-134 (P6b): the stood-down sentence named N payload slot(s) ...
+[ms_llm] check_availability BLOCKED - caller is accepting an already-offered slot
 ```
 
-which is fix #3 doing its job — the list is wrong but the caller's next pick
-still resolves.
+That is #4 working, and it is what stops the 16 seconds. If instead you see
+
+```
+[ms_tools] availability re-queried after the caller had already chosen ... - narrowed
+```
+
+the guard was bypassed and the backstop caught it — tell me, because it means
+the guard's outer conditions have a hole the corpus did not show.
+
+There should be **no** `deterministic offer STOOD DOWN ... (P6b)` line. If one
+appears anyway, the next line should now be `B-134 (P6b): the stood-down
+sentence named N payload slot(s)` — fix #3 doing its job.
 
 ---
 
