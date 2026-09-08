@@ -2899,7 +2899,12 @@ def accepted_slot_is_named_in(session: Dict[str, Any], text: str) -> bool:
 
     False here is the safe answer: the payload offer wins, exactly as today.
     """
-    iso = str((session or {}).get(ACCEPTED_SLOT_KEY) or "")[:19]
+    # `slot_accepted_by_caller` opens with the same check, for the same reason:
+    # a caller mid-booking must not lose their turn to a resolver. `(session or
+    # {})` covers None and the falsy shapes, not a truthy non-dict.
+    if not isinstance(session, dict):
+        return False
+    iso = str(session.get(ACCEPTED_SLOT_KEY) or "")[:19]
     if not iso or not isinstance(text, str) or not text.strip():
         return False
     label = next(
@@ -2912,11 +2917,51 @@ def accepted_slot_is_named_in(session: Dict[str, Any], text: str) -> bool:
     )
     if not label:
         return False
+
+    # A confirmation names the accepted slot's DAY, or names no day at all.
+    # Text that names only OTHER weekdays is a fresh list, whatever its times
+    # happen to be. Same helper and the same one-way rule as B-138.
+    #
+    # CA4215ab7f (theorem_v3, 8 Sep 2026 01:15) is why: the caller accepted
+    # Wednesday 9th at three in the afternoon, and this returned True for
+    #
+    #   "here's what we've got coming up -- Number 1, Friday 11th September --
+    #    nine in the morning or two in the afternoon. Number 2, Monday 14th ...
+    #    Number 3, Tuesday 15th September ..."
+    #
+    # Gate 5 stood down, spoke it, and the caller heard sixteen seconds of
+    # three days they had not asked for after picking one.
+    if _names_a_different_weekday(text, iso[:10]):
+        return False
+
     phrase = _time_norm(text)
     if _time_named_in(phrase, label):
         return True
+
     bare = _strip_part_of_day(label)
-    return bool(bare and bare != label and _time_named_in(phrase, bare))
+    if not bare or bare == label:
+        return False
+    # THE BARE LABEL OF AN O'CLOCK TIME IS JUST A NUMBER, and `_time_norm`
+    # folds it to a digit: "three in the afternoon" -> "three" -> "3". Every
+    # numbered read-out contains "Number 3", which normalises to "number 3",
+    # and `\b3\b` matched it. So accepting a 3 o'clock slot made this function
+    # true of ANY list with a third option -- the guard against a re-read was
+    # the thing causing one.
+    #
+    # B-114 settled this rule for the caller-facing resolver a fortnight ago
+    # ("a core that is a bare number word has to be USED as a time") and this
+    # function never adopted it. Same helper, so the two cannot drift.
+    #
+    # Tested on the RAW text, not the folded phrase, because the markers that
+    # make a number a time -- "at", "o'clock", a part of day -- are words. A
+    # confirmation written in digits ("at 3 in the afternoon") therefore fails
+    # this and the payload offer wins, which is today's behaviour and the safe
+    # direction.
+    if bare in _BARE_HOUR_WORDS and not _bare_hour_word_is_a_clock_reference(
+        text, bare
+    ):
+        return False
+    return _time_named_in(phrase, bare)
 
 
 # A sentence, and the contrast that starts a new one in the middle of it.
