@@ -8034,43 +8034,90 @@ _APOLOGY_OPENER_RE = re.compile(
 )
 
 
-def _echoes_head(chunk: str, head: str) -> bool:
-    """True when ``chunk`` says nothing the head has not already said. PURE.
+#: Where a clause can legitimately end. The echo must stop at one of these for
+#: the prefix strip below to be allowed to fire -- see `_head_echo_remainder`.
+_ECHO_BOUNDARY = ".!?,;:—–-…"
 
-    theorem_v3 CAd16d6e36, 8 Sep 2026, on the live line. The caller asked to
-    cancel:
 
-        16:58:46.65  head:  'No problem at all -'
-        16:58:51.24  model: 'no problem at all.'
+def _head_echo_remainder(chunk: str, head: str):
+    """What is left of ``chunk`` once it stops repeating ``head``. PURE.
 
-    Two dedupe paths already existed and neither could see it. `_APOLOGY_*`
-    covers the SYMPTOM head; `_strip_interim_opener` covers the lookup openers
-    it was built from. "No problem at all" is the CANCEL_REQ head and belongs to
-    neither, so `body` came back non-empty and the pure-duplicate branch below
-    was never reached.
+    Returns ``None`` when ``chunk`` does not open with a word-for-word echo of
+    the head, ``""`` when it is nothing BUT the echo, and the remainder
+    otherwise. Callers use the three cases to decide, in that order, to leave
+    the chunk alone / to suppress it / to speak only the part that is new.
 
-    Adding a third family regex would have fixed this call and left the next
-    one: `INTENT_HEADS` has 21 families and 46 wordings -- CANCEL_REQ,
-    TRANSFER_REQ ("Not a problem -"), SLOT_PICKED, RESCHEDULE_REQ, REPEAT_ASK
-    and the eight FAQ lead-ins among them -- and the model can echo any of
-    them. So the test is not which family the head belongs to but whether the
-    chunk carries anything new.
+    TWO live calls, both on the demo line, both a cancel:
 
-    Deliberately FULL equality, not a prefix strip. A chunk that merely OPENS
-    with the head still has a payload, and removing an opener from a sentence
-    that continues is a judgement about content -- which is what the two
-    family-specific strippers are for, each conditional on a head they
-    recognise. This only fires when there is provably nothing to lose.
+        CAd16d6e36, 8 Sep 16:58   head:  'No problem at all -'
+                                  model: 'no problem at all.'
+        CAce958696,  8 Sep 17:46  head:  'No problem at all -'
+                                  model: "no problem at all. I've got you on
+                                          oh seven five oh two..."
 
-    Compared on words alone: the head ends on a dash and the echo on a full
-    stop, and casing differs, so any comparison that keeps punctuation misses
-    the very case it is here for.
+    The first shipped as `66b8c209` on full equality alone, with a docstring
+    arguing that a prefix strip was a judgement about content best left to the
+    family-specific strippers. The second call, on that very build, is the
+    counter-example: same head, same echo, and the only difference is that the
+    chunker handed the echo and the payload over welded together instead of
+    600ms apart. Equality cannot see it. The caller heard the opener twice
+    again.
+
+    So the strip is allowed -- but ONLY WHERE THE ECHO ENDS A CLAUSE. That
+    condition is the whole safety of it, and it is what makes this a fact about
+    the text rather than a guess about meaning:
+
+        'no problem at all. I've got you on...'   -> '.' after the echo, STRIP
+        'As for parking spaces, we have six.'     -> 'spaces' follows, LEAVE
+
+    Without it, an FAQ head whose last word opens a noun phrase in the model's
+    sentence would be cut mid-phrase and the caller would hear "Spaces, we have
+    six." Sixteen of the 46 heads end on a word that can do that, so this is
+    not a hypothetical.
+
+    Matched on words alone: the head ends on a dash and the echo on a full
+    stop, and the casing differs, so any comparison that keeps punctuation
+    misses the very case this exists for.
     """
-    def _words(s: str) -> str:
-        return " ".join(re.sub(r"[^\w\s]", " ", s or "").casefold().split())
+    if not chunk or not (head or "").strip():
+        return None
 
-    a, b = _words(chunk), _words(head)
-    return bool(a) and a == b
+    head_words = re.findall(r"\w+", head.casefold())
+    if not head_words:
+        return None
+
+    seen = 0
+    pos = 0
+    for m in re.finditer(r"\w+", chunk):
+        if seen == 0 and chunk[:m.start()].strip(" 	"):
+            # Something other than whitespace before the first word -- the
+            # chunk does not OPEN with the echo.
+            return None
+        if m.group(0).casefold() != head_words[seen]:
+            return None
+        seen += 1
+        pos = m.end()
+        if seen == len(head_words):
+            break
+    if seen != len(head_words):
+        return None
+
+    tail = chunk[pos:]
+    stripped = tail.strip()
+    if not stripped:
+        return ""
+
+    # The echo must END A CLAUSE. A word continuing straight on means the head's
+    # last word was doing different work in this sentence.
+    if stripped[0] not in _ECHO_BOUNDARY:
+        return None
+
+    return stripped.lstrip(_ECHO_BOUNDARY + " 	").strip()
+
+
+def _echoes_head(chunk: str, head: str) -> bool:
+    """True when ``chunk`` says nothing the head has not already said. PURE."""
+    return _head_echo_remainder(chunk, head) == ""
 
 
 def join_after_head(
@@ -8107,14 +8154,26 @@ def join_after_head(
     if not head:
         return chunk
 
-    # Nothing new in this chunk at all -- see `_echoes_head`. Handled before the
-    # family branches because none of them needs to run: there is no payload to
-    # protect and no opener to strip, only a decision about whether the caller
-    # may end up with silence. That decision has exactly one owner
-    # (`suppress_pure_duplicate`), and answering it a second time here is how
-    # B-121 happened.
-    if _echoes_head(chunk, head):
-        return "" if suppress_pure_duplicate else chunk
+    # The chunk opens by repeating the head -- see `_head_echo_remainder`.
+    # Handled before the family branches because neither of them needs to run:
+    # this is not a paraphrase to recognise, it is the same words back.
+    #
+    # Two outcomes, and only the first is a question about the caller:
+    #
+    #   ""   the chunk was NOTHING BUT the echo, so the only thing left to
+    #        decide is whether this caller may end up with silence. That has
+    #        exactly one owner (`suppress_pure_duplicate`), and answering it a
+    #        second time here is how B-121 happened.
+    #
+    #   rest the echo ended a clause and real content followed it. Nothing is
+    #        at risk: the caller has already heard the words being removed,
+    #        and `_head_echo_remainder` only cuts at a clause boundary. The
+    #        remainder falls through to the seam logic below like any payload.
+    _rest = _head_echo_remainder(chunk, head)
+    if _rest is not None:
+        if not _rest:
+            return "" if suppress_pure_duplicate else chunk
+        chunk = _rest[0].upper() + _rest[1:]
 
     # A repeated APOLOGY. `_INTERIM_DUPE_RE` covers the lookup openers -- "Let
     # me see", "Let me check" -- because those were the 95 stored duplicates it
