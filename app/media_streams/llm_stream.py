@@ -8034,6 +8034,45 @@ _APOLOGY_OPENER_RE = re.compile(
 )
 
 
+def _echoes_head(chunk: str, head: str) -> bool:
+    """True when ``chunk`` says nothing the head has not already said. PURE.
+
+    theorem_v3 CAd16d6e36, 8 Sep 2026, on the live line. The caller asked to
+    cancel:
+
+        16:58:46.65  head:  'No problem at all -'
+        16:58:51.24  model: 'no problem at all.'
+
+    Two dedupe paths already existed and neither could see it. `_APOLOGY_*`
+    covers the SYMPTOM head; `_strip_interim_opener` covers the lookup openers
+    it was built from. "No problem at all" is the CANCEL_REQ head and belongs to
+    neither, so `body` came back non-empty and the pure-duplicate branch below
+    was never reached.
+
+    Adding a third family regex would have fixed this call and left the next
+    one: `INTENT_HEADS` has 21 families and 46 wordings -- CANCEL_REQ,
+    TRANSFER_REQ ("Not a problem -"), SLOT_PICKED, RESCHEDULE_REQ, REPEAT_ASK
+    and the eight FAQ lead-ins among them -- and the model can echo any of
+    them. So the test is not which family the head belongs to but whether the
+    chunk carries anything new.
+
+    Deliberately FULL equality, not a prefix strip. A chunk that merely OPENS
+    with the head still has a payload, and removing an opener from a sentence
+    that continues is a judgement about content -- which is what the two
+    family-specific strippers are for, each conditional on a head they
+    recognise. This only fires when there is provably nothing to lose.
+
+    Compared on words alone: the head ends on a dash and the echo on a full
+    stop, and casing differs, so any comparison that keeps punctuation misses
+    the very case it is here for.
+    """
+    def _words(s: str) -> str:
+        return " ".join(re.sub(r"[^\w\s]", " ", s or "").casefold().split())
+
+    a, b = _words(chunk), _words(head)
+    return bool(a) and a == b
+
+
 def join_after_head(
     chunk: str, head: str, *, suppress_pure_duplicate: bool = False
 ) -> str:
@@ -8067,6 +8106,15 @@ def join_after_head(
         return chunk
     if not head:
         return chunk
+
+    # Nothing new in this chunk at all -- see `_echoes_head`. Handled before the
+    # family branches because none of them needs to run: there is no payload to
+    # protect and no opener to strip, only a decision about whether the caller
+    # may end up with silence. That decision has exactly one owner
+    # (`suppress_pure_duplicate`), and answering it a second time here is how
+    # B-121 happened.
+    if _echoes_head(chunk, head):
+        return "" if suppress_pure_duplicate else chunk
 
     # A repeated APOLOGY. `_INTERIM_DUPE_RE` covers the lookup openers -- "Let
     # me see", "Let me check" -- because those were the 95 stored duplicates it
