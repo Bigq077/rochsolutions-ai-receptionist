@@ -142,13 +142,17 @@ def test_the_model_is_told_what_to_do_with_it():
     assert "three in the afternoon" in msg
 
 
-def test_the_session_copy_is_narrowed_too():
-    """`session['available_days']` is what the slot layer resolves picks
-    against. Leaving it wide would let the next turn resolve a day the caller
-    was never read."""
+def test_the_session_copy_is_deliberately_left_alone():
+    """Narrowed on the first attempt, and that was wrong. That copy OUTLIVES the
+    turn: B-118 records a later refusal handing it straight back to the model,
+    and `try_unspoken_followup_speech` answers "anything later?" out of it. A
+    turn-scoped judgement written there becomes permanent, and a caller who
+    afterwards asked for a different day could be told there is none.
+
+    The tool RESULT is what this turn hands the model, and it is enough."""
     session = _session()
     _run({"service": "x"}, session)
-    assert [d["date"] for d in session["available_days"]] == ["2026-09-09"]
+    assert len(session["available_days"]) == 4
 
 
 def test_the_times_on_the_chosen_day_all_survive():

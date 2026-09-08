@@ -6207,7 +6207,58 @@ class LLMStream:
                         # message told it to "present the existing slots" — so
                         # the caller heard the same offer again and had to accept
                         # twice (~24s when Spec I had also wiped the cache).
-                        if utterance_accepts_offered_slot(_user):
+                        # ...or the caller named a specific offered time.
+                        #
+                        # CA4215ab7f (theorem_v3, 8 Sep 2026). The caller said
+                        # "yeah three works" after a numbered readout. The
+                        # resolver got it exactly right -- `caller ACCEPTED
+                        # 2026-09-09T15:00:00+01:00` -- and this guard, which
+                        # exists to stop precisely this re-query, did not fire.
+                        # The model looked the diary up again and read out three
+                        # days the caller had not asked for. They hung up.
+                        #
+                        # The two readers are COMPLEMENTARY, and the guard was
+                        # wired to only one of them:
+                        #
+                        #   "that works for me"        accepts=True   resolves=None
+                        #   "yes please"               accepts=True   resolves=None
+                        #   "yeah three works"         accepts=False  resolves 15:00
+                        #   "ten in the morning works" accepts=False  resolves 10:00
+                        #   "the third one"            accepts=False  resolves 15:00
+                        #
+                        # `utterance_accepts_offered_slot` is a phrase list over
+                        # TEXT ALONE -- it takes no session, so it cannot know
+                        # that "three" was one of the times just offered. It
+                        # catches the VAGUE acceptances and misses every
+                        # specific one, which are exactly the ones where we know
+                        # which slot was meant.
+                        #
+                        # So the fix is not another phrase. Adding "three works"
+                        # to the list leaves "ten in the morning works" and the
+                        # next hundred wordings, which is the mistake this
+                        # codebase keeps recording -- "the matcher shape is the
+                        # bug", and the rule already stated two thousand lines
+                        # up: discriminate on DATA, not a phrase list.
+                        # `slot_accepted_by_caller` IS that data test: it
+                        # resolves only against times the caller was actually
+                        # read, and it declines requests and different-day
+                        # moves on its own ("three works but have you got
+                        # anything on friday" -> None).
+                        try:
+                            from app.tools.slot_followup import (
+                                slot_accepted_by_caller as _sabc,
+                            )
+                            _named_a_slot = bool(_sabc(session, _user))
+                        except Exception:
+                            # The guard must never cost a caller their turn.
+                            # Falling back to the phrase list is exactly
+                            # today's behaviour.
+                            logger.exception(
+                                "[ms_llm] accepted-slot resolve failed in the "
+                                "re-query guard - falling back to the phrase list"
+                            )
+                            _named_a_slot = False
+                        if utterance_accepts_offered_slot(_user) or _named_a_slot:
                             logger.warning(
                                 "[ms_llm] check_availability BLOCKED — caller is "
                                 "accepting an already-offered slot; do not re-list "

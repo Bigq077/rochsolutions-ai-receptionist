@@ -10460,7 +10460,13 @@ def _narrows_to_the_chosen_slot(fn):
                 "these times are included here, on the day they chose, in case "
                 "they ask what else is free that day."
             )
-            session["available_days"] = keep
+            # NOT session["available_days"]. That copy outlives the turn,
+            # and B-118 records what reads it: a later refusal hands it
+            # straight back to the model, and `try_unspoken_followup_speech`
+            # answers "anything later?" out of it. Narrowing it would make a
+            # turn-scoped judgement permanent, so a caller who later asked
+            # for another day could be told there is none. The tool RESULT
+            # is what this turn hands the model, and it is enough.
             logger.warning(
                 "[ms_tools] availability re-queried after the caller had "
                 "already chosen %s and with no new request (date_hint=%r) - "
