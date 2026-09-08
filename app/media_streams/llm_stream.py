@@ -3666,6 +3666,85 @@ class LLMStream:
             # rather than opening a list, and this is the stronger one: the
             # caller's acceptance resolved to a slot THIS TURN, and the model's
             # sentence names that slot. Both sides come from the payload.
+            # ── B-134, second door ──────────────────────────────────────
+            # Both stand-down branches speak the MODEL and suppress the
+            # deterministic offer, so both leave the record describing an offer
+            # the caller can no longer hear. Only P6 below was ever taught to
+            # repair that; P6b was not, and the omission reached a patient line.
+            #
+            # CA4215ab7f (theorem_v3, 8 Sep 2026, build 08e99fab). P6b stood
+            # down -- wrongly, which 8b97f1e4 fixes separately -- and the model
+            # spoke three days the caller had not asked for. All six times were
+            # genuine payload slots and not one was recorded. The caller then
+            # said "let me if the last one works for me", and "the last one"
+            # resolved against the PREVIOUS offer: the Wednesday slot they had
+            # already accepted, not the last of what had just been read out.
+            #
+            # It is not reachable only through that bug. A confirmation that
+            # also offers an alternative -- "that's Wednesday at three, or I've
+            # also got Friday at nine" -- names the accepted slot, so P6b fires
+            # CORRECTLY, and strands the alternative in exactly the same way.
+            # Fixing the stand-down does not close this; it is its own defect.
+            #
+            # The rule is the one B-134 settled: whatever sentence the caller
+            # actually hears, the record must describe it, or their next
+            # sentence resolves against something they were never read. The
+            # body below is B-134's, moved verbatim rather than rewritten, so
+            # that the branch it already protects cannot drift from the one it
+            # now also protects.
+            def _record_stood_down_slots(_text, _chunks, _why):
+                """Record payload slots the spoken sentence named that the
+                record does not already hold. Never raises -- the worst case is
+                the behaviour that shipped before it."""
+                try:
+                    from app.tools.slot_followup import payload_slots_named_in
+                    from app.tools.slot_offer import apply_offer_to_session
+                    _spoken_slots = payload_slots_named_in(session, _text)
+                    _already = {
+                        str((_s or {}).get("start") or "")[:19]
+                        for _s in (session.get("last_offered_slots") or [])
+                        if isinstance(_s, dict)
+                    }
+                    _fresh = [
+                        _s for _s in _spoken_slots
+                        if str(_s.get("start") or "")[:19] not in _already
+                    ]
+                    if not _fresh:
+                        return
+                    # An empty dtmf_map arms no keypad -- the model numbered
+                    # nothing there is to press -- and SUPERSEDES the stale day
+                    # map rather than clearing it: digits stop resolving, the
+                    # voice window stays open, and popping it would hand the
+                    # next turn permission to wipe `last_offered_slots`
+                    # (B-78/B-80). apply_offer_to_session's rule, not a new one.
+                    apply_offer_to_session(
+                        session,
+                        {
+                            "slots": _spoken_slots,
+                            "dtmf_map": {},
+                            "mode": "single_day",
+                        },
+                        _chunks,
+                    )
+                    logger.warning(
+                        "[ms_gate5] B-134 (%s): the stood-down sentence named "
+                        "%d payload slot(s) the record did not hold (%r) - "
+                        "recorded them, so the caller's pick can resolve and "
+                        "the read-back guard has something true to check "
+                        "against",
+                        _why, len(_fresh),
+                        [str(_s.get("start") or "")[:19] for _s in _fresh],
+                    )
+                except Exception:
+                    # A record that cannot be written must not stop the caller
+                    # hearing the sentence. The worst case is the behaviour
+                    # that shipped before this.
+                    logger.exception(
+                        "[ms_gate5] B-134 (%s): could not record the "
+                        "stood-down sentence's slots - speaking it regardless",
+                        _why,
+                    )
+
             from app.tools.slot_followup import accepted_slot_is_named_in
             _names_accepted = accepted_slot_is_named_in(session, _model_text)
             if _model_text and _names_accepted:
@@ -3676,6 +3755,7 @@ class LLMStream:
                     "model instead (P6b). model=%r",
                     _model_text[:120],
                 )
+                _record_stood_down_slots(_model_text, _stand_down, "P6b")
                 for _c in _stand_down:
                     await tts_queue.put(_c)
                     session["_slotbuf_emitted"] = True
@@ -3734,45 +3814,7 @@ class LLMStream:
                 # (B-78/B-80). That is apply_offer_to_session's own rule, not a
                 # new one, and it is P9's defect it prevents: pressing 2 for
                 # Tuesday after she has narrowed to Monday times.
-                try:
-                    from app.tools.slot_followup import payload_slots_named_in
-                    from app.tools.slot_offer import apply_offer_to_session
-                    _spoken_slots = payload_slots_named_in(session, _model_text)
-                    _already = {
-                        str((_s or {}).get("start") or "")[:19]
-                        for _s in (session.get("last_offered_slots") or [])
-                        if isinstance(_s, dict)
-                    }
-                    _fresh = [
-                        _s for _s in _spoken_slots
-                        if str(_s.get("start") or "")[:19] not in _already
-                    ]
-                    if _fresh:
-                        apply_offer_to_session(
-                            session,
-                            {
-                                "slots": _spoken_slots,
-                                "dtmf_map": {},
-                                "mode": "single_day",
-                            },
-                            _stand_down,
-                        )
-                        logger.warning(
-                            "[ms_gate5] B-134: the stood-down sentence named %d "
-                            "payload slot(s) the record did not hold (%r) - "
-                            "recorded them, so the caller's pick can resolve and "
-                            "the read-back guard has something true to check "
-                            "against",
-                            len(_fresh),
-                            [str(_s.get("start") or "")[:19] for _s in _fresh],
-                        )
-                except Exception:
-                    # A record that cannot be written must not stop the caller
-                    # hearing the sentence. The worst case is today's behaviour.
-                    logger.exception(
-                        "[ms_gate5] B-134: could not record the stood-down "
-                        "sentence's slots - speaking it regardless"
-                    )
+                _record_stood_down_slots(_model_text, _stand_down, "P6")
                 for _c in _stand_down:
                     await tts_queue.put(_c)
                     session["_slotbuf_emitted"] = True
