@@ -6531,6 +6531,36 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         _explicit_window = args.get("day_window")
         if _explicit_window and int(_explicit_window) <= _NARROW_WINDOW_MAX_DAYS:
             _requested_iso = after_date_str or w_start.date().isoformat()
+            # ── Closed, or fully booked? They are not the same sentence ──────
+            # `free_slots` is empty for two different reasons and the payload
+            # used to collapse both into `requested_day_empty`, so the only
+            # wording available to the model was "is fully booked, I'm afraid".
+            # Said of a day the clinic does not open, that is a false statement
+            # about the diary -- northgate CAf4e4a3a6, 8 Sep 2026, where the
+            # caller asked for Sunday the 13th.
+            #
+            # The distinction is still here and costs nothing to keep:
+            # generate_candidate_slots is given clinic_working_hours and
+            # closed_dates, so a day the clinic does not open produces NO
+            # candidates at all, while a day that is booked out produces
+            # candidates that filter_free_slots then removes.
+            #
+            # Counted on the requested DATE rather than on `candidates` being
+            # empty overall: a narrow window may span two or three days, and
+            # "every day in the window was shut" is a different claim from
+            # "the day they asked for was shut".
+            _requested_had_candidates = any(
+                _c[0].date().isoformat() == _requested_iso for _c in candidates
+            )
+            logger.info(
+                "_exec_check_availability (gcal): %s empty — %s (candidates=%d)",
+                _requested_iso,
+                "CLOSED, no candidate slots exist"
+                if not _requested_had_candidates
+                else "open but fully booked",
+                sum(1 for _c in candidates
+                    if _c[0].date().isoformat() == _requested_iso),
+            )
             _wide_end = w_start + timedelta(days=_WIDEN_WINDOW_DAYS)
             logger.info(
                 "_exec_check_availability (gcal): requested day %s empty — "
@@ -6595,6 +6625,10 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
                     # itself.  Empty when the caller gave a relative narrow
                     # window ("the next 2 days") rather than a named day.
                     "requested_day_empty": True,
+                    # True only when the clinic does not open that day. The
+                    # model needs both: `requested_day_empty` says "you cannot
+                    # have it", this says WHICH true sentence explains why.
+                    "requested_day_closed": not _requested_had_candidates,
                     "requested_date":      _requested_iso,
                     "requested_day_label": _spoken_day_label(_requested_iso) if after_date_str else "",
                     "note":                "requested_day_full_widened",

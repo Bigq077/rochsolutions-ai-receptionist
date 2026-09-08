@@ -245,7 +245,15 @@ UNCHANGED_CLINIC_PROMPTS = {
     # byte-identical: verified by hashing all of them either side, not
     # assumed. Recomputed with this file's own _sha, never copied between
     # tables. See tests/regression/test_jv_mirrors_the_demo_line_screening_posture.py.
-    "jv_v1": "ca827da1b92e6b67",
+    # Re-pinned 2026-09-08, ca827da1b92e6b67 -> c787bfeb7ba73f57. The template's REQUESTED DAY
+    # FULL rule now branches on `requested_day_closed`: a day the clinic
+    # does not open must be called CLOSED, not "fully booked", which is a
+    # false claim about the diary (northgate CAf4e4a3a6, the caller asked
+    # for Sunday the 13th). Moves every template_v1 clinic and nothing
+    # else -- demo, theorem and theorem_v3 are byte-identical across it,
+    # which is the property this table exists to prove. Recomputed with
+    # this file's own _sha, never copied between tables.
+    "jv_v1": "c787bfeb7ba73f57",
     "theorem": "8565be9a48a7a9aa",
     # Re-pinned 2026-08-25: 'Children under fifteen not seen' -> 'Children
     # under seven not seen'. Mark's minimum age is 7 (owner-confirmed

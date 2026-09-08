@@ -7194,8 +7194,74 @@ class LLMStream:
                     )
                 if _offer is not None:
                     # A plain dict: the session is serialised to Redis.
+                    # ── Say the day they actually asked for ──────────────────
+                    # northgate CAf4e4a3a6, 8 Sep 2026. The caller asked "have
+                    # you got anything on Sunday the 13th"; Sunday was empty, so
+                    # the tool widened and returned Mon/Tue/Wed. Susie said
+                    # "Here's what we've got coming up — Number 1, Monday 14th
+                    # September…" and never mentioned Sunday at all. The caller
+                    # asked a direct question and was never told no.
+                    #
+                    # The payload was not at fault: it carries
+                    # `requested_day_empty` and a pre-rendered
+                    # `requested_day_label`. Nor was the model: the system
+                    # prompt has a rule headed "REQUESTED DAY FULL (check this
+                    # before anything else)" telling it to open with the miss.
+                    # The rule was unreachable. `requested_day_empty` is read in
+                    # exactly two places in the codebase and both are prompt
+                    # files, while on this path the deterministic offer replaces
+                    # the model's words outright ("the model's 0 buffered
+                    # chunk(s) are discarded") and the second LLM call is
+                    # skipped. The one instruction that had to survive was the
+                    # one nothing downstream could speak.
+                    #
+                    # So it is said HERE, where both modes converge, rather than
+                    # inside build_slot_offer: `lead_in` there is a selector
+                    # ("earliest" / "also" / ""), not free text, and multi_day
+                    # deliberately has no lead-in at all (B-125) — there is
+                    # nowhere in that sentence for a different day to go.
+                    #
+                    # Speech only. It is prepended to `chunks` and never touches
+                    # `slots` or `dtmf_map`, because the day being named is the
+                    # one day that is NOT bookable — the same rule that keeps
+                    # `other_dates` out of the record (B-108b).
+                    _miss_chunk = ""
+                    if isinstance(result, dict) and result.get("requested_day_empty"):
+                        _miss_label = (result.get("requested_day_label") or "").strip()
+                        if _miss_label:
+                            # CLOSED and FULL are different facts and only one
+                            # of them is true. Telling a caller that a day the
+                            # clinic does not open is "fully booked" is a false
+                            # statement about the diary, and it is the sentence
+                            # the prompt would have produced.
+                            if result.get("requested_day_closed"):
+                                _miss_chunk = (
+                                    f"We're closed on {_miss_label}, I'm afraid."
+                                )
+                            else:
+                                _miss_chunk = (
+                                    f"{_miss_label} is fully booked, I'm afraid."
+                                )
+                        else:
+                            # No named day — the caller gave a relative window
+                            # ("the next couple of days"). Nothing to name, so
+                            # claim nothing about a specific date.
+                            _miss_chunk = (
+                                "I haven't got anything in that window, "
+                                "I'm afraid."
+                            )
+                        logger.info(
+                            "[ms_gate5] requested day missed (%s) — leading with "
+                            "%r",
+                            "closed" if result.get("requested_day_closed")
+                            else "fully booked",
+                            _miss_chunk,
+                        )
                     session["_slot_offer_prebuilt"] = {
-                        "chunks": list(_offer.chunks),
+                        "chunks": (
+                            ([_miss_chunk] if _miss_chunk else [])
+                            + list(_offer.chunks)
+                        ),
                         "slots": [
                             {
                                 "start": s.get("start"),
