@@ -1646,6 +1646,32 @@ def _loc_rung2_confirm(clinic_disp: str = "Awlstuh") -> str:
 # Convenience alias for the Awlstuh-constant sites (watchdog / silence / seeds).
 _LOC_RUNG2_CONFIRM: str = _loc_rung2_confirm("Awlstuh")
 
+# Every form the two-choice clinic question can take IN SUSIE'S OWN SPEECH.
+# Three separate guards ask "did the reply already ask this?" and each had its
+# own copy; one copy went stale and the caller heard the question twice.
+#
+# theorem_v3 CAd16d6e36, 8 Sep 2026:
+#     16:58:51.359  "Was the appointment you'd like to cancel at our Awlstuh
+#                    or Redditch clinic?"      <- the model's own question
+#     16:58:51.726  "Was your original appointment at our Awlstuh or Redditch
+#                    clinic?"                  <- injected on top of it
+#
+# The injector HAS a guard for this. It matched "alcester or redditch" — the
+# SPELLING — while the prompt teaches the model the pronunciation and says
+# "Awlstuh" 59 times, so the model never writes the string the guard looks for
+# and the guard could not fire on this clinic at all. Two of the three copies
+# had already been given "awlstuh or redditch"; the third had not.
+#
+# One tuple, so a form added for one guard is added for all of them. Sites keep
+# their own extra phrasings by concatenating.
+_CLINIC_Q_SIGNALS: tuple = (
+    "which clinic",
+    "which location",
+    "awlstuh or redditch",
+    "alcester or redditch",
+    "alcester or reditch",
+)
+
 _LOC_RUNG3_DTMF: str = (
     "No problem at all — on your keypad, just press 1 for Awlstuh, "
     "or 2 for Redditch."
@@ -13393,12 +13419,7 @@ class WebSocketCallHandler:
                                 )
                                 _prev_was_loc_q = any(
                                     kw in _last_prompt_lower
-                                    for kw in (
-                                        "which clinic",
-                                        "which location",
-                                        "awlstuh or redditch",
-                                        "alcester or redditch",
-                                        "alcester or reditch",
+                                    for kw in _CLINIC_Q_SIGNALS + (
                                         "did you mean awlstuh",
                                         "did you mean alcester",
                                         "did you mean redditch",
@@ -14321,10 +14342,7 @@ class WebSocketCallHandler:
                                         # question.
                                         _llm_asked_loc = any(
                                             kw in _last_bot.lower()
-                                            for kw in (
-                                                "which clinic",
-                                                "alcester or redditch",
-                                                "alcester or reditch",
+                                            for kw in _CLINIC_Q_SIGNALS + (
                                                 "original appointment at",
                                             )
                                         )
@@ -14418,13 +14436,7 @@ class WebSocketCallHandler:
                         # clinic question IS on the table, the system must be
                         # listening for the answer.  Failing the other way deletes
                         # the answer, which is the outcome above.
-                        _clinic_question_signals = (
-                            "which clinic",
-                            "awlstuh or redditch",
-                            "alcester or redditch",
-                            "alcester or reditch",
-                            "which location",
-                        )
+                        _clinic_question_signals = _CLINIC_Q_SIGNALS
                         if (
                             not self.session.get("v3_location_q_active")
                             and not self.session.get("v3_location_confirmed")

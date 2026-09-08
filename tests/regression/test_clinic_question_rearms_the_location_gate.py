@@ -42,15 +42,16 @@ def _arm_block() -> str:
 
 
 def _signals() -> tuple:
-    """The clinic-question signals as the code actually holds them."""
-    block = _arm_block()
-    start = block.index("_clinic_question_signals = (")
-    end = block.index(")", start)
-    return tuple(
-        line.strip().strip(',').strip('"')
-        for line in block[start:end].splitlines()[1:]
-        if line.strip().startswith('"')
-    )
+    """The clinic-question signals as the code actually holds them.
+
+    Read from the module rather than scraped out of the arm block. The block
+    used to declare its own literal tuple; on 2026-09-08 the three guards that
+    each kept a private copy were given one shared `_CLINIC_Q_SIGNALS` after a
+    stale copy let the caller hear the clinic question twice
+    (theorem_v3 CAd16d6e36). Scraping the old literal would now read an empty
+    list and pass this file vacuously, which is worse than failing.
+    """
+    return tuple(c._CLINIC_Q_SIGNALS)
 
 
 # ── the precondition that caused it ────────────────────────────────────────
