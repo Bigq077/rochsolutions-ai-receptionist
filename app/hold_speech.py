@@ -668,6 +668,15 @@ _SERVICE_REQUEST = _rx(
 )
 
 
+#: Intents that change the SUBJECT of the call rather than answer the question
+#: on the table. Each one makes Susie acknowledge a request to do something
+#: other than what she just asked about, so each is wrong by construction while
+#: she is capturing a name.
+_TOPIC_SWITCH_INTENTS = frozenset({
+    Intent.CANCEL_REQ, Intent.RESCHEDULE_REQ, Intent.TRANSFER_REQ,
+})
+
+
 def classify_intent(
     text,
     prev_assistant="",
@@ -676,6 +685,7 @@ def classify_intent(
     slot_selection=False,
     service_named=False,
     offer_refused=False,
+    name_pending=False,
 ):
     """Every intent this utterance corroborates, most specific first. PURE.
 
@@ -781,6 +791,41 @@ def classify_intent(
         if blocker is not None and blocker.search(utterance):
             continue
         if answering and intent in _DIARY_INTENTS:
+            continue
+        # A name is not an intent.
+        #
+        # CAffe1e087 (northgate, 8 Sep 2026, build 4d68f3d8). Susie asked "could
+        # I take your first name and surname?", the caller answered, and STT
+        # split it. A short fragment arrived -- 'canceling it' -- and the engine
+        # KEPT it on purpose:
+        #
+        #   [ms_conn] same-breath straggler KEPT (name collection, short
+        #             fragment - likely surname): 'canceling it'
+        #
+        # ...and then this table read the same fragment as a request: the
+        # CANCEL_REQ trigger `\bcancel\w*\b` with `it` as its corroborator.
+        # Susie said "Yes, no problem -", acknowledging a cancellation nobody
+        # had asked for. That went into history, the model committed, looked the
+        # number up, found a REAL earlier booking and offered to cancel it. The
+        # booking under way was never made and the caller hung up.
+        #
+        # Two rules, each right on its own, that disagree about what the
+        # fragment IS: one says surname candidate, the other says intent. The
+        # straggler rule is the load-bearing one -- it exists so a surname is
+        # not dropped -- so this is the side that yields.
+        #
+        # Narrow deliberately. It suppresses the HEAD, not the model: a caller
+        # who genuinely wants to cancel mid-name is still heard, they just do
+        # not get the acknowledgement before anything has decided. And it is
+        # only the topic-switch family -- SYMPTOM, SLOT_PICKED and the FAQ
+        # intents stay live, because none of them changes what Susie is doing.
+        #
+        # Self-inflicted, and datable: 790f4604 (29 Aug) let the caller's raw
+        # text choose the head at all. Before it the head came from the tool
+        # being invoked, so a cancellation could not be announced before
+        # something had decided to cancel. Zero prior instances in 921 stored
+        # calls -- every name-ask turn in the corpus was checked.
+        if name_pending and intent in _TOPIC_SWITCH_INTENTS:
             continue
         hits.append(intent)
     if (

@@ -5068,6 +5068,17 @@ class LLMStream:
                     _hs_service = bool(_names_service(_hs_utterance or ""))
                 except Exception:  # pragma: no cover - defensive
                     _hs_service = False
+                # Which question is on the table. One owner, and never a
+                # raise: an unreadable phase must not cost the caller a
+                # head, so it falls back to "not capturing a name",
+                # which is exactly the behaviour before this guard.
+                try:
+                    from app.media_streams.latency_timing import (
+                        capture_phase as _hs_capture_phase,
+                    )
+                    _hs_name_pending = _hs_capture_phase(session) == "name"
+                except Exception:  # pragma: no cover - defensive
+                    _hs_name_pending = False
                 _hs_hits = _classify_intent(
                     _hs_utterance,
                     _last_assistant_text(session),
@@ -5075,6 +5086,12 @@ class LLMStream:
                     slot_selection=_hs_picking,
                     service_named=_hs_service,
                     offer_refused=_hs_refused,
+                    # `capture_phase` is the one owner of "what is Susie
+                    # asking for right now", and B-15 already hardened it
+                    # against the sticky-flag staleness that would make
+                    # this suppress heads for the rest of a call: a live
+                    # prompt about anything else ends name capture.
+                    name_pending=_hs_name_pending,
                 )
                 if _hs_hits:
                     _hs_intent = _hs_hits[0]
