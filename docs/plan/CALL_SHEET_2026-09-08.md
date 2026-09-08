@@ -3,8 +3,23 @@
 `production` = **`08e99fab`** (the revert target — write it down before any
 promotion). `latency-eval` carries all six fixes below.
 
-Two calls. **Do them in this order** — the first one is the only one that
-touches a line real patients ring.
+**ONE call, after promoting.** An earlier version of this sheet asked for a
+call against production *before* promoting, to "separate the existing work from
+the routing change". That was wrong and it is worth saying why, because the
+reasoning looked sound:
+
+* it would have **reproduced a defect we already hold a complete obs record
+  of** (`CA4215ab7f`, transcript + `slot_offers` + latency) — no new information,
+  at the cost of a real Acuity write, a cancel, and your Twilio spend;
+* `uses_acuity` (Phase A) **is not on production**, so the two turns annotated
+  as exercising it could not have done. The sheet contradicted its own table;
+* what remained testable there — P8 and the read-back steer — are both already
+  on production, and the steer was exercised on four northgate calls on 7 Sep.
+
+The thing with no evidence behind it is the **fix**. So: promote, then call.
+That is also the workflow CLAUDE.md sets out — out of hours, revert target
+written down, a real call after any engine change — and calling first inverted
+it.
 
 ---
 
@@ -34,20 +49,27 @@ All six come out of one call: `CA4215ab7f` (theorem_v3, 01:15, build
 
 ---
 
-## CALL A — Theorem, on production as it stands  ·  +447380841468
+## STEP 1 — promote
 
-**Do not promote first.** This call is worth more against `08e99fab` than
-against anything newer, because three changes already live on that branch have
-never been exercised on Theorem's Acuity path: P8 (closed day vs lead time), the
-read-back name steer, and Phase A's `uses_acuity` routing. A failure here with
-no new code in the way names its own cause.
+`latency-eval` (`f0dcea98`) → `production`, fast-forward, **out of hours**.
+
+> **Revert target: `08e99fab`.** Write it down before you push —
+> [[build-sha-only-in-render-log]] means the only proof of what is running is
+> `[build_info] running build <sha>` in the Render log.
+
+## STEP 2 — the call · Theorem · +447380841468
+
+Theorem's Acuity path has had no live call since 2 September and now carries
+five unverified changes: P8, the read-back steer, Phase A's `uses_acuity`
+routing, the Gate 5 repairs, and the re-query guard. This one call reaches all
+of them, which the pre-promotion version could not.
 
 | turn | say | what it exercises |
 |---|---|---|
 | 1 | "Hi, I'd like to book an appointment." | `_build_theorem_v3` |
 | 2 | **"Alcester"** | the location ladder — Theorem only |
 | 3 | "What have you got?" | P8 + `uses_acuity` → `_check_availability_acuity` |
-| 4 | pick a slot **by its time**, e.g. "three in the afternoon works" | the defect above, on the clinic it happened to |
+| 4 | pick a slot **by its time**, e.g. "three in the afternoon works" | **the fix**, on the clinic and the phrasing it failed on |
 | 5 | **listen** | see the pass/fail line below |
 | 5b | if she confirms, say **"actually, that doesn't work"** | `49b72699` — she must go and look again, NOT treat it as a pick |
 | 6 | "Quentin, surname R-O-C-H, Roch" | surname parse + read-back steer |
@@ -60,16 +82,18 @@ being verified.
 ### The pass/fail line, turn 5
 
 * **PASS** — she confirms the slot you named and asks for your name.
-* **FAIL** — she reads out a list of *other days*. That is the live defect,
-  reproduced. Say so and stop; it is fixed on `latency-eval` and Call B proves
-  the fix.
+* **FAIL** — she reads out a list of *other days*. The fix did not hold; revert
+  to `08e99fab` and tell me, with the Render log for that turn.
 
 ### Then, in the Render log for the Theorem service
 
 ```
-[build_info] running build 08e99fab
+[build_info] running build f0dcea98
+[ms_llm] check_availability BLOCKED - caller is accepting an already-offered slot
 Row built — ... name=Quentin Roch            <- not "Quentin R-O-C-H"
 ```
+
+That middle line is the whole point of the call.
 
 and on turn 7, that it reached the **Acuity** executor. If `uses_acuity` were
 wrong the symptom is a refusal, not a wrong write — both guard families fail
@@ -77,7 +101,7 @@ closed. Loud, by design.
 
 ---
 
-## CALL B — the demo line  ·  +447366263180
+## STEP 3 (optional) — the demo line  ·  +447366263180
 
 The demo line, and nothing else, so it is safe to push to. This call proves all
 six.
@@ -146,12 +170,19 @@ recording work; the shape above is the reason it has to.
 
 ---
 
-## After both calls
+## If the call fails
 
-If Call A passes and Call B passes, promote `latency-eval` → `production` by
-fast-forward, out of hours, with `08e99fab` written down as the revert target.
-Then re-run **turns 3, 7 and 8 of Call A** against the new build — those are the
-three that go through `uses_acuity`.
+Revert `production` to **`08e99fab`** and send me the Render log for the turn
+after the pick. The two lines that name the cause are
 
-If Call A fails at turn 5, promote anyway (the fix is what it needs) but re-run
-Call A in full afterwards rather than the three-turn subset.
+```
+[ms_llm] check_availability BLOCKED ...        <- the guard fired
+[ms_tools] availability re-queried ... narrowed <- the guard was bypassed, backstop caught it
+```
+
+Neither appearing means the pick never resolved at all, which is a different
+defect and a different fix.
+
+Step 3 is only worth doing if you want the band-less door (#2) exercised
+deliberately — northgate's diary has to hand you an option number matching its
+own hour, which it did not on 7 September.
