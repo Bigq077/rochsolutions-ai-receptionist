@@ -2409,6 +2409,41 @@ _NEGATED_POSITION_RE = re.compile(
     r"\b(first|second|third|fourth|fifth|sixth|last|one|two|three|four|five)\b",
     re.I)
 
+# A caller REJECTING what they were offered, while naming part of it.
+#
+# `_NEGATED_POSITION_RE` above already claims this ground -- the docstring below
+# says "a REJECTION is a negator sitting in front of the position" -- but it
+# only covers POSITIONS. A negated DAY or time walks straight through it:
+#
+#   "no saturday is not soon enough i need to be seen as soon as possible"
+#   "uh yeah monday doesn't work"
+#   "no no saturday doesn't work i need one now"
+#
+# All three resolved to a slot, because naming a day IS a selection on a
+# multi-day offer and nothing was asking whether the caller had said no to it.
+# Five such turns in the stored corpus, all northgate, all unambiguous.
+#
+# Found by MEASURING a fix rather than by a phone call: widening the re-query
+# guard to consult this resolver newly blocked 307 turns across 921 calls, and
+# reading all of them is what turned up the five. A resolver feeding a BLOCKING
+# guard has to be right about rejection, because refusing the lookup for a
+# caller who has just said "that doesn't work" is worse than the defect being
+# fixed.
+#
+# Deliberately narrow, and deliberately biased. A leading "no" is a rejection
+# only when it is not "no problem" / "no worries" / "no rush" -- those are
+# agreement. Everything else here needs an explicit negation attached to
+# WORKING or to being soon enough. A miss costs the old behaviour; a false
+# positive costs a caller their pick, so the doubt goes to not-a-rejection.
+_REJECTS_THE_OFFER_RE = re.compile(
+    r"^\s*(?:uh|um|er|ah|oh|well|yeah|yes|ok|okay)?[\s,]*"
+    r"(?:no|nope|nah)\b(?!\s+(?:problem|worries|rush|bother|trouble))"
+    r"|\bnot\s+\w*\s*enough\b"
+    r"|\b(?:does|do|wo|will)\s?n['\u2019]?o?t\s+(?:really\s+)?work\b"
+    r"|\bno\s+good\b",
+    re.I)
+
+
 
 # A caller who did not HEAR is asking for the readout again, not choosing from
 # it. Found by the replay harness once P12 let a position settle a single-day
@@ -2466,6 +2501,7 @@ def utterance_is_a_request_not_a_pick(text: str) -> bool:
         return False
     return bool(_REQUEST_FOR_SLOTS_RE.search(t)
                 or _NEGATED_POSITION_RE.search(t)
+                or _REJECTS_THE_OFFER_RE.search(t)
                 or _DID_NOT_HEAR_RE.search(t))
     if _REQUEST_FOR_SLOTS_RE.search(t) or _NEGATED_POSITION_RE.search(t):
         return True
