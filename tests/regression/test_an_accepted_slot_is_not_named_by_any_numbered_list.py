@@ -167,3 +167,41 @@ def test_a_bare_hour_used_as_a_time_still_confirms():
 def test_it_never_raises(junk):
     assert accepted_slot_is_named_in(_session(), junk) is False
     assert accepted_slot_is_named_in(junk, "anything") is False
+
+
+# ---------------------------------------------------------------------------
+# The bare-hour guard on its own
+#
+# The two guards must each earn their place. Everything above names OTHER
+# weekdays, so `_names_a_different_weekday` alone refuses it and the bare-hour
+# rule is never reached — neutering the bare-hour guard left all of it green,
+# which is the B-134 failure ("tests that stayed green when the fix was
+# neutered, because they exercised the helper and not the call site").
+#
+# These name NO other weekday, so only the bare-hour rule can refuse them.
+# ---------------------------------------------------------------------------
+
+def test_an_option_number_alone_is_not_the_accepted_time():
+    """No weekday anywhere, so the B-138 guard cannot help. The accepted slot
+    is THREE o'clock and the text's only "3" is an option number."""
+    text = ("Number 1, nine in the morning. Number 2, ten in the morning. "
+            "Number 3, four in the afternoon. Any of those work?")
+    assert accepted_slot_is_named_in(_session(), text) is False, text
+
+
+def test_a_re_read_of_the_SAME_day_is_still_not_a_confirmation():
+    """The most dangerous shape: the right weekday, so B-138 passes it through,
+    and a third option whose number folds onto the accepted hour."""
+    text = ("Wednesday 9th September — Number 3, four in the afternoon. "
+            "Any of those work?")
+    assert accepted_slot_is_named_in(_session(), text) is False, text
+
+
+@pytest.mark.parametrize("stray", [
+    "I've got 3 others that day.",
+    "There are 3 times left.",
+    "That's 3 appointments this week.",
+])
+def test_a_stray_number_three_is_not_the_accepted_time(stray):
+    """Any bare "3" in the sentence used to name a three o'clock slot."""
+    assert accepted_slot_is_named_in(_session(), stray) is False, stray
