@@ -4125,6 +4125,17 @@ def _build_theorem_v3(session: dict) -> str:
             f"CTA COUNT: {_cta_count} — booking has been offered "
             f"twice already; do NOT add another booking CTA"
         )
+    # The caller's pick reaches the MODEL here, and nowhere else. One owner in
+    # `slot_followup` because theorem_v3 renders from a different builder and a
+    # rule written in one is absent from the other.
+    try:
+        from app.tools.slot_followup import chosen_slot_steer
+        _slot_steer = chosen_slot_steer(session)
+    except Exception:
+        _slot_steer = ""
+    if _slot_steer:
+        state.append(_slot_steer)
+
     # NAME ON RECORD. One owner in `name_capture`, because template_v1 renders
     # the same rule from a different builder and two copies of it would be two
     # answers to "which name does the read-back use". `name=` above is a passive

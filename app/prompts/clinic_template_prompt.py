@@ -3501,6 +3501,17 @@ def _b7_call_state(session: Dict[str, Any], clinic: Dict[str, Any], tk: Dict[str
             "otherwise continue from the step you are on."
         )
 
+    # The caller's pick reaches the MODEL here, and nowhere else. One owner in
+    # `slot_followup` because theorem_v3 renders from a different builder and a
+    # rule written in one is absent from the other.
+    try:
+        from app.tools.slot_followup import chosen_slot_steer
+        _slot_steer = chosen_slot_steer(session)
+    except Exception:
+        _slot_steer = ""
+    if _slot_steer:
+        state.append(_slot_steer)
+
     # NAME ON RECORD. One owner in `name_capture` because theorem_v3 renders
     # from a different builder and needs the same rule -- two copies of it
     # would be two answers to "which name does the read-back use".

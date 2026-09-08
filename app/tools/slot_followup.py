@@ -2010,6 +2010,64 @@ _BAND_WORDS = ("morning", "afternoon", "evening")
 ACCEPTED_SLOT_KEY = "_accepted_slot_iso"
 
 
+def chosen_slot_steer(session: "Dict[str, Any] | None") -> str:
+    """The CALL STATE line telling the model the caller has just picked. PURE.
+
+    The engine resolves a caller's pick to an exact slot, logs
+    `caller ACCEPTED 2026-09-09T15:00:00+01:00`, and steers Gate 5 and the hold
+    speech with it -- and never tells the MODEL. The model learns a slot is
+    settled only from `v3_confirmed_slot_phrase`, which is captured out of its
+    OWN sentence at the name request. So it is told the choice is made only
+    after it has already said so; if it does anything else, nothing corrects it.
+
+    That is a circular dependency, and it is the second instance of one in this
+    codebase: the first name is likewise only ever learned from Susie's own
+    speech, so a deleted acknowledgement asks the caller for it forever
+    (`gate5g`). Same shape, same cost.
+
+    On CA4215ab7f (8 Sep 2026) what it did instead was call check_availability
+    again. `_narrows_to_the_chosen_slot` is the backstop for that and cannot be
+    ignored; this is the cure, and it is worth having as well because the
+    backstop still pays for the round trip -- that turn's content reached the
+    caller 7.25s after they finished speaking.
+
+    ONE OWNER, two builders. `theorem_v3` renders from `_build_theorem_v3` and
+    every other clinic from the template, so a rule written in one is absent
+    from the other -- which is exactly how the read-back name steer had to be
+    done, and why this is a function rather than a paragraph.
+
+    Turn-scoped by construction: the pin is popped and re-resolved at the top of
+    every caller turn, so this line describes THIS turn's choice or nothing. It
+    cannot go stale mid-call the way `v3_confirmed_slot_phrase` did for three
+    callers who changed day and were read the day they had left.
+
+    Deliberately does NOT say "book it". The caller has chosen a time; the name,
+    the phone and the confirmation all still have to happen, and a steer that
+    skipped them would trade this defect for a worse one.
+    """
+    s = session if isinstance(session, dict) else {}
+    iso = str(s.get(ACCEPTED_SLOT_KEY) or "")[:19]
+    if not iso:
+        return ""
+    label = ""
+    try:
+        for sl in flatten_bookable_slots(s.get("available_days") or []):
+            if str(sl.get("start") or "")[:19] == iso:
+                label = "%s at %s" % (
+                    sl.get("day_label") or "", sl.get("spoken") or "")
+                break
+    except Exception:
+        label = ""
+    label = (label or iso).strip(" at").strip()
+    return (
+        "SLOT JUST CHOSEN - in the turn you are answering now, the caller "
+        "picked " + label + ". That is settled. Do NOT call check_availability "
+        "again and do NOT read out any list of days or times: they have "
+        "already chosen from one. Confirm that slot back to them and continue "
+        "with the next step you owe them."
+    )
+
+
 def slot_llm_reply_can_only_be_discarded(session: "Dict[str, Any] | None") -> bool:
     """Is the post-check_availability model call certain to be thrown away? PURE.
 

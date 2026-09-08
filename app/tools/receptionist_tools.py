@@ -10337,6 +10337,147 @@ def _invalidate_gcal_lookup_cache(session: Dict[str, Any], reason: str) -> None:
         )
 
 
+#: A date_hint that asks for nothing in particular. The model fills this field
+#: even when the caller has not asked for anything, so an empty-ish hint is the
+#: signal that this lookup carries no NEW request -- not the absence of the key.
+_VACUOUS_DATE_HINTS = frozenset({
+    "", "any", "any time", "anytime", "any day", "asap",
+    "as soon as possible", "earliest", "soonest", "next available",
+    "none", "no preference", "whenever", "flexible",
+})
+
+
+def _narrows_to_the_chosen_slot(fn):
+    """Wrap check_availability so a re-query cannot re-open a settled choice.
+
+    CA4215ab7f (theorem_v3, 8 Sep 2026, build 08e99fab). The caller was read
+    Wednesday 9th September and said "yeah three works". The resolver got it
+    right -- `caller ACCEPTED 2026-09-09T15:00:00+01:00` -- and then the model
+    called check_availability a SECOND time. The diary had not changed, so it
+    came back with the same twenty days, and the caller heard 16.1 seconds of
+    Friday, Monday and Tuesday. They said "let me if the last one works for me"
+    and hung up. outcome=abandoned, score=2.
+
+    WHY THIS IS THE LAYER, AND NOT GATE 5.
+    Gate 5 was fixed first and it was the wrong layer. `calls.slot_offers` for
+    that call holds two entries with an IDENTICAL twenty-day payload -- seq 0
+    single_day, seq 1 multi_day -- and seq 1's deterministic chunks are 91%
+    token-identical to the sentence the caller actually heard:
+
+        model  "...Number 1, Friday 11th September ... Any of those suit you?"
+        det    "...Number 1, Friday 11th September ... Any of those work?"
+
+    So every repair downstream of the tool result only chooses which wording of
+    the wrong list is spoken. By the time anything in Gate 5 runs, the model has
+    already been handed twenty days and has already composed a list out of them.
+    The only place the list can be prevented is where the days are handed over.
+
+    WHAT IT DOES. When the caller's pick resolved THIS TURN and the model asks
+    for availability again WITHOUT a new request, the day they chose is the only
+    day returned. The model keeps a true tool result -- it can still answer "is
+    that all you have that day?" -- but it has nothing to build a fresh
+    multi-day list out of.
+
+    WHY IT NARROWS RATHER THAN REFUSES. `slot_accepted_by_caller` is not a
+    perfect reader of intent, and two shapes leak through it:
+
+        "one in the afternoon works but earlier would be better"  -> resolves
+        "is three in the afternoon your only option"              -> resolves
+
+    Neither is a settled choice. A refusal would strand both; narrowing answers
+    both correctly, because the answer to each lives on that same day. The
+    failure mode is a shorter list, never a broken turn -- and a caller who does
+    want another day says so, which puts a real `date_hint` on the next call and
+    this stands down.
+
+    THE THREE CONDITIONS, each of which alone is not enough:
+
+      1. the pin is set -- and it is turn-scoped, popped and re-resolved at the
+         top of every caller turn (`connection.py`), so it cannot describe an
+         older turn's choice the way `v3_confirmed_slot_phrase` can;
+      2. the `date_hint` carries no new request;
+      3. the chosen day is actually in the payload -- otherwise the diary has
+         moved under the caller and the full result is the honest answer.
+
+    Registered in TOOL_EXECUTORS rather than called inside the executor,
+    for the reason `_invalidates_lookup_cache` gives: there are four dispatch
+    sites and a rule enforced at the call site is a rule the fifth will not have.
+    There are also three provider paths inside the executor (Google, Acuity, and
+    two degraded fallbacks) each with its own return, and a wrapper cannot drift
+    between them.
+
+    Never raises. A wrapper that fails leaves today's behaviour exactly.
+    """
+    import functools as _functools
+
+    @_functools.wraps(fn)
+    async def _wrapped(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
+        result = await fn(args, session)
+        try:
+            from app.tools.slot_followup import ACCEPTED_SLOT_KEY
+
+            if not isinstance(result, dict) or not isinstance(session, dict):
+                return result
+            chosen = str(session.get(ACCEPTED_SLOT_KEY) or "")[:19]
+            if not chosen:
+                return result
+
+            hint = str((args or {}).get("date_hint") or "").strip().lower()
+            if hint.strip(" .!?") not in _VACUOUS_DATE_HINTS:
+                return result
+
+            days = result.get("available_days")
+            if not isinstance(days, list) or len(days) < 2:
+                return result
+
+            day = chosen[:10]
+            keep = [d for d in days
+                    if isinstance(d, dict) and str(d.get("date") or "") == day]
+            if not keep:
+                logger.info(
+                    "[ms_tools] chosen slot %s is not in this payload - "
+                    "returning it whole; the diary has moved", chosen,
+                )
+                return result
+
+            result = dict(result)
+            result["available_days"] = keep
+            result["total_days"] = len(keep)
+            # Named in WORDS as well as ISO. The model composes speech from
+            # this, and a bare timestamp is the thing it has to translate --
+            # translating it is where a wrong day gets spoken.
+            _spoken = ""
+            for _sl in (keep[0].get("slots") or []):
+                if str((_sl or {}).get("start") or "")[:19] == chosen:
+                    _spoken = " (%s at %s)" % (
+                        keep[0].get("day_label") or "",
+                        (_sl or {}).get("spoken") or "")
+                    break
+            result["message"] = (
+                "The caller has ALREADY chosen " + chosen + _spoken + ". Do not "
+                "read out a list of days or times - they have picked. Confirm "
+                "that slot back to them and move on to the next step. Only "
+                "these times are included here, on the day they chose, in case "
+                "they ask what else is free that day."
+            )
+            session["available_days"] = keep
+            logger.warning(
+                "[ms_tools] availability re-queried after the caller had "
+                "already chosen %s and with no new request (date_hint=%r) - "
+                "narrowed %d days to the chosen one. The caller does not hear "
+                "a fresh list.",
+                chosen, (args or {}).get("date_hint"), len(days),
+            )
+        except Exception:
+            logger.exception(
+                "[ms_tools] chosen-slot narrowing failed - returning the "
+                "availability result unchanged"
+            )
+        return result
+
+    return _wrapped
+
+
 def _invalidates_lookup_cache(fn):
     """Wrap a write executor so the cache cannot outlive a calendar mutation.
 
@@ -10611,7 +10752,9 @@ async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) ->
 
 
 TOOL_EXECUTORS: Dict[str, Any] = {
-    "check_availability":     _exec_check_availability,
+    # Wrapped: a re-query after the caller has already picked must not
+    # hand the model a fresh set of days to read out. See the decorator.
+    "check_availability":     _narrows_to_the_chosen_slot(_exec_check_availability),
     # Wrapped: any write mutates the calendar, so the cached upcoming-events
     # list must not survive it. See _invalidates_lookup_cache.
     "book_appointment":       _invalidates_lookup_cache(_exec_book_appointment),
