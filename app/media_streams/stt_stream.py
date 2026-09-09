@@ -202,6 +202,16 @@ _KEYTERM_STOPWORDS: frozenset = frozenset({
     "is", "are", "was", "were", "be", "been", "being", "am", "have", "has",
     "had", "do", "does", "did", "can", "cant", "cannot", "will", "wont",
     "would", "could", "should", "get", "got", "go", "goes", "went", "gone",
+    # The negated forms, completing the class. `cant`, `cannot` and `wont`
+    # were already here and the rest of the family was not, which is an
+    # oversight rather than a decision -- and `_distinctive_tokens` compares
+    # the apostrophe-free form, so these are what "can't" and "don't" are
+    # tested as. Measured 2026-09-09: adding them leaves all four clinics'
+    # keyterm lists byte-identical, so this buys durability against a future
+    # clinic.json phrase and costs nothing today.
+    # "ill" and "id" are deliberately ABSENT: "ill" is clinical vocabulary.
+    "dont", "doesnt", "didnt", "isnt", "arent", "wasnt", "werent",
+    "havent", "hasnt", "hadnt", "couldnt", "wouldnt", "shouldnt",
     "come", "came", "take", "took", "make", "made", "put", "keep", "kept",
     "hold", "held", "use", "used", "done", "give", "gave", "seem", "seems",
     # common adverbs / adjectives / quantities
@@ -271,11 +281,47 @@ def _distinctive_tokens(phrase: str) -> list[str]:
 
     Drops stopwords and 1-2 character fragments. Order preserved so the
     caller's priority ordering survives.
+
+    A contraction is tested by its apostrophe-free form as well as its literal
+    one. `_KEYTERM_STOPWORDS` holds `can`, `cant`, `cannot` and `wont` — the
+    word was always meant to go — but this function strips only EDGE
+    apostrophes, so the token `can't` never matched the entry `cant` and
+    survived a filter written to remove it.
+
+    That was not cosmetic. Thirteen `trauma_fracture` and `serious_spinal`
+    phrases reduce to nothing but this token —
+
+        "can't put weight"        ->  ["can't"]
+        "can't sleep for the pain" -> ["can't"]
+
+    because `weight`, `walk`, `stand` and `sleep` are all deliberately
+    stopworded already. So `can't` ranked at keyterm index 2 on northgate while
+    `cancel` sat at 84, and on `CA7888178d5913d3a188a3f18c6a1efa59` (9 Sep
+    2026, 09:28:43) a caller saying "cancel it altogether" was transcribed
+    `"i can't"`. The consent gate then refused the cancel — correctly; that
+    string is not permission to delete an appointment — and the caller was
+    asked again. Same mechanism as B-66, whose own comment names the cause:
+    *"every word it drifted toward was boosted and 'cancel' was not."*
+
+    It costs the screens nothing, which is the trade this had to avoid. The
+    fracture screen's informative words (`swollen`, `deformed`, `misshapen`,
+    `snap`, `crack`) keep their slots, and its TRIGGER matching reads
+    `clinic.json` rather than this list, so it is untouched either way.
+    Measured 2026-09-09, both clinics at the 100-term cap get the freed slots
+    back as exactly the anatomy this file says must never be starved:
+    northgate gains "frozen shoulder" and "tennis elbow", jv_v1 "fasciitis"
+    and "tendon". vital_edge and theorem_v3 are byte-identical.
+
+    Only the TEST is normalised, never the emitted token: a possessive or a
+    dialect form ("grip's", "golfer's", "gi'o'er") is ordinary vocabulary whose
+    bare form is not a stopword, and it survives spelled as it is said.
     """
     out: list[str] = []
     for word in re.split(r"[^a-z0-9']+", (phrase or "").lower()):
         word = word.strip("'")
-        if len(word) < 3 or word in _KEYTERM_STOPWORDS:
+        if len(word) < 3:
+            continue
+        if word in _KEYTERM_STOPWORDS or word.replace("'", "") in _KEYTERM_STOPWORDS:
             continue
         out.append(word)
     return out
