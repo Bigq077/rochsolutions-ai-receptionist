@@ -23,8 +23,20 @@ WHY IT IS SAFE TO DROP, all of it measured rather than argued:
 
 WHAT IS NOT MEASURABLE, and why this is a flag and not a default: the suffix
 also CONFIRMS to a caller that "eight" is the morning. No corpus can price
-that. So it is off for northgate — the demo line, which exists to be listened
-to — and on everywhere a patient might ring.
+that.
+
+REVERSED 9 Sep 2026 — the judge priced it. northgate ran bare for two days and
+CA0b217e710b9a3957a384186794af4149 (9 Sep 10:32) came back tagged
+`caller_frustration`, evidence "the slot read-outs were garbled and ambiguous",
+quoting the readout this flag produces: "Number 1, eight. Number 2, one.
+Number 3, ten past five." One call in 13, so a signal and not a verdict — but
+the demo line is the most expensive place to hold a wording experiment, so it
+goes back and the lever stays.
+
+So NO clinic opts out today. The lever is still fully covered below: every
+wording, resolution and read-out assertion drives `part_of_day` directly rather
+than through a clinic, which is what lets the flag be turned on again without
+rediscovering whether it works.
 """
 
 import inspect
@@ -72,16 +84,26 @@ def _armed_session(part_of_day):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("clinic_id", ["jv_v1", "vital_edge", "theorem_v3",
-                                       "theorem", "demo"])
-def test_every_patient_clinic_keeps_the_suffix(clinic_id):
-    """The three live clinics and the fallbacks are untouched until someone
-    listens to this and decides."""
+                                       "theorem", "demo", "northgate"])
+def test_every_clinic_keeps_the_suffix(clinic_id):
+    """Including northgate, from 9 Sep. See the reversal note in the docstring:
+    the demo line went bare for two days and a caller heard "Number 2, one"."""
     assert speaks_part_of_day({"clinic_id": clinic_id}) is True, clinic_id
 
 
-def test_northgate_is_the_one_that_drops_it():
-    """The demo line, which is what the demo line is for."""
-    assert speaks_part_of_day({"clinic_id": "northgate"}) is False
+def test_the_lever_still_reads_a_false_from_config(monkeypatch):
+    """The reversal removed the only clinic that exercised the OFF path, and a
+    flag no config sets is a flag that can quietly stop being read. This drives
+    it from a stub so turning it back on stays a one-key change.
+
+    `speaks_part_of_day` imports `get_clinic` inside the function, so the patch
+    has to land on the source module rather than on a name bound at import.
+    """
+    import app.clinic_config as cc
+    monkeypatch.setattr(
+        cc, "get_clinic",
+        lambda cid: {"operational": {"speak_part_of_day": False}}, raising=False)
+    assert speaks_part_of_day({"clinic_id": "anything"}) is False
 
 
 @pytest.mark.parametrize("junk", [None, "", {}, "a string", 0, [],

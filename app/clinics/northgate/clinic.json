@@ -98,8 +98,8 @@
   "owner_alerts": {
    "enabled": false
   },
-  "_speak_part_of_day_note": "LAT-1. false drops \"in the morning\" / \"in the afternoon\" / \"in the evening\" from every spoken slot time. The suffix is about 27 percent of a multi-day read-out (4.7s of 17.3s measured on CA8d5b2e3e). Over 236 real day-offers carrying 2262 spoken labels, dropping it created ZERO pairs that sound alike, and no clinic offers an hour together with its twelve-hour twin (measured spreads: northgate 08-18, theorem 09-18). slot_accepted_by_caller already strips the suffix before matching, so nothing a caller may SAY changes. ON HERE ONLY because northgate is the demo line -- the three patient clinics keep the suffix until someone has heard this and decided.",
-  "speak_part_of_day": false,
+  "_speak_part_of_day_note": "LAT-1, REVERSED 9 Sep 2026. false drops \"in the morning\" / \"in the afternoon\" / \"in the evening\" from every spoken slot time and buys about 27 percent of a multi-day read-out (4.7s of 17.3s on CA8d5b2e3e). It was ON here because northgate is the demo line. The judge has now priced the half LAT-1 said no corpus could price: CA0b217e710b9a3957a384186794af4149, 9 Sep 10:32, tagged caller_frustration, evidence \"the slot read-outs were garbled and ambiguous\" -- quoting \"Number 1, eight. Number 2, one. Number 3, ten past five\". The resolver was never the risk and still is not; what a bare label costs is the caller CONFIRMING that eight is the morning, and the demo line is the worst place to spend it. n=1 of 13 offer-carrying northgate calls since 10dad81d, so this is a signal rather than a verdict -- the lever is intact and this is one key. Buy the latency back out of the read-out itself, not out of the words that disambiguate it.",
+  "speak_part_of_day": true,
   "slot_minutes": 30,
   "_slot_break_note": "Each service is offered at its own length (services[].typical_duration_minutes) plus a 5-min break between appointments. Slots anchor to each day's opening time; the break is spacing only and is never added to the calendar event.",
   "slot_break_minutes": 5,

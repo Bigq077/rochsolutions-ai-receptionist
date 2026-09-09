@@ -142,51 +142,89 @@ produced `"September 19th" → 19 August`. Writing one overnight with no call to
 verify it is the wrong trade. It is small, well-anchored and evidence-backed —
 it should be the next thing done, with a phone call behind it.
 
-### D9 — every day is offered at its two extreme ends 🔴 the real slot-presentation defect
+### D9 — CLOSED, and it was two defects wearing one coat ⚪ corrected 9 Sep
+
+**The headline was wrong. The exhibit disproves it, and the exhibit is quoted
+in full below because the first version of this entry stopped reading it too
+early.**
 
 Demo line, 9 Sep 10:32, `CA0b217e710b9a3957a384186794af4149`, build
-`c21db7d589a6`. A booking call, judge score 3, tag `caller_frustration`. The
-readout:
+`c21db7d589a6`. Booking call, judge score 3, tag `caller_frustration`.
+
+#### What D9 claimed
+
+That offering two times per day at the extreme ends — 08:00 and 17:10 out of
+twelve bookable slots — leaves the caller unable to reach anything between, and
+that `_pick_times_for_day` at `limit == 2` is the bug.
+
+#### What actually happens, from the stored transcript
 
 ```
-Number 1, Monday 14th September — eight, or ten past five.
-Number 2, Tuesday 15th September — eight, or ten past five.
-Number 3, Wednesday 16th September — eight, or ten past five.
+Susie : Here's what we've got coming up — Number 1, Monday 14th — eight, or ten past five.
+        Number 2, Tuesday 15th — eight, or ten past five.
+        Number 3, Wednesday 16th — eight, or ten past five. Any of those work?
+caller: oh yeah tuesday works
+Susie : Tuesday it is — Number 1, eight. Number 2, one. Number 3, ten past five.
+        And I've a few others that day. Any of those work?
+caller: oh yeah 10 past 5 works
+Susie : all booked — you're in for Tuesday the 15th at ten past five in the evening.
 ```
 
-Three consecutive days, the identical pair, and nothing between 8am and 5:10pm
-named at all. Each of those days holds **twelve** bookable slots
-(08:00, 08:50, 09:40, 10:30, 11:20, 12:10, 13:00, 13:50, 14:40, 15:30, 16:20,
-17:10). The judge called the read-outs "garbled and ambiguous".
+**The week is a menu of DAYS, not of times.** Two per day is a sample that lets
+the caller pick a day; picking one opens it to `times_single_day` (three) plus
+the `more_times` tail that says out loud there are others. The caller booked.
 
-**Mechanism, reproduced locally:**
+This is the owner's stated intent, confirmed 9 Sep: *"presents week with two
+slots, then if you ask for a day it'll say let me look at Monday, I have 1/2/3
+and a few others that day."*
 
-```python
-_pick_times_for_day(twelve_slots, 2)  ->  ['08:00', '17:10']   # the extremes
-_pick_times_for_day(twelve_slots, 3)  ->  ['08:00', '13:00', '17:10']
-```
+It is not northgate-only. `CA1736b441372dad9949bc289665e63b1c` (theorem_v3,
+8 Sep, **before** Stage A) does the same thing — *"Number 1, nine in the
+morning. Number 2, eleven in the morning. Number 3, four in the afternoon. And
+I've a few others that day."* The drill-down lives in `slot_followup`, not in
+the availability executor, so it has never depended on which reader ran.
 
-At `limit=2` it takes the earliest, then the LATEST in a different part of the
-day. That rule is deliberate and its reason is sound — the docstring says
-*"ten in the morning or eleven in the morning is not a choice a caller
-experiences as two options"* — but on a full day it overshoots to the two ends.
-The `limit >= 3` branch already spreads evenly and gets it right.
+**Do not change `_spread` or `_pick_times_for_day`.** Both were about to be
+edited on the strength of this entry, on all four clinics, to fix a caller
+experience that already works.
 
-The second half is worse than the first: `choose_presented_indices` picks the
-same POSITIONS on every day, and these days share a template, so all three come
-out identical. Varying across days — 8am Monday, 1pm Tuesday, 5pm Wednesday —
-would give the caller a real spread from the same two-per-day budget.
+#### The real defect in the same exhibit — and it is a config flag
 
-**Anchors**: `app/tools/slot_offer.py:97` `_pick_times_for_day` (the `limit == 2`
-path, and the `limit >= 3` spread just below it that already works);
-`app/tools/slot_followup.py` `choose_presented_indices`.
+The judge's words were *"garbled and ambiguous"*, and the quote it gave was
+`"Number 1, eight. Number 2, one. Number 3, ten past five."` That is not
+selection. That is **LAT-1**: `operational.speak_part_of_day: false`, set on
+northgate only in `10dad81d` (7 Sep), which strips *"in the morning"* from every
+label. "eight" could be either end of the day and "one" is barely a time at all.
+Theorem, on the same code, says *"nine in the morning"* — because it never
+opted out.
 
-**Not fixed here.** It changes what every caller on every clinic hears, and
-"which two times sound like a real choice" is a judgement rather than a bug fix.
-`operational.slot_presentation` (D2) is the lever that lets it be tried on one
-clinic first. This supersedes §2.1's reading: the drip-feed *volume* complaint
-really was closed by 7624b1a7 and fee6e67a — what is still wrong is WHICH times
-get spoken, not how many.
+LAT-1 predicted this and said it could not be measured:
+
+> *"What is lost is the caller's CONFIRMATION that eight means the morning, and
+> no corpus can price that — which is why this is a clinic's decision behind a
+> flag rather than an engine default."*
+
+The judge priced it. **Reversed 9 Sep**: `speak_part_of_day` is back to `true`
+on northgate, the note in `clinic.json` records why, and the flag itself is
+untouched and still tested from a stub so it can be turned on again as one key.
+
+Honest scope: **n=1 of 13** offer-carrying northgate calls since `10dad81d`. A
+signal, not a verdict. It is reversed anyway because the demo line is the most
+expensive place in the estate to run a wording experiment, and the latency it
+bought (4.7s of a 17.3s read-out) is better taken out of the read-out's length
+than out of the words that disambiguate it.
+
+#### What survives as an open question, downgraded
+
+The three days did read out an **identical pair** — same positions on every day,
+because those days share a rota template. Varying the second time across days
+(8am Monday, 1pm Tuesday, 5pm Wednesday) would still be nicer from the same
+two-per-day budget. But it is cosmetic, not a completeness failure, and it is
+not worth an engine change across four clinics. Filed, not scheduled.
+
+**Lesson, recorded because it is the third time**: this entry read one turn of a
+transcript and diagnosed the mechanism behind it. The next turn contained the
+answer. Read the call to the end — and to the booking — before naming a defect.
 
 ### N5 — the stall itself, and the two-rung filler ladder 🟠 needs an owner decision
 
