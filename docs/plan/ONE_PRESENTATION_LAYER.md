@@ -9,6 +9,56 @@ the decisions in §7.
 
 ---
 
+> ## ⚠️ CORRECTION, 2026-09-09, same day
+>
+> **Two rows of the table below were wrong and the headline number does not
+> measure what it claims.** Verified with an AST walk per function rather than
+> line numbers:
+>
+> * `other_dates_for_requested_day` — the fall-through (Northgate, JV) and
+>   `diary` (Vital Edge) BOTH call `_name_the_other_matching_dates`. Only
+>   `published` lacks it, and no live clinic uses `published`. **The claim that
+>   B-110 was regressed on Northgate and JV was FALSE.**
+> * `day_requested*` and the window feedback are likewise present on the
+>   fall-through and diary. Only `published` lacks them.
+> * The 83%/14% "deterministic rate" used `slot_offers.presented` as its
+>   discriminator. That field only ever exists for **multi_day**, so every
+>   single_day offer was miscounted as model-written on every clinic. The
+>   number is not usable and is withdrawn.
+>
+> **The real defect is one branch, and it is confirmed from logs rather than
+> inferred.** `_check_availability_acuity` sets `first_day` (line 3736) so
+> Theorem's SINGLE-day readouts do get the deterministic builder — seen live at
+> 10:04:46, `deterministic single_day offer built: 1 chunk(s)`. It never sets
+> `presented_days`, so MULTI-day always fails the gate — seen live twice, on two
+> different builds:
+>
+> ```
+> 10:03  NO deterministic offer built — mode='multi_day' has_presented_days=False
+> 11:04  NO deterministic offer built — mode='multi_day' has_presented_days=False
+> ```
+>
+> The cause is at line 3599, and the comment above it states the old contract
+> out loud:
+>
+> ```python
+> # The <=2-times-per-day cap is enforced by the slot formatter
+> # (SLOT_FORMATTER_SYSTEM_PROMPT, multi_day).
+> _present_days = days_data[:3] if _presentation_mode == "multi_day" else days_data
+> ```
+>
+> Theorem's multi-day cap is enforced **by the prompt**, not by code. That is the
+> pre-`slot_offer.py` architecture — the model writes the sentence and a repair
+> layer reverse-parses it — which that module's own docstring says "cannot
+> converge" and where "fifteen B-numbers live". Theorem's single_day path was
+> migrated; its multi_day path never was.
+>
+> Everything in §5 (target shape) and §6 (stages) still stands. **Stage 1 is
+> deleted** — it was fixing a gap that does not exist. The real first step is
+> Stage 2.
+
+---
+
 ## 1. The finding in one table
 
 There are **four** availability readers. They do not agree, and it is not a
