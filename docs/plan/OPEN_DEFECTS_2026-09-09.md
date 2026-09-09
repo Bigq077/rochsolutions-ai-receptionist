@@ -19,6 +19,8 @@
 | **D6** | A regression case pinned to the real clock | `e780d2ff` | the case now passes on any date |
 | **D1** | The phonetic spelling of Alcester left the TTS layer | `70860840` | prompt render-diff + 1,527-line corpus replay |
 | **D2** | Slot-presentation caps were engine constants | `58d5706c` | regression test + full suite |
+| **N2** | `can't` was boosted over `cancel`, so a cancel was misheard | `dfd8f907` | **verified on a live call** |
+| **N4** | Two wordings of one wait apology, back to back | `e2e1d859` | regression test + full suite |
 
 ### D4's unresolved question, answered
 
@@ -140,6 +142,21 @@ produced `"September 19th" → 19 August`. Writing one overnight with no call to
 verify it is the wrong trade. It is small, well-anchored and evidence-backed —
 it should be the next thing done, with a phone call behind it.
 
+### N5 — the stall itself, and the two-rung filler ladder 🟠 needs an owner decision
+
+Five samples now, across both lines and both builds. `llm_ttft` on a turn that
+performs a WRITE spans the tool round-trip, so those turns are structurally
+slower — last turn of a call that cancelled: n=7, p50 2.2s, **3 over 10s**;
+booking completions p50 5.3s; every other turn p50 1.6s, 1% over 10s.
+
+The recovery, not the latency, is the fixable part. The ladder has two rungs and
+stops: on the demo line at 09:29 the caller heard nothing for 14s, and at 10:02
+nothing for 13s after the second phrase. N4 closes the case where the second
+rung says the same thing twice, but it does not add a third rung, and
+`UNKNOWN_SLOW` has no third wording to give it. **That is caller-facing copy —
+an owner decision.** "Bear with me" is not available: Gate 5 strips it as a
+banned phrase.
+
 ### D7 — demo-service Sheets is broken ⚪ env var, not code
 
 Unchanged from the handover. `GOOGLE_SERVICE_ACCOUNT_JSON` is malformed on
@@ -159,23 +176,47 @@ handover's own instruction.
 
 ---
 
+## 3b. D1's Theorem gate — CLOSED by observation, 9 Sep
+
+The handover asked for a Theorem call confirming Alcester is still pronounced
+correctly after the prompt stopped teaching the phonetic spelling. Two owner
+calls to `+447380841468` on 9 Sep supplied it without needing a new one, because
+**they ran the OLD build** (`f97932045fe7`) and still demonstrate the mechanism
+end to end:
+
+    obs transcript (pre-substitution) : [assistant] Alcester.
+    synthesise_chunk (post-)          : text='Awlstuh.'
+
+`connection.py` records `_obs_chunk_text` BEFORE `_apply_tts_subs`, so the model
+wrote the canonical spelling and the caller heard the phonetic one. Across the
+corpus that is **90 of 136** Theorem calls, on every build back to August.
+
+So D1 does not introduce the substitution path — it makes it the ONLY path
+instead of one of two. The remaining risk is the 43 prompt lines themselves,
+and those were render-diffed line by line with the other four clinics
+byte-identical.
+
 ## 4. Gates this session could not close
 
 All three need a phone, and one needs the Render dashboard:
 
-1. **Phase 1** — one demo-line cancel call confirming `purpose="cancel"` in the
-   tool log and no T-3 nudge. *(Safe: the demo line's calendar entry is a test
-   fixture.)*
-2. **Phase 2** — one Theorem call **abandoned at the read-back** confirming
-   Alcester is still pronounced correctly. The replay evidence is strong — the
-   forward substitution is byte-identical on all 1,527 stored assistant lines,
-   so the audio provably cannot move — but the handover asks for an ear on it
-   and it is a live patient line.
-3. **D7** — re-paste the service-account JSON in Render.
+1. ~~**Phase 1** — one demo-line cancel call.~~ **CLOSED 9 Sep 09:28 and
+   10:01.** `purpose="cancel"` on every lookup, no T-3 nudge over an
+   outstanding question, and N2 verified: "cancel it altogether" transcribed
+   correctly with no `BLOCKED` line, judge 4 against 3.
+2. ~~**Phase 2** — one Theorem call.~~ **CLOSED by observation** — see §3b.
+3. **D7** — re-paste the service-account JSON in Render. Still open; the
+   demo-service log showed it again on both 9 Sep calls.
 
 **Nothing here has been promoted to `production`.** Every commit is on
-`latency-eval`, which serves the demo line only. Promotion is
-`git push origin origin/latency-eval:production` after the calls above.
+`latency-eval`, which serves the demo line only. Both gates are now closed, so
+promotion is a decision rather than a blocker:
+
+    git push origin origin/latency-eval:production      # revert target f9793204
+
+Note what the three live clinics are running while it waits: `f9793204`, which
+contains D1, D3, D4, D5 and N2 — including the misheard-cancel defect that cost
+a live caller a `loop` this morning.
 
 ---
 
