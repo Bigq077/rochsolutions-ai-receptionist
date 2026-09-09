@@ -4505,10 +4505,37 @@ def more_days_speech(session: Dict[str, Any]) -> Optional[str]:
         logger.exception("[slot_followup] more-days offer unavailable")
         return None
 
-    fresh = choose_presented_days(session, days, _MAX_PRESENTED_DAYS)
-    # `choose_presented_days` never starves a repeat -- when every day has been
-    # heard it returns the first three again, which here would re-read days he
-    # has already had. Only genuinely unheard days may be spoken as "what else".
+    # THE UNHEARD DAYS, SELECTED HERE RATHER THAN BY `choose_presented_days`.
+    #
+    # D12, 9 Sep 2026, northgate, build 909a90ad3752. That helper answers a
+    # different question -- which days to LEAD a fresh readout with -- and it
+    # short-circuits on `caller_wants_soonest` to `days[:max_days]`, the three
+    # EARLIEST days. For a caller who asked for the soonest, those are exactly
+    # the three they have just heard, so the unheard filter below emptied the
+    # list and this producer declined for the rest of the call:
+    #
+    #     caller: uh what's the soonest you've got
+    #     Susie : Starting with the soonest -- Number 1 Wednesday, 2 Thursday,
+    #             3 Friday ...
+    #     caller: okay then what else have you got this week
+    #     [slot_followup] every day in the sweep has been offered -- falling
+    #                     through
+    #     Susie : this week I've also got Thursday at eight in the morning, or
+    #             ... Friday at eight in the morning, or half past three ...
+    #
+    # -- Thursday and Friday read straight back, which is the going-in-circles
+    # shape B-137 and D11 both exist to end.
+    #
+    # LATENT UNTIL 38709d5f. `day_preference` was only ever set by the literal
+    # "as soon as possible"/"asap", so `caller_wants_soonest` was almost always
+    # False here and the helper fell to its unheard branch. Teaching the capture
+    # the words people actually use made the short-circuit reachable, so this is
+    # that commit's bill and it is paid here rather than by narrowing it: the
+    # soonest ordering is RIGHT on a fresh readout and wrong only in this
+    # producer, where the question is "what have I NOT heard".
+    #
+    # `choose_presented_days`' own unheard branch returns `unoffered[:max_days]`
+    # -- which is what this now does directly, minus the short-circuit above it.
     try:
         spoken = spoken_starts_for_offer(session)
     except Exception:
@@ -4518,14 +4545,14 @@ def more_days_speech(session: Dict[str, Any]) -> Optional[str]:
             str((sl or {}).get("start") or "")[:19] in spoken
             for sl in ((day or {}).get("slots") or [])
         )
-    #: D10, this producer's copy. `fresh` is already capped to
-    #: `_MAX_PRESENTED_DAYS` by `choose_presented_days` above, so
-    #: `build_slot_offer`'s own "did I drop any days" test is blind here in
-    #: exactly the way it is on the live readout path. Counted over the WHOLE
-    #: payload, because "what else have you got" is a question about the diary,
-    #: not about the three days this answer happens to name.
-    _unheard_total = len([d for d in days if not _heard(d)])
-    fresh = [d for d in fresh if not _heard(d)]
+    _unheard = [d for d in days if not _heard(d)]
+    #: D10, this producer's copy. `fresh` below is capped to
+    #: `_MAX_PRESENTED_DAYS`, so `build_slot_offer`'s own "did I drop any days"
+    #: test is blind here in exactly the way it is on the live readout path.
+    #: Counted over the WHOLE payload, because "what else have you got" is a
+    #: question about the diary, not about the three days this answer names.
+    _unheard_total = len(_unheard)
+    fresh = _unheard[:_MAX_PRESENTED_DAYS]
     if not fresh:
         logger.info(
             "[slot_followup] 'what else' after a multi-day readout, but every "
