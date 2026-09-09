@@ -1068,6 +1068,114 @@ def _candidate_hhmm_from_text(text: str) -> List[str]:
     return out
 
 
+#: How far from the time the caller named a slot may sit and still BE that time.
+#: northgate CA82c05845, 9 Sep 2026, judge 2, abandoned: the caller asked for
+#: "around 12 o'clock" three times and was offered eight, five-ten, ten-to-nine
+#: and twenty-past-four. Wednesday 16th held 12:10 throughout.
+#:
+#: The matching was exact string equality on both sides of this module, and this
+#: clinic's grid runs in FIFTY-minute steps -- 08:00, 08:50, 09:40, 10:30, 11:20,
+#: 12:10, 13:00. Only two round hours exist in a whole day, so a caller naming
+#: nine, ten, eleven, twelve, two, three or four could never match anything. The
+#: defect was not the parser; it was assuming a caller's "12" and a diary's
+#: "12:10" are different times.
+#:
+#: 20 minutes picks exactly one slot on a 50-minute grid and cannot reach across
+#: to the neighbour, so it stays a nearest-match rather than becoming a range.
+NEAREST_TIME_TOLERANCE_MIN = 20
+
+#: Minutes-past-the-hour a caller says when they mean ROUGHLY that time. Any
+#: other value was read off a diary -- see `nearest_time_index`.
+_SPOKEN_MINUTE_MARKS = frozenset({0, 15, 30, 45})
+
+
+def _hhmm_to_minutes(value: Any) -> "int | None":
+    """"HH:MM" (or an ISO start) to minutes past midnight, or None."""
+    s = str(value or "")
+    # An ISO start carries the clock after "T"; a bare slot time does not.
+    if "T" in s:
+        s = s.split("T", 1)[1]
+    if len(s) < 5 or s[2] != ":":
+        return None
+    try:
+        h, m = int(s[:2]), int(s[3:5])
+    except ValueError:
+        return None
+    if not (0 <= h <= 24 and 0 <= m <= 59):
+        return None
+    return h * 60 + m
+
+
+def nearest_time_index(
+    times: Any, wanted: Any, tolerance_min: int = NEAREST_TIME_TOLERANCE_MIN
+) -> "int | None":
+    """The ONE slot the caller meant, by nearest clock time, or None.
+
+    ONE owner for "which slot did the caller name?", because the exact-match
+    version of this question was written twice -- in `resolve_requested_time`
+    and in `_pin_requested_time_index` -- and both were wrong the same way on
+    the same call. A second copy is how they drift apart again.
+
+    `wanted` may hold a 12-hour TWIN ("at 5" is 05:00 and 17:00, and
+    `requested_clock_times` returns both). The decline rules are unchanged from
+    the exact-match version and are about the CALLER, not the tolerance:
+
+      * no reading lands within tolerance -- the time is not on this day, which
+        is ordinary and silent;
+      * two readings land on DIFFERENT slots -- which was meant is unknowable
+        here, so pin neither. A band word the caller actually said ("at five in
+        the evening") has already collapsed the pair upstream.
+
+    Within a single reading, the NEAREST slot wins outright -- two candidates
+    for one stated time is not ambiguity, it is a grid. Ties go to the earlier
+    slot: arbitrary, but deterministic, and unreachable on any grid whose step
+    is not exactly twice the tolerance.
+
+    TOLERANCE SCALES WITH THE CALLER'S OWN PRECISION, and this is the half that
+    was nearly wrong. Replaying the real grids surfaced "oh yeah 20 to 10 will
+    work" -> 09:40 being pulled to 10:00, and "ten to nine in the morning" ->
+    08:50 pulled to 09:00. A caller who says twenty-to-ten means 09:40 and is
+    almost always QUOTING a slot back; moving them twenty minutes is worse than
+    the defect this fixes. So only the times people SAY when they mean roughly
+    -- o'clock, quarter past, half past, quarter to -- are matched loosely. A
+    time off those marks is a time read off a diary, and must match exactly.
+
+    Never raises. A readout preference must not be what fails a lookup.
+    """
+    try:
+        if not isinstance(times, (list, tuple)) or not times:
+            return None
+        if isinstance(wanted, str) or not isinstance(wanted, (list, tuple, set)):
+            return None
+        slots = [_hhmm_to_minutes(t) for t in times]
+        picks = set()
+        for w in wanted:
+            wm = _hhmm_to_minutes(w)
+            if wm is None:
+                continue
+            # See the docstring: an on-the-mark time is approximate speech, a
+            # time off it is quoted from a diary and gets no tolerance at all.
+            _tol = tolerance_min if (wm % 60) in _SPOKEN_MINUTE_MARKS else 0
+            best, best_d = None, None
+            for i, sm in enumerate(slots):
+                if sm is None:
+                    continue
+                d = abs(sm - wm)
+                if d > _tol:
+                    continue
+                # Strictly-less keeps the EARLIER slot on an exact tie.
+                if best_d is None or d < best_d:
+                    best, best_d = i, d
+            if best is not None:
+                picks.add(best)
+        if len(picks) != 1:
+            return None
+        return picks.pop()
+    except Exception:
+        logger.exception("[slot_followup] nearest_time_index failed")
+        return None
+
+
 def resolve_requested_time(
     text: str,
     remaining: List[Dict[str, Any]],
@@ -1138,11 +1246,31 @@ def resolve_requested_time(
             soft_hits[0], available_days, text,
         )
 
-    candidates = _candidate_hhmm_from_text(t)
-    time_hits = [s for s in remaining if s.get("time") in candidates]
-    if len(time_hits) == 1:
+    # N-2. Two changes, one defect (northgate CA82c05845, 9 Sep 2026).
+    #
+    # THE PARSER. `_candidate_hhmm_from_text` reads the WORD form ("at twelve")
+    # and returns nothing at all for every DIGIT form -- "at 12", "12 o'clock",
+    # "any slots at 12" all yield []. So this path could not match the caller's
+    # time even when the diary held it exactly. `requested_clock_times` is D8's
+    # parser, replayed over 2,509 stored caller turns with zero inventions, and
+    # it reads all of them. Unioned rather than swapped: the old reader is the
+    # only consumer of that function and still contributes its word forms.
+    #
+    # THE MATCHING. Exact equality against a 50-minute grid -- see
+    # NEAREST_TIME_TOLERANCE_MIN. "at 12" now reaches 12:10.
+    #
+    # The "exactly one" discipline is unchanged and still lives in
+    # `nearest_time_index`, so a 12-hour twin straddling two real slots
+    # declines here exactly as it did before.
+    candidates = list(_candidate_hhmm_from_text(t))
+    try:
+        candidates += [c for c in requested_clock_times(t) if c not in candidates]
+    except Exception:
+        logger.exception("[slot_followup] requested_clock_times failed in resolve")
+    _idx = nearest_time_index([s.get("time") for s in remaining], candidates)
+    if _idx is not None:
         return _reject_if_caller_named_another_day(
-            time_hits[0], available_days, text,
+            remaining[_idx], available_days, text,
         )
     return None
 
@@ -3504,18 +3632,13 @@ def _pin_requested_time_index(
     times = day.get("slot_times") if isinstance(day, dict) else None
     if not isinstance(times, list) or not times:
         return chosen
-    hits = [i for i, t in enumerate(times) if str(t or "")[:5] in wanted]
-    if len(hits) != 1:
-        # 0 -- the caller's time is not on this day, which is ordinary.
-        # 2+ -- an unresolved 12-hour twin; see the docstring.
-        if len(hits) > 1:
-            logger.info(
-                "[slot_followup] declining to pin a requested time -- %r "
-                "matches %d slots on %s, so which one was meant is unknowable "
-                "here (D8)", wanted, len(hits), day.get("date"),
-            )
+    # N-1. Was exact string equality, which on a 50-minute grid meant a caller
+    # naming a round hour matched nothing -- see NEAREST_TIME_TOLERANCE_MIN.
+    # The decline rules live in `nearest_time_index` now, shared with
+    # `resolve_requested_time`, which had the identical bug.
+    idx = nearest_time_index(times, wanted)
+    if idx is None:
         return chosen
-    idx = hits[0]
     if idx in chosen:
         return chosen                      # already being spoken
     keep = [i for i in chosen if i != idx][: max(0, limit - 1)]
