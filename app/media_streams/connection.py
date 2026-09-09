@@ -1672,6 +1672,92 @@ _CLINIC_Q_SIGNALS: tuple = (
     "alcester or reditch",
 )
 
+#: `v3_caller_intent` -> the three intents its readers actually branch on.
+#: Anything else the classifier returns (NAMED_DAY, SYMPTOM, an FAQ, a slot
+#: pick) is NOT an answer to "what does this caller want" and must leave the
+#: stored intent alone -- a caller who asked to cancel and then says "Friday
+#: at ten" has not become a booking.
+_V3_INTENT_FROM_HOLD = {
+    "cancel_req": "cancel",
+    "reschedule_req": "reschedule",
+    "book_new": "booking",
+}
+
+
+def _v3_record_caller_intent(session: dict, utterance: str) -> None:
+    """Record what the caller asked for, from their own words. Never raises.
+
+    theorem_v3 CAffb37870, 9 Sep 2026 02:50, on the live line. The caller
+    asked to cancel and was then asked to pick a slot:
+
+        02:50:31.8  caller: 'um would you like to cancel my appointment'
+        02:50:32.5  situational head (cancel_req)        <- classified CORRECTLY
+        02:50:42.1  caller: 'uh your ooster clinic'
+        02:50:42.8  Haiku resolved location: alcester, intent=BOOKING
+        02:50:43.0  Susie:  'Is there a particular day or time that works
+                             best for you?'
+
+    `v3_caller_intent` has EIGHT readers in this file and every one of them
+    defaults to "booking" when it is unset. It had TWO writers, and both are
+    too late or too narrow to have run here:
+
+      * the intent-pivot block, which lives under `elif _v3_loc_answering:`
+        and so only sees a caller who says "cancel" WHILE ANSWERING the
+        location question. On turn 1 that branch does not run; on turn 2 the
+        caller said only a place name. It never fired.
+      * the booking-ack block, which infers the intent by matching
+        "no problem at all" against SUSIE'S OWN last reply -- the exact
+        pattern [[write-gates-match-one-literal]] records as costing five
+        fixes here, and one the hold-speech dedupe is now designed to remove
+        from that reply.
+
+    So the ordinary shape of a cancel -- state it up front, then answer the
+    clinic question with a place name -- wrote nothing, and eight readers took
+    the default. The caller was asked to choose an appointment slot while
+    trying to cancel one.
+
+    THE INTENT WAS ALREADY KNOWN. `classify_intent` had it right at 02:50:32,
+    600ms into the call, and it is strictly better than the pivot block's bare
+    substring set: it requires a corroborator, so "cancel" alone does not
+    match, and it read the mangled 'would you like to cancel my appointment'
+    correctly. This records what that classifier already decided instead of
+    asking a third time in a third way.
+
+    NEVER DOWNGRADES. "booking" cannot overwrite a stored cancel or
+    reschedule. A caller cancelling one appointment often books another in the
+    same breath, and the readers below use this to decide whether a phone
+    number is a LOOKUP KEY or a contact detail -- getting that backwards
+    deletes the wrong appointment.
+    """
+    try:
+        from app.hold_speech import classify_intent as _classify_intent
+        _hits = _classify_intent(utterance or "", _last_bot_text(session))
+    except Exception:  # pragma: no cover - intent must never break a call
+        return
+    if not _hits:
+        return
+    _mapped = _V3_INTENT_FROM_HOLD.get(getattr(_hits[0], "value", ""))
+    if not _mapped:
+        return
+    if _mapped == "booking" and session.get("v3_caller_intent") in (
+        "cancel", "reschedule"
+    ):
+        return
+    if session.get("v3_caller_intent") != _mapped:
+        logger.info(
+            "[ms_conn v3] caller intent = %s (from %r)", _mapped, utterance[:60]
+        )
+    session["v3_caller_intent"] = _mapped
+
+
+def _last_bot_text(session: dict) -> str:
+    """The most recent assistant line, or "". Pure."""
+    for _m in reversed(session.get("conversation_history") or []):
+        if _m.get("role") == "assistant":
+            return _m.get("content", "") or ""
+    return ""
+
+
 _LOC_RUNG3_DTMF: str = (
     "No problem at all — on your keypad, just press 1 for Awlstuh, "
     "or 2 for Redditch."
@@ -10464,6 +10550,13 @@ class WebSocketCallHandler:
                         if self.session.get("v3_location_q_active"):
                             self.session["_location_q_patient_spoke"] = True
 
+                        # ONE OWNER for "what does this caller want".
+                        # Runs before the gate reads it below and before
+                        # the location branches -- see
+                        # `_v3_record_caller_intent` for the live call
+                        # where eight readers took the "booking" default
+                        # and a cancel was asked to pick a slot.
+                        _v3_record_caller_intent(self.session, utterance)
                         _v3_gate_fired = (
                             self.session.get("v3_booking_intent", False)
                             and not self.session.get(
