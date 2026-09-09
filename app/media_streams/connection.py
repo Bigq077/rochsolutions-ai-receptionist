@@ -2806,6 +2806,56 @@ _KNOWN_QUESTION_PHRASES = [
 ]
 
 
+#: Sentence boundaries, as every predicate in this file has always split them.
+_SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?])\s+|\n+')
+
+
+def _question_sentence(text: str) -> str:
+    """The LAST sentence of `text` that is itself a question, or "". PURE.
+
+    Theorem, 9 Sep 2026 03:28:24, on the live line. Susie asked
+    `_V3_PHONE_CONFIRM_Q` -- a question, then the instruction that qualifies it
+    ("...just say 'use this number'.") -- and six seconds later the watchdog logged "question-less turn reached the
+    arming family" and armed "Anything else you'd like to know?" over it — the
+    T-3 nudge overwrites `last_question`, so the caller's outstanding question
+    was replaced by an open invitation.
+
+    Every "did this turn ask a question?" predicate in this file read only the
+    TAIL of the text — `t.endswith("?")` in `_is_question_worth_storing` and in
+    `on_tts_finished`, `_prompt_contains_question(LAST SENTENCE)` at the
+    watchdog arm. `_V3_PHONE_CONFIRM_Q` closes on the instruction that follows
+    its question, so all three answered "no" about a question, nothing was
+    stored in `last_question`, and the BACKSTOP that exists for exactly this
+    case could not see an outstanding question to protect. The T-3 branch was
+    then reached by construction, not by judgement.
+
+    `_LOC_RUNG2_CONFIRM` has the identical shape ("...just say 'use this
+    clinic'.") and was already worked around at the arming site with a
+    `v3_awaiting_use_this_clinic` special case. Two instances of one defect is
+    the signal that the SHAPE of the predicate is wrong, not that a third
+    string needs its own branch — the same lesson as the sentence matchers.
+
+    Returns the question SENTENCE rather than a bool because both callers need
+    it: spec W says a re-ask replays one sentence, not the whole paragraph, and
+    the sentence it must replay is the one that asked.
+    """
+    if not text:
+        return ""
+    for part in reversed(_SENTENCE_SPLIT_RE.split(str(text).strip())):
+        stripped = part.strip()
+        if stripped.endswith("?"):
+            return stripped
+    return ""
+
+
+def _turn_asks_a_question(text: str) -> bool:
+    """True when ANY sentence of the turn is a question. PURE.
+
+    The whole turn's speech, not its last chunk — see `_question_sentence`.
+    """
+    return bool(_question_sentence(text))
+
+
 def _is_question_worth_storing(text: str) -> bool:
     """
     Return True only if text is a real question Susie asked.
@@ -2819,7 +2869,10 @@ def _is_question_worth_storing(text: str) -> bool:
     for q in _KNOWN_QUESTION_PHRASES:
         if q in t:
             return True
-    if t.endswith("?"):
+    # D4: ANY sentence, not just the last one. A question followed by the
+    # instruction that qualifies it is still a question — see
+    # `_question_sentence` for the live call this cost.
+    if _turn_asks_a_question(text):
         return True
     return False
 
@@ -4874,7 +4927,7 @@ class SilenceHandler:
                 self._watchdog_grace_until,
             )
         is_question = (
-            t.endswith("?") or
+            _turn_asks_a_question(t) or
             any(p in t.lower() for p in [
                 "what brings", "how long", "does that", "been with us",
                 "work best", "full name", "reach you", "which would",
@@ -4891,12 +4944,7 @@ class SilenceHandler:
                     # a full multi-sentence FAQ response (e.g. "The clinic is open Mon–Fri
                     # 8:30am–9pm. Would you like to book?" → re-ask = "Would you like to
                     # book?" not the whole opening-hours paragraph).
-                    import re as _re
-                    _parts = _re.split(r'(?<=[.!?])\s+|\n+', t)
-                    _q = next(
-                        (p.strip() for p in reversed(_parts) if p.strip().endswith('?')),
-                        t,
-                    )
+                    _q = _question_sentence(t) or t
                     self.last_question = _q
                     logger.debug("[ms_silence] on_tts_finished: last_question set → %r", _q[:60])
                 else:
@@ -16301,8 +16349,14 @@ class WebSocketCallHandler:
                     (p.strip() for p in reversed(_parts_w) if p.strip()),
                     _t_str_w,
                 )
+                # D4: the tail test stays (it also matches question WORDS with
+                # no "?"), widened by the whole-turn one. `_V3_PHONE_CONFIRM_Q`
+                # and `_LOC_RUNG2_CONFIRM` both end on the instruction that
+                # follows their question, and so read as question-less turns.
                 _has_question_w = bool(
-                    _last_sent_w and _sh_w._prompt_contains_question(_last_sent_w)
+                    _turn_asks_a_question(_t_str_w)
+                    or (_last_sent_w
+                        and _sh_w._prompt_contains_question(_last_sent_w))
                 )
                 # Fix A: while the clinic question is still pending, ALWAYS arm
                 # the location ladder — even when the LLM's re-ask ends on a
@@ -16332,7 +16386,9 @@ class WebSocketCallHandler:
                         # the fire path's rung-1 alcester constant (line ~2854).
                         _arm_q_w = _LOC_RUNG2_CONFIRM
                     elif _has_question_w:
-                        _arm_q_w = _last_sent_w
+                        # The sentence that ASKED, when there is one - spec W
+                        # still forbids replaying the whole paragraph.
+                        _arm_q_w = _question_sentence(_t_str_w) or _last_sent_w
                     else:
                         # Location active but last sentence is a statement — seed
                         # last_question with the canonical clinic question so any
