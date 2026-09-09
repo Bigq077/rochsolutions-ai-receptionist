@@ -209,6 +209,69 @@ def _named_weekdays(preference: str) -> List[int]:
     return [wd for name, wd in _WEEKDAY_NAME_TO_INDEX.items() if name in pref]
 
 
+def restore_named_day(preference: str, after_date: str, session: Any) -> str:
+    """Put the weekday the CALLER named back into the preference string.
+
+    `_filter_tuples_by_preference` already filters by a named weekday, through
+    `_named_weekdays` above -- the very helper the Acuity reader uses, and Acuity
+    is 0-for-44 on this defect across the stored corpus while the Google Calendar
+    path runs at ~10%. It never fires there because it reads `date_hint`, and the
+    template prompt deliberately forbids the weekday from living there ("Never
+    bury ... a specific date inside date_hint"). The weekday's only carrier on
+    that path is `day_window=1`, which the model is free to omit -- and when it
+    does, the day the caller named is erased with nothing between them and a
+    three-day readout. northgate CA420ea8c4, 9 Sep 2026, judge 2: "a wednesday at
+    12 please", answered with Wednesday, Thursday and Friday.
+
+    TWO INDEPENDENT SIGNALS MUST AGREE, because neither is trustworthy alone.
+    Replayed over 375 real caller utterances, `day_preference` banks a weekday the
+    caller RULED OUT ("monday doesn't work", "not tuesday"), and on "the wednesday
+    instead of the tuesday" it banks the WRONG one of the two. `after_date` is the
+    model's own resolution of the same words -- different evidence, not a second
+    copy of the same. Requiring the captured weekday to BE the weekday of
+    after_date rejects every one of those: on a rule-out the model is hunting
+    alternatives and does not aim after_date at the refused day, and on "wednesday
+    instead of tuesday" it aims at the Wednesday while the capture says tuesday.
+
+    Returns `preference` UNCHANGED whenever the two disagree, whenever the model
+    named a weekday itself (its word wins), or on any malformed input. It only
+    ever NARROWS: `_filter_tuples_by_preference` drops a day filter that matches
+    nothing, so a caller naming a day the diary cannot serve is no worse off.
+
+    KNOCK-ON, deliberate. `_pref` is not rebound between here and the
+    named-weekday WIDEN arm further down (`_pref_weekdays = _named_weekdays(_pref)`),
+    which widens once when the requested day is absent from the window. That arm
+    was gated on the weekday being in `date_hint` and so was dark on exactly the
+    calls this guard is for. Restoring the weekday arms it, which is why this
+    fix reaches the "day absent entirely" cases and not only the diluted ones.
+    The cost is one extra Google round trip on those calls, and only those.
+
+    NOT a contradiction of that arm's "trust the caller over the model's
+    arithmetic" rule. There the weekday comes from `date_hint` -- the model
+    quoting the caller -- and is trusted over `after_date`. Here it comes from
+    `day_preference`, which the corpus shows banks refused and wrong days, so it
+    is trusted only when `after_date` independently corroborates it. Both rules
+    say the same thing: weight the signal by how reliable it has proven.
+
+    Never raises -- a readout preference must not be what fails a lookup.
+    """
+    pref = preference or ""
+    try:
+        if not after_date or _named_weekdays(pref):
+            return pref
+        captured = str((session or {}).get("day_preference") or "").strip().lower()
+        wd = _WEEKDAY_NAME_TO_INDEX.get(captured)
+        if wd is None:
+            return pref
+        from datetime import date as _rnd_date
+        if _rnd_date.fromisoformat(str(after_date).strip()).weekday() != wd:
+            return pref
+        return f"{captured} {pref}".strip()
+    except Exception:
+        logger.exception("[ms_tools] named-day restore failed")
+        return pref
+
+
 def _spoken_starts_for(session: Dict[str, Any]) -> set:
     """The ISO starts this caller has already HEARD, or an empty set.
 
@@ -6670,6 +6733,18 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
                 "_exec_check_availability (gcal): could not parse after_date=%r — ignoring: %r",
                 after_date_str, _ae,
             )
+
+    # The caller named a weekday and the model dropped day_window -- see
+    # `restore_named_day`. Declines unless after_date independently agrees.
+    _pref_before = _pref
+    _pref = restore_named_day(_pref, after_date_str, session)
+    if _pref != _pref_before:
+        logger.info(
+            "[ms_tools] named-day restored: day_preference=%r agrees with "
+            "after_date=%s but day_window was %r -- preference %r -> %r",
+            (session or {}).get("day_preference"), after_date_str,
+            args.get("day_window"), _pref_before, _pref,
+        )
 
     w_end = w_start + timedelta(days=day_window_days)
 
