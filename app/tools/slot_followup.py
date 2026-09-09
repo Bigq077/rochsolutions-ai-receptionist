@@ -4848,6 +4848,7 @@ def _acknowledge_day_pick(session: Dict[str, Any], user_text: str) -> str:
             Intent.SLOT_PICKED,
             subject=subject,
             index=len(session.get("used_fillers") or []),
+            avoid=str(session.get("last_bot_prompt") or ""),          # D5
         )
     except Exception:  # pragma: no cover - defensive
         return ""

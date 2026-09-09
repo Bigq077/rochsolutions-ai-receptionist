@@ -1187,7 +1187,9 @@ INTENT_HEADS = {
 }
 
 
-def render_intent_head(intent, *, subject: str = "", index: int = 0) -> str:
+def render_intent_head(
+    intent, *, subject: str = "", index: int = 0, avoid: str = ""
+) -> str:
     """One head for ``intent``, rotated by ``index``. PURE.
 
     The subject-free member of a pool is a FALLBACK, not a rotation partner.
@@ -1198,6 +1200,22 @@ def render_intent_head(intent, *, subject: str = "", index: int = 0) -> str:
     Saturday was right there. Naming what they asked for is the entire point of
     a situational head, so the choice is made among the members that CAN carry
     a subject whenever one is available, and among the rest when none is.
+
+    ``avoid`` is what the assistant said last. The rotation counts only the
+    heads WE have spoken -- ``len(session["used_fillers"])`` -- and the model's
+    own openers are not in that count, so on the demo line at 03:35 on 9 Sep
+    2026 the caller heard
+
+        03:35:44  head:   "No problem at all -"
+        03:35:58  model:  "No problem at all."
+
+    CANCEL_REQ's pool holds both that phrase and "Yes, no problem -", so a
+    second wording was available and the rotation had no way to know it was
+    wanted. This gives it one. It only ever CHOOSES differently: nothing the
+    model wrote is stripped, edited or suppressed, and matching happens against
+    this module's own constants rather than against a literal lifted out of
+    model speech. When every member has been used it returns the rotation's own
+    answer -- going quiet is worse than repeating.
     """
     pool = INTENT_HEADS.get(intent) or []
     if not pool:
@@ -1206,6 +1224,19 @@ def render_intent_head(intent, *, subject: str = "", index: int = 0) -> str:
     without = [h for h in pool if "{subject}" not in h]
     usable = (with_subject if (subject and with_subject) else without) or pool
     head = usable[index % len(usable)]
+    if len(usable) > 1:
+        try:
+            recent = (avoid or "").lower()
+        except Exception:  # pragma: no cover - a head must never break a call
+            recent = ""
+        if recent:
+            for step in range(len(usable)):
+                candidate = usable[(index + step) % len(usable)]
+                probe = candidate.replace("{subject}", subject or "").strip()
+                probe = probe.rstrip(EM_DASH + " -").strip().lower()
+                if probe and probe not in recent:
+                    head = candidate
+                    break
     if "{subject}" in head:
         # Only reachable when the pool has nothing else -- keep the guard, since
         # "Let me see what  looks like" is the failure it exists to prevent.

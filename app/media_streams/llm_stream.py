@@ -5150,6 +5150,10 @@ class LLMStream:
                         _hs_intent,
                         subject=_subject_for(_hs_utterance),
                         index=len(session.get("used_fillers") or []),
+                        # D5. The rotation counts our heads, not the model's
+                        # own openers, so it handed back "No problem at all -"
+                        # fourteen seconds after the model had said it.
+                        avoid=_last_assistant_text(session),
                     )
         except Exception:  # pragma: no cover - a head must never break a call
             logger.warning("[ms_llm] situational head unavailable", exc_info=True)
