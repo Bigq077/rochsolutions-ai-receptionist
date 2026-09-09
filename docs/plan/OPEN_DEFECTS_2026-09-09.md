@@ -394,15 +394,26 @@ All three need a phone, and one needs the Render dashboard:
 3. **D7** — re-paste the service-account JSON in Render. Still open; the
    demo-service log showed it again on both 9 Sep calls.
 
-**Nothing here has been promoted to `production`.** Every commit is on
-`latency-eval`, which serves the demo line only. Both gates are now closed, so
-promotion is a decision rather than a blocker:
-
-    git push origin origin/latency-eval:production      # revert target f9793204
-
-Note what the three live clinics are running while it waits: `f9793204`, which
-contains D1, D3, D4, D5 and N2 — including the misheard-cancel defect that cost
-a live caller a `loop` this morning.
+> ⚠️ **SUPERSEDED 2026-09-09 evening. This section said "nothing has been
+> promoted" and named `f9793204` as the revert target. Both are now wrong, and
+> a stale revert target is worse than none.**
+>
+> `production` was promoted twice on the owner's green light and is now at
+> **`8e838f0f`**, identical to `latency-eval`:
+>
+> | step | production | revert to |
+> |---|---|---|
+> | promotion 1 | `5f1003c9` → `c5d24da6` | `5f1003c9` |
+> | promotion 2 | `c5d24da6` → `8e838f0f` | `c5d24da6` |
+>
+> `5f1003c9` undoes the whole day; `c5d24da6` undoes only the clinical fix.
+> The three live clinics now carry D8, the named-day guard, the nearest-time
+> matcher, the Monday fix and the WHOSE SYMPTOM IS IT rule.
+>
+> Verified on the demo line at 23:08 on build `8e838f0f`: the clinical
+> acknowledgement is general ("ankles can be tricky to get fully right — worth
+> having Priya take a proper look"), a named weekday returns that weekday, and
+> ten past twelve is offered to a caller who asked for twelve.
 
 ---
 
