@@ -3712,13 +3712,153 @@ def _pin_requested_time_index(
     return out
 
 
+def _day_iso_of(day: Dict[str, Any]) -> str:
+    """The calendar date a day payload is about, "" if it cannot be established.
+
+    `date` is what four readers already treat as the day's identity, so it is
+    read first; a payload assembled without it still carries the date on every
+    slot start, and a readout preference that fails a lookup is the one thing
+    this file will not do.
+    """
+    if not isinstance(day, dict):
+        return ""
+    value = str(day.get("date") or "")[:10]
+    if len(value) == 10:
+        return value
+    slots = day.get("slots")
+    if isinstance(slots, list):
+        for slot in slots:
+            start = str((slot or {}).get("start") or "")[:10]
+            if len(start) == 10:
+                return start
+    return ""
+
+
+def _prefer_unheard_clock_times(
+    session: Dict[str, Any], day: Dict[str, Any], chosen: List[int], limit: int
+) -> List[int]:
+    """On a day the caller has NOT heard, prefer clock times they have not heard.
+
+    T1, CA5e14516b (9 Sep 2026, northgate, build 8e838f0f), judge 2, tagged
+    `dead_end` + `booking_error`:
+
+        caller: "do you have anything wednesday around 12"
+        Susie : Wednesday 16th -- eight in the morning / ten past twelve /
+                twenty past four
+        caller: "what about monday at 12"
+        Susie : Monday 14th   -- eight in the morning / ten past twelve /
+                twenty past four
+
+    Three times, twice, and the second readout carried no information at all.
+    He stopped asking.
+
+    B-116's "already heard" is a set of DATED ISO starts, so `2026-09-16T08:00`
+    and `2026-09-14T08:00` are different members of it and its unheard filter
+    can never carry across a day boundary: on a fresh day every slot is
+    unheard, the pool is the whole day, and `_spread` picks by position. On
+    northgate's uniform 50-minute grid the same positions are the same clock
+    times, so every day reads identically. PRE-EXISTING -- the raw selection
+    was [0, 10, 11] on both days before the D8 pin touched it, so this is not
+    the 9 Sep fixes' bill.
+
+    A WRAPPER, not a widening. B-116 is the single owner of "how many, and
+    which" for every readout on every clinic and the file's own comment says
+    that widening its rule in place is how you break a readout nobody was
+    looking at. This is the third wrapper of the same shape, beside
+    `_pin_accepted_index` and `_pin_requested_time_index`.
+
+    THE SAME-DAY RULE IS UNTOUCHED. When the day being read is one the caller
+    has already heard, this returns `chosen` unchanged -- byte-identical -- so
+    "what else have you got that day" keeps B-116/B-117/B-119 exactly as they
+    are. It only ever fires on a day boundary, which is the only place the
+    defect lives.
+
+    "SOONER" IS STILL THE OPPOSITE QUESTION. B-137/B-142: a caller who asked
+    for the earliest appointment wants the earliest time on every day they are
+    offered, repeated clock times and all, so this stands down for them rather
+    than pushing the day's real earliest out of the readout.
+
+    IT PREFERS, IT DOES NOT WITHHOLD. B-119 declines to pad a short unheard
+    list back up to `limit`, because there the padding speaks a time the caller
+    has just been told about and contradicts the sentence before it. Nothing of
+    the sort is true across days: every slot on a fresh day is a bookable
+    appointment this caller has never been offered, and dropping one to avoid a
+    clock-time coincidence would cost them a real option. So a short preferred
+    pool is filled back up from the rest of the day.
+    """
+    if not isinstance(session, dict) or not isinstance(day, dict):
+        return chosen
+    if limit < 1 or not chosen:
+        return chosen
+    slots = day.get("slots")
+    if not isinstance(slots, list) or not slots:
+        return chosen
+    n = len(slots)
+    # The desynchronised-arrays case is B-116's, and its answer there is a
+    # chronological readout rather than a cleverer one. Speaking a label from
+    # one slot against another's time names an appointment the caller cannot
+    # book, so a day that cannot prove its arrays are parallel does not get
+    # reordered here either.
+    for key in ("slot_times", "slot_times_spoken"):
+        value = day.get(key)
+        if isinstance(value, list) and len(value) != n:
+            return chosen
+    if caller_wants_soonest(session):
+        return chosen
+    try:
+        spoken = spoken_starts_for_offer(session)
+    except Exception:      # never let a readout fail on its own preference
+        return chosen
+    if not spoken:
+        return chosen      # the first lookup of a call -- nothing to differ from
+    today = _day_iso_of(day)
+    if not today or today in {str(s)[:10] for s in spoken}:
+        # A day the caller has already heard. B-116 owns this case entirely.
+        return chosen
+    heard_clocks = {str(s)[11:16] for s in spoken if len(str(s)) >= 16}
+    if not heard_clocks:
+        return chosen
+
+    def _clock(i: int) -> str:
+        try:
+            return str((slots[i] or {}).get("start") or "")[11:16]
+        except (IndexError, TypeError, AttributeError):
+            return ""
+
+    fresh = [i for i in range(n) if _clock(i) and _clock(i) not in heard_clocks]
+    if not fresh:
+        # Every clock time on this day was heard on another one. There is
+        # nothing to prefer, and withholding the day would be worse than
+        # repeating it.
+        return chosen
+    if all(_clock(i) not in heard_clocks for i in chosen):
+        return chosen      # B-116 already picked clean -- do not disturb it
+    if len(fresh) >= limit:
+        out = _spread(slots, fresh, limit)
+    else:
+        # Prefer, do not withhold: fill back up from the day's remaining times.
+        rest = [i for i in range(n) if i not in set(fresh)]
+        out = sorted(set(fresh) | set(_spread(slots, rest, limit - len(fresh))))
+    logger.info(
+        "[slot_followup] %s is a day this caller has not heard, and B-116 had "
+        "picked %r -- the same clock times as another day (T1). Reading %r "
+        "instead; heard clocks %s",
+        today, [_clock(i) for i in chosen], [_clock(i) for i in out],
+        sorted(heard_clocks),
+    )
+    return out
+
+
 def choose_presented_indices(
     session: Dict[str, Any], day: Dict[str, Any], limit: int
 ) -> List[int]:
     """Which positions in a day's parallel slot arrays should be SPOKEN.
 
-    Wrapper: picks by the B-116 rule below, then pins the slot the caller has
-    just accepted back in if that rule dropped it. See `_pin_accepted_index`.
+    Wrapper, applied outwards: picks by the B-116 rule below; prefers clock
+    times unheard when the DAY is one the caller has not heard (T1,
+    `_prefer_unheard_clock_times`); pins a time they asked for (D8,
+    `_pin_requested_time_index`); then pins the slot they have ACCEPTED
+    (`_pin_accepted_index`), which gets the last word on what to displace.
 
     Returns CHRONOLOGICAL indices, at most `limit`, preferring times this
     caller has not already heard.
@@ -3758,7 +3898,12 @@ def choose_presented_indices(
     return _pin_accepted_index(
         session, day,
         _pin_requested_time_index(
-            session, day, _choose_presented_times(session, day, limit), limit,
+            session, day,
+            _prefer_unheard_clock_times(
+                session, day, _choose_presented_times(session, day, limit),
+                limit,
+            ),
+            limit,
         ),
         limit,
     )
