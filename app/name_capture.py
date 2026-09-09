@@ -37,7 +37,11 @@ NAME_FALSE_POSITIVES = frozenset({
     "thanks", "thank", "hi", "hello", "hey", "now", "just", "that",
     "this", "then", "so", "and", "but", "the", "a", "an",
     # Spec T amendment additions
-    "brilliant", "lovely", "noted", "awlstuh", "redditch",
+    # D1: "alcester" alongside "awlstuh". The prompt used to teach only the
+    # phonetic spelling, so only that one was ever seen here; the bare
+    # name-confirm pattern matches "<Titlecase>, " and would otherwise store
+    # a caller answering "Alcester, perfect." as a patient called Alcester.
+    "brilliant", "lovely", "noted", "awlstuh", "alcester", "redditch",
     "monday", "tuesday", "wednesday", "thursday", "friday",
     "saturday", "sunday",
     # CODE SPEC AB: time-of-day words — prevent slot-presentation phrases like

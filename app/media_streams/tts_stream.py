@@ -337,6 +337,49 @@ _TTS_SUBSTITUTIONS_OPENAI: list[tuple] = [
 ]
 
 
+#: The inverse of the pronunciation rules above, for READERS rather than for
+#: the synthesiser: the obs transcript, the judge, and the owner's summaries.
+#:
+#: D1. A phonetic hint is a fact about how a word is SAID, and it has no
+#: business on the page. Measured over the stored corpus on 9 Sep 2026, of the
+#: Theorem calls the judge scored 1-5 whose evidence mentions the clinic or the
+#: location, 24 are the judge reading "Awlstuh" and reporting a "garbled clinic
+#: name" when nothing had gone wrong -- about 19% of every low score Theorem
+#: has, and an artefact rather than a defect.
+#:
+#: The model's own speech is already recorded pre-substitution, so this exists
+#: for the OTHER producer: the location-ladder constants in connection.py are
+#: written phonetically on purpose (their own comment says so -- the DTMF
+#: handler and the clinic binding key off that wording) and are queued to TTS
+#: already carrying it. Rewriting them would mean changing strings several
+#: guards match on; rewriting what a READER sees costs nothing on the call path
+#: and cannot change a single spoken syllable.
+#:
+#: Pairs, not regexes, because an inverse must be exact. Every entry here is
+#: checked against the forward table by
+#: `tests/regression/test_d1_pronunciation_stays_in_the_tts_layer.py`, so a new
+#: pronunciation rule with no inverse fails rather than quietly leaking.
+_TTS_SUBSTITUTIONS_INVERSE: list[tuple] = [
+    (_re.compile(r"\bAwlstuh\b", _re.IGNORECASE), "Alcester"),
+]
+
+
+def undo_tts_substitutions(text: str) -> str:
+    """Put a spoken-form pronunciation hint back into its written spelling.
+
+    For anything that READS Susie's words rather than says them. Never raises:
+    a transcript is worth more slightly wrong than missing.
+    """
+    if not text:
+        return text
+    try:
+        for pattern, replacement in _TTS_SUBSTITUTIONS_INVERSE:
+            text = pattern.sub(replacement, text)
+    except Exception:  # pragma: no cover - a record must never break a call
+        return text
+    return text
+
+
 def _apply_tts_substitutions_elevenlabs(text: str) -> str:
     """
     Apply ElevenLabs-specific substitutions before synthesis.

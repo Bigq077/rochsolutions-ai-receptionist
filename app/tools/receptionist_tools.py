@@ -6221,7 +6221,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
                     "The caller has not yet confirmed their clinic. "
                     "Do NOT call check_availability until the caller has stated "
                     "which clinic they want (Alcester or Redditch). "
-                    "Ask: 'Which clinic would you like — Awlstuh or Redditch?' "
+                    "Ask: 'Which clinic would you like — Alcester or Redditch?' "
                     "and wait for their answer. Once they confirm, call "
                     "check_availability with their confirmed location."
                 ),

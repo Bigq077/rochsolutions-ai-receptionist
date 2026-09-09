@@ -2123,7 +2123,11 @@ _LEADING_AFFIRMATION_RES = [
     re.compile(r"^of course\s*[—\-,]?\s*",       re.IGNORECASE),
     re.compile(r"^no problem\s*[—\-,]?\s*",      re.IGNORECASE),
     re.compile(r"^not a problem\s*[—\-,]?\s*",   re.IGNORECASE),
-    re.compile(r"^awlstuh,?\s*perfect\.?\s*",    re.IGNORECASE),
+    # D1: both spellings. The prompt taught "Awlstuh, perfect." and now
+    # teaches "Alcester, perfect." -- the phonetic form stays because the
+    # stored corpus and any in-flight session still contain it, and the
+    # canonical one is added because that is what she writes from here.
+    re.compile(r"^(?:awlstuh|alcester),?\s*perfect\.?\s*", re.IGNORECASE),
 ]
 
 
@@ -15687,6 +15691,19 @@ class WebSocketCallHandler:
                     _obs_display_text = _strip_marker_obs(_obs_chunk_text)
                 except Exception:  # pragma: no cover - never break the record
                     _obs_display_text = _obs_chunk_text
+                # D1. The location-ladder constants are written phonetically on
+                # purpose and are queued already carrying it, so the model
+                # being taught the canonical spelling is only half the job --
+                # the judge still reads "Awlstuh" and reports a garbled clinic
+                # name. Undone for the READER only: `chunk_text` above is what
+                # is synthesised and is untouched, so this cannot change a
+                # spoken syllable.
+                try:
+                    from .tts_stream import undo_tts_substitutions as _obs_undo
+
+                    _obs_display_text = _obs_undo(_obs_display_text)
+                except Exception:  # pragma: no cover - never break the record
+                    pass
                 _obs_turns.record_assistant(self.session, _obs_display_text)
 
                 # Change C: cancel filler timer; inject 100ms breath gap if
