@@ -252,3 +252,67 @@ def test_only_the_google_calendar_clinics_are_touched():
             f"{earlier} no longer returns before the named-day guard -- a clinic "
             f"that is not on the Google Calendar path can now reach it"
         )
+
+
+# ── CAd7495e58: "wednesday around 12" answered with MONDAY ───────────────────
+# 9 Sep 2026, judge 2, abandoned. A regression introduced by the nearest-time
+# matcher: once "around 12" could resolve at all, it resolved onto whatever day
+# happened to hold that time. Two independent faults, both fixed here.
+def _slot(date, time="12:10"):
+    return {"time": time, "spoken": "ten past twelve in the afternoon",
+            "start": f"{date}T{time}:00+01:00"}
+
+
+_DAYS = [{"date": "2026-09-10", "day_label": "Thursday 10th September"},
+         {"date": "2026-09-14", "day_label": "Monday 14th September"},
+         {"date": "2026-09-16", "day_label": "Wednesday 16th September"}]
+
+
+def test_a_bare_weekday_refuses_a_slot_on_another_day():
+    """`day_named_by_caller` returns None for a BARE weekday -- its docstring
+    defers that as Tier 2. Safe while a bare time could not resolve; not safe
+    once it could. Refusing on a weekday needs no corpus: the worst a false
+    positive does is decline and let the caller be asked again."""
+    from app.tools.slot_followup import resolve_requested_time
+
+    hit = resolve_requested_time(
+        "oh i saw at wednesday around 12", [_slot("2026-09-14")], _DAYS,
+    )
+    assert hit is None, "a Wednesday request was answered with Monday"
+
+
+def test_the_same_time_on_two_days_declines_rather_than_guessing():
+    from app.tools.slot_followup import resolve_requested_time
+
+    hit = resolve_requested_time(
+        "oh i saw at wednesday around 12",
+        [_slot("2026-09-14"), _slot("2026-09-16")], _DAYS,
+    )
+    assert hit is None, "an exact tie across two days must not pick one"
+
+
+@pytest.mark.parametrize("utterance, slots, expect", [
+    # The day they asked for IS the day held -> serve it.
+    ("wednesday around 12",           [_slot("2026-09-16")], "2026-09-16"),
+    # Naming the day they are ACCEPTING must not refuse it.
+    ("wednesday at 12 works",         [_slot("2026-09-16")], "2026-09-16"),
+    # No day named -> the guard says nothing, exactly as before.
+    ("do you have any slots at 12",   [_slot("2026-09-16")], "2026-09-16"),
+    # Two weekdays names neither, so the hit stands (pre-existing behaviour).
+    ("monday or wednesday around 12", [_slot("2026-09-16")], "2026-09-16"),
+])
+def test_the_weekday_refusal_stays_silent_when_it_should(utterance, slots, expect):
+    from app.tools.slot_followup import resolve_requested_time
+
+    hit = resolve_requested_time(utterance, slots, _DAYS)
+    assert hit is not None and hit["start"].startswith(expect)
+
+
+def test_the_weekday_pattern_is_a_real_word_boundary():
+    """Written once as a literal backspace byte (0x08) instead of \b, which
+    compiled fine and matched NOTHING -- the guard was silently inert."""
+    from app.tools.slot_followup import _WEEKDAY_RE
+
+    assert "\x08" not in _WEEKDAY_RE.pattern, "a control byte is in the pattern"
+    assert [m.group(1) for m in _WEEKDAY_RE.finditer("on wednesday please")] == ["wednesday"]
+    assert not _WEEKDAY_RE.search("wednesdayish nonsense words")

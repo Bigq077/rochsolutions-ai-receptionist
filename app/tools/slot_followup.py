@@ -1126,10 +1126,16 @@ def nearest_time_index(
         here, so pin neither. A band word the caller actually said ("at five in
         the evening") has already collapsed the pair upstream.
 
-    Within a single reading, the NEAREST slot wins outright -- two candidates
-    for one stated time is not ambiguity, it is a grid. Ties go to the earlier
-    slot: arbitrary, but deterministic, and unreachable on any grid whose step
-    is not exactly twice the tolerance.
+    Within a single reading the NEAREST slot wins outright -- two candidates at
+    different distances is not ambiguity, it is a grid. But an EXACT TIE
+    declines, and that rule is load-bearing rather than fussy: `remaining` in
+    `resolve_requested_time` spans the whole sweep, so the same clock time on
+    three different days ties three ways. The exact-match version this replaced
+    got that right by accident (`len(time_hits) == 1`), and the first cut of
+    this function took the earliest instead -- which answered "wednesday around
+    12" with MONDAY on CAd7495e58, 9 Sep 2026, judge 2. Declining is the only
+    safe reading of a tie: the caller is asked again, rather than booked into a
+    day they never said.
 
     TOLERANCE SCALES WITH THE CALLER'S OWN PRECISION, and this is the half that
     was nearly wrong. Replaying the real grids surfaced "oh yeah 20 to 10 will
@@ -1156,18 +1162,23 @@ def nearest_time_index(
             # See the docstring: an on-the-mark time is approximate speech, a
             # time off it is quoted from a diary and gets no tolerance at all.
             _tol = tolerance_min if (wm % 60) in _SPOKEN_MINUTE_MARKS else 0
-            best, best_d = None, None
+            best_d, best_idxs = None, []
             for i, sm in enumerate(slots):
                 if sm is None:
                     continue
                 d = abs(sm - wm)
                 if d > _tol:
                     continue
-                # Strictly-less keeps the EARLIER slot on an exact tie.
                 if best_d is None or d < best_d:
-                    best, best_d = i, d
-            if best is not None:
-                picks.add(best)
+                    best_d, best_idxs = d, [i]
+                elif d == best_d:
+                    best_idxs.append(i)
+            # An exact tie is ambiguity -- most often the SAME time on two
+            # different days. See the docstring: decline, never guess.
+            if len(best_idxs) > 1:
+                return None
+            if best_idxs:
+                picks.add(best_idxs[0])
         if len(picks) != 1:
             return None
         return picks.pop()
@@ -1275,6 +1286,45 @@ def resolve_requested_time(
     return None
 
 
+#: Weekday name -> Python weekday index, for the refusal in the guard below.
+_WEEKDAY_NAMES = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+_WEEKDAY_RE = re.compile(r"\b(" + "|".join(_WEEKDAY_NAMES) + r")s?\b", re.I)
+
+
+def _reject_if_another_weekday(
+    hit: Dict[str, Any], text: str
+) -> Optional[Dict[str, Any]]:
+    """Drop a slot that falls on a different weekday from the one named.
+
+    Only fires when the caller named EXACTLY ONE weekday -- naming two ("monday
+    or tuesday") says nothing about which, and naming none says nothing at all.
+    Both keep the hit, which is the behaviour that existed before this.
+    """
+    try:
+        found = {m.group(1).lower() for m in _WEEKDAY_RE.finditer(text or "")}
+        if len(found) != 1:
+            return hit
+        want = _WEEKDAY_NAMES[next(iter(found))]
+        key = _day_key(hit)
+        if not key:
+            return hit
+        from datetime import date as _rw_date
+        if _rw_date.fromisoformat(str(key)[:10]).weekday() == want:
+            return hit
+        logger.info(
+            "[slot_followup] refusing a time on %s -- the caller named %s and "
+            "that is a different weekday (CAd7495e58)",
+            key, next(iter(found)),
+        )
+        return None
+    except Exception:
+        logger.exception("[slot_followup] weekday refusal failed")
+        return hit
+
+
 def _reject_if_caller_named_another_day(
     hit: Dict[str, Any], available_days: Any, text: str,
 ) -> Optional[Dict[str, Any]]:
@@ -1301,7 +1351,18 @@ def _reject_if_caller_named_another_day(
     except Exception:
         return hit          # never let a guard be the thing that fails a lookup
     if not named:
-        return hit
+        # A BARE weekday names no calendar day, so `day_named_by_caller`
+        # returns None -- its docstring calls that Tier 2 and defers it. That
+        # was safe while a bare time could not resolve at all; it stopped being
+        # safe the moment the resolver learned to read "around 12". CAd7495e58,
+        # 9 Sep 2026, judge 2: "wednesday around 12" was answered with "ten past
+        # twelve on MONDAY 14th September is free. Shall I book that in?"
+        #
+        # REFUSING on a weekday is not the same as SELECTING on one, which is
+        # why this does not need the Tier 2 corpus. The worst a false positive
+        # can do is decline and let the caller be asked again; a false negative
+        # books them into a day they never said.
+        return _reject_if_another_weekday(hit, text)
     if _day_key(hit) == named:
         return hit
     logger.info(

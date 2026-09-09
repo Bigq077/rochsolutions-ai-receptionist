@@ -130,9 +130,18 @@ def test_the_tolerance_boundary_is_inclusive():
     assert nearest_time_index(["12:21"], ["12:00"]) is None     # 21
 
 
-def test_nearest_wins_and_ties_go_to_the_earlier_slot():
+def test_nearest_wins_but_an_exact_tie_declines():
+    """A tie is ambiguity, not a coin toss -- and this rule is load-bearing.
+
+    `remaining` in `resolve_requested_time` spans the WHOLE SWEEP, so the same
+    clock time on three days ties three ways. The exact-match version this
+    replaced got that right by accident (`len(time_hits) == 1`); the first cut
+    of the nearest matcher took the earliest instead, and answered "wednesday
+    around 12" with MONDAY on CAd7495e58, 9 Sep 2026, judge 2.
+    """
     assert nearest_time_index(["11:20", "12:10"], ["12:00"]) == 1   # 10 beats 40
-    assert nearest_time_index(["11:40", "12:20"], ["12:00"]) == 0   # tie -> earlier
+    assert nearest_time_index(["11:40", "12:20"], ["12:00"]) is None  # tie
+    assert nearest_time_index(["12:10", "12:10"], ["12:00"]) is None  # same time
 
 
 def test_it_is_a_strict_superset_of_exact_matching():
