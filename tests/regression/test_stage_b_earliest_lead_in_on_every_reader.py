@@ -6,17 +6,32 @@ opened warm and northgate, JV and Vital Edge opened flat on the identical
 request. `_cap_presented_slots` now sets it for the three readers that come
 through it.
 
-That sentence makes TWO claims and both are pinned here:
+TWO TOKENS, because there are two different claims and only one of them is
+about a single day:
 
-  * the caller asked for the soonest  -> `caller_wants_soonest`
-  * the day read out IS the soonest   -> `_earliest_available_date`
+  `earliest`        single_day. "The earliest I have is Monday 14th — ..."
+  `soonest_first`   multi_day.  "Starting with the soonest — Number 1, ..."
 
-The within-day half stays where it was, in `earliest_lead_in_is_true`, which
-this file asserts is still consulted rather than replaced.
+Both require that the caller ASKED for the soonest (`caller_wants_soonest`) and
+that the day being led with IS the soonest in the payload
+(`_earliest_available_date`). The within-day half of the single-day claim stays
+where it was, in `earliest_lead_in_is_true`, which this file asserts is still
+consulted rather than replaced.
 
-The containment claim is the important one: ACUITY MUST NOT MOVE. Stage A routes
-it through `_cap_presented_slots` only on multi_day, so this code cannot run on
-a Theorem payload -- asserted structurally at the bottom rather than trusted.
+They are separate tokens on purpose. The payload reaches the MODEL as well as
+the deterministic builder, and SLOT_FORMATTER's prompt maps `earliest` onto the
+single-day opener -- so putting that value on a three-day payload would invite
+"The earliest I have is ..." over a list of three days if the deterministic
+build ever fell through. B-125 is unchanged and pinned below.
+
+WHAT MOVED FOR THEOREM, stated because the first version of this file claimed
+nothing did. Its SINGLE-day lead-in is still Acuity's own, computed from
+`_ASAP_SIGNALS` against the tool's date_hint, and cannot be reached from here --
+stage A routes Acuity through `_cap_presented_slots` only on multi_day, asserted
+structurally at the bottom. But its MULTI-day readouts do come through here, so
+a Theorem caller whose `day_preference` means "soonest" now hears the ordering
+opener too. That is owner decision 2 -- the lead-in was wanted on every clinic --
+and it is the half of it that a multi-day list can honestly make.
 """
 
 import inspect
@@ -140,15 +155,80 @@ def test_a_lead_in_already_on_the_payload_is_never_overwritten():
 
 
 # ---------------------------------------------------------------------------
-# multi_day never carries one (B-125)
+# multi_day never carries the SINGLE-DAY token (B-125), but it does carry the
+# ordering one -- stage B option B, owner decision 9 Sep
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("kwargs", [{}, {"mode": "multi_day"}])
-def test_multi_day_gets_no_lead_in_however_the_mode_was_reached(kwargs):
+def test_multi_day_never_claims_the_earliest_single_day(kwargs):
+    """B-125 is untouched: "The earliest I have is ..." is a claim about ONE
+    day, and a three-day list has no referent for it. The token that drives
+    that sentence must never appear on a multi-day payload -- including in the
+    model's copy of it, which is why the ordering claim uses its own token."""
     days = [_day(_D1, "Monday", ["09:00"]), _day(_D2, "Tuesday", ["09:00"])]
     out = _cap_presented_slots(_result(days), _soonest(), **kwargs)
     assert out["presentation_mode"] == "multi_day"
+    assert out.get("lead_in") != "earliest"
+
+
+def test_multi_day_says_it_is_ordered_soonest_first_when_asked():
+    days = [_day(_D1, "Monday", ["09:00"]), _day(_D2, "Tuesday", ["09:00"])]
+    out = _cap_presented_slots(_result(days), _soonest())
+    assert out["presentation_mode"] == "multi_day"
+    assert out.get("lead_in") == "soonest_first"
+
+
+@pytest.mark.parametrize("pref", [None, "", "next week", "whenever", "thursday"])
+def test_no_ordering_claim_when_the_caller_did_not_ask_for_the_soonest(pref):
+    days = [_day(_D1, "Monday", ["09:00"]), _day(_D2, "Tuesday", ["09:00"])]
+    out = _cap_presented_slots(_result(days), {"day_preference": pref})
+    assert "lead_in" not in out, pref
+
+
+def test_no_ordering_claim_when_day_one_is_not_the_earliest():
+    """The claim is about the ORDER, so it is false the moment the list does
+    not start at the payload's earliest day."""
+    days = [_day(_D2, "Tuesday", ["09:00"]), _day(_D1, "Monday", ["09:00"])]
+    out = _cap_presented_slots(_result(days), _soonest())
+    assert out["presented_days"][0]["date"] == _D2
     assert "lead_in" not in out
+
+
+def test_the_ordering_opener_reaches_the_sentence():
+    days = [_day(_D1, "Monday", ["09:00"]), _day(_D2, "Tuesday", ["09:00"])]
+    ranked = build_slot_offer(days, lead_in="soonest_first").chunks[0]
+    plain = build_slot_offer(days).chunks[0]
+    assert ranked.startswith("Starting with the soonest —")
+    assert plain.startswith("Here's what we've got coming up —")
+
+
+def test_the_ordering_opener_names_no_date_of_its_own():
+    """Both wordings that named a date repeated the label the very next clause
+    reads out. A date said twice in one breath is worse than one not ranked."""
+    days = [_day(_D1, "Monday 14th September", ["09:00"]),
+            _day(_D2, "Tuesday 15th September", ["09:00"])]
+    opener = build_slot_offer(
+        days, lead_in="soonest_first").chunks[0].split("Number 1")[0]
+    assert "September" not in opener, opener
+    assert opener.count("Monday") == 0, opener
+
+
+def test_an_unknown_lead_in_token_falls_back_to_the_neutral_opener():
+    """Deny by default. A token this builder does not recognise must not be
+    guessed at."""
+    days = [_day(_D1, "Monday", ["09:00"]), _day(_D2, "Tuesday", ["09:00"])]
+    out = build_slot_offer(days, lead_in="something_new").chunks[0]
+    assert out.startswith("Here's what we've got coming up —")
+
+
+def test_the_gate_forwards_only_the_ordering_token():
+    """`llm_stream` must not pass an arbitrary payload value into the opener:
+    the multi-day branch forwards "soonest_first" and nothing else."""
+    from app.media_streams import llm_stream
+
+    src = inspect.getsource(llm_stream)
+    assert 'result.get("lead_in") == "soonest_first"' in src
+    assert "lead_in=_multi_lead," in src
 
 
 # ---------------------------------------------------------------------------

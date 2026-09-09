@@ -262,18 +262,72 @@ Measured, offers in the 21 days to 9 Sep: northgate reaches `single_day` on
 the three the opener can fire on at most one offer in six — and only the subset
 of those where the caller asked for the soonest.
 
-**Closing the rest of it means converging the mode rule, which is a behavioural
-change to three clinics (two of them live patient lines) and belongs to stage C
-or D with a call behind it — not to a lead-in.** Adopting Acuity's
-request-derived rule looks right, since it honours what was asked, but it would
-change which callers hear one day instead of three. That is the same change
-stage A refused in the other direction, and for the same reason.
+**RESOLVED the same day — owner chose option B, and the mode rule stays put.**
 
-**Stage C — one offer record everywhere, and the MODE RULE.** Stage B raised the
-mode rule from a documented divergence to the thing blocking a shipped decision,
-so it joins this stage: one rule for `presentation_mode`, owner-chosen, applied
-on all four paths. Do it with a call behind it — it decides whether a caller
-asking for the soonest hears one day or three. With Stage A in, `build_slot_offer`
+The decision put to the owner was narrower than "converge the mode rule". Acuity
+decides the mode in two arms, and only ONE of them disagrees with the data rule:
+
+| arm | Acuity | shared readers | agree? |
+|---|---|---|---|
+| caller NAMES a day | `single_day` | `single_day` — the filter leaves one day | ✅ |
+| caller asks for the SOONEST | `single_day` | `multi_day` | ❌ |
+
+So the whole question was: *when a caller asks for the soonest, do they hear one
+day with three times, or three days with two times each?*
+
+**The evidence looked stronger for switching than it was, and it nearly went in
+the write-up that way.** Five northgate ASAP calls, three tagged
+`caller_frustration` or `loop`, mean score 2.4. But four of the five are from
+4 Sep — the day `040baa47` and `7eb61dd2` landed, which are precisely the
+B-137/B-142 fixes for "not soon enough" being answered with slots FURTHER AWAY.
+The frustration in those transcripts is that loop:
+
+```
+caller: that's not soon enough can you give me a slot that's sooner
+Susie : [reads the identical three days back, verbatim]
+```
+
+The one ASAP call after the fix (`CA8d5b2e3e`, 7 Sep) shows no loop at all.
+
+**What survived is a sentence, not a structure.** B-137 already puts the
+earliest day first when the caller asks for the soonest — the list IS the
+answer — and Susie simply never says so. On `CA1c6c836` the caller had to push
+three times before hearing *"those are the soonest available"*.
+
+**Option B, shipped:** keep the three days, and make the ordering explicit.
+`_cap_presented_slots` sets `lead_in="soonest_first"` on multi_day when the
+caller asked AND day one really is the earliest, and the opener becomes
+*"Starting with the soonest —"* instead of *"Here's what we've got coming up —"*.
+Nobody's choice set changes, so the blast radius is a phrase.
+
+The wording names no date on purpose. Both candidates that did —
+*"The soonest I have is Monday 14th September — Number 1, Monday 14th
+September — ..."* — repeat the label in the very next clause, and a date said
+twice in one breath is worse than a date not ranked.
+
+`soonest_first` is a SEPARATE TOKEN from single_day's `earliest`, because the
+payload reaches the model as well as the deterministic builder and
+SLOT_FORMATTER maps `earliest` onto the single-day opener. B-125 is unchanged.
+
+**This does move Theorem**, unlike stage A: its single_day lead-in is still
+Acuity's own and unreachable from here, but its MULTI-day readouts come through
+`_cap_presented_slots`, so a Theorem caller whose `day_preference` means
+"soonest" now hears the ordering opener too. That is decision 2 being delivered,
+not a leak.
+
+**Option A — ASAP → `single_day` everywhere — is NOT dead, it is deferred.** If
+callers still push back on the soonest after B, it is the answer and stage A's
+`mode` seam already carries it. It was declined now because it changes what
+7–9% of callers hear on two live patient lines to fix something that was mostly
+fixed on 4 September, and because one day with three times is a genuine
+take-it-or-leave-it risk that Theorem accepts by an owner decision of 15 June
+and the other two clinics have never been asked about.
+
+**Stage C — one offer record everywhere.** The mode rule was raised here by
+stage B and then **removed again** by the owner choosing option B: the ranking
+claim no longer needs `single_day`, so nothing is blocked on converging it. The
+divergence stays documented, contained, and out of scope until something else
+needs it. With Stage A in, `build_slot_offer`
 and `apply_offer_to_session` run on Theorem, so the reverse-parse and its repair
 layer go dead there. Gate: no `could not resolve spoken option(s)` on any clinic.
 
@@ -292,7 +346,10 @@ stage that can change what a clinic offers.
 
 1. **Ship the fix.** ✅ Go ahead. (Moot as originally posed — the gap it
    addressed did not exist. Stage A is the real first step.)
-2. **`lead_in` everywhere?** ✅ **Yes, wanted on every clinic.** Stage B.
+2. **`lead_in` everywhere?** ✅ **Yes, wanted on every clinic.** Stage B —
+   delivered in two halves: `earliest` on single_day (the three shared readers),
+   and `soonest_first` on multi_day (all four, Theorem included) after the owner
+   chose **option B** over switching the mode rule. See the stage B entry.
 3. **The filter block.** ✅ **Stays per clinic** — clinics have different hours
    and different closed dates. Read as: *one mechanism, per-clinic values.* The
    code path is shared; the numbers come from each clinic's own config. Not

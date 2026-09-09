@@ -5841,6 +5841,25 @@ def _cap_presented_slots(
         out.pop("first_day", None)
         if truncated:
             out["more_times"] = True
+        # Stage B, second half. Owner decision 9 Sep 2026, taking option B over
+        # switching the mode rule: a caller who asks "what's the soonest you've
+        # got" is already READ the soonest first -- B-137 orders the days -- and
+        # is simply never told that is what it is. Five northgate ASAP calls in
+        # the corpus open "Here's what we've got coming up", and on CA1c6c836
+        # the caller had to push three times before hearing "those are the
+        # soonest available".
+        #
+        # A SEPARATE TOKEN from single_day's "earliest", deliberately. The
+        # payload reaches the MODEL as well as the deterministic builder, and
+        # SLOT_FORMATTER's prompt maps lead_in="earliest" onto the single-day
+        # opener "The earliest I have is ...". Putting that value on a
+        # three-day payload would invite exactly that sentence over a list of
+        # three days if the deterministic build ever fell through. An unknown
+        # token is ignored by the prompt, which is the safe direction.
+        if presented and isinstance(presented[0], dict):
+            _set_earliest_lead_in(
+                out, session, days, presented[0], value="soonest_first",
+            )
 
     return out
 
@@ -5862,7 +5881,7 @@ def _earliest_available_date(days: Any) -> Optional[str]:
 
 def _set_earliest_lead_in(
     out: Dict[str, Any], session: Optional[Dict[str, Any]],
-    days: Any, first: Dict[str, Any],
+    days: Any, first: Dict[str, Any], value: str = "earliest",
 ) -> None:
     """May this single-day readout open "The earliest I have is ..."?
 
@@ -5917,7 +5936,7 @@ def _set_earliest_lead_in(
         _earliest = _earliest_available_date(days)
         if not _earliest or str(first.get("date") or "") != _earliest:
             return
-        out["lead_in"] = "earliest"
+        out["lead_in"] = value
     except Exception:
         logger.exception(
             "[tools] earliest lead-in not set -- continuing with the neutral "

@@ -477,8 +477,27 @@ def build_slot_offer(
                 # because "that day" has no referent after three days are
                 # named. So this sentence is the ONLY thing the caller has to
                 # go on, and it was the confident version.
-                _lead = ("I've got a few days —" if _more_days
-                         else "Here's what we've got coming up —")
+                # STAGE B, option B (owner, 9 Sep 2026). "What's the soonest
+                # you've got" is a RANKING question, and this list already
+                # answers it -- B-137 puts the earliest day first when the
+                # caller asked for the soonest -- but the sentence never says
+                # so. `soonest_first` is set by `_cap_presented_slots` only
+                # when the caller asked AND day one really is the earliest in
+                # the payload, so the claim is true wherever it appears.
+                #
+                # It names no date, which is the point: both wordings that
+                # named one repeated the label the very next clause reads out
+                # ("The soonest I have is Monday 14th September — Number 1,
+                # Monday 14th September — ..."), and a date said twice in one
+                # breath is worse than a date not ranked.
+                #
+                # It also makes NO completeness claim, so it is safe in both
+                # the `_more_days` cases this replaces.
+                if lead_in == "soonest_first":
+                    _lead = "Starting with the soonest —"
+                else:
+                    _lead = ("I've got a few days —" if _more_days
+                             else "Here's what we've got coming up —")
                 chunks.append("{} {}".format(_lead, piece))
             else:
                 chunks.append(piece)

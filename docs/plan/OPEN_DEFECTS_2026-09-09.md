@@ -226,6 +226,47 @@ not worth an engine change across four clinics. Filed, not scheduled.
 transcript and diagnosed the mechanism behind it. The next turn contained the
 answer. Read the call to the end — and to the booking — before naming a defect.
 
+### D10 — the multi-day opener's completeness hedge is dead 🟡 NEW, found 9 Sep
+
+`build_slot_offer` picks between two multi-day openers:
+
+```python
+_lead = ("I've got a few days —" if _more_days
+         else "Here's what we've got coming up —")
+```
+
+and `_more_days` is `len(days) > len(days[:max_days])`. But `llm_stream` hands
+it `result["presented_days"]` — a list `_cap_presented_slots` has ALREADY capped
+to three. So `more` is always `False` on the live path and the confident opener
+always fires, including when four or more days were found and held back.
+
+Its own comment states the rule it is no longer keeping:
+
+> *only claim to be showing everything when everything is what is being shown.*
+> *"Here's what we've got coming up" reads as the diary's upcoming days; with a*
+> *fourth day sitting unnamed behind it, that is not what it is.*
+
+Confirmed live: northgate 9 Sep 12:20 returned **7** available days, presented
+3, and opened *"Here's what we've got coming up"*. The hedge has probably never
+fired from this path.
+
+**Not the same defect as D9.** D9 was about which TIMES are spoken and closed as
+not-a-defect. This is a completeness claim about DAYS, and it is the B-99 / P10
+concern the comment was written for, arriving through the caller rather than the
+callee.
+
+**Anchors**: `app/tools/slot_offer.py` `_more_days` (assigned from `more` just
+below `spoken_days = days[:max_days]`); the call site in
+`app/media_streams/llm_stream.py`'s multi_day branch, which passes
+`result["presented_days"]`.
+
+**Not fixed.** The fix is to decide the hedge from something that still knows
+what was held back — `session["_slot_more_times"]` is already carried into this
+function as `more_times` and is the obvious candidate — but it changes a
+caller-facing sentence on all four clinics, so it wants an owner decision and a
+call, exactly like stage B's opener did. Note that stage B's `soonest_first`
+opener makes NO completeness claim, so it is unaffected either way.
+
 ### N5 — the stall itself, and the two-rung filler ladder 🟠 needs an owner decision
 
 Five samples now, across both lines and both builds. `llm_ttft` on a turn that

@@ -7146,11 +7146,27 @@ class LLMStream:
                     _det_mode = "multi_day"
                     try:
                         from app.tools.slot_offer import build_slot_offer
-                        # No lead_in. "The earliest I have is ..." is a claim
-                        # about ONE day; B-125 decided it against the untrimmed
-                        # day, and there is no such day here.
+                        # B-125 still holds: "The earliest I have is ..." is a
+                        # claim about ONE day and there is no such day here, so
+                        # the `earliest` token is never passed on this branch.
+                        #
+                        # Stage B option B adds a DIFFERENT claim that a
+                        # multi-day list can make honestly -- that it is
+                        # ORDERED soonest-first -- under its own token.
+                        # `_cap_presented_slots` sets it only when the caller
+                        # asked for the soonest and day one really is the
+                        # earliest in the payload; anything else is ignored
+                        # here rather than forwarded, so a stray value cannot
+                        # reach the opener.
+                        _multi_lead = (
+                            "soonest_first"
+                            if isinstance(result, dict)
+                            and result.get("lead_in") == "soonest_first"
+                            else ""
+                        )
                         _offer = build_slot_offer(
                             list(result["presented_days"]),
+                            lead_in=_multi_lead,
                             more_times=bool(session.get("_slot_more_times")),
                             other_dates=session.get("_slot_other_dates"),
                         )
