@@ -142,6 +142,52 @@ produced `"September 19th" → 19 August`. Writing one overnight with no call to
 verify it is the wrong trade. It is small, well-anchored and evidence-backed —
 it should be the next thing done, with a phone call behind it.
 
+### D9 — every day is offered at its two extreme ends 🔴 the real slot-presentation defect
+
+Demo line, 9 Sep 10:32, `CA0b217e710b9a3957a384186794af4149`, build
+`c21db7d589a6`. A booking call, judge score 3, tag `caller_frustration`. The
+readout:
+
+```
+Number 1, Monday 14th September — eight, or ten past five.
+Number 2, Tuesday 15th September — eight, or ten past five.
+Number 3, Wednesday 16th September — eight, or ten past five.
+```
+
+Three consecutive days, the identical pair, and nothing between 8am and 5:10pm
+named at all. Each of those days holds **twelve** bookable slots
+(08:00, 08:50, 09:40, 10:30, 11:20, 12:10, 13:00, 13:50, 14:40, 15:30, 16:20,
+17:10). The judge called the read-outs "garbled and ambiguous".
+
+**Mechanism, reproduced locally:**
+
+```python
+_pick_times_for_day(twelve_slots, 2)  ->  ['08:00', '17:10']   # the extremes
+_pick_times_for_day(twelve_slots, 3)  ->  ['08:00', '13:00', '17:10']
+```
+
+At `limit=2` it takes the earliest, then the LATEST in a different part of the
+day. That rule is deliberate and its reason is sound — the docstring says
+*"ten in the morning or eleven in the morning is not a choice a caller
+experiences as two options"* — but on a full day it overshoots to the two ends.
+The `limit >= 3` branch already spreads evenly and gets it right.
+
+The second half is worse than the first: `choose_presented_indices` picks the
+same POSITIONS on every day, and these days share a template, so all three come
+out identical. Varying across days — 8am Monday, 1pm Tuesday, 5pm Wednesday —
+would give the caller a real spread from the same two-per-day budget.
+
+**Anchors**: `app/tools/slot_offer.py:97` `_pick_times_for_day` (the `limit == 2`
+path, and the `limit >= 3` spread just below it that already works);
+`app/tools/slot_followup.py` `choose_presented_indices`.
+
+**Not fixed here.** It changes what every caller on every clinic hears, and
+"which two times sound like a real choice" is a judgement rather than a bug fix.
+`operational.slot_presentation` (D2) is the lever that lets it be tried on one
+clinic first. This supersedes §2.1's reading: the drip-feed *volume* complaint
+really was closed by 7624b1a7 and fee6e67a — what is still wrong is WHICH times
+get spoken, not how many.
+
 ### N5 — the stall itself, and the two-rung filler ladder 🟠 needs an owner decision
 
 Five samples now, across both lines and both builds. `llm_ttft` on a turn that
