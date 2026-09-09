@@ -424,7 +424,24 @@ UNMOVED_PROMPTS = {
     # else -- demo, theorem and theorem_v3 are byte-identical across it,
     # which is the property this table exists to prove. Recomputed with
     # this file's own _sha, never copied between tables.
-    "jv_v1": "c787bfeb7ba73f57",
+    # Re-pinned 2026-09-09, c787bfeb7ba73f57 -> fd0fffed95c870da. The WHOSE
+    # SYMPTOM IS IT rule was added to _render_condition_fluency (northgate
+    # CAeedecabfd, judge 2, tag `hallucination`: a caller who said "just for the
+    # left ankle and achilles tendons" was told about stiffness, soreness and
+    # morning symptoms). That block is gated on `condition_knowledge`, which
+    # only jv_v1 and northgate carry.
+    #
+    # THIS table is the containment proof, because it pins vital_edge where the
+    # B-55 one does not: demo, theorem, theorem_v3 AND vital_edge are all
+    # byte-identical across the change, and jv_v1 alone moved. northgate is in
+    # neither table -- it is covered by
+    # tests/regression/test_a_hallmark_belongs_to_the_condition.py, which
+    # asserts the rendered text directly rather than a hash.
+    #
+    # Found the hard way: the B-55 table was re-pinned first and the suite still
+    # went +1, because the jv_v1 hash lives in TWO tables under two different
+    # names (UNCHANGED_CLINIC_PROMPTS here is UNMOVED_PROMPTS). Re-pin both.
+    "jv_v1": "fd0fffed95c870da",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL

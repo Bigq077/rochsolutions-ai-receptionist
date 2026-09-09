@@ -253,7 +253,19 @@ UNCHANGED_CLINIC_PROMPTS = {
     # else -- demo, theorem and theorem_v3 are byte-identical across it,
     # which is the property this table exists to prove. Recomputed with
     # this file's own _sha, never copied between tables.
-    "jv_v1": "c787bfeb7ba73f57",
+    # Re-pinned 2026-09-09, c787bfeb7ba73f57 -> fd0fffed95c870da. INTENDED, and
+    # scoped exactly as this table is meant to prove: the WHOSE SYMPTOM IS IT
+    # rule was added to _render_condition_fluency, which renders only for the
+    # two clinics carrying `condition_knowledge` (jv_v1 and northgate). demo,
+    # theorem and theorem_v3 are byte-identical across the change.
+    #
+    # Why: northgate CAeedecabfd, 9 Sep 2026, judge 2, tag `hallucination`. The
+    # caller said "just for the left ankle and achilles tendons" and heard back
+    # "that kind of stiffness and soreness in the Achilles, especially that
+    # first-few-minutes-in-the-morning feeling" -- three findings nobody gave
+    # her. The block's own docstring already said the caller is never told what
+    # THEY have; nothing in the rendered text enforced it.
+    "jv_v1": "fd0fffed95c870da",
     "theorem": "8565be9a48a7a9aa",
     # Re-pinned 2026-08-25: 'Children under fifteen not seen' -> 'Children
     # under seven not seen'. Mark's minimum age is 7 (owner-confirmed

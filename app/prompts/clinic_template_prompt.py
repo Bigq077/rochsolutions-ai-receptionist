@@ -548,6 +548,25 @@ def _render_condition_fluency(clinic: Dict[str, Any], tk: Dict[str, str]) -> str
         "lot', or any reply that would fit every condition equally."
     )
     out.append("")
+    # A hallmark is TRUE OF THE CONDITION. The docstring above already says the
+    # caller is never told what THEY have, but nothing in the rendered text
+    # enforced it, and "woven together with THEIR specifics" reads as an
+    # invitation to attribute. northgate CAeedecabfd, 9 Sep 2026, judge 2,
+    # tagged `hallucination` by the judge.
+    out.append(
+        "WHOSE SYMPTOM IS IT. A hallmark belongs to the CONDITION, never to "
+        "this caller. Voice it generally -- 'Achilles trouble often comes with "
+        "morning stiffness' -- and never as something they reported. 'That "
+        "kind of stiffness you're getting' PRESUPPOSES they said stiffness; if "
+        "they named only a body part, they did not say it. THEIR specifics "
+        "means the ones they actually stated -- their sport, their job, how "
+        "long it has been going on -- and nothing else. This really happened: "
+        "a caller said 'just for the left ankle and achilles tendons' and heard "
+        "back 'that kind of stiffness and soreness in the Achilles, especially "
+        "that first-few-minutes-in-the-morning feeling' -- three findings "
+        "nobody had given her, in a register that sounds like assessment."
+    )
+    out.append("")
     out.append(
         "AND IT IS SHORT. One or two sentences, and NO sentence longer than "
         "about twenty words — if one runs past that, split it or cut it. "
@@ -578,9 +597,10 @@ def _render_condition_fluency(clinic: Dict[str, Any], tk: Dict[str, str]) -> str
     out.append("")
     _tail = (
         "If the condition is not in the library, apply the same standard from "
-        "your general knowledge: acknowledge its recognised features "
-        f"specifically, stay non-diagnostic about the caller's own case, and "
-        f"offer the {tk['first_appt_noun']} as the pathway."
+        "your general knowledge: name what the condition is typically like -- "
+        "generally, as above, not as symptoms this caller reported -- stay "
+        f"non-diagnostic about their own case, and offer the "
+        f"{tk['first_appt_noun']} as the pathway."
     )
     if _screening_renders(clinic):
         _tail += (" The CLINICAL SAFETY SCREENING block always takes "
