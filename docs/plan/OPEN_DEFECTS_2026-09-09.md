@@ -91,7 +91,54 @@ The conclusion is unchanged: **do not rebuild the ladder.**
 
 ## 3. Still open
 
-### D8 — a caller who names an exact time is read the day's default times 🔴 NEW, and the only live readout defect left
+### D8 — a caller who names an exact time is read the day's default times ✅ FIXED 9 Sep
+
+> **Closed on `latency-eval`.** The fix shape below was right and was followed:
+> `_pin_requested_time_index`, a sibling of `_pin_accepted_index`, on the same
+> displace-don't-add contract, with `choose_presented_indices` left untouched as
+> the single owner of "how many, and which".
+>
+> **The resolver was built against the corpus, not against imagination.**
+> `requested_clock_times` was replayed over **2,509 unique stored caller turns**.
+> It resolves the 202 that name a time and invents one for **none** of the
+> remaining 2,307. Four utterances resolve that `_has_explicit_clock` does not
+> gate — all four are correct readings the old detector misses ("at five in the
+> evening", "11 in the morning"), so the resolver is strictly better than the
+> gate in front of it.
+>
+> **Three false positives were found by that replay and closed**, and each is a
+> class rather than a case:
+>
+> | corpus utterance | naive reading | why it is not a time |
+> |---|---|---|
+> | "knee pain for about **3 weeks**" | 03:00 / 15:00 | a DURATION — and it is the *opening reason* on a booking call |
+> | "he's **18 17** i mean he's turning 18" | 18:17 | an AGE, on the one clinic with an under-age gate |
+> | "monday at **8 am**" | 08:00 **and** 20:00 | the meridiem answered it; the loose arm asked again and invented a real bookable hour |
+>
+> **Dates are masked before a single digit is read as an hour**, which is the
+> whole B-126 lesson one layer down. The corpus is full of callers naming both in
+> one breath — "monday the 7th at 10 in the morning", "half past 4 on the 24th",
+> "the 10th of august at 5 in the evening" — and every one now resolves to the
+> TIME only.
+>
+> **Two readings decline.** "at 5" is 05:00 or 17:00 and both are returned; if
+> the day holds both, neither is pinned. A band word the caller actually said
+> ("at 5 in the evening") collapses the pair upstream, so the common case still
+> pins.
+>
+> Published at the **three** `check_availability` entry points, which between
+> them cover all four clinics — not at the one that carries the honesty fields,
+> which is the D10 trap. A test asserts all three publish it, and that the write
+> is unconditional so a time named earlier in the call cannot pin a later
+> readout.
+>
+> Verified: 51 regression tests; the existing suite **provably unchanged** —
+> re-run with the new file excluded it reports 94 failed / 9555 passed / 26
+> skipped, byte-identical to the baseline. No call yet.
+
+<details><summary>The original entry, kept because its anchors and reasoning were correct</summary>
+
+
 
 `theorem_v3`, **7 Sep 2026 21:33**, `CA7d48a879ed6cb0554a3738dee8941380`,
 judge score 3, tag `loop`. Verbatim:
@@ -141,6 +188,8 @@ booking readout for all four clinics, and this repo's date parsing has already
 produced `"September 19th" → 19 August`. Writing one overnight with no call to
 verify it is the wrong trade. It is small, well-anchored and evidence-backed —
 it should be the next thing done, with a phone call behind it.
+
+</details>
 
 ### D9 — CLOSED, and it was two defects wearing one coat ⚪ corrected 9 Sep
 

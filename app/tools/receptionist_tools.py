@@ -6567,6 +6567,20 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     # presentation builders so available_days honours it, mirroring the Acuity
     # path (bug C5-5).
     _pref = (args.get("date_hint") or args.get("preference") or "").strip()
+    # D8. Resolve the clock time the caller named ONCE, here, where the hint
+    # arrives -- not in the readout, which would be a second parser to keep in
+    # step with this one. Written on every lookup including the empty case, so
+    # a time named earlier in the call cannot pin a slot in a later readout it
+    # has nothing to do with. Read by `_pin_requested_time_index`.
+    try:
+        from app.tools.slot_followup import (
+            REQUESTED_TIMES_KEY as _RTK, requested_clock_times as _rct,
+        )
+        if session is not None:
+            session[_RTK] = _rct(_pref)
+    except Exception:
+        # A readout preference must never fail a lookup.
+        logger.exception("[ms_tools] requested-time resolve failed")
     _spoken = _spoken_starts_for(session)
 
     clinic = get_clinic(session.get("clinic_id"))
@@ -7202,6 +7216,20 @@ async def _check_availability_diary(
 
     location = (args.get("location") or session.get("selected_location", "")).lower().strip()
     _pref = (args.get("date_hint") or args.get("preference") or "").strip()
+    # D8. Resolve the clock time the caller named ONCE, here, where the hint
+    # arrives -- not in the readout, which would be a second parser to keep in
+    # step with this one. Written on every lookup including the empty case, so
+    # a time named earlier in the call cannot pin a slot in a later readout it
+    # has nothing to do with. Read by `_pin_requested_time_index`.
+    try:
+        from app.tools.slot_followup import (
+            REQUESTED_TIMES_KEY as _RTK, requested_clock_times as _rct,
+        )
+        if session is not None:
+            session[_RTK] = _rct(_pref)
+    except Exception:
+        # A readout preference must never fail a lookup.
+        logger.exception("[ms_tools] requested-time resolve failed")
     _spoken = _spoken_starts_for(session)
     _raw_service = args.get("service") or session.get("selected_service") or ""
     calendar_id = _resolve_calendar_id(clinic, location)
@@ -7511,6 +7539,20 @@ async def _check_availability_published(
 
     location = (args.get("location") or session.get("selected_location", "")).lower().strip()
     _pref = (args.get("date_hint") or args.get("preference") or "").strip()
+    # D8. Resolve the clock time the caller named ONCE, here, where the hint
+    # arrives -- not in the readout, which would be a second parser to keep in
+    # step with this one. Written on every lookup including the empty case, so
+    # a time named earlier in the call cannot pin a slot in a later readout it
+    # has nothing to do with. Read by `_pin_requested_time_index`.
+    try:
+        from app.tools.slot_followup import (
+            REQUESTED_TIMES_KEY as _RTK, requested_clock_times as _rct,
+        )
+        if session is not None:
+            session[_RTK] = _rct(_pref)
+    except Exception:
+        # A readout preference must never fail a lookup.
+        logger.exception("[ms_tools] requested-time resolve failed")
     _spoken = _spoken_starts_for(session)
     calendar_id = _resolve_calendar_id(clinic, location)
     days_ahead = int(clinic.get("days_ahead") or 14)

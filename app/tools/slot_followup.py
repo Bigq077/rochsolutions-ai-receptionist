@@ -3194,6 +3194,217 @@ def payload_slots_named_in(
     return out
 
 
+# ───────────────────────────────────────────────────────────────────────────
+# D8 -- a caller who names an exact time is read the day's default times.
+#
+# theorem_v3, 7 Sep 2026 21:33, CA7d48a879ed6cb0554a3738dee8941380, judge 3,
+# tag `loop`:
+#
+#     caller : wednesday the 9th of september at 12 pm
+#     Susie  : Number 1, ten in the morning. Number 2, eleven in the morning.
+#              Number 3, three in the afternoon. And I've a few others that day.
+#     caller : no what else have you got that day
+#     Susie  : On Wednesday 9th September I also have -- Number 1, midday.
+#     caller : number 1 midday
+#
+# Midday was bookable the whole time. The band filter had already done its job
+# -- `_has_explicit_clock` deliberately skips the coarse morning/afternoon band
+# so a named time is never FILTERED OUT. But surviving the filter is not being
+# SPOKEN: `choose_presented_indices` then applies B-116, "times this caller has
+# not heard, chronologically", which has no notion of a time they asked for.
+#
+# THE PARSER IS THE RISK, NOT THE PIN. This repo's date handling has already
+# turned "September 19th" into 19 AUGUST through two independent day-first
+# gates, and the corpus is full of callers who name a date and a time in one
+# breath -- "monday the 7th at 10 in the morning", "half past 4 on the 24th",
+# "the 10th of august at 5 in the evening". A bare number-grab reads the DATE
+# as the hour. That is B-126's defect exactly, one layer down: there, "9"
+# matched inside "Wednesday the 9th of September" and a guard stood down.
+#
+# So dates are MASKED OUT before a single digit is read as a time.
+# ───────────────────────────────────────────────────────────────────────────
+
+_MONTH_WORD = (
+    r"(?:jan|feb|mar|apr|may|jun|jul|aug|sept?|oct|nov|dec)[a-z]*"
+)
+
+#: Ordinals spelled out. Never a time, always a date or a position, so masking
+#: them costs nothing and stops "the ninth" being read as nine o'clock.
+_WORD_ORDINAL = (
+    r"(?:twenty[-\s]?|thirty[-\s]?)?"
+    r"(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth"
+    r"|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth"
+    r"|seventeenth|eighteenth|nineteenth|twentieth|thirtieth)"
+)
+
+#: Everything that is a DATE and could be misread as a clock time. Ordered
+#: widest-span first: a month with its number goes before the bare month, or
+#: masking the month leaves the number behind to be read as an hour.
+_DATE_NOISE_RES = [
+    re.compile(r"\b\d{1,2}\s*(?:of\s+)?" + _MONTH_WORD + r"\b", re.I),
+    re.compile(r"\b" + _MONTH_WORD + r"\s+\d{1,2}\b", re.I),
+    re.compile(r"\b\d{1,2}\s*(?:st|nd|rd|th)\b", re.I),
+    re.compile(r"\b" + _WORD_ORDINAL + r"\b", re.I),
+    re.compile(r"\b" + _MONTH_WORD + r"\b", re.I),
+]
+
+_PAST_TO_UNITS = {"half": 30, "quarter": 15}
+
+#: A number followed by one of these is a DURATION, not a clock time. "I've had
+#: knee pain for about 3 weeks" is the opening reason on a booking call and the
+#: loose "about N" arm below read it as three o'clock. The band words cannot
+#: save that one -- "3 weeks" carries none.
+_DURATION_UNIT = (
+    r"(?:wk|week|day|night|month|yr|year|hour|hr|min|minute|sec|second"
+    r"|time|week's|month's|year's)s?\b"
+)
+
+_BAND_TESTS = (
+    ("morning", lambda h: h < 12),
+    ("afternoon", lambda h: 12 <= h < 17),
+    ("evening", lambda h: h >= 17),
+    ("night", lambda h: h >= 17),
+)
+
+
+def _mask_dates(text: str) -> str:
+    """Blank every date-shaped span so no digit in one can be read as an hour.
+
+    Replaced with spaces rather than removed, so nothing that was two words
+    becomes one and starts matching across the gap.
+    """
+    out = text
+    for rx in _DATE_NOISE_RES:
+        out = rx.sub(lambda m: " " * len(m.group(0)), out)
+    return out
+
+
+def requested_clock_times(text: Any) -> List[str]:
+    """Every 24-hour HH:MM the caller might have meant by *text*. PURE.
+
+    Returns candidates, not an answer, and that is deliberate: a bare "at 5"
+    is 05:00 or 17:00 and only the diary knows which. The caller of this
+    function matches the candidates against the day's REAL bookable times, so
+    an impossible reading simply never matches. Where a band word is present
+    ("at 5 in the evening") the impossible half is dropped here, because that
+    the caller did say.
+
+    Empty for text that names no time at all -- including text that names only
+    a date, which is the whole point of `_mask_dates`.
+    """
+    raw = str(text or "").lower()
+    if not raw.strip():
+        return []
+    masked = _mask_dates(raw)
+    t = _fold_clock_words(masked)
+
+    exact: List[int] = []          # minutes-since-midnight, unambiguous
+    ambiguous: List[int] = []      # 12-hour readings needing a twin
+
+    def _add(h: int, mm: int, certain: bool) -> None:
+        if not (0 <= h <= 23 and 0 <= mm <= 59):
+            return
+        (exact if certain else ambiguous).append(h * 60 + mm)
+
+    if re.search(r"\b(?:midday|noon)\b", t):
+        _add(12, 0, True)
+    if re.search(r"\bmidnight\b", t):
+        _add(0, 0, True)
+
+    # "half past four", "20 to 10", "quarter past 5" -- folded to digits above.
+    for m in re.finditer(
+        r"\b(half|quarter|\d{1,2})\s+(past|to)\s+(\d{1,2})\b", t
+    ):
+        unit_raw, direction, hour_raw = m.group(1), m.group(2), int(m.group(3))
+        unit = _PAST_TO_UNITS.get(unit_raw)
+        if unit is None:
+            try:
+                unit = int(unit_raw)
+            except ValueError:
+                continue
+        if not (1 <= unit <= 59) or not (1 <= hour_raw <= 12):
+            continue
+        if direction == "past":
+            _add(hour_raw, unit, False)
+        else:
+            prev = hour_raw - 1 if hour_raw > 1 else 12
+            _add(prev, 60 - unit, False)
+
+    # "3pm", "8 a.m." -- the meridiem settles it outright.
+    #
+    # BLANKED once read, because every looser arm below also matches a bare
+    # digit and "monday at 8 am" would otherwise yield 08:00 AND 20:00 -- the
+    # meridiem answering the question and the "at N" arm asking it again. The
+    # twin it invents is a real bookable hour on these clinics, so it would
+    # pin the wrong slot rather than simply fail to match.
+    def _meridiem(m: "re.Match[str]") -> str:
+        h = int(m.group(1))
+        if 1 <= h <= 12:
+            _add(h % 12 + (12 if m.group(2) == "p" else 0), 0, True)
+        return " " * len(m.group(0))
+
+    t = re.sub(r"\b(\d{1,2})\s*([ap])\.?\s?m\.?\b", _meridiem, t)
+
+    # "12:30", "9.30", and the spoken "6 10" / "7 15" of a digits-only readout.
+    for m in re.finditer(r"\b(\d{1,2})\s*[:.]\s*([0-5]\d)\b", t):
+        _add(int(m.group(1)), int(m.group(2)), False)
+    # "at 7 15", "at 6 10 in the evening" -- a colon-less spoken time. The
+    # preposition is REQUIRED, because two bare numbers in a row are far more
+    # often something else: on the corpus this arm read "um he's 18 17 i mean
+    # he's turning 18 in a couple months" -- an AGE, on the one clinic that has
+    # an under-age gate -- as 18:17. The candidate would have matched no real
+    # slot and died quietly, which is the design working; it is closed anyway
+    # because a rule that is only saved by the diary is a rule waiting for a
+    # diary that disagrees.
+    for m in re.finditer(
+        r"\b(?:at|around|about|near|by|from)\s+(\d{1,2})\s+([0-5]\d)\b(?![:.\d])",
+        t,
+    ):
+        _add(int(m.group(1)), int(m.group(2)), False)
+
+    # "3 o'clock", "at 8", "around 4".
+    for m in re.finditer(r"\b(\d{1,2})\s*o'?\s?clock\b", t):
+        _add(int(m.group(1)), 0, False)
+    for m in re.finditer(
+        r"\b(?:at|around|about|near|by|for)\s+(\d{1,2})\b"
+        r"(?!\s*[:.]?\s*\d)"
+        r"(?!\s*" + _DURATION_UNIT + r")",
+        t,
+    ):
+        _add(int(m.group(1)), 0, False)
+
+    # A band word the caller SAID resolves the 12-hour twin. Only one band may
+    # be present -- two is a caller changing their mind mid-sentence and the
+    # standing rule in this module for two of anything is to decline.
+    named = [(w, fn) for w, fn in _BAND_TESTS if re.search(r"\b" + w, t)]
+    #: "evening" and "night" are the same band under two names, so they are one
+    #: reading, not two. Anything genuinely contradictory declines.
+    band = named[0][1] if len({fn(18) for _, fn in named}) == 1 and named else None
+
+    out: List[str] = []
+    seen = set()
+
+    def _emit(mins: int) -> None:
+        hh, mm = divmod(mins, 60)
+        if hh > 23:
+            return
+        v = "%02d:%02d" % (hh, mm)
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+
+    for mins in exact:
+        _emit(mins)
+    for mins in ambiguous:
+        twins = [mins]
+        if mins < 12 * 60:
+            twins.append(mins + 12 * 60)
+        kept = [x for x in twins if band is None or band(x // 60)]
+        for x in (kept or twins):
+            _emit(x)
+    return out
+
+
 def _pin_accepted_index(
     session: Dict[str, Any], day: Dict[str, Any], chosen: List[int], limit: int
 ) -> List[int]:
@@ -3246,6 +3457,77 @@ def _pin_accepted_index(
     return out
 
 
+#: Set once per availability lookup by the three `check_availability` entry
+#: points, from that lookup's own `date_hint`. Written on EVERY lookup, empty
+#: included, so a time named three turns ago cannot pin a slot in a readout
+#: that has nothing to do with it.
+REQUESTED_TIMES_KEY = "_requested_clock_times"
+
+
+def _pin_requested_time_index(
+    session: Dict[str, Any], day: Dict[str, Any], chosen: List[int], limit: int
+) -> List[int]:
+    """Force the time the caller ASKED FOR back into a readout that dropped it.
+
+    D8, CA7d48a879ed6cb0554a3738dee8941380 (7 Sep 2026, theorem_v3), judge 3,
+    tag `loop`. The caller said "wednesday the 9th of september at 12 pm" and
+    was read ten, eleven and three -- then had to ask again to be told midday
+    existed, which it had all along.
+
+    The band filter was never the problem: `_has_explicit_clock` already skips
+    the coarse morning/afternoon band precisely so a named time survives. But
+    SURVIVING is not being SPOKEN, and `_choose_presented_times` then applies
+    B-116 -- "times this caller has not heard, chronologically" -- which has no
+    notion of a time they asked for.
+
+    The same shape as `_pin_accepted_index` above and for the same reason, so
+    it is the same kind of wrapper: B-116 is the single owner of "how many, and
+    which" for every readout on every clinic, and widening its rule in place is
+    how you break a readout nobody was looking at.
+
+    TWO READINGS DECLINE. "at 5" is 05:00 or 17:00 and
+    `requested_clock_times` returns both; if the day happens to hold both, this
+    cannot know which was meant and pins neither. A band word the caller
+    actually said ("at 5 in the evening") has already collapsed the pair
+    upstream, so the common case still pins.
+
+    Runs INSIDE `_pin_accepted_index`, never outside it: a slot the caller has
+    ACCEPTED outranks a time they merely asked about, so the accepted pin must
+    get the last word on what to displace.
+    """
+    wanted = session.get(REQUESTED_TIMES_KEY) if isinstance(session, dict) else None
+    # Type-checked rather than trusted. The key is written by three entry
+    # points and read here; "a readout preference must never fail a lookup" is
+    # the standing rule in this file, and `x in 12` raises.
+    if not isinstance(wanted, (list, tuple, set)) or not wanted or limit < 1:
+        return chosen
+    times = day.get("slot_times") if isinstance(day, dict) else None
+    if not isinstance(times, list) or not times:
+        return chosen
+    hits = [i for i, t in enumerate(times) if str(t or "")[:5] in wanted]
+    if len(hits) != 1:
+        # 0 -- the caller's time is not on this day, which is ordinary.
+        # 2+ -- an unresolved 12-hour twin; see the docstring.
+        if len(hits) > 1:
+            logger.info(
+                "[slot_followup] declining to pin a requested time -- %r "
+                "matches %d slots on %s, so which one was meant is unknowable "
+                "here (D8)", wanted, len(hits), day.get("date"),
+            )
+        return chosen
+    idx = hits[0]
+    if idx in chosen:
+        return chosen                      # already being spoken
+    keep = [i for i in chosen if i != idx][: max(0, limit - 1)]
+    out = sorted(set(keep + [idx]))
+    logger.info(
+        "[slot_followup] pinned the requested time back into the readout -- "
+        "the caller asked for %s and B-116 had dropped it (D8). %r -> %r",
+        times[idx], chosen, out,
+    )
+    return out
+
+
 def choose_presented_indices(
     session: Dict[str, Any], day: Dict[str, Any], limit: int
 ) -> List[int]:
@@ -3290,7 +3572,11 @@ def choose_presented_indices(
     cleverer readout.
     """
     return _pin_accepted_index(
-        session, day, _choose_presented_times(session, day, limit), limit
+        session, day,
+        _pin_requested_time_index(
+            session, day, _choose_presented_times(session, day, limit), limit,
+        ),
+        limit,
     )
 
 
