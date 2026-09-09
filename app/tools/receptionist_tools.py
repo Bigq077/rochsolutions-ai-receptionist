@@ -5722,8 +5722,25 @@ def _cap_presented_slots(
     result: Dict[str, Any],
     session: Optional[Dict[str, Any]] = None,
     max_days: Optional[int] = None,
+    mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Trim the SPOKEN availability list. Never trim bookable data.
+
+    `mode` (Stage A) lets a caller that ALREADY KNOWS the presentation mode
+    hand it in rather than have it re-derived here. Exactly one reader does:
+    `_check_availability_acuity` decides from the CALLER'S REQUEST -- "as soon
+    as possible" or a named day gives single_day, anything else multi_day --
+    while the rule below decides from the DATA, i.e. how many days survived.
+
+    The two disagree whenever a caller asks for the soonest and several days
+    have slots, and Acuity's answer is arguably the better one: it honours what
+    was asked. Re-deriving it here would silently change which Theorem callers
+    hear one day instead of three, which is not this stage's job. So it is
+    passed in, and the other three readers pass nothing and keep the data rule
+    byte-identically.
+
+    Anything that is not "single_day" or "multi_day" is ignored and the data
+    rule applies -- a readout must not fail because a hint is odd.
 
     Speak via first_day (single_day) or presented_days (multi_day), with
     more_times=True when truncated. available_days stays the FULL bookable set
@@ -5805,7 +5822,12 @@ def _cap_presented_slots(
     if _rota:
         out["sparse_rota_note"] = _rota
 
-    if len(presented) == 1 and isinstance(presented[0], dict):
+    _forced = mode if mode in ("single_day", "multi_day") else None
+    _single = (
+        _forced == "single_day" if _forced is not None
+        else (len(presented) == 1 and isinstance(presented[0], dict))
+    )
+    if _single and presented and isinstance(presented[0], dict):
         first = dict(presented[0])
         if truncated:
             first["more_times"] = True
@@ -6374,7 +6396,32 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
     if uses_acuity(session):
         _acuity_result = await _check_availability_acuity(args, session)
-        return _filter_same_day_slots(_acuity_result, session)
+        _acuity_result = _filter_same_day_slots(_acuity_result, session)
+        # ── Stage A ──────────────────────────────────────────────────────
+        # This branch was the only one of four that returned without
+        # `_cap_presented_slots`, and the multi_day gate in llm_stream needs
+        # the `presented_days` it produces. Acuity sets `first_day`, so
+        # Theorem's SINGLE-day readouts already reached the deterministic
+        # builder; multi_day always logged
+        #     NO deterministic offer built — branch=none-matched
+        #     mode='multi_day' has_presented_days=False
+        # so the model wrote the sentence, nothing recorded what was offered,
+        # and the read-back guard then "corrected" a caller's chosen 6pm to
+        # 1pm off a stale record (CAba2e3d8eb282bb, 9 Sep 11:05).
+        #
+        # The MODE is handed in, never re-derived: Acuity decides it from the
+        # caller's request and this function decides it from the data, and the
+        # two disagree on "as soon as possible". See `_cap_presented_slots`.
+        #
+        # single_day is deliberately left on Acuity's own path for now — it
+        # works today, and its `first_day` block carries B-108b, B-117 and the
+        # band-spent label that this function does not produce. Converging it
+        # is stage C, with a call behind it.
+        if _acuity_result.get("presentation_mode") == "multi_day":
+            _acuity_result = _cap_presented_slots(
+                _acuity_result, session, mode="multi_day",
+            )
+        return _acuity_result
 
     # Provisional clinics (e.g. vital_edge) read the slots the practitioner has
     # PUBLISHED to a dedicated Google calendar, rather than generating slots
