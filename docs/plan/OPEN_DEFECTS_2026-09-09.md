@@ -226,7 +226,19 @@ not worth an engine change across four clinics. Filed, not scheduled.
 transcript and diagnosed the mechanism behind it. The next turn contained the
 answer. Read the call to the end — and to the booking — before naming a defect.
 
-### D10 — the multi-day opener's completeness hedge is dead 🟡 NEW, found 9 Sep
+### D10 — the multi-day opener's completeness hedge is dead ✅ FIXED + LIVE 9 Sep
+
+> **Closed `909a90ad`, verified live 14:52:25 on `1489a02c4331`, on all three
+> patient lines since `19fc6cac`.** The fix is NOT the `more_times` candidate
+> proposed below — that name is already owned. `days_not_shown` exists, means
+> exactly this, and is written by `_check_availability_acuity` ALONE;
+> `_cap_presented_slots` is forbidden to touch it and a regression test enforces
+> that. Shipped as `days_were_held_back()` in `slot_offer.py`, which prefers that
+> field and falls back to found-versus-spoken for the three readers that emit no
+> honesty fields at all — northgate, JV and Vital Edge, i.e. where it was
+> observed. See ONE_PRESENTATION_LAYER.md. Two siblings shipped with it: **D11**
+> (a push-back on the earliest slot is answered with why, not the same list) and
+> **D12** (a soonest request no longer disables "what else have you got").
 
 `build_slot_offer` picks between two multi-day openers:
 
@@ -260,7 +272,7 @@ below `spoken_days = days[:max_days]`); the call site in
 `app/media_streams/llm_stream.py`'s multi_day branch, which passes
 `result["presented_days"]`.
 
-**Not fixed.** The fix is to decide the hedge from something that still knows
+**Superseded — see the box above.** The proposal below was to decide the hedge from something that still knows
 what was held back — `session["_slot_more_times"]` is already carried into this
 function as `more_times` and is the obvious candidate — but it changes a
 caller-facing sentence on all four clinics, so it wants an owner decision and a
