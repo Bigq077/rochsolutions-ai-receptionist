@@ -489,16 +489,13 @@ UNMOVED_PROMPTS = {
     # banned on this clinic, and the pre-fix "never read back the surname" rule.
     # theorem_v3 is again the ONLY id that moves; demo, jv_v1, theorem and
     # theorem_v2 held byte-identical on the same run.
-    # Re-pinned 2026-09-09, c8b94e274006ebdd -> ccb591e8da1d314b. D1: the
-    # phonetic spelling of Alcester left the model-facing prompt. 43 lines
-    # moved, all of them "Awlstuh" -> "Alcester"; the STT-variant list, which
-    # enumerates what the CALLER's speech comes back as, kept it. Rendered and
-    # diffed line by line before re-pinning: nothing else changed, and demo,
-    # theorem, jv_v1 and vital_edge are byte-identical across the edit -- which
-    # is the containment claim this table exists for. The caller still HEARS
-    # "Awlstuh": _TTS_SUBSTITUTIONS_ELEVENLABS does that at synthesis, which is
-    # where pronunciation has belonged since B-14.
-    "theorem_v3": "ccb591e8da1d314b",
+    # UNCHANGED, and back to its original value after a same-day round trip.
+    # D1 moved this to ccb591e8da1d314b on 2026-09-09 by taking the phonetic
+    # spelling of Alcester out of the model-facing prompt; the owner reverted
+    # it a few hours later on live evidence from the Theorem line. The prompt
+    # now renders byte-identical to its pre-D1 form for all five clinics --
+    # verified by diffing the rendered text, not by trusting the revert.
+    "theorem_v3": "c8b94e274006ebdd",
     # Moved 2026-08-25, deliberately: 76ac625e89e83e4a -> e52579ab12c53eab.
     # vital_edge gained the ESTABLISH THE AGE rule in _render_policies. Its
     # minimum of 18 was unenforceable in practice because the gate only arms

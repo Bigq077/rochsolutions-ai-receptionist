@@ -77,17 +77,40 @@ def _theorem_prompt() -> str:
     return static + (chr(10) * 2) + dynamic
 
 
-# ── the prompt no longer teaches the phonetic spelling ──────────────────────
+# ── D1a: REVERTED — the prompt teaches the phonetic spelling again ─────────
 
-def test_the_prompt_does_not_teach_susie_to_write_the_phonetic_form():
+def test_the_prompt_teaches_the_phonetic_form_again_REVERTED():
+    """D1a was REVERTED on 2026-09-09, hours after it shipped.
+
+    The owner ran a Theorem call on the new build (03170904af23,
+    CA48296fab5117) and judged the clinic question worse than before. No
+    mechanism linking the prompt edit to it was found: the STT garble that
+    turned the caller's answer into "uh you're osteopathic" came off a keyterm
+    list this change never touched, and Theorem's 77 terms were byte-identical
+    across it. But a 43-line prompt edit moves model behaviour in ways no
+    render-diff can predict, D1a's benefit was ANALYTICAL rather than
+    caller-facing, and the line carries real patients. Cheap to remove, so
+    removed. The rendered prompt is byte-identical to its pre-D1 form for all
+    five clinics -- verified by diffing the rendered text, not by trusting the
+    revert -- and both hash tables went back to c8b94e274006ebdd.
+
+    Inverted rather than deleted so the round trip stays visible: anyone taking
+    the phonetic spelling out again will find this and the reason it came back.
+
+    D1b is UNAFFECTED and still live. The judge and the obs transcript read
+    "Alcester" whichever spelling the model writes, because
+    undo_tts_substitutions runs at the record rather than in the prompt -- and
+    that was most of what D1 was for.
+    """
     prompt = _theorem_prompt()
-    offenders = [
+    phonetic = [
         line for line in prompt.splitlines()
         if "awlstuh" in line.lower() and _STT_VARIANTS_MARKER not in line
     ]
-    assert not offenders, (
-        "the phonetic spelling is back in the model-facing prompt:\n  "
-        + "\n  ".join(o.strip()[:100] for o in offenders[:5])
+    assert phonetic, (
+        "the phonetic spelling has left the prompt again. That WAS D1a and it "
+        "was reverted on 2026-09-09 on live evidence -- read this test before "
+        "reinstating it, and take a Theorem call first."
     )
 
 
