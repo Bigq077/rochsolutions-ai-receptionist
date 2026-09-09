@@ -519,13 +519,34 @@ still declines, so the honest end-of-week sentence is untouched.
 
 | | live call | tests |
 |---|---|---|
-| D11 — nothing-sooner concession | ✅ 14:32:58, verbatim | 51 |
-| D12 — "what else" after a soonest request | ❌ not yet | 7 |
-| D10 — the completeness hedge | ❌ **cannot** be reached by a soonest request — `soonest_first` makes no completeness claim, so the hedge is only live on a readout the caller did NOT ask to be soonest-ordered | 21 |
+| D11 — nothing-sooner concession | ✅ 14:32:58, verbatim, **132 ms** | 51 |
+| D10 — the completeness hedge | ✅ 14:52:25 | 21 |
+| D12 — "what else" after a soonest request | ✅ 14:52:45, **123 ms** | 7 |
 
-D10 needs a call that asks **without** urgency ("what have you got?") with four
-or more days in the sweep, and the tell is `"I've got a few days —"` in place of
-`"Here's what we've got coming up —"`.
+**All three verified live, build `1489a02c4331`.** D10 could never be reached by
+a soonest request — `soonest_first` makes no completeness claim — so it needed a
+call that asks WITHOUT urgency, and got one:
+
+```
+14:52:18  caller: um what have you got
+14:52:24  tool: check_availability  date_hint="any"
+14:52:25  deterministic TTS chunk 1/3: "I've got a few days — Number 1,
+          Wednesday 9th September — tw..."          <- D10, the hedge fires
+
+14:52:45  caller: um what else have you got
+14:52:45  'what else' answered with 3 day(s) he has not heard:
+          ['2026-09-12', '2026-09-14', '2026-09-15']   <- D12, no circling
+14:52:45  "I've got a few days — Number 1, Saturday 12th September — nine in
+          the morning, or twenty past twelve in the afternoon. N..."
+14:52:45  LAT turn_seq=4 path=slot_followup ttfa_ms=123
+```
+
+The second opener is D10's hedge firing INSIDE `more_days_speech` — four days
+unheard, three named — which is the copy of the fix that producer needed.
+
+Both deterministic turns answered in ~125 ms against 3,100–7,400 ms for the LLM
+turns on the same call, because neither reaches the model. The honest sentence
+and the fast sentence turned out to be the same sentence.
 
 **Stage C — one offer record everywhere.** The mode rule was raised here by
 stage B and then **removed again** by the owner choosing option B: the ranking
