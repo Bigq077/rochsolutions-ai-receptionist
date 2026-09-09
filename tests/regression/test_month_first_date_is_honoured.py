@@ -76,7 +76,10 @@ import datetime as _dt
 
 import pytest
 
-from app.tools.receptionist_tools import _extract_week_range
+from app.tools.receptionist_tools import (
+    _extract_multidate_range,
+    _extract_week_range,
+)
 
 
 TODAY = _dt.date.today()
@@ -200,7 +203,11 @@ def test_a_bare_year_is_not_eaten_as_the_day():
     [
         ("next week",       None, None),
         ("from 18 May 2026", _dt.date(2026, 5, 18), _dt.date(2026, 5, 24)),
-        ("8th or 9th",      _dt.date(2026, 9, 8),  _dt.date(2026, 9, 9)),
+        # "8th or 9th" carries no month, so the dates it resolves to depend on
+        # the real clock. Only the property that does NOT move is asserted here
+        # — that it stays a multi-day range. The dates themselves are pinned
+        # against an injected `today` in the test below (D6).
+        ("8th or 9th",      None, None),
     ],
 )
 def test_week_and_multidate_patterns_still_win(hint, start, end):
@@ -213,3 +220,42 @@ def test_week_and_multidate_patterns_still_win(hint, start, end):
         assert rng == (start, end)
     else:
         assert rng[0] != rng[1], f"{hint!r} collapsed to a single day"
+
+
+# ---------------------------------------------------------------------------
+# D6 — the same case, pinned against an injected date instead of the clock.
+#
+# The row above used to assert (2026-09-08, 2026-09-09) as literals. Written on
+# 8 September 2026, it passed that day and failed on the 9th on an UNMODIFIED
+# tree: a bare day-of-month with no month resolves to the NEAREST FUTURE date
+# with that day, so on the 9th the "8th" is next month's.
+#
+# The behaviour it pinned is real and stays pinned — `_extract_multidate_range`
+# takes `today` as an argument, so the expectation is expressed against a fixed
+# one rather than against whenever the suite happens to run.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "today,expected",
+    [
+        # Both days still ahead: the same month.
+        (_dt.date(2026, 9, 1), (_dt.date(2026, 9, 8), _dt.date(2026, 9, 9))),
+        # The day the literal was written — it held here.
+        (_dt.date(2026, 9, 8), (_dt.date(2026, 9, 8), _dt.date(2026, 9, 9))),
+        # The day after, which broke it: the 8th has passed, so it rolls.
+        (_dt.date(2026, 9, 9), (_dt.date(2026, 9, 9), _dt.date(2026, 10, 8))),
+        # A month boundary, for the same reason.
+        (_dt.date(2026, 12, 20), (_dt.date(2027, 1, 8), _dt.date(2027, 1, 9))),
+    ],
+)
+def test_a_bare_two_date_disjunction_resolves_from_the_given_day(today, expected):
+    assert _extract_multidate_range("8th or 9th", today) == expected
+
+
+def test_a_bare_two_date_disjunction_is_never_a_single_day(today=None):
+    """Whatever the clock says, "8th or 9th" spans two days — that is the
+    property `test_week_and_multidate_patterns_still_win` still asserts."""
+    for offset in range(0, 400, 17):
+        day = _dt.date(2026, 1, 1) + _dt.timedelta(days=offset)
+        got = _extract_multidate_range("8th or 9th", day)
+        assert got is not None, day
+        assert got[0] != got[1], (day, got)
