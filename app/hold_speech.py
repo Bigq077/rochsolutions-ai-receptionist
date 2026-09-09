@@ -1246,6 +1246,57 @@ def render_intent_head(
     return head
 
 
+def head_families(text) -> frozenset:
+    """Which pool this hold phrase came from, or None. PURE.
+
+    N4. `WorkKind.UNKNOWN_SLOW` holds two members that differ only by a leading
+    "Sorry, ", and `_second_filler_text` rotates by `len(used_fillers)` -- so a
+    turn that stalls twice is GUARANTEED to produce the other one:
+
+        10:03  caller: "um to book an appointment mate"
+        10:03  Susie:  "Sorry, still with you -"
+        10:03  Susie:  "Still with you -"
+
+    Theorem `CAf9e32e638f07efa25f06c01103bab3ac`, 9 Sep 2026. The caller hung
+    up and the judge tagged the call `dead_end`, quoting both phrases. The
+    timing was right -- turn 1 stalled 12.7s, so the re-arm was doing its job --
+    and only the wording was wrong.
+
+    `_second_filler_text`'s rule 3 already forbade this in words ("Never a
+    verbatim repeat. Hearing the identical phrase twice reads as a stuck line
+    rather than a hold") and tested it with `==`, which two wordings of one
+    sentence walk straight past. Third instance of an equality test standing in
+    for "is this the same thing again?" -- see the head echo (`66b8c209` ->
+    `ff0fa987`) and D5 (`9cff40aa`).
+
+    Returns a SET, because one wording can belong to several pools: "Let me
+    see -" is the subject-free fallback of `diary_read`, `named_day`,
+    `named_week`, `time_band` and `session_length` alike. Two phrases are "the
+    same thing again" when their sets INTERSECT, which is the question the
+    caller of this actually has.
+
+    Built from the pools themselves rather than a hand-kept list, for the same
+    reason `_head_pattern` is: a copy of this mapping is exactly the thing that
+    goes stale the first time a head is reworded. Never raises -- a hold phrase
+    is a nicety and the answer to "what family is this?" must not fail a turn.
+    """
+    found: set = set()
+    try:
+        probe = str(text or "").strip().lower()
+        if not probe:
+            return frozenset()
+        for pools in (HEADS, INTENT_HEADS):
+            for key, members in pools.items():
+                for head in members:
+                    if "{" in head:
+                        continue    # needs a subject; matched by _HEAD_RE
+                    if head.strip().lower() == probe:
+                        found.add(getattr(key, "value", str(key)))
+    except Exception:  # pragma: no cover - a filler must never break a call
+        return frozenset()
+    return frozenset(found)
+
+
 def _head_pattern():
     """Every head, as one regex, with the placeholders opened out.
 

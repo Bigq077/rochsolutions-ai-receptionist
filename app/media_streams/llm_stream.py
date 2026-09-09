@@ -1225,8 +1225,19 @@ def _second_filler_text(
        (``filler_phrases.with_filler`` clears it) and is already speaking.
        Deliberately NOT ``_ack_filler_cancelled``: ``_tts_loop`` *consumes*
        that flag, so it reads False whether or not a tool filler won.
-    3. Never a verbatim repeat. Hearing the identical phrase twice reads as a
-       stuck line rather than a hold.
+    3. Never the same thing again. Hearing it twice reads as a stuck line
+       rather than a hold -- and that is about the THING SAID, not the bytes.
+       `WorkKind.UNKNOWN_SLOW` holds "Sorry, still with you -" and "Still with
+       you -", so the rotation guarantees the second stall of a turn produces
+       the other one, and `==` walks straight past it. N4, Theorem
+       `CAf9e32e638f07efa25f06c01103bab3ac`: both played, the caller hung up,
+       and 21 calls in the corpus carry the pair. So the test is by FAMILY --
+       see `hold_speech.head_family`. Refusing leaves the rest of the stall
+       silent, which is the better fault: one apology and quiet reads better
+       than two apologies. It is not a cure. UNKNOWN_SLOW is deliberately
+       contentless and both its members are one sentence; a third,
+       structurally different wording would let this speak again, and that is
+       caller-facing copy rather than an engineering call.
     4. Never a second write-ack — the first phrase may have been "Just locking
        that in now…", and saying it twice claims the write twice to a caller
        who has already confirmed.
@@ -1238,6 +1249,17 @@ def _second_filler_text(
     if candidate is not None:
         text = (candidate or "").strip()
         if not text or text == (first_text or "").strip():
+            return None
+        # Rule 3 by family, not by bytes. See the docstring above.
+        from app.hold_speech import head_families as _families
+
+        _f_first, _f_next = _families(first_text), _families(text)
+        if _f_first & _f_next:
+            logger.info(
+                "[ms_llm] second hold phrase refused - %r and %r are both "
+                "%s, and two wordings of one sentence read as a stuck line "
+                "(N4)", first_text, text, sorted(_f_first & _f_next),
+            )
             return None
         # Rule 4 generalised: whatever the arbiter hands us, it may not be the
         # second phrase in a row that claims a write has happened.
