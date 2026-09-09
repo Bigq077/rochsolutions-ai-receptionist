@@ -323,6 +323,64 @@ fixed on 4 September, and because one day with three times is a genuine
 take-it-or-leave-it risk that Theorem accepts by an owner decision of 15 June
 and the other two clinics have never been asked about.
 
+**Stage B, the follow-up — the opener did not fire, and the reason was not the
+opener.** Demo call, 9 Sep 13:11, build `b5f5c9975949` confirmed in the log:
+
+```
+13:11:11  caller: "um what's the soonest available slot you have"
+13:11:15  tool: check_availability  date_hint="as soon as possible"
+13:11:15  chunk 1/3: "Here's what we've got coming up — Number 1, Wednesday 9th Se"
+```
+
+The model understood perfectly — it said *"Let me find the soonest I've got"*
+and put the right hint in the tool args. What never happened was the SESSION
+capture: `_extract_day_preference` in `connection.py` knew the literal phrases
+"as soon as possible" and "asap" and **nothing else** — not "soonest", not
+"earliest", not "sooner" — so `day_preference` stayed empty and
+`caller_wants_soonest` was False.
+
+**This was never really a stage B defect.** `caller_wants_soonest` gates three
+things and the lead-in is the least of them:
+
+| consumer | fix | what a missed capture costs |
+|---|---|---|
+| `choose_presented_days` | B-137 | leads with the UNHEARD days instead of the earliest ones |
+| `choose_presented_indices` | B-142 | reads each day from times the caller has not heard, not its earliest |
+| `_cap_presented_slots` | stage B | no ordering opener |
+
+So a caller who said *"sooner"* rather than *"as soon as possible"* got the
+**pre-B-137 behaviour**: asked for something sooner, answered with days further
+away. B-137 was only ever armed for callers who used its one phrase — and
+`CA5685a2ab`, the call it was written for, says *"that's not soon enough"*,
+which the matcher could not see. The 4 September fix has been half-live for five
+days.
+
+`_extract_day_preference` is the ONLY writer of `day_preference`; the two other
+"soonest" vocabularies in the repo (`_SCHEDULING_SINGLES`, `_VACUOUS_DATE_HINTS`)
+already know these words but feed routing and hint-classification, not this
+capture.
+
+**Fixed by vocabulary plus a guard, not vocabulary alone.** Adding the words
+bare re-creates the B-138 family: *"what's the earliest on Thursday"* would bank
+"as soon as possible" and `choose_presented_days` would then lead with the
+globally earliest days, dropping the only day the caller asked about. So a
+concrete weekday or "next week" in the same utterance wins. Bare "soon" is
+deliberately absent — *"see you soon"* is not a slot request and this capture
+persists for the whole call.
+
+**One pre-existing bug fixed with it.** *"Saturday is not soon enough"* banked
+**saturday** on `b5f5c997` too, via the bare-weekday arm — a rejection read as a
+request, pinning every later readout to the day the caller had just turned down.
+It is the same call and the same sentence, so it ships here rather than as a
+separate row. Only the NEGATED frame: *"is Thursday soon enough?"* is a caller
+ACCEPTING Thursday and still resolves to thursday.
+
+Executable surface: three module-level regexes and two branches. Test:
+`tests/regression/test_soonest_vocabulary_arms_the_soonest_rules.py`, which
+asserts through `caller_wants_soonest` rather than the matcher's return value —
+a test that checks only the string cannot see `_SOONEST_DAY_PREFERENCES` drift
+out from under it.
+
 **Stage C — one offer record everywhere.** The mode rule was raised here by
 stage B and then **removed again** by the owner choosing option B: the ranking
 claim no longer needs `single_day`, so nothing is blocked on converging it. The

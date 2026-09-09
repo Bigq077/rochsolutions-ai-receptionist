@@ -1360,6 +1360,71 @@ def _extract_time_preference(text: str) -> "str | None":
     return None
 
 
+#: Ways a caller asks for the earliest thing available, beyond the two forms
+#: `_extract_day_preference` already knew ("as soon as possible" / "asap").
+#:
+#: 9 Sep 2026, northgate, build b5f5c9975949. The caller opened with "um what's
+#: the soonest available slot you have". The model understood it -- it said
+#: "Let me find the soonest I've got" and sent date_hint="as soon as possible"
+#: -- but `day_preference` was never written, because this matcher knew neither
+#: "soonest" nor "earliest" nor "sooner".
+#:
+#: THE COST IS NOT THE LEAD-IN. `caller_wants_soonest` reads this capture and
+#: gates three things, and the opener is the least of them:
+#:
+#:   slot_followup.choose_presented_days   -- B-137, lead with the EARLIEST days
+#:                                            rather than the unheard ones
+#:   slot_followup index chooser           -- B-142, read each day from its
+#:                                            earliest time
+#:   _cap_presented_slots / Acuity         -- the "soonest-first" lead-in
+#:
+#: So a caller who said "sooner" instead of "as soon as possible" got the
+#: PRE-B-137 behaviour: asked for something sooner, answered with days further
+#: away. CA5685a2ab is the call B-137 was written for and its transcript reads
+#: "that's not soon enough" -- a sentence this matcher could not see. B-137 was
+#: only ever armed for callers who happened to use its one phrase.
+#:
+#: Bare "soon" is deliberately absent. "see you soon" and "as soon as I can get
+#: there" are not slot requests, and this capture persists for the whole call.
+_SOONEST_PHRASE_RE = re.compile(
+    r"\b(?:soonest|earliest|sooner|next\s+available|first\s+available)\b"
+    r"|\bsoon\s+enough\b"
+)
+
+#: A day named concretely in the SAME utterance beats a vague "earliest".
+#:
+#: Without this, "what's the earliest on Thursday" banks "as soon as possible"
+#: for the rest of the call, and `choose_presented_days` then leads with the
+#: globally earliest days -- ignoring the only day the caller asked about. That
+#: is the B-138 family exactly: a vague phrase banking a filter that deletes the
+#: caller's real request.
+#:
+#: The pre-existing "as soon as possible" / "asap" arm is left UNGUARDED on
+#: purpose. It could reach the same trap in principle, but "asap on Thursday" is
+#: not a sentence people say, whereas "earliest on Thursday" is the natural
+#: form -- so the vocabulary added above is what makes the trap reachable, and
+#: the guard ships with it rather than as a widening of a fix nobody has
+#: reported a defect against.
+_CONCRETE_DAY_RE = re.compile(
+    r"\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b"
+    r"|\bnext\s+week\b"
+)
+
+#: "Saturday is not soon enough" is a REJECTION of Saturday, and the guard above
+#: would read it as a request for one.
+#:
+#: Pre-existing and not introduced by the vocabulary above -- b5f5c997 returns
+#: "saturday" for this utterance too, via the bare-weekday arm. It is fixed here
+#: rather than left because it is the same call: CA5685a2ab said "no i need it as
+#: soon as possible i can't wait a week" after being offered the 10th, and the
+#: same caller one turn earlier says the sentence this matches. Banking the
+#: rejected day pins every later readout to it.
+#:
+#: Only the NEGATED frame. "is thursday soon enough?" is a caller ACCEPTING
+#: Thursday, and the concrete-day guard is right about that one.
+_NOT_SOON_ENOUGH_RE = re.compile(r"(?:\bnot|n't)\s+soon\s+enough\b")
+
+
 def _extract_day_preference(text: str) -> "str | None":
     """Extract a day / relative-day preference that is enough to look up slots.
 
@@ -1374,6 +1439,15 @@ def _extract_day_preference(text: str) -> "str | None":
     t = text.lower()
     # Relative / open day first — more specific phrases before bare weekday.
     if "as soon as possible" in t or re.search(r"\basap\b", t):
+        return "as soon as possible"
+    # A rejection of a named day is not a request for it -- checked BEFORE the
+    # concrete-day guard below, which would otherwise bank the rejected day.
+    if _NOT_SOON_ENOUGH_RE.search(t):
+        return "as soon as possible"
+    # Same meaning, the words people actually use -- see `_SOONEST_PHRASE_RE`.
+    # Refused when the caller named a concrete day in the same breath, because
+    # that day is the request and "earliest" only qualifies it.
+    if _SOONEST_PHRASE_RE.search(t) and not _CONCRETE_DAY_RE.search(t):
         return "as soon as possible"
     if "next week" in t:
         return "next week"
