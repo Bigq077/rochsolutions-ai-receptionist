@@ -482,6 +482,51 @@ days. 159 characters, ending in a question — inside the 200-char
 `last_bot_prompt` cap, so B-31 cannot strip the "?" and disarm clinical
 screening's orphan matching.
 
+**D12 — a fix's own bill, found by the call that verified the fix before it.**
+
+9 Sep 14:32, northgate, build `909a90ad3752`. D11 fired perfectly (and in
+**132 ms** — `path=slot_followup`, against 2.7–9.5 s for every LLM turn on that
+call, because it never reaches the model). Then:
+
+```
+caller: okay then what else have you got this week
+[slot_followup] every day in the sweep has been offered -- falling through
+Susie : this week I've also got Thursday at eight in the morning, or ...
+        Friday at eight in the morning, or half past three ...
+```
+
+Thursday and Friday read straight back — Numbers 2 and 3 from ninety seconds
+earlier. The going-in-circles shape B-137 and D11 both exist to end.
+
+`more_days_speech` picked its candidates with `choose_presented_days`, which
+answers a **different question** — which days should LEAD a fresh readout — and
+short-circuits on `caller_wants_soonest` to `days[:max_days]`, the three
+earliest. For this caller those were the three just heard, so the unheard filter
+emptied the list, the producer declined, and the model circled.
+
+**Latent until `38709d5f`.** `day_preference` was previously set only by the
+literal "as soon as possible"/"asap", so `caller_wants_soonest` was almost never
+true here. Teaching the capture the words people actually use made the
+short-circuit reachable — a fix in one place switching on a dormant branch in
+another, which is worth recording as a shape and not just an incident.
+
+Paid by selecting the unheard days directly in that one producer, NOT by
+narrowing the capture: the soonest ordering is right on a fresh readout and
+wrong only where the question is "what have I not heard". Genuine exhaustion
+still declines, so the honest end-of-week sentence is untouched.
+
+**Verification status of the three, as of 9 Sep evening:**
+
+| | live call | tests |
+|---|---|---|
+| D11 — nothing-sooner concession | ✅ 14:32:58, verbatim | 51 |
+| D12 — "what else" after a soonest request | ❌ not yet | 7 |
+| D10 — the completeness hedge | ❌ **cannot** be reached by a soonest request — `soonest_first` makes no completeness claim, so the hedge is only live on a readout the caller did NOT ask to be soonest-ordered | 21 |
+
+D10 needs a call that asks **without** urgency ("what have you got?") with four
+or more days in the sweep, and the tell is `"I've got a few days —"` in place of
+`"Here's what we've got coming up —"`.
+
 **Stage C — one offer record everywhere.** The mode rule was raised here by
 stage B and then **removed again** by the owner choosing option B: the ranking
 claim no longer needs `single_day`, so nothing is blocked on converging it. The
