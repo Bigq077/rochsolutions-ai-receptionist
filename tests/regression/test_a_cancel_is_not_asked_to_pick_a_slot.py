@@ -152,3 +152,74 @@ def test_it_never_raises():
     for bad in (None, 123, object()):
         _v3_record_caller_intent(_session(), bad)  # type: ignore[arg-type]
     _v3_record_caller_intent({}, "cancel my appointment")
+
+
+# ── The second live call: a THIRD copy of the post-location decision ────────
+#
+# `CA6b71544d`, 9 Sep 03:12, on build 6f277d414bcb -- the build that recorded
+# the intent correctly:
+#
+#     03:12:28.8  [ms_conn v3] caller intent = cancel      <- the fix FIRED
+#     03:12:39.0  [ms_conn v3] location answer intercepted — ack-only, no run_turn
+#     03:12:39.2  Susie: 'Is there a particular day or time that works best
+#                         for you?'
+#
+# Recording the intent was necessary and not sufficient. THREE sites decide
+# what to ask once the clinic is known -- the keypad path, the Haiku resolver,
+# and the deterministic verbal intercept. The first two already branched on the
+# intent; the third did not, and clean STT ("uh at your alcester clinic") is
+# what routes a call to it rather than to Haiku.
+
+import ast
+from pathlib import Path
+
+from app.media_streams.connection import _V3_PHONE_CONFIRM_Q
+
+
+def test_the_phone_confirm_question_has_exactly_one_owner():
+    """The clinic-question keywords drifted into three copies and the one that
+    was never updated is what let Susie ask twice (f89a4c7e). The same shape
+    here let the third site ask a cancelling caller for a day and time.
+
+    Counts STRING LITERALS in the module, not references: three call sites may
+    reference the constant, but none may spell the sentence out again.
+    """
+    src = Path("app/media_streams/connection.py")
+    tree = ast.parse(src.read_text(encoding="utf-8"))
+    spelled = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Constant)
+        and isinstance(n.value, str)
+        and "associated with your booking" in n.value
+    ]
+    assert len(spelled) == 1, (
+        f"{len(spelled)} copies of the phone-confirm wording — it must be "
+        f"spelled once and referenced by every site "
+        f"(lines {[n.lineno for n in spelled]})"
+    )
+
+
+def test_the_two_follow_up_questions_are_different_questions():
+    """A cancelling caller's number is a LOOKUP KEY, not a contact detail."""
+    assert "day or time" not in _V3_PHONE_CONFIRM_Q.lower()
+    assert "booking" in _V3_PHONE_CONFIRM_Q.lower()
+
+
+def test_every_post_location_site_branches_on_the_intent():
+    """All three sites must consult `v3_caller_intent`. A fourth site added
+    without it is the defect this file exists for, twice over.
+
+    Asserted structurally: each place that can speak the preference question
+    must sit inside a function that also reads the intent.
+    """
+    src = Path("app/media_streams/connection.py").read_text(encoding="utf-8")
+    # The deterministic intercept is the site that lacked the branch. Its new
+    # guard must sit immediately before the treatment-bypass fallback.
+    assert (
+        '"v3_caller_intent", "booking"\n'
+        '                                            ) in ("reschedule", "cancel"):'
+        in src.replace("\r\n", "\n")
+    ), (
+        "the deterministic verbal location intercept no longer branches on the "
+        "caller's intent — a cancelling caller will be asked to pick a slot"
+    )

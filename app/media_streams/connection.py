@@ -1400,6 +1400,19 @@ _TIMING_QUESTION_AFTER_BOOKING_ACK = (
     "Is there a particular day or time that works best for you?"
 )
 
+#: Asked once the clinic is known and the caller is CANCELLING or
+#: RESCHEDULING: the number is a LOOKUP KEY for an existing booking, not a
+#: contact detail for a new one. Three sites decide what to ask after the
+#: location is confirmed -- the keypad path, the Haiku resolver and the
+#: deterministic verbal intercept -- and on CA6b71544d (9 Sep 03:12, live)
+#: the third asked a cancelling caller for a day and time because it was the
+#: only one without the branch. One string, so the wording cannot drift the
+#: way the clinic-question keywords did.
+_V3_PHONE_CONFIRM_Q = (
+    "Is the number you're calling on the one associated with your booking? "
+    "If so, just say 'use this number'."
+)
+
 
 def _reason_already_known(session: dict) -> bool:
     """True when the call already has a booking reason on record."""
@@ -6977,12 +6990,7 @@ class WebSocketCallHandler:
                 _ack = f"{_disp}."
                 _intent = self.session.get("v3_caller_intent", "booking")
                 if _intent in ("reschedule", "cancel"):
-                    _next_q = (
-                        "Is the number you're calling on "
-                        "the one associated with your "
-                        "booking? If so, just say "
-                        "'use this number'."
-                    )
+                    _next_q = _V3_PHONE_CONFIRM_Q
                     self.session["v3_awaiting_phone_confirm"] = True
                 else:
                     # FAQ-before-clinic: if the caller asked a clinic-specific
@@ -11207,12 +11215,7 @@ class WebSocketCallHandler:
                                         "v3_caller_intent", "booking"
                                     )
                                     if _intent in ("reschedule", "cancel"):
-                                        _next_q = (
-                                            "Is the number you're calling "
-                                            "on the one associated with "
-                                            "your booking? If so, just "
-                                            "say 'use this number'."
-                                        )
+                                        _next_q = _V3_PHONE_CONFIRM_Q
                                     else:
                                         # FAQ-before-clinic: re-queue a pending
                                         # clinic-specific FAQ now the clinic is
@@ -11515,13 +11518,7 @@ class WebSocketCallHandler:
                                             "v3_caller_intent", "booking"
                                         )
                                         if _intent in ("reschedule", "cancel"):
-                                            _new_ret_q = (
-                                                "Is the number you're "
-                                                "calling on the one "
-                                                "associated with your "
-                                                "booking? If so, just "
-                                                "say 'use this number'."
-                                            )
+                                            _new_ret_q = _V3_PHONE_CONFIRM_Q
                                             self.session[
                                                 "v3_awaiting_phone_confirm"
                                             ] = True
@@ -11663,59 +11660,111 @@ class WebSocketCallHandler:
                                                 _faq_pending[:60],
                                             )
                                         else:
-                                            # Treatment bypass / non-booking
-                                            # with no pending FAQ — route based
-                                            # on what is already known.
-                                            _ae_sc = (
-                                                self.session.get(
-                                                    "soft_context"
-                                                ) or {}
-                                            )
-                                            _ae_tp = (
-                                                _ae_sc.get("time_preference")
-                                                or self.session.get(
-                                                    "time_of_day_preference"
-                                                )
-                                                or ""
-                                            )
-                                            if _ae_tp:
-                                                await self.transcript_queue.put(
-                                                    (time.monotonic(), _ae_tp,
-                                                     True)
-                                                )
-                                                logger.info(
-                                                    "[ms_conn v3] time"
-                                                    " preference already"
-                                                    " known (%r) — re-queued"
-                                                    " for check_availability"
-                                                    " after ack",
-                                                    _ae_tp,
-                                                )
-                                            else:
-                                                _PREF_Q = (
-                                                    "Is there a particular"
-                                                    " day or time that works"
-                                                    " best for you?"
-                                                )
+                                            # A caller who is CANCELLING or
+                                            # RESCHEDULING needs the number
+                                            # that finds their booking, not a
+                                            # day and time for a new one.
+                                            #
+                                            # theorem_v3 CA6b71544d, 9 Sep
+                                            # 03:12, live: intent was recorded
+                                            # as `cancel` on turn 1 and this
+                                            # branch still asked 'Is there a
+                                            # particular day or time that works
+                                            # best for you?'. THIRD copy of the
+                                            # post-location decision: the DTMF
+                                            # path and the Haiku resolver both
+                                            # carry this branch already; this,
+                                            # the deterministic verbal
+                                            # intercept, was the one that did
+                                            # not — see
+                                            # [[location-intercept-has-four-copies]].
+                                            if self.session.get(
+                                                "v3_caller_intent", "booking"
+                                            ) in ("reschedule", "cancel"):
+                                                self.session[
+                                                    "v3_awaiting_phone_confirm"
+                                                ] = True
                                                 await self.tts_text_queue.put(
-                                                    _PREF_Q
+                                                    _V3_PHONE_CONFIRM_Q
                                                 )
                                                 self.session[
                                                     "last_bot_prompt"
-                                                ] = _PREF_Q
+                                                ] = _V3_PHONE_CONFIRM_Q
                                                 self.session[
                                                     "last_question"
-                                                ] = _PREF_Q
+                                                ] = _V3_PHONE_CONFIRM_Q
                                                 self.session.setdefault(
                                                     "conversation_history", []
                                                 ).append({
                                                     "role": "assistant",
-                                                    "content": _PREF_Q,
+                                                    "content":
+                                                        _V3_PHONE_CONFIRM_Q,
                                                 })
-                                                self._silence_handler\
-                                                    .on_question_asked(
+                                                self._silence_handler.on_question_asked(
+                                                    _V3_PHONE_CONFIRM_Q
+                                                )
+                                                logger.info(
+                                                    "[ms_conn v3] location"
+                                                    " confirmed — lookup"
+                                                    " follow-up (intent=%s)",
+                                                    self.session.get(
+                                                        "v3_caller_intent"
+                                                    ),
+                                                )
+                                            else:
+                                                # Treatment bypass / non-booking
+                                                # with no pending FAQ — route based
+                                                # on what is already known.
+                                                _ae_sc = (
+                                                    self.session.get(
+                                                        "soft_context"
+                                                    ) or {}
+                                                )
+                                                _ae_tp = (
+                                                    _ae_sc.get("time_preference")
+                                                    or self.session.get(
+                                                        "time_of_day_preference"
+                                                    )
+                                                    or ""
+                                                )
+                                                if _ae_tp:
+                                                    await self.transcript_queue.put(
+                                                        (time.monotonic(), _ae_tp,
+                                                         True)
+                                                    )
+                                                    logger.info(
+                                                        "[ms_conn v3] time"
+                                                        " preference already"
+                                                        " known (%r) — re-queued"
+                                                        " for check_availability"
+                                                        " after ack",
+                                                        _ae_tp,
+                                                    )
+                                                else:
+                                                    _PREF_Q = (
+                                                        "Is there a particular"
+                                                        " day or time that works"
+                                                        " best for you?"
+                                                    )
+                                                    await self.tts_text_queue.put(
                                                         _PREF_Q
                                                     )
+                                                    self.session[
+                                                        "last_bot_prompt"
+                                                    ] = _PREF_Q
+                                                    self.session[
+                                                        "last_question"
+                                                    ] = _PREF_Q
+                                                    self.session.setdefault(
+                                                        "conversation_history", []
+                                                    ).append({
+                                                        "role": "assistant",
+                                                        "content": _PREF_Q,
+                                                    })
+                                                    self._silence_handler\
+                                                        .on_question_asked(
+                                                            _PREF_Q
+                                                        )
                                     await save_session(
                                         self.call_sid, self.session
                                     )
@@ -11918,13 +11967,7 @@ class WebSocketCallHandler:
                                         # next step based on intent and
                                         # whether time preference is known.
                                         if _intent in ("reschedule", "cancel"):
-                                            _h_next_q = (
-                                                "Is the number you're "
-                                                "calling on the one "
-                                                "associated with your "
-                                                "booking? If so, just "
-                                                "say 'use this number'."
-                                            )
+                                            _h_next_q = _V3_PHONE_CONFIRM_Q
                                             _h_tp = ""
                                         else:
                                             _h_sc = (
@@ -14255,12 +14298,7 @@ class WebSocketCallHandler:
                                         "v3_caller_intent", "booking"
                                     )
                                     if _intent in ("reschedule", "cancel"):
-                                        _next_q = (
-                                            "Is the number you're calling "
-                                            "on the one associated with "
-                                            "your booking? If so, just "
-                                            "say 'use this number'."
-                                        )
+                                        _next_q = _V3_PHONE_CONFIRM_Q
                                         self.session[
                                             "v3_awaiting_phone_confirm"
                                         ] = True
