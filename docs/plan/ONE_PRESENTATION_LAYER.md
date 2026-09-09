@@ -381,6 +381,107 @@ asserts through `caller_wants_soonest` rather than the matcher's return value �
 a test that checks only the string cannot see `_SOONEST_DAY_PREFERENCES` drift
 out from under it.
 
+**D10 and D11 — the two missing sentences. BOTH FIXED 9 Sep 2026.**
+
+Neither is a slot-selection defect. In both the structure was already right and
+the honest sentence was absent, which is the same shape stage B turned out to
+have — so all three belong together.
+
+**D10 — the completeness hedge was dead code.** `build_slot_offer` picks
+between a claim about the diary and a hedge:
+
+| opener | means |
+|---|---|
+| `"Here's what we've got coming up —"` | this is the diary |
+| `"I've got a few days —"` | there are more than these |
+
+and it chose from `len(days) > len(days[:max_days])`. That can only be true of
+an UNTRIMMED list, and every live path hands it `presented_days`, already capped
+to three by `_cap_presented_slots`. The hedge was unreachable; the confident
+sentence went out unconditionally. Proved on the 9 Sep 12:20 northgate call —
+**7 days found, 3 spoken, opener "Here's what we've got coming up"** — the exact
+claim its own comment forbids, caller-facing on all four clinics.
+
+**The first cut of the fix was wrong and the suite caught it.** It published a
+new `days_not_shown` from `_cap_presented_slots`. That name already exists,
+already means this, and is written by `_check_availability_acuity` alone —
+`max(days_found − days_SPOKEN, 0)`, B-94. `_cap_presented_slots` is *forbidden*
+to write it, because post-processing owning that name lets the truncated view
+overwrite the honest count; `test_the_honesty_fields_are_not_clobbered_
+downstream` failed within a minute of the change. Worth recording because the
+same collision is available to anyone who reaches for the obvious name.
+
+The shipped fix is one pure function, `days_were_held_back(result)`, with two
+arms in priority order: the retrieval layer's `days_not_shown` where it exists
+(Acuity/Theorem — and strictly better, because it sees days a `single_day`
+presentation hides, where a local comparison reads 0), and found-versus-spoken
+otherwise. That second arm is what covers the google_calendar fall-through
+(northgate, JV), `diary` (Vital Edge) and `published` — which emit no honesty
+fields at all, and are where the defect was observed. `build_slot_offer` gains
+`more_days`, the exact twin of the `more_times` contract B-97 established.
+
+Stage B's `soonest_first` opener makes no completeness claim, so it was never
+affected either way — which is why D10 did not fire on the 13:43 call.
+
+**D11 — "that's not soon enough", answered with the same slots.** 9 Sep 13:43,
+northgate, build `38709d5fbecb` — the call that verified the soonest-capture
+fix. The opener was right:
+
+```
+Susie : Starting with the soonest — Number 1, Wednesday 9th September —
+        half past three in the afternoon, or ten past five in the evening. ...
+caller: um that's not soon enough
+Susie : I've got today — Wednesday the 9th of September — at half past three in
+        the afternoon, or ten past five. Do either of those work?
+```
+
+The same two times, restated as though new. It was 13:43, so **half three today
+genuinely was the first slot in the diary** — the content was correct and the
+sentence saying so was missing. B-137 fixed WHICH slots a push-back gets; one
+turn later, nothing said "this already is the earliest".
+
+Three reasons nothing caught it, all worth keeping:
+
+* `utterance_requests_more_slots` matches "later", "else", "other", "another",
+  "instead" — every one a request to move AWAY. This caller is asking to move
+  NEARER, so no matcher fired and the turn fell to the model.
+* No `check_availability` ran (`slot cache kept — awaiting slot selection`), so
+  the whole `_flush_slot_buf` apparatus — `sparse_rota_note`, `band_spent_label`
+  and the deterministic builder — was dormant. **Everything stage A and B built
+  governs the FIRST readout; the push-back turn was ungoverned.**
+* `_sparse_rota_note` is the nearest existing thing and cannot fire here: it
+  needs the earliest day several days out (today is 0) and a second clinic site
+  (northgate is single-site).
+
+Fixed as a deterministic producer, `nothing_sooner_speech`, in
+`try_unspoken_followup_speech` — the pre-LLM dispatcher that already answers
+"what else have you got" from the cached payload with no tool call. Whether the
+diary holds anything earlier is a fact, and per `_sparse_rota_note`'s own rule
+a fact about the diary is decided from the payload and never guessed.
+
+> *"I wish I had something sooner — Today at half past three in the afternoon is
+> genuinely the first slot we've got, nothing before it. Does that one work for
+> you?"*
+
+Four conditions, each closing a way the sentence could be a lie:
+
+1. the caller asked for something sooner **on this turn** — not
+   `caller_wants_soonest`, which is a standing preference and would apologise
+   for an offer nobody objected to;
+2. no day is a band-filtered view (B-97) — where `times_not_shown` is positive
+   this payload's earliest is merely the earliest that survived the filter;
+3. the earliest slot in the payload has **already been spoken**. If something
+   earlier sits unspoken the honest answer is to read it, which the producers
+   below already do;
+4. it has not been said about that same slot before — a repeated push-back
+   answered identically is the going-in-circles shape this exists to end.
+
+It touches no offer state: the keypad, `last_offered_slots` and the slot window
+still describe the live offer, so the caller can still take one of the other
+days. 159 characters, ending in a question — inside the 200-char
+`last_bot_prompt` cap, so B-31 cannot strip the "?" and disarm clinical
+screening's orphan matching.
+
 **Stage C — one offer record everywhere.** The mode rule was raised here by
 stage B and then **removed again** by the owner choosing option B: the ranking
 claim no longer needs `single_day`, so nothing is blocked on converging it. The

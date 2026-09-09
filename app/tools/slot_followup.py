@@ -4518,6 +4518,13 @@ def more_days_speech(session: Dict[str, Any]) -> Optional[str]:
             str((sl or {}).get("start") or "")[:19] in spoken
             for sl in ((day or {}).get("slots") or [])
         )
+    #: D10, this producer's copy. `fresh` is already capped to
+    #: `_MAX_PRESENTED_DAYS` by `choose_presented_days` above, so
+    #: `build_slot_offer`'s own "did I drop any days" test is blind here in
+    #: exactly the way it is on the live readout path. Counted over the WHOLE
+    #: payload, because "what else have you got" is a question about the diary,
+    #: not about the three days this answer happens to name.
+    _unheard_total = len([d for d in days if not _heard(d)])
     fresh = [d for d in fresh if not _heard(d)]
     if not fresh:
         logger.info(
@@ -4536,7 +4543,9 @@ def more_days_speech(session: Dict[str, Any]) -> Optional[str]:
         presented.append(trimmed)
 
     try:
-        offer = build_slot_offer(presented)
+        offer = build_slot_offer(
+            presented, more_days=_unheard_total > len(presented),
+        )
     except Exception:
         logger.exception(
             "[slot_followup] more-days offer failed to build -- falling through"
@@ -4929,6 +4938,181 @@ def day_acceptance_speech(
         return None
 
 
+#: D11 -- a caller pushing back on the offer because it is not soon enough.
+#:
+#: 9 Sep 2026, northgate, build 38709d5fbecb. She read "Starting with the
+#: soonest -- Number 1, Wednesday 9th September -- half past three in the
+#: afternoon, or ten past five", and the caller said "um that's not soon
+#: enough". It was 13:43, so half three TODAY was the first slot in the diary
+#: and there was genuinely nothing before it. The reply repeated the same two
+#: times with no acknowledgement:
+#:
+#:     "I've got today -- Wednesday the 9th of September -- at half past three
+#:      in the afternoon, or ten past five. Do either of those work?"
+#:
+#: The content was right and the sentence that makes it honest was missing --
+#: the same defect shape as B-137's, one turn later. B-137 fixed WHICH slots a
+#: push-back gets; nothing ever said "this already is the earliest".
+#:
+#: Not caught by `utterance_requests_more_slots`: its signals are "later",
+#: "else", "other", "another", "instead" -- every one of them a request to move
+#: AWAY, and this caller is asking to move nearer. So the turn fell through to
+#: the model, which cannot know it is looking at the whole diary.
+_SOONER_REQUEST_RE = re.compile(
+    r"(?:\bnot|n't)\s+soon\s+enough\b"
+    r"|\b(?:any|anything|something|nothing|owt)\s+(?:sooner|earlier)\b"
+    r"|\b(?:sooner|earlier)\s+than\b"
+    # "before that" needs a determiner in front of it. Bare, it swallows
+    # narrative -- "before that I had physio elsewhere" is a caller answering
+    # the reason question, not pushing back on an offer.
+    r"|\b(?:any|anything|nothing|owt|something)\s+before\s+(?:that|then|it)\b"
+    r"|\b(?:too|so)\s+(?:far|long)\s+(?:away|off|out)\b"
+    # "can't wait" only as impatience, never as anticipation. "I can't wait to
+    # get this sorted" is a caller being NICE about an offer they have just
+    # accepted, and answering it with an apology reads as not listening.
+    r"|\bcan'?t\s+wait\b(?!\s+to\b)"
+    r"|\bneed\s+(?:it\s+|to\s+be\s+seen\s+)?(?:something\s+)?(?:sooner|earlier)\b"
+    r"|\b(?:got|have)\s+(?:anything\s+|owt\s+)?(?:sooner|earlier)\b"
+)
+
+
+def utterance_asks_for_something_sooner(text: Any) -> bool:
+    """True when the caller is pushing for an EARLIER slot than the one offered.
+
+    Distinct from `utterance_requests_more_slots`, which means "show me
+    something else" and is answered with different slots. This one can only be
+    answered with the truth about the earliest slot there is -- and when that
+    slot has already been spoken, the truth is that there is nothing sooner.
+
+    Bare "sooner"/"earlier" must sit in a request frame. A caller saying "the
+    earlier one" is PICKING from what they just heard, and that utterance
+    belongs to `resolve_requested_time`, not here.
+    """
+    return bool(_SOONER_REQUEST_RE.search(str(text or "").lower()))
+
+
+def _day_phrase_for(date_iso: Any, day_label: Any) -> str:
+    """"Today" / "Tomorrow" / the payload's own label. Never raises.
+
+    The label is the fallback rather than the default because "Wednesday 9th
+    September" for a slot two hours away is how a diary talks, not how a person
+    does -- and this sentence is the one place Susie concedes something to the
+    caller, so it should not sound like a lookup.
+    """
+    try:
+        from datetime import datetime as _dt
+        from app.tools.receptionist_tools import LONDON_TZ
+        today = _dt.now(LONDON_TZ).date()
+        d = _date.fromisoformat(str(date_iso)[:10])
+        if d == today:
+            return "Today"
+        if (d - today).days == 1:
+            return "Tomorrow"
+    except Exception:
+        pass
+    return str(day_label or "").strip() or "That day"
+
+
+def nothing_sooner_speech(
+    session: Dict[str, Any], user_text: str
+) -> Optional[str]:
+    """Say that the earliest slot already offered IS the earliest there is.
+
+    Returns None -- and the caller falls through unchanged -- unless ALL of the
+    following hold. Each is a way the sentence could be a lie, and a lie here is
+    worse than the bare repeat it replaces:
+
+      1. the caller ASKED for something sooner on THIS turn. Deliberately not
+         `caller_wants_soonest`, which is a standing preference captured earlier
+         in the call: the concession only makes sense as an answer to a
+         push-back, and firing it on a first readout would apologise for an
+         offer nobody had objected to;
+      2. no day in the payload is a FILTERED view. Where `times_not_shown` is
+         positive a band filter removed times before the session ever saw them
+         (B-97), so the earliest slot here is merely the earliest that SURVIVED
+         the filter. "Nothing before it" would be false in exactly the case the
+         caller is most likely to catch;
+      3. the earliest slot in the payload has ALREADY been spoken to this
+         caller. If something earlier sits unspoken, the honest answer is to
+         read it out -- which the producers below already do -- and denying it
+         would be both false and infuriating;
+      4. it has not been said about this same slot before. Answering a repeated
+         push-back with the identical sentence is the going-in-circles shape
+         this exists to end, so a second one falls through to the model.
+
+    Touches no offer state on purpose. The keypad map, `last_offered_slots` and
+    `v3_awaiting_slot_selection` all still describe the offer on the table, and
+    that offer is still live -- this turn adds a sentence about it, it does not
+    replace it. Re-pointing the keypad at the single named slot would destroy
+    the caller's ability to take one of the other days just read to them.
+    """
+    if not utterance_asks_for_something_sooner(user_text):
+        return None
+    days = session.get("available_days")
+    if not isinstance(days, list) or not days:
+        return None
+
+    # 2 -- a filtered day makes "the earliest" unknowable from here.
+    try:
+        if _days_showing_a_filtered_view(days):
+            logger.info(
+                "[slot_followup] declining the nothing-sooner sentence -- a "
+                "band filter hid times before the session saw them, so the "
+                "earliest slot in this payload is not the earliest there is "
+                "(B-97)"
+            )
+            return None
+    except Exception:
+        return None
+
+    try:
+        bookable = [
+            s for s in flatten_bookable_slots(days) if str(s.get("start") or "")
+        ]
+        if not bookable:
+            return None
+        earliest = min(bookable, key=lambda s: str(s.get("start"))[:19])
+        spoken = spoken_starts_for_offer(session)
+    except Exception:
+        logger.exception(
+            "[slot_followup] nothing-sooner check failed -- falling through"
+        )
+        return None
+
+    key = str(earliest.get("start"))[:19]
+    # 3 -- something earlier is still unspoken, so read it rather than deny it.
+    if key not in spoken:
+        logger.info(
+            "[slot_followup] caller asked for something sooner and %s has NOT "
+            "been spoken yet -- falling through so it can be offered rather "
+            "than denied", key,
+        )
+        return None
+
+    # 4 -- said once already about this same slot.
+    if str(session.get("_nothing_sooner_said_for") or "") == key:
+        logger.info(
+            "[slot_followup] the nothing-sooner sentence has already been said "
+            "about %s -- not repeating it verbatim; falling through", key,
+        )
+        return None
+
+    _time = str(earliest.get("spoken") or "").strip()
+    if not _time:
+        return None
+    session["_nothing_sooner_said_for"] = key
+    _day = _day_phrase_for(earliest.get("date"), earliest.get("day_label"))
+    logger.info(
+        "[slot_followup] caller pushed for something sooner and %s is the "
+        "earliest slot in the payload AND already spoken -- saying so rather "
+        "than re-reading the same offer (D11)", key,
+    )
+    return (
+        "I wish I had something sooner \u2014 {} at {} is genuinely the first "
+        "slot we've got, nothing before it. Does that one work for you?"
+    ).format(_day, _time)
+
+
 def try_unspoken_followup_speech(
     session: Dict[str, Any], user_text: str
 ) -> Optional[str]:
@@ -4950,6 +5134,23 @@ def try_unspoken_followup_speech(
     days = session.get("available_days") or []
     if not offered or not days:
         return None
+
+    # ── D11. "That's not soon enough", when there IS nothing sooner ─────────
+    # ABOVE the exhaustion branch below, and that placement is the point rather
+    # than a preference. This question is about the EARLIEST slot in the diary,
+    # which is answerable whether or not unspoken times remain -- and the
+    # `if not remaining:` block below returns None for any utterance that is
+    # not a more-slots request, so a push-back arriving after a fully-read day
+    # would never reach a producer at all.
+    #
+    # It cannot take another producer's turn. `nothing_sooner_speech` declines
+    # unless the earliest slot in the payload has ALREADY been spoken, so
+    # whenever there is something earlier to offer, this returns None and the
+    # producers below read it out exactly as they do today. What it catches is
+    # only the case where the honest answer is a sentence, not a slot.
+    _nothing_sooner = nothing_sooner_speech(session, user_text)
+    if _nothing_sooner:
+        return _nothing_sooner
 
     # Cumulative, not just the current offer — see B-78b above.
     remaining = remaining_unspoken(session)

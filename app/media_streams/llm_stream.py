@@ -7164,10 +7164,19 @@ class LLMStream:
                             and result.get("lead_in") == "soonest_first"
                             else ""
                         )
+                        # D10. `presented_days` is already capped, so the
+                        # builder's own day count is blind to what was dropped
+                        # -- it would read three days as "all of them" and open
+                        # with the confident sentence. The payload is asked
+                        # instead; `days_were_held_back` prefers the retrieval
+                        # layer's own honesty field and falls back to
+                        # found-versus-spoken for the readers that emit none.
+                        from app.tools.slot_offer import days_were_held_back
                         _offer = build_slot_offer(
                             list(result["presented_days"]),
                             lead_in=_multi_lead,
                             more_times=bool(session.get("_slot_more_times")),
+                            more_days=days_were_held_back(result),
                             other_dates=session.get("_slot_other_dates"),
                         )
                         # THE ANCHOR KEEPS ITS EXISTING MEANING. Section 4 of

@@ -306,6 +306,56 @@ def apply_offer_to_session(
         session["v3_last_offered_day_iso"] = day_iso
 
 
+def days_were_held_back(result: Any) -> bool:
+    """Did this availability payload find more days than it will speak? PURE.
+
+    D10. The multi-day opener picks between a claim about the diary --
+    "Here's what we've got coming up" -- and a hedge -- "I've got a few days".
+    `build_slot_offer` decided that from its own argument, which on every live
+    path is `presented_days`, ALREADY capped to three by `_cap_presented_slots`.
+    So the hedge was unreachable and the confident sentence went out
+    unconditionally. Confirmed on the 9 Sep 2026 12:20 northgate call: 7 days
+    found, 3 spoken, and the opener claimed the diary.
+
+    TWO SOURCES, and the order matters:
+
+      1. `days_not_shown`, when the payload carries it. This is the retrieval
+         layer's own number (B-94, `max(days_found - days_SPOKEN, 0)`), and it
+         is strictly better than anything derivable here because it counts what
+         the SWEEP found -- including days a single_day presentation hides,
+         where the local comparison below reads 0. It is written by
+         `_check_availability_acuity` and NOT by the shared readers, and
+         `_cap_presented_slots` is forbidden to write it at all: post-processing
+         owning that name would let the truncated view overwrite the honest
+         count, which is the defect `test_the_honesty_fields_are_not_clobbered_
+         downstream` exists to prevent.
+
+      2. failing that, found-versus-spoken on this payload. Covers the three
+         readers that emit no honesty fields -- the google_calendar
+         fall-through (northgate, JV), `diary` (Vital Edge) and `published` --
+         which is to say the clinic the defect was actually observed on.
+
+    Never raises, and defaults to False: a payload it cannot read keeps today's
+    opener rather than acquiring a hedge nobody can justify.
+    """
+    if not isinstance(result, dict):
+        return False
+    try:
+        _honest = result.get("days_not_shown")
+        if _honest is not None:
+            return int(_honest) > 0
+    except (TypeError, ValueError):
+        pass
+    try:
+        _found = result.get("available_days")
+        _shown = result.get("presented_days")
+        if isinstance(_found, list) and isinstance(_shown, list):
+            return len(_found) > len(_shown)
+    except Exception:
+        pass
+    return False
+
+
 def build_slot_offer(
     available_days: Any,
     *,
@@ -314,6 +364,7 @@ def build_slot_offer(
     times_per_day: int = MULTI_DAY_TIMES_PER_DAY,
     single_day_max_times: int = SINGLE_DAY_MAX_TIMES,
     more_times: Optional[bool] = None,
+    more_days: Optional[bool] = None,
     other_dates: Any = None,
 ) -> Optional[SlotOffer]:
     """Build the spoken offer, its record and its keypad map from the payload.
@@ -326,6 +377,17 @@ def build_slot_offer(
     A day filtered by a time-of-day band reports `times_not_shown`, and those
     hidden slots count as "more" even though no walk over `slots` can see them
     (B-97).
+
+    `more_days` is the DAY-level twin, and it exists because the multi-day
+    opener was making a claim it could not check. D10: `_more_days` below is
+    derived as `len(days) > len(days[:max_days])`, which is only true of an
+    UNTRIMMED list -- and the live path hands in `presented_days`, already
+    capped to three by `_cap_presented_slots`. So the hedge was dead: the
+    confident "Here's what we've got coming up" fired even with four days held
+    back. Confirmed on the 9 Sep 12:20 call -- 7 days found, 3 spoken, and the
+    opener claimed the diary. Same contract as `more_times`, for the same
+    reason: the retrieval path is the only layer that still knows what it
+    dropped, so it says, and this function does not guess.
 
     PASS `more_times` when the days handed in have ALREADY been trimmed to what
     should be spoken. `_cap_presented_slots` selects those positions through
@@ -379,7 +441,12 @@ def build_slot_offer(
     #: `more`, which the single-day branch goes on to overload with "this day
     #: holds times we are not reading". The multi-day opener is a claim about
     #: DAYS, so it has to ask the question it is actually making.
-    _more_days = more
+    #: D10. `more` above can only see the list it was handed. When the caller
+    #: has already trimmed it, its own count is silent about the days that were
+    #: dropped, so the retrieval path's answer wins -- exactly as `more_times`
+    #: does eight lines down. Absent, the local count still decides, which is
+    #: right for every caller that passes an untrimmed list.
+    _more_days = more if more_days is None else bool(more_days)
     _more_is_given = more_times is not None
 
     named: List[Dict[str, Any]] = []
