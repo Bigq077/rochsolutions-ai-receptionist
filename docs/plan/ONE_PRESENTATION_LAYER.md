@@ -209,59 +209,74 @@ Acuity to emit `presented_days`.
 
 ---
 
-## 6. Staged plan
+## 6. Staged plan — as decided 2026-09-09
 
-Each stage ships alone, reverts alone, and has a gate. **The measurable one is
-Theorem's deterministic rate: 14% → 83%+.**
+Owner decisions are in §7. Stage 1 of the original plan is **deleted**: it fixed
+a gap that did not exist (see the correction at the top).
 
-**Stage 0 — audit (no code).** Line-by-line classification of 2966–3899 into
-provider / presentation / generic-but-only-here. Output is a table, not a diff.
-The 279-line filter block is the deliverable; the rest is confirmation.
+Each stage ships alone and reverts alone. Work happens on `feat/one-presentation-layer`,
+lands on `latency-eval`, and reaches the live branches later by fast-forward.
 
-**Stage 1 — promote what Acuity has and the others lack.** Move
-`day_requested*`, the window feedback and `lead_in` into the shared layer, and
-call `_name_the_other_matching_dates` on the fall-through path too. *This
-changes Northgate and JV*, which is the point — they are missing B-110 today.
-Gate: replay the stored JV/Northgate calls; a caller who asked about one weekday
-should now hear the other dates exist.
+**Stage A — Acuity multi_day joins the deterministic builder.** The narrow fix,
+first and on its own, because it is what a caller actually heard and it is
+testable against two stored Theorem calls without touching the architecture.
+`_check_availability_acuity` stops capping and stops deciding
+`presentation_mode`; the dispatcher routes its result through
+`_cap_presented_slots` like the other three.
 
-**Stage 2 — route Acuity through `_cap_presented_slots`.** Delete the
-`days_data[:3]` and the bespoke `presentation_mode`, return
-`{available_days, total_days}` from the seam, and let the dispatcher do what it
-does for the other three. Gate: Theorem's deterministic rate, plus the
-read-back-correction misfire must be unreproducible on the stored calls.
+*Contract change to watch:* Acuity today puts the **trimmed** days in the
+result's `available_days` and the **full** set in `session["available_days"]`.
+Every other reader puts the full set in both and lets `_cap_presented_slots`
+derive `presented_days`. Stage A aligns Acuity to that, so anything reading the
+result's `available_days` as "what was spoken" changes meaning.
 
-**Stage 3 — one offer record everywhere.** With Stage 2 in, `build_slot_offer`
-and `apply_offer_to_session` run on Theorem, so the reverse-parse and its ~900
-lines of repair become dead on that path too. Gate: no
-`could not resolve spoken option(s)` on any clinic.
+Gate: `deterministic multi_day offer built` on a Theorem call; the read-back
+correction misfire unreproducible on the stored calls; suite clean.
 
-**Stage 4 — extract the provider interface.** Only now is `fetch_free_slots` a
-small function. Doing it before Stage 2 means extracting an interface around
-logic that is about to move.
+**Stage B — `lead_in` everywhere.** Owner decision 2. Currently Acuity-only.
+Move it above the seam so all four can make the ranking claim, still guarded by
+`earliest_lead_in_is_true`.
 
-**Stage 5 — clinic policy above the seam.** The 279-line filter block. Last,
-because it is the one that can change behaviour on a clinic nobody is testing.
+**Stage C — one offer record everywhere.** With Stage A in, `build_slot_offer`
+and `apply_offer_to_session` run on Theorem, so the reverse-parse and its repair
+layer go dead there. Gate: no `could not resolve spoken option(s)` on any clinic.
 
----
+**Stage D — extract the provider interface.** Only now is `fetch_free_slots` a
+small function. Four acquisition strategies, one signature — see §7 decision 5
+for why they are all legitimate.
 
-## 7. Decisions needed before Stage 1
+**Stage E — clinic policy above the seam, values per clinic.** Owner decision 3.
+Lead-time, working hours and closed dates get ONE mechanism applied at one
+place, reading each clinic's own values from config. Explicitly NOT unified
+behaviour: clinics keep different hours and different closed dates. Same shape
+as D2's caps — shared code path, per-clinic numbers. Last, because it is the
+stage that can change what a clinic offers.
 
-1. **Stage 1 changes Northgate and JV.** Giving them `other_dates_for_requested_day`
-   is a fix, but it is a change to what live callers hear on two lines. Ship it,
-   or hold the whole thing until Theorem is done?
-2. **Is `lead_in` wanted everywhere?** "The earliest I have is…" is a ranking
-   claim, guarded by `earliest_lead_in_is_true`. Today only Theorem can make it.
-3. **The 279-line filter block.** Lead-time, working hours and closed dates
-   differ per clinic today — partly by design, partly because nobody unified
-   them. Unifying may change what a clinic offers. Which of the three is policy
-   you want identical, and which is genuinely per-clinic?
-4. **Where does this run?** Theorem is on `production` and it is Mark's line.
-   Stages 2–3 want a Theorem call each. Out-of-hours, or a two-site fixture on
-   the demo service first? The handover's Phase 5 argued for the fixture and it
-   would pay for itself here.
+## 7. Decisions — ANSWERED 2026-09-09
 
----
+1. **Ship the fix.** ✅ Go ahead. (Moot as originally posed — the gap it
+   addressed did not exist. Stage A is the real first step.)
+2. **`lead_in` everywhere?** ✅ **Yes, wanted on every clinic.** Stage B.
+3. **The filter block.** ✅ **Stays per clinic** — clinics have different hours
+   and different closed dates. Read as: *one mechanism, per-clinic values.* The
+   code path is shared; the numbers come from each clinic's own config. Not
+   "make every clinic behave identically".
+4. **Where does it run?** ✅ Own working branch → `latency-eval` → live branches
+   later. No direct work on `production`.
+5. **Four acquisition strategies are legitimate and stay.** Recorded because it
+   was asked and the answer shapes Stage D:
+
+   | clinic | `booking_system` | how availability is obtained |
+   |---|---|---|
+   | Northgate, JV | `google_calendar` | generate candidates from working hours, subtract freebusy |
+   | Vital Edge | `google_calendar_provisional` + `diary` | working envelope MINUS everything in the diary |
+   | Theorem | `acuity` | ask the provider API for free slots |
+
+   Northgate and JV are genuinely identical. Vital Edge differs because the
+   practitioner's calendar records work he is DOING rather than slots he is
+   offering — the inversion that once offered a caller his flight to Ibiza.
+   All four reduce to one `fetch_free_slots() -> [(start, end)]`, which is why
+   the seam works.
 
 ## 8. What I would not do
 
