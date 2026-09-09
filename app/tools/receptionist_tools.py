@@ -5834,6 +5834,7 @@ def _cap_presented_slots(
         out["presentation_mode"] = "single_day"
         out["first_day"] = first
         out.pop("presented_days", None)
+        _set_earliest_lead_in(out, session, days, first)
     else:
         out["presentation_mode"] = "multi_day"
         out["presented_days"] = presented
@@ -5842,6 +5843,86 @@ def _cap_presented_slots(
             out["more_times"] = True
 
     return out
+
+
+def _earliest_available_date(days: Any) -> Optional[str]:
+    """The soonest date in a payload's day list. PURE. None if unreadable.
+
+    Read by MINIMUM rather than by taking `days[0]`. Every producer sorts
+    soonest-first today and none of them promises to, and a ranking claim that
+    silently depends on somebody else's sort order is the kind of thing that
+    stays true until a filter is inserted above it.
+    """
+    dates = [
+        str(d.get("date")) for d in (days or [])
+        if isinstance(d, dict) and d.get("date")
+    ]
+    return min(dates) if dates else None
+
+
+def _set_earliest_lead_in(
+    out: Dict[str, Any], session: Optional[Dict[str, Any]],
+    days: Any, first: Dict[str, Any],
+) -> None:
+    """May this single-day readout open "The earliest I have is ..."?
+
+    STAGE B of docs/plan/ONE_PRESENTATION_LAYER.md, owner decision 2 of 9 Sep:
+    the warm lead-in was wanted on every clinic and only Acuity had it, set at
+    the end of `_check_availability_acuity` from its own `_ASAP_SIGNALS` match
+    against the tool's `date_hint`. The three readers that come through here --
+    the google_calendar fall-through (northgate, JV), `diary` (Vital Edge) and
+    `published` -- opened flat on the identical request.
+
+    ACUITY IS NOT AFFECTED, and the containment is structural rather than a
+    condition anybody has to maintain: stage A routes Acuity through
+    `_cap_presented_slots` ONLY when its mode is multi_day, and multi_day never
+    carries a lead-in (B-125 -- "the earliest I have is" is a claim about ONE
+    day and a three-day readout has no referent for it). So this function
+    cannot run on a Theorem payload. The `out.get("lead_in")` check below is a
+    second belt for a future caller that does reach here with one already set:
+    a value a reader computed itself always wins.
+
+    TWO CONDITIONS, both required, because the sentence makes two claims:
+
+      1. the caller ASKED for the soonest -- `caller_wants_soonest`, which
+         reads the `day_preference` captured once in connection.py.
+         Deliberately the same predicate B-137 and B-142 already steer day and
+         time ordering by, rather than a fourth "is this an ASAP request"
+         matcher. There are two in the codebase already and that is the ceiling;
+      2. the day being read out IS the soonest one in the payload. Acuity does
+         not check this and does not need to -- it sets the lead-in only when
+         the caller asked for the soonest AND its result is a single day, so
+         the day is the earliest by construction. Here `single_day` is derived
+         from the DATA (one day survived the filters), and `day_preference`
+         holds "today", "tomorrow" and "this week" as well as "as soon as
+         possible", so a caller who asked for tomorrow could otherwise be told
+         it was the earliest thing available. It might not be.
+
+    The within-day half of the claim is NOT decided here. `first` has already
+    had heard times removed by B-116, so its first slot need not be the day's;
+    `earliest_lead_in_is_true` re-checks that in `llm_stream` against the
+    untrimmed day, on every path, and drops the opener to neutral when it
+    cannot be established. That guard is unchanged and still the last word.
+
+    Never raises. A lead-in is a nicety; a readout that fails because of one is
+    not. Deny by default -- silence is always safe, a false ranking claim is
+    not.
+    """
+    try:
+        if out.get("lead_in"):
+            return
+        from app.tools.slot_followup import caller_wants_soonest
+        if not caller_wants_soonest(session or {}):
+            return
+        _earliest = _earliest_available_date(days)
+        if not _earliest or str(first.get("date") or "") != _earliest:
+            return
+        out["lead_in"] = "earliest"
+    except Exception:
+        logger.exception(
+            "[tools] earliest lead-in not set -- continuing with the neutral "
+            "opener"
+        )
 
 
 def _name_the_other_matching_dates(

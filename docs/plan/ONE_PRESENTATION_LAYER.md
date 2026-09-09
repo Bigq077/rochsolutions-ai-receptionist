@@ -233,11 +233,47 @@ result's `available_days` as "what was spoken" changes meaning.
 Gate: `deterministic multi_day offer built` on a Theorem call; the read-back
 correction misfire unreproducible on the stored calls; suite clean.
 
-**Stage B — `lead_in` everywhere.** Owner decision 2. Currently Acuity-only.
-Move it above the seam so all four can make the ranking claim, still guarded by
-`earliest_lead_in_is_true`.
+**Stage B — `lead_in` everywhere. DONE, and it hit a ceiling worth reading.**
+Owner decision 2. `_cap_presented_slots` now sets `lead_in="earliest"` for the
+three readers that come through it, guarded by two conditions rather than one:
+the caller asked for the soonest (`caller_wants_soonest`, the same predicate
+B-137 and B-142 already steer by — not a fourth ASAP matcher), AND the day being
+read out is the soonest in the payload (`_earliest_available_date`). Acuity is
+untouched, and the containment is structural: stage A routes it through this
+function only on multi_day, and multi_day never carries a lead-in (B-125).
+`earliest_lead_in_is_true` still has the last word on the within-day half.
 
-**Stage C — one offer record everywhere.** With Stage A in, `build_slot_offer`
+**THE CEILING.** Verified against both real backends, no call and no deploy:
+
+```
+northgate  "as soon as possible"  -> multi_day, no first_day, no lead-in
+theorem    "as soon as possible"  -> single_day, first_day, lead_in=earliest
+```
+
+The two paths decide `presentation_mode` by different rules — Acuity from the
+CALLER'S REQUEST, the shared layer from the DATA — which stage A documented and
+deliberately did not converge. A lead-in is a claim about ONE day, so it can only
+ride on `single_day`; and on the shared readers an ASAP request stays multi_day
+whenever more than one day survives the filters. **So decision 2 is delivered as
+far as the current mode rule allows, and no further.**
+
+Measured, offers in the 21 days to 9 Sep: northgate reaches `single_day` on
+**17%** (8 of 48), theorem on **80%** (12 of 15), JV n=1. So on the busiest of
+the three the opener can fire on at most one offer in six — and only the subset
+of those where the caller asked for the soonest.
+
+**Closing the rest of it means converging the mode rule, which is a behavioural
+change to three clinics (two of them live patient lines) and belongs to stage C
+or D with a call behind it — not to a lead-in.** Adopting Acuity's
+request-derived rule looks right, since it honours what was asked, but it would
+change which callers hear one day instead of three. That is the same change
+stage A refused in the other direction, and for the same reason.
+
+**Stage C — one offer record everywhere, and the MODE RULE.** Stage B raised the
+mode rule from a documented divergence to the thing blocking a shipped decision,
+so it joins this stage: one rule for `presentation_mode`, owner-chosen, applied
+on all four paths. Do it with a call behind it — it decides whether a caller
+asking for the soonest hears one day or three. With Stage A in, `build_slot_offer`
 and `apply_offer_to_session` run on Theorem, so the reverse-parse and its repair
 layer go dead there. Gate: no `could not resolve spoken option(s)` on any clinic.
 

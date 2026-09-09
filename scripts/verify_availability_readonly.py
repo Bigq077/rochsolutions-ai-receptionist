@@ -46,47 +46,83 @@ CLINIC = sys.argv[1] if len(sys.argv) > 1 else "theorem_v3"
 LOCATION = sys.argv[2] if len(sys.argv) > 2 else "alcester"
 SERVICE = "physiotherapy assessment" if CLINIC.startswith("theorem") else "initial_assessment"
 
-#: (date_hint, what the reader should decide, why)
+#: (date_hint, day_preference, expected mode, expected lead_in, why)
+#:
+#: `day_preference` is what connection.py captures from the caller's own words,
+#: and it is what the SHARED readers steer by -- ordering (B-137, B-142) and,
+#: since stage B, the "earliest I have is" opener. Acuity ignores it and reads
+#: its own `_ASAP_SIGNALS` off `date_hint`, which is why both are set here: a
+#: case that only set one would pass on one path and prove nothing on the other.
+#: EXPECTATIONS ARE PER PATH, because the two paths decide `presentation_mode`
+#: by different rules and both are deliberate (stage A):
+#:
+#:   Acuity  decides from the CALLER'S REQUEST -- "as soon as possible" or a
+#:           named day gives single_day;
+#:   shared  decides from the DATA -- single_day only when ONE day survived the
+#:           filters.
+#:
+#: So an ASAP request is single_day on Theorem and multi_day on the other three,
+#: and since a lead-in is a claim about ONE day (B-125) it follows that stage B's
+#: opener reaches the shared readers only when the data itself narrows to one
+#: day. That is a real limit on owner decision 2, recorded in
+#: ONE_PRESENTATION_LAYER.md rather than papered over here.
 CASES = [
-    ("any time next week",  "multi_day",  "open request"),
-    ("as soon as possible", "single_day", "ASAP — Acuity decides from the REQUEST"),
+    # date_hint, day_preference, (acuity_mode, lead), (shared_mode, lead), why
+    ("any time next week",  "next week",
+     ("multi_day", ""), ("multi_day", ""),
+     "open request — never a lead-in on either path (B-125)"),
+    ("as soon as possible", "as soon as possible",
+     ("single_day", "earliest"), ("multi_day", ""),
+     "ASAP — single_day on Acuity; multi_day here unless the data narrows"),
+    ("do you have Thursday", "thursday",
+     ("single_day", ""), ("single_day", ""),
+     "a NAMED day — a ranking claim answers a question nobody asked"),
 ]
 
 
-def _session() -> dict:
+def _session(day_preference: str = "") -> dict:
     return {
         "call_sid": "CAverify_readonly",
         "clinic_id": CLINIC,
         "selected_location": LOCATION,
         "collected": {},
         "v3_location_confirmed": True,
+        "day_preference": day_preference,
     }
 
 
 async def main() -> int:
     print(f"clinic={CLINIC}  location={LOCATION}  uses_acuity={uses_acuity(_session())}\n")
     failures = 0
-    for hint, expect, why in CASES:
+    _acuity = uses_acuity(_session())
+    for hint, pref, _acu, _shared, why in CASES:
+        expect, expect_lead = _acu if _acuity else _shared
         out = await _exec_check_availability(
             {"service": SERVICE, "location": LOCATION, "date_hint": hint},
-            _session(),
+            _session(pref),
         )
         if out.get("error"):
             print(f"{hint!r} ({why})\n    error={out['error']} — cannot judge\n")
             continue
         mode = out.get("presentation_mode")
+        mode_ok = mode == expect
         pd, fd = out.get("presented_days"), out.get("first_day")
         # This is exactly what llm_stream's gate tests.
         ok = (mode == "multi_day" and pd) or (mode == "single_day" and fd)
         print(f"{hint!r} ({why})")
-        print(f"    presentation_mode = {mode!r}   expected {expect!r}")
+        print(f"    presentation_mode = {mode!r}   expected {expect!r}"
+              f"   {'OK' if mode_ok else '*** WRONG ***'}")
         print(f"    presented_days    = {len(pd) if pd else None}"
               f"   times/day={[len(d['slot_times']) for d in pd] if pd else '-'}")
         print(f"    first_day         = {'yes' if fd else 'no'}")
         print(f"    available_days    = {len(out.get('available_days') or [])} (bookable, never trimmed)")
+        lead = str(out.get("lead_in") or "")
+        lead_ok = lead == expect_lead
+        print(f"    lead_in           = {lead!r}   expected {expect_lead!r}"
+              f"   {'OK' if lead_ok else '*** WRONG ***'}")
         print(f"    gate              : {'OK' if ok else '*** branch=none-matched — WOULD FAIL ***'}")
         print()
-        if not ok:
+        if not ok or not lead_ok or not mode_ok:
             failures += 1
     return 1 if failures else 0
 
