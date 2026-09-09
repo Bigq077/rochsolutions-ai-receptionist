@@ -2061,8 +2061,19 @@ TOOL_LOOKUP_PATIENT = {
                 "type": "string",
                 "enum": ["cancel", "reschedule", "history"],
                 "description": (
-                    "'cancel' or 'reschedule' — look up an upcoming appointment. "
-                    "'history' — retrieve the patient's recent treatment history."
+                    "What the CALLER asked for, in their words — not what you "
+                    "intend to do next. "
+                    "'cancel' — they want the appointment removed and are not "
+                    "taking another time. "
+                    "'reschedule' — they want to keep the appointment but move "
+                    "it to a different time. "
+                    "'history' — retrieve the patient's recent treatment history. "
+                    "'cancel' and 'reschedule' are NOT interchangeable: a "
+                    "reschedule sizes the next availability search by the "
+                    "appointment being moved and holds its slot back, and doing "
+                    "that to someone who only wants to cancel offers them the "
+                    "wrong times. If they said cancel, pass 'cancel' — if they "
+                    "then decide to rebook, call this again."
                 ),
             },
             "next": {
@@ -10647,6 +10658,60 @@ async def _lookup_patient_gcal(args: Dict[str, Any], session: Dict[str, Any]) ->
     return _emit(matches[0], 0, len(matches))
 
 
+def _authoritative_lookup_purpose(
+    asked: Optional[str], session: Dict[str, Any]
+) -> Optional[str]:
+    """What this lookup is FOR, deciding between the model and the engine.
+
+    Demo line, 9 Sep 2026 03:35:58. The caller asked to cancel, the engine
+    recorded `v3_caller_intent = cancel` from their own words, and the model
+    called `lookup_patient(purpose="reschedule")` a few hundred milliseconds
+    later. It had been told to: the schema description read "'cancel' or
+    'reschedule' - look up an upcoming appointment", which distinguishes
+    neither, so the two values were interchangeable for the only thing the
+    model could observe about them.
+
+    `_lookup_purpose` is not decoration. `_reschedule_busy_block` subtracts the
+    appointment being MOVED from the availability grid, and
+    `_reschedule_duration_override` sizes any later grid by that appointment's
+    length instead of the service the caller named. Both are correct for a move
+    and wrong for a cancel.
+
+    Since `6f277d41` the engine has its own answer, and it is a better one:
+    `classify_intent` requires a corroborator, reads the mangled shapes STT
+    produces, and NEVER downgrades to "booking" - so a stored "cancel" or
+    "reschedule" is something the caller said out loud. The model's label is a
+    suggestion; this is the record.
+
+    Deliberately narrow:
+
+      * only the cancel/reschedule pair is ever rewritten. "history" is a
+        different operation entirely and is left alone in both directions;
+      * an unset intent, or "booking", leaves the model's value untouched -
+        the engine overrules only where it knows better;
+      * it never raises. A lookup must not fail because the intent
+        bookkeeping is odd, so anything unexpected returns `asked` unchanged.
+    """
+    try:
+        if asked not in (None, "", "cancel", "reschedule"):
+            return asked
+        recorded = session.get("v3_caller_intent")
+        if recorded not in ("cancel", "reschedule"):
+            return asked
+        if asked and asked == recorded:
+            return asked
+        if asked:
+            logger.info(
+                "[ms_tools] lookup_patient: purpose=%r overruled by the "
+                "caller's recorded intent %r - the engine heard it from their "
+                "own words (D3)",
+                asked, recorded,
+            )
+        return recorded
+    except Exception:  # pragma: no cover - must never break a lookup
+        return asked
+
+
 async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     """
     Routes based on purpose:
@@ -10654,7 +10719,12 @@ async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) ->
       cancel / reschedule → find upcoming appointment by name or phone
         (Acuity for Theorem; Google Calendar for template clinics like jv_v1).
     """
-    purpose = args.get("purpose", "history")
+    # D3. The model's label loses to what the caller was heard to say - see
+    # `_authoritative_lookup_purpose` for the live call and for why this is
+    # narrow enough not to disturb B-77.
+    purpose = _authoritative_lookup_purpose(args.get("purpose", "history"), session)
+    if purpose is None or purpose == "":
+        purpose = "history"
 
     if purpose == "history":
         return await _exec_get_patient_history(args, session)
