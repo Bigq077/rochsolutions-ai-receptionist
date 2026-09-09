@@ -5644,10 +5644,84 @@ def _sparse_rota_note(
     return note
 
 
+def _clinic_slot_presentation(session: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """This clinic's `operational.slot_presentation` block, or {}. Never raises."""
+    try:
+        from app.clinic_config import get_clinic as _gc
+        block = _gc((session or {}).get("clinic_id")).get("slot_presentation")
+        return block if isinstance(block, dict) else {}
+    except Exception:
+        return {}
+
+
+#: A readout longer than this is not a choice, it is a list. The 2 Sep northgate
+#: call that read nine slots and lost the caller is the evidence; the cap is
+#: here so a typo in clinic.json cannot reproduce it.
+_PRESENTED_TIMES_CEILING = 9
+_PRESENTED_DAYS_CEILING = 5
+
+
+def _presentation_caps(session: Optional[Dict[str, Any]]) -> Dict[str, int]:
+    """How much of the diary this clinic SPEAKS. Never raises.
+
+    D2. The three numbers below are the single owner of "how much is said" --
+    the sentence is built from `presented_days` by `build_slot_offer`, so what
+    is not selected is not spoken -- and they are an owner decision that differs
+    by clinic. A two-site physio line reading three days at two times is not the
+    same call as a single-room clinic with one practitioner, and until now the
+    only way to tell them apart was to edit engine code that all four share.
+
+    DEFAULTS ARE TODAY'S NUMBERS. Nothing moves for any clinic until one opts
+    in, which is deliberate rather than cautious: measured against the stored
+    corpus on 9 Sep 2026, every judge complaint about slots being "drip-fed"
+    predates both `7624b1a7` (1 Sep, three days at two times) and `fee6e67a`
+    (2 Sep, a continuation says "I also have"), and since the second landed
+    there is exactly ONE readout complaint in the corpus -- which is not about
+    batch size at all (see D8 in `docs/plan/OPEN_DEFECTS_2026-09-09.md`). One
+    of the 2 Sep failures is a NINE-slot readout the caller hung up on. More is
+    not better, so this ships the lever and not a new number.
+
+    Bounded on both sides. A value that is not a usable integer, or that asks
+    for more than a caller can hold in their head, falls back to the module
+    default rather than being spoken -- a typo in `clinic.json` reaches a live
+    caller's ear, and there is no review step between the two.
+    """
+    caps = {
+        "max_days": _MAX_PRESENTED_DAYS,
+        "times_per_day_multi": _MAX_PRESENTED_TIMES_MULTI_DAY,
+        "times_single_day": _MAX_PRESENTED_TIMES_SINGLE_DAY,
+    }
+    try:
+        block = _clinic_slot_presentation(session)
+        ceilings = {
+            "max_days": _PRESENTED_DAYS_CEILING,
+            "times_per_day_multi": _PRESENTED_TIMES_CEILING,
+            "times_single_day": _PRESENTED_TIMES_CEILING,
+        }
+        for key, ceiling in ceilings.items():
+            value = block.get(key)
+            if isinstance(value, bool) or not isinstance(value, int):
+                continue
+            if 1 <= value <= ceiling:
+                caps[key] = value
+            else:
+                logger.warning(
+                    "[tools] slot_presentation.%s=%r is outside 1..%d -- "
+                    "keeping the default %d. A readout is spoken to a caller, "
+                    "so an unusable number is not read out.",
+                    key, value, ceiling, caps[key],
+                )
+    except Exception:
+        logger.exception(
+            "[tools] slot_presentation config unreadable -- using the defaults"
+        )
+    return caps
+
+
 def _cap_presented_slots(
     result: Dict[str, Any],
     session: Optional[Dict[str, Any]] = None,
-    max_days: int = _MAX_PRESENTED_DAYS,
+    max_days: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Trim the SPOKEN availability list. Never trim bookable data.
 
@@ -5656,6 +5730,13 @@ def _cap_presented_slots(
     so unspoken follow-up (slot_followup) and _resolve_slot_iso still see every
     real time. Does not touch session["available_days"]. Input is copied.
     """
+    # D2. Resolved rather than defaulted, so a clinic can say how much of its
+    # own diary is spoken. An explicit `max_days` argument still wins: a caller
+    # that passes one is asking for that number.
+    _caps = _presentation_caps(session)
+    if max_days is None:
+        max_days = _caps["max_days"]
+
     days = result.get("available_days")
     if not isinstance(days, list) or not days:
         return result
@@ -5674,8 +5755,8 @@ def _cap_presented_slots(
         )
         kept = days[:max_days]
     per_day = (
-        _MAX_PRESENTED_TIMES_MULTI_DAY if len(kept) > 1
-        else _MAX_PRESENTED_TIMES_SINGLE_DAY
+        _caps["times_per_day_multi"] if len(kept) > 1
+        else _caps["times_single_day"]
     )
 
     presented: List[Dict[str, Any]] = []

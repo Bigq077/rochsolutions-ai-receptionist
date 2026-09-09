@@ -1598,6 +1598,12 @@ def _map_json_to_clinic_contract(loaded: Dict[str, Any]) -> Dict[str, Any]:
     clinic["owner_alerts"] = op.get("owner_alerts", {})  # real-time owner SMS alert config
     clinic["call_overflow"] = op.get("call_overflow", {})  # human-first overflow ring config
     clinic["allow_same_day"] = bool(op.get("allow_same_day", False))
+    # D2. How much of the diary this clinic SPEAKS: max_days,
+    # times_per_day_multi, times_single_day. Absent means "the engine
+    # defaults", which is where all four clinics are today -- see
+    # `_presentation_caps` in receptionist_tools for the numbers, the bounds
+    # and the corpus measurement behind leaving them where they are.
+    clinic["slot_presentation"] = op.get("slot_presentation", {}) or {}
     # Does this clinic open on England/Wales bank holidays? Defaults to NO,
     # because the two mistakes are not symmetric: a clinic wrongly closed loses
     # a caller one day of options, and a clinic wrongly OPEN sends a patient to
