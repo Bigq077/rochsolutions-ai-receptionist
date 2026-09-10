@@ -3768,11 +3768,24 @@ def _prefer_unheard_clock_times(
     looking at. This is the third wrapper of the same shape, beside
     `_pin_accepted_index` and `_pin_requested_time_index`.
 
-    THE SAME-DAY RULE IS UNTOUCHED. When the day being read is one the caller
-    has already heard, this returns `chosen` unchanged -- byte-identical -- so
-    "what else have you got that day" keeps B-116/B-117/B-119 exactly as they
-    are. It only ever fires on a day boundary, which is the only place the
-    defect lives.
+    B-116'S POOL IS NEVER WIDENED. On a day the caller has already heard, the
+    candidates here are exactly the slots B-116 would have chosen from -- the
+    ones unheard ON THIS DAY -- and this picks among those. A time they have
+    already been offered that day can no more come back than it could before.
+
+    S-2, CA8214b75c (10 Sep 2026, northgate). Until then this returned `chosen`
+    unchanged for ANY heard day, on the ground that B-116 owned that case. For
+    a single day that is right. But a multi-day readout makes every day it
+    named a heard day, so from the first readout onwards every day the caller
+    could ask about took the early return and the cross-day preference never
+    fired again -- exactly when they are comparing days and a repeat is most
+    audible. "Twenty to ten" was offered for Monday and again for Tuesday,
+    seventeen seconds apart (09:35:46 -> 09:36:03).
+
+    B-116 cannot cover that case by construction: its "already heard" is a set
+    of DATED ISO starts, so it subtracts what was heard on THIS day and has no
+    notion of a clock time heard on another one. The two rules compose; neither
+    replaces the other.
 
     "SOONER" IS STILL THE OPPOSITE QUESTION. B-137/B-142: a caller who asked
     for the earliest appointment wants the earliest time on every day they are
@@ -3817,9 +3830,23 @@ def _prefer_unheard_clock_times(
     except Exception:      # never let a readout fail on its own preference
         return chosen
     today = _day_iso_of(day)
-    if not today or today in {str(s)[:10] for s in spoken}:
-        # A day the caller has already heard. B-116 owns this case entirely.
+    if not today:
         return chosen
+    # S-2. The candidate pool, and the ONE place the two rules meet. On a day
+    # already heard it is B-116's own pool -- the slots unheard on this day --
+    # so choosing within it cannot hand back a time the caller was offered that
+    # day. On a fresh day every slot is a candidate, as T1 had it.
+    if today in {str(s)[:10] for s in spoken}:
+        pool = [
+            i for i, s in enumerate(slots)
+            if str((s or {}).get("start") or "")[:19] not in spoken
+        ]
+        if not pool:
+            # Every time on the day has been heard. B-116 answers this
+            # chronologically and there is nothing here to prefer.
+            return chosen
+    else:
+        pool = list(range(n))
     heard_clocks = {str(s)[11:16] for s in spoken if len(str(s)) >= 16}
     # T1b. Clock times committed to SIBLING days earlier in this same
     # readout. Nothing has been spoken yet when a multi-day offer is
@@ -3839,11 +3866,11 @@ def _prefer_unheard_clock_times(
         except (IndexError, TypeError, AttributeError):
             return ""
 
-    fresh = [i for i in range(n) if _clock(i) and _clock(i) not in heard_clocks]
+    fresh = [i for i in pool if _clock(i) and _clock(i) not in heard_clocks]
     if not fresh:
-        # Every clock time on this day was heard on another one. There is
-        # nothing to prefer, and withholding the day would be worse than
-        # repeating it.
+        # Every clock time available on this day was heard on another one.
+        # There is nothing to prefer, and withholding the day would be worse
+        # than repeating it.
         return chosen
     if all(_clock(i) not in heard_clocks for i in chosen):
         return chosen      # B-116 already picked clean -- do not disturb it
@@ -3853,11 +3880,11 @@ def _prefer_unheard_clock_times(
         return chosen
     out = _spread(slots, fresh, limit)
     logger.info(
-        "[slot_followup] %s is a day this caller has not heard, and B-116 had "
-        "picked %r -- the same clock times as another day (T1). Reading %r "
-        "instead; heard clocks %s",
-        today, [_clock(i) for i in chosen], [_clock(i) for i in out],
-        sorted(heard_clocks),
+        "[slot_followup] B-116 had picked %r for %s -- clock times this caller "
+        "already heard on another day (T1/S-2). Reading %r instead, chosen "
+        "from %d candidate%s; heard clocks %s",
+        [_clock(i) for i in chosen], today, [_clock(i) for i in out],
+        len(pool), "" if len(pool) == 1 else "s", sorted(heard_clocks),
     )
     return out
 

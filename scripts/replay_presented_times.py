@@ -55,7 +55,21 @@ THE ASSERTIONS THAT ARE GATES
 -----------------------------
   lost_a_slot        a day offering FEWER times after the change      MUST be 0
   invented_a_slot    a time not on that day's payload                 MUST be 0
-  changed_a_heard_day  a day the caller had already been read         MUST be 0
+  re_offered_a_heard_time  a time already read out ON THAT DAY        MUST be 0
+
+`changed_a_heard_day` WAS the third gate, and it was retired deliberately on
+10 Sep 2026 rather than found stale. It asserted that a day the caller had
+already been read must never change, which was T1's stand-down restated as an
+invariant. S-2 superseded that decision: a multi-day readout makes every day it
+named a heard day, so the stand-down silenced the cross-day preference for the
+rest of the call, and "twenty to ten" was offered for Monday and again for
+Tuesday seventeen seconds apart (CA8214b75c).
+
+What that gate was really protecting is B-116's pool, and THAT is what the
+replacement asserts directly: whatever the selection does on a heard day, it
+may never hand back a time the caller was already read on that day. The old
+count is still printed, because a large swing in it is worth seeing -- it is
+just no longer a failure.
 
 No PII: a slot is a date and a time, and nothing else is read.
 """
@@ -229,6 +243,15 @@ def collect(rows):
                         for earlier in offers[:k] if _was_spoken(earlier, speech)
                         for s in _spoken_slots_of(earlier)
                     }),
+                    # B-116's own subtraction, per day. The gate below is the
+                    # only thing standing between a heard-day selection and
+                    # re-offering a time the caller has already turned down.
+                    "heard_clocks_this_day": sorted({
+                        str(s.get("start"))[11:16]
+                        for earlier in offers[:k] if _was_spoken(earlier, speech)
+                        for s in _spoken_slots_of(earlier)
+                        if str(s.get("start"))[:10] == date
+                    }),
                     "stored": stored.get(date, []),
                 })
         skipped_unspoken += sum(
@@ -252,8 +275,10 @@ def diff(base_path, cand_path):
     if set(base) ^ set(cand):
         print(f"!! {len(set(base) ^ set(cand))} day(s) present on only one side")
 
-    changed = lost = invented = heard_day_changed = 0
+    changed = lost = invented = heard_day_changed = re_offered = 0
     repeats_before = repeats_after = cross_day_days = 0
+    heard_days = 0
+    heard_repeats_before = heard_repeats_after = 0
     examples = []
     for key in shared:
         b, c = base[key], cand[key]
@@ -268,6 +293,27 @@ def diff(base_path, cand_path):
             cross_day_days += 1
             repeats_before += len(set(bc) & heard)
             repeats_after += len(set(cc) & heard)
+        # S-2's own population: a day the caller HAS heard, on a call where
+        # something was read out on another day too. This is the half the old
+        # gate made unmeasurable by forbidding it.
+        if b.get("heard_day"):
+            heard_days += 1
+            heard_repeats_before += len(set(bc) & heard)
+            heard_repeats_after += len(set(cc) & heard)
+        # The gate. Independent of whether the day changed: a selection that
+        # re-offers a time already read out on that day is wrong either way.
+        #
+        # ...UNLESS the day cannot fill the readout without it. B-116 returns
+        # every slot on a day holding `limit` or fewer, and B-119 settled that
+        # withholding is right only while something unheard remains. On
+        # CAffe1e08713631e5178c6fe73f44e4037/2026-09-09 the day held exactly
+        # two times and one had been heard, so both base and candidate offered
+        # it -- correctly. Gating on the un-narrowed set would have failed a
+        # rule this file is supposed to be defending.
+        own = set(c.get("heard_clocks_this_day") or [])
+        spare = set(c.get("day_times") or []) - own
+        if own & set(cc) and len(spare) >= (c.get("limit") or 0):
+            re_offered += 1
         if bc == cc:
             continue
         changed += 1
@@ -284,17 +330,20 @@ def diff(base_path, cand_path):
     print(f"{'days changed':<26}{changed}")
     print(f"{'  lost a slot':<26}{lost}          MUST be 0")
     print(f"{'  invented a slot':<26}{invented}          MUST be 0")
-    print(f"{'  on a day already heard':<26}{heard_day_changed}          MUST be 0")
+    print(f"{'re-offered a heard time':<26}{re_offered}          MUST be 0")
+    print(f"{'  on a day already heard':<26}{heard_day_changed}          (reported, not a gate -- see the header)")
     print()
     print(f"{'cross-day readouts':<26}{cross_day_days}")
     print(f"{'  repeated clock times':<26}{repeats_before} -> {repeats_after}")
+    print(f"{'heard-day readouts':<26}{heard_days}")
+    print(f"{'  repeated clock times':<26}{heard_repeats_before} -> {heard_repeats_after}")
     print()
     for (sid, seq, date), clinic, bc, cc, heard in examples:
         print(f"  {sid[:14]} seq={seq} {date} {clinic}")
         print(f"      heard {heard}")
         print(f"      base  {bc}")
         print(f"      cand  {cc}")
-    return 0 if (lost == 0 and invented == 0 and heard_day_changed == 0) else 1
+    return 0 if (lost == 0 and invented == 0 and re_offered == 0) else 1
 
 
 def main() -> int:
