@@ -148,24 +148,49 @@ def test_the_key_is_written_on_every_payload_turn_empty_included():
     with it - the same defect the tool path's docstring guards against, one
     layer down."""
     session = _at_step_five()
-    # 15:30 has ALREADY been heard on Wednesday, so B-116 holds it out of the
-    # pool and only a live pin could put it back. That is what makes this
-    # assertion discriminating: a time B-116 would pick anyway proves nothing.
-    session[REQUESTED_TIMES_KEY] = ["15:30"]
+    # RE-AIMED for N1 (11 Sep 2026). The stale time used to be 15:30, chosen
+    # because it had been heard on Wednesday, so B-116 held it out and only a
+    # live pin could put it back. N1 now KEEPS Wednesday's offered times for a
+    # caller who asks about Wednesday, so 15:30 comes back for the right reason
+    # and stopped discriminating anything.
+    #
+    # 12:10 does the same job today: it is not one of Wednesday's offered times
+    # (N1 does not keep it), and every one of its clock times has been heard on
+    # some day, so S-2 does not choose it either. Only a stale pin could put it
+    # in this readout.
+    session[REQUESTED_TIMES_KEY] = ["12:10"]
 
     named_day_speech(session, "and what about wednesday")
 
     assert session.get(REQUESTED_TIMES_KEY) == [], session.get(REQUESTED_TIMES_KEY)
-    assert "15:30" not in _spoken_times(session), _spoken_times(session)
+    assert "12:10" not in _spoken_times(session), _spoken_times(session)
 
 
 def test_a_day_named_with_no_time_is_unchanged():
     """The no-op case, stated so a later reader can see the pin is additive:
-    a plain named-day request still reads B-116's unheard pick."""
+    a plain named-day request reads exactly the selection with no pin at all.
+
+    RE-AIMED for N1 (11 Sep 2026). Was `not {"09:40", "15:30"} & spoken` --
+    "still reads B-116's unheard pick" -- which pinned the N1 defect as the
+    expectation: 09:40 and 15:30 are the two times this caller was offered for
+    Wednesday, and N1's exhibits are callers who asked about a day and heard
+    neither. What the test was FOR is that the pin adds nothing when no time
+    was named; that is now asserted directly, against the real selector.
+    """
+    import copy
+
+    from app.tools.slot_followup import choose_presented_indices
+
     session = _at_step_five()
+    probe = copy.deepcopy(session)
+    probe[REQUESTED_TIMES_KEY] = []
+    wed = _day(WED)
+    expected = [wed["slot_times"][i]
+                for i in choose_presented_indices(probe, wed, 3, named_day=True)]
 
     text = named_day_speech(session, "and what about wednesday")
 
     assert text
     spoken = _spoken_times(session)
-    assert not {"09:40", "15:30"} & set(spoken), spoken
+    assert spoken == expected, (spoken, expected)
+    assert {"09:40", "15:30"} <= set(spoken), spoken       # N1: offered, kept

@@ -3947,17 +3947,134 @@ def _prefer_unheard_clock_times(
     return out
 
 
+def _keep_times_heard_on_named_day(
+    session: Dict[str, Any], day: Dict[str, Any], chosen: List[int], limit: int,
+) -> List[int]:
+    """N1 -- "what about Monday?" hears Monday, INCLUDING the times that made them ask.
+
+    CA12036a4529eaf8e46919432a9ebc1a6a (10 Sep 2026 21:57, northgate), and
+    reproduced on demand by CA91d1f12332f6230ed51ad1a427f91f5c (11 Sep 23:10):
+
+        Susie : Monday 14th -- eight in the morning, or ten past five.
+                Tuesday 15th -- ten to nine, or twenty past four. ...
+        caller: "um what about monday"
+        Susie : Monday 14th -- half past ten, twenty past eleven, twenty to three.
+
+    Zero overlap. The two times that made the caller ask about Monday were the
+    two the readout guaranteed to withhold. Measured over the corpus: 6 of 6
+    re-readouts of an offered day, on every day with slots to spare.
+
+    THE OWNER IS B-116, NOT S-2, and a live log line settled it. B-116's own
+    pick was already 08:50/09:40/16:20 -- it subtracts by dated ISO start, so
+    the two Monday times from the spread are "heard on this day" and gone
+    before `_prefer_unheard_clock_times` is consulted. Reverting S-2 would
+    have handed the caller 08:50/09:40/16:20: still zero overlap.
+
+    THREE QUESTIONS, and B-116 cannot tell them apart from the session:
+
+      * "what else have you got?"  -> withhold what they heard. B-116.
+      * "anything sooner?"         -> the earliest, repeats and all. B-142.
+      * "what about Monday?"       -> the day, offered times included. THIS.
+
+    So the signal is not a session key. Nothing on the session distinguishes a
+    day named off the spread from a day named cold, and the fourth wrapper on
+    this function is the wrong place to guess. It is the CALLER of this
+    function that knows: `speak_one_day_from_payload` is the only producer
+    that answers a request about ONE named day, and it passes `named_day=True`.
+    Every other reader -- the tool caps, the refusals, "what else on Monday"
+    -- passes nothing and is byte-identical to before.
+
+    A WRAPPER, not a rule inside B-116 ("Do not add rules here"). It never
+    touches the pool B-116 and S-2 chose from; it re-admits only the times
+    this caller was already read ON THIS DAY, and fills the remaining places
+    from `chosen` -- which is already clean of cross-day repeats wherever S-2
+    could make it so. Nothing can be spoken here that was not either offered
+    to this caller for this day, or chosen by the existing rules.
+
+    Deny by default, and every condition declines to `chosen` unchanged:
+
+      * nothing heard on this day -- a day named cold (B-148) has nothing to
+        keep, and the existing rules are already right for it;
+      * `limit` or more heard on this day -- they have had a full readout of
+        it already, so this is closer to "what else" than to "tell me about
+        it", and re-reading all of it would carry no new time at all. B-116
+        answers that, as it did;
+      * every heard time is already in `chosen`;
+      * the arrays are not provably parallel (B-116's desync rule).
+
+    WHICH time fills the spare place. A part of the day the kept times do not
+    cover, so the readout still spans the day (`_spread`, owner 1 Sep). For a
+    caller who asked for the SOONEST it is the earliest instead -- B-142's
+    question outranks the spread, exactly as it does one level down.
+    """
+    if not isinstance(session, dict) or not isinstance(day, dict):
+        return chosen
+    if limit < 2 or not isinstance(chosen, list):
+        return chosen
+    slots = day.get("slots")
+    if not isinstance(slots, list) or not slots:
+        return chosen
+    n = len(slots)
+    for key in ("slot_times", "slot_times_spoken"):
+        value = day.get(key)
+        if isinstance(value, list) and len(value) != n:
+            return chosen
+    try:
+        spoken = spoken_starts_for_offer(session)
+    except Exception:      # never let a readout fail on its own preference
+        return chosen
+    if not spoken:
+        return chosen
+
+    def _start(i: int) -> str:
+        try:
+            return str((slots[i] or {}).get("start") or "")
+        except (IndexError, TypeError, AttributeError):
+            return ""
+
+    heard = [i for i in range(n) if _start(i)[:19] and _start(i)[:19] in spoken]
+    if not heard or len(heard) >= limit:
+        return chosen
+    if all(i in chosen for i in heard):
+        return chosen
+    rest = [i for i in chosen if isinstance(i, int) and 0 <= i < n and i not in heard]
+    need = limit - len(heard)
+    if caller_wants_soonest(session):
+        fill = rest[:need]
+    else:
+        covered = {part_of_day(_start(i)) for i in heard}
+        uncovered = [i for i in rest if part_of_day(_start(i)) not in covered]
+        fill = (uncovered + [i for i in rest if i not in uncovered])[:need]
+    out = sorted(set(heard + fill))
+    logger.info(
+        "[slot_followup] the caller asked about %s, which they were already "
+        "offered at %r -- keeping those times in the readout rather than "
+        "withholding them (N1). %r -> %r",
+        _day_iso_of(day), [_start(i)[11:16] for i in heard],
+        [_start(i)[11:16] for i in chosen if isinstance(i, int) and 0 <= i < n],
+        [_start(i)[11:16] for i in out],
+    )
+    return out
+
+
 def choose_presented_indices(
     session: Dict[str, Any], day: Dict[str, Any], limit: int,
-    *, also_heard_clock_times: Any = None,
+    *, also_heard_clock_times: Any = None, named_day: bool = False,
 ) -> List[int]:
     """Which positions in a day's parallel slot arrays should be SPOKEN.
 
     Wrapper, applied outwards: picks by the B-116 rule below; prefers clock
     times unheard when the DAY is one the caller has not heard (T1,
-    `_prefer_unheard_clock_times`); pins a time they asked for (D8,
-    `_pin_requested_time_index`); then pins the slot they have ACCEPTED
-    (`_pin_accepted_index`), which gets the last word on what to displace.
+    `_prefer_unheard_clock_times`); when the caller asked about THIS day by
+    name, keeps the times they were already offered on it (N1,
+    `_keep_times_heard_on_named_day`, only when `named_day` is passed); pins a
+    time they asked for (D8, `_pin_requested_time_index`); then pins the slot
+    they have ACCEPTED (`_pin_accepted_index`), which gets the last word on
+    what to displace.
+
+    `named_day` is passed by ONE caller, `speak_one_day_from_payload`, and
+    must stay that way: it is the only reader that knows the caller asked to
+    hear a day rather than asked what else there is. See N1's docstring.
 
     Returns CHRONOLOGICAL indices, at most `limit`, preferring times this
     caller has not already heard.
@@ -3994,16 +4111,15 @@ def choose_presented_indices(
     time the caller cannot book, so a desynchronised day is not worth a
     cleverer readout.
     """
+    chosen = _prefer_unheard_clock_times(
+        session, day, _choose_presented_times(session, day, limit),
+        limit, also_heard_clock_times,
+    )
+    if named_day:
+        chosen = _keep_times_heard_on_named_day(session, day, chosen, limit)
     return _pin_accepted_index(
         session, day,
-        _pin_requested_time_index(
-            session, day,
-            _prefer_unheard_clock_times(
-                session, day, _choose_presented_times(session, day, limit),
-                limit, also_heard_clock_times,
-            ),
-            limit,
-        ),
+        _pin_requested_time_index(session, day, chosen, limit),
         limit,
     )
 
@@ -5695,7 +5811,14 @@ def speak_one_day_from_payload(
         logger.exception("[slot_followup] requested-time resolve failed")
 
     _times = list(day.get("slot_times") or [])
-    _idx = choose_presented_indices(session, day, SINGLE_DAY_MAX_TIMES)
+    # N1. This producer answers a request about ONE named day -- both of its
+    # callers, D-B's "what about Monday" and B-145's "yeah Monday works" -- so
+    # it is the one reader that may say so. The times the caller was already
+    # read for this day are what made them ask; withholding every one of them
+    # is the defect. See `_keep_times_heard_on_named_day`.
+    _idx = choose_presented_indices(
+        session, day, SINGLE_DAY_MAX_TIMES, named_day=True,
+    )
     _spoken_day = dict(day)
     for _key in ("slot_times", "slot_times_spoken", "slots"):
         if isinstance(_spoken_day.get(_key), list):
@@ -5728,7 +5851,12 @@ def speak_one_day_from_payload(
     # S-7: born spoken. This records BESIDE `apply_offer_to_session`, on the
     # path that says the sentence -- unlike gate5, which records where the
     # offer is BUILT and may still stand it down.
-    _rec_offer(session, source="producer", spoken=True,
+    # `producer=why` so the replay harness can tell a named-day readout from
+    # every other producer row and replay it with `named_day=True`. Without it
+    # the harness replays these rows down the "what else" path and reports
+    # UNCHANGED for exactly the readouts N1 changes -- a blind harness that
+    # reads green. Forward-only: rows before this commit carry no producer.
+    _rec_offer(session, source="producer", spoken=True, producer=why,
                payload_days=session.get("available_days"),
                offer=offer, presented_days=[_spoken_day])
     logger.info(

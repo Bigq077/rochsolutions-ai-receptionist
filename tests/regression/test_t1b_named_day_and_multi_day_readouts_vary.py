@@ -160,9 +160,22 @@ def test_soonest_still_leads_every_day_with_its_earliest():
 # ---------------------------------------------------------------------------
 # Site 2 - the named-day producer
 # ---------------------------------------------------------------------------
-def test_a_named_day_is_not_re_read_at_the_times_already_heard():
+def test_a_named_day_keeps_its_offered_times_and_adds_a_new_one():
     """"Can you tell me about monday", after Monday's 08:00 and 17:10 were
-    read out in the multi-day offer."""
+    read out in the multi-day offer.
+
+    RE-AIMED for N1 (11 Sep 2026), not weakened. Was
+    `test_a_named_day_is_not_re_read_at_the_times_already_heard`, asserting
+    `not {"08:00", "17:10"} & spoken`. That assertion pinned the N1 defect as
+    the expectation: CA12036a4529 (10 Sep 21:57) and CA91d1f123 (11 Sep 23:10)
+    are callers who asked about Monday and were read three times they had never
+    heard, with both of Monday's offered times withheld -- 6 of 6 in the corpus.
+
+    What this test was PROTECTING is what T1b's exhibit actually suffered:
+    "eight in the morning" four times, and a readout that told him nothing new.
+    So that is asserted directly -- the readout carries a time he has not
+    heard on ANY day -- and the times offered for Monday are kept.
+    """
     session, days = _after_the_multi_day_offer()
 
     text = speak_one_day_from_payload(session, days, MON, why="D-B")
@@ -170,18 +183,30 @@ def test_a_named_day_is_not_re_read_at_the_times_already_heard():
     assert text
     spoken = _spoken_times(session)
     assert len(spoken) == 3, spoken
-    assert not {"08:00", "17:10"} & set(spoken), spoken
+    assert {"08:00", "17:10"} <= set(spoken), spoken
+    heard_anywhere = {"08:00", "17:10", "16:20"}
+    assert set(spoken) - heard_anywhere, spoken
 
 
-def test_a_second_named_day_is_not_re_read_either():
-    """"And what about tuesday" - the same defect one turn later."""
+def test_a_second_named_day_keeps_its_own_offered_times():
+    """"And what about tuesday" - one turn later.
+
+    RE-AIMED for N1, was `test_a_second_named_day_is_not_re_read_either`
+    asserting `not {"08:00", "16:20"} & spoken`. Tuesday was offered at those
+    two times, so they are kept; what must not happen is Monday's readout
+    bleeding into Tuesday's, which is the repeat T1b's caller heard.
+    """
     session, days = _after_the_multi_day_offer()
     speak_one_day_from_payload(session, days, MON, why="D-B")
+    monday = set(_spoken_times(session))
 
     speak_one_day_from_payload(session, days, TUE, why="D-B")
 
     spoken = _spoken_times(session)
-    assert not {"08:00", "16:20"} & set(spoken), spoken
+    assert {"08:00", "16:20"} <= set(spoken), spoken
+    new_on_tuesday = set(spoken) - {"08:00", "16:20"}
+    assert new_on_tuesday, spoken
+    assert not new_on_tuesday & monday, (monday, spoken)
 
 
 def test_the_named_day_producer_honours_a_requested_time():

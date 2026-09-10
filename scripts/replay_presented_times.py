@@ -71,6 +71,27 @@ may never hand back a time the caller was already read on that day. The old
 count is still printed, because a large swing in it is worth seeing -- it is
 just no longer a failure.
 
+`re_offered_a_heard_time` RE-AIMED, 11 Sep 2026 -- N1, not deleted
+------------------------------------------------------------------
+That gate forbade verbatim what N1's fix has to do. CA12036a4529 (10 Sep
+21:57, northgate): Monday offered at 08:00 / 17:10, the caller said "what about
+monday", and was read 10:30 / 11:20 / 14:40 -- zero overlap, 6 of 6 re-readouts
+on days with slots to spare. B-116 withheld both offered times because they had
+been "heard on this day", which is right for "what else have you got" and
+exactly wrong for "tell me about Monday".
+
+So "re-offered" now means re-offered in answer to WHAT ELSE -- the distinction
+B-142 already draws in the code. Rows the named-day producer spoke (stored
+`producer` "D-B" or "B-145", on the day it spoke) are replayed with
+`named_day=True`, the path that answered them live, and do not count against
+it. They get their own gate instead:
+
+  named_day_withheld_all   a named-day readout that kept NONE of the times
+                           offered for that day, on a day with room  MUST be 0
+
+`producer` is forward-only from 11 Sep 2026. An older row carries none and is
+replayed exactly as before: absent means unknown, never "not named-day".
+
 No PII: a slot is a date and a time, and nothing else is read.
 """
 from __future__ import annotations
@@ -91,6 +112,10 @@ from app.tools.slot_followup import (  # noqa: E402
     choose_presented_indices,
     record_spoken_slots,
 )
+
+#: The producers that answer a request about ONE named day, as stored in a
+#: slot_offers row's `producer`. See the N1 note in the module docstring.
+NAMED_DAY_PRODUCERS = frozenset({"D-B", "B-145"})
 
 
 def _as_list(value):
@@ -220,8 +245,19 @@ def collect(rows):
                 probe["slots"] = [
                     {"start": f"{date}T{t}:00", "end": f"{date}T{t}:00"} for t in times
                 ]
+                # N1. A named-day producer row is replayed down the path that
+                # answered it live -- but only for the day it SPOKE. The other
+                # days of the same payload were not what the caller asked about.
+                named = (
+                    str(record.get("producer") or "") in NAMED_DAY_PRODUCERS
+                    and date in stored
+                )
                 try:
-                    idx = choose_presented_indices(session, probe, limit)
+                    idx = (
+                        choose_presented_indices(session, probe, limit, named_day=True)
+                        if named
+                        else choose_presented_indices(session, probe, limit)
+                    )
                 except Exception as exc:      # a readout preference must not raise
                     out.append({
                         "call": sid, "clinic": clinic, "seq": k, "date": date,
@@ -234,6 +270,7 @@ def collect(rows):
                     "seq": k,
                     "date": date,
                     "limit": limit,
+                    "named_day": named,
                     "day_times": list(times),
                     "chosen": [times[i] for i in idx if 0 <= i < len(times)],
                     "heard_day": date in heard_dates,
@@ -276,6 +313,7 @@ def diff(base_path, cand_path):
         print(f"!! {len(set(base) ^ set(cand))} day(s) present on only one side")
 
     changed = lost = invented = heard_day_changed = re_offered = 0
+    named_kept = named_withheld_all = 0
     repeats_before = repeats_after = cross_day_days = 0
     heard_days = 0
     heard_repeats_before = heard_repeats_after = 0
@@ -312,7 +350,16 @@ def diff(base_path, cand_path):
         # rule this file is supposed to be defending.
         own = set(c.get("heard_clocks_this_day") or [])
         spare = set(c.get("day_times") or []) - own
-        if own & set(cc) and len(spare) >= (c.get("limit") or 0):
+        limit = c.get("limit") or 0
+        if c.get("named_day"):
+            # N1 -- re-aimed, not deleted; see the module docstring. A caller
+            # who asked about THIS day is owed the times offered for it.
+            if own and len(own) < limit:
+                if own & set(cc):
+                    named_kept += 1
+                elif len(spare) >= limit - len(own):
+                    named_withheld_all += 1
+        elif own & set(cc) and len(spare) >= limit:
             re_offered += 1
         if bc == cc:
             continue
@@ -330,7 +377,9 @@ def diff(base_path, cand_path):
     print(f"{'days changed':<26}{changed}")
     print(f"{'  lost a slot':<26}{lost}          MUST be 0")
     print(f"{'  invented a slot':<26}{invented}          MUST be 0")
-    print(f"{'re-offered a heard time':<26}{re_offered}          MUST be 0")
+    print(f"{'re-offered a heard time':<26}{re_offered}          MUST be 0   (answers to 'what else' -- named-day rows excluded, N1)")
+    print(f"{'named-day withheld all':<26}{named_withheld_all}          MUST be 0   (N1)")
+    print(f"{'named-day kept offered':<26}{named_kept}          (N1 -- the point of the fix, not a gate)")
     print(f"{'  on a day already heard':<26}{heard_day_changed}          (reported, not a gate -- see the header)")
     print()
     print(f"{'cross-day readouts':<26}{cross_day_days}")
@@ -343,7 +392,9 @@ def diff(base_path, cand_path):
         print(f"      heard {heard}")
         print(f"      base  {bc}")
         print(f"      cand  {cc}")
-    return 0 if (lost == 0 and invented == 0 and re_offered == 0) else 1
+    return 0 if (
+        lost == 0 and invented == 0 and re_offered == 0 and named_withheld_all == 0
+    ) else 1
 
 
 def main() -> int:

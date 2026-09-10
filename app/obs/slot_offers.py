@@ -95,6 +95,7 @@ def record_offer(
     presented_days: Any = None,
     source: str = "gate5",
     spoken: bool = False,
+    producer: str = "",
 ) -> None:
     """Append one lookup and the offer built from it. NEVER RAISES.
 
@@ -139,6 +140,11 @@ def record_offer(
             # Never inferred from `source`: a gate5 row becomes spoken later,
             # and the whole point is that the two are separate facts.
             "spoken": bool(spoken),
+            # N1. WHICH producer, when `source` is "producer". The replay
+            # harness needs it to replay a named-day readout down the path
+            # that answered it; "" on gate5 rows and on every row before
+            # 11 Sep 2026 -- absent means unknown, never "not named-day".
+            "producer": str(producer or "")[:16],
             "mode": getattr(offer, "mode", None),
             "payload": _trim_days(payload_days),
             "presented": _trim_days(presented_days),
