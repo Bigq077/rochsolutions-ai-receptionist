@@ -5504,7 +5504,9 @@ def named_day_speech(
         if not date:
             return None
 
-        return speak_one_day_from_payload(session, days, date, why="D-B")
+        return speak_one_day_from_payload(
+            session, days, date, why="D-B", user_text=user_text,
+        )
     except Exception:  # pragma: no cover - defensive; live call path
         logger.exception("[slot_followup] named-day offer unavailable")
         return None
@@ -5516,6 +5518,7 @@ def speak_one_day_from_payload(
     date: str,
     *,
     why: str,
+    user_text: Any = None,
 ) -> Optional[str]:
     """Narrow the conversation to ONE day, speaking and recording it. Or None.
 
@@ -5579,6 +5582,32 @@ def speak_one_day_from_payload(
     # `more_times` must be passed explicitly now, for the reason the
     # docstring gives: a pre-trimmed day looks complete to the formatter,
     # and it would fall silent about the rest of the diary (B-97).
+    # S-13, CAb8ac636017de7d35370fd7951c54d3cf (10 Sep 2026 13:43, northgate,
+    # build 9259595f50f5), judge 1, outcome=abandoned. "do you have anything
+    # around midday on tuesday" was answered with 08:00, 09:40 and 15:30; he
+    # rephrased and was answered with three more times, none near noon; 12:10
+    # and 13:00 had been read to him sixteen seconds earlier and were bookable
+    # throughout. He hung up.
+    #
+    # D8 reads ONE key and all three of its writers are inside
+    # `check_availability`. This path runs no tool -- the log line below says
+    # "no tool call needed" -- so nothing here had ever written the caller's
+    # own words into it, and the pin was a no-op on every named-day follow-up
+    # in the system's life. Its log line has never appeared in a stored call.
+    #
+    # WRITTEN ON EVERY PAYLOAD TURN, EMPTY INCLUDED, for the reason the key's
+    # own docstring gives one layer up: partial writing re-creates the
+    # staleness it guards against, and a time named three turns ago must not
+    # pin a slot in a readout that has nothing to do with it.
+    # `requested_clock_times` is the same parser the tool path uses -- a second
+    # one would be a second thing to keep in step with it.
+    try:
+        session[REQUESTED_TIMES_KEY] = requested_clock_times(user_text)
+    except Exception:  # pragma: no cover - defensive; live call path
+        # The standing rule in this file: a readout preference must never fail
+        # a lookup. A dead pin reads the day as it did before D8 existed.
+        logger.exception("[slot_followup] requested-time resolve failed")
+
     _times = list(day.get("slot_times") or [])
     _idx = choose_presented_indices(session, day, SINGLE_DAY_MAX_TIMES)
     _spoken_day = dict(day)
@@ -5698,7 +5727,9 @@ def day_acceptance_speech(
         if not date:
             return None
 
-        offer = speak_one_day_from_payload(session, days, date, why="B-145")
+        offer = speak_one_day_from_payload(
+            session, days, date, why="B-145", user_text=user_text,
+        )
         if not offer:
             return None
 

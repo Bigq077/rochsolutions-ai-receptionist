@@ -186,12 +186,23 @@ def test_a_second_named_day_is_not_re_read_either():
 
 def test_the_named_day_producer_honours_a_requested_time():
     """D8's pin lives inside `choose_presented_indices`, so bypassing that
-    call dropped it too: a caller who named a day AND a time got neither."""
+    call dropped it too: a caller who named a day AND a time got neither.
+
+    RE-AIMED for S-13, not weakened. This test used to write
+    `REQUESTED_TIMES_KEY` itself, and it passed all week while the live path
+    was dead - nothing on this path ever wrote that key, because its only
+    three writers are inside `check_availability` and a named-day follow-up
+    runs no tool. The producer now writes it from the caller's own words on
+    every payload turn, so the caller's words are what this hands in.
+    """
     session, days = _after_the_multi_day_offer()
-    session[REQUESTED_TIMES_KEY] = ["13:00"]
 
-    speak_one_day_from_payload(session, days, MON, why="D-B")
+    speak_one_day_from_payload(
+        session, days, MON, why="D-B",
+        user_text="can you tell me about monday at one in the afternoon",
+    )
 
+    assert session[REQUESTED_TIMES_KEY] == ["13:00"]
     assert "13:00" in _spoken_times(session), _spoken_times(session)
 
 
