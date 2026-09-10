@@ -1,10 +1,35 @@
-# Finishing slot presentation — plan of record, rev. 2 (2026-09-10, PM)
+# Finishing slot presentation — plan of record, rev. 3 (2026-09-10, evening)
 
 **Goal (owner, 10 Sep):** slot presentation is *finished* by the end of this week.
 **Time available:** Friday 11th, weekend buffer 12–13th.
-**Author's note:** rev. 2 replaces the morning's ordering. Read §1 and §7 before
-touching anything. The re-order is not a change of mind — it is what measurement
-did to rev. 1's central assumption. §4.0 says why.
+**Author's note:** rev. 3 records a session that worked rev. 2's queue in order
+and closed items 1–4. Read §1 and §7 before touching anything.
+
+> ### ⚠️ NOTHING BELOW HAS BEEN CALL-VERIFIED
+>
+> Four commits sit on `latency-eval` unpushed. Every gate that can be met
+> without a phone has been met — failing-set diffs, three replay harnesses,
+> 40 new tests — and the one gate that cannot has not. **S-2 changes what a
+> caller hears on a named-day follow-up and S-3 changes when the hold phrase
+> speaks.** Both need the §5 call script before `production`.
+>
+> The safe move is to push `latency-eval` (demo line only, +447366263180),
+> call it, and promote afterwards. Do not fast-forward `production` on the
+> strength of this document.
+
+**What rev. 3 changes about rev. 2's plan, in one line each:**
+
+* **S-3's remedy in rev. 2 was wrong**, and measurement says so: the constant
+  cannot reach 63% of the breaches. The part that IS the constant is fixed;
+  the rest is filed as **S-11**. See §4.1.
+* **S-2 is fixed** and the corpus effect is large: repeated clock times on the
+  38 heard-day readouts fall **29 → 1**.
+* **S-5 is enforced** by a parameter, a runtime warning and a census — and the
+  guard found a real fifth producer on its first run.
+* **S-6 / S-8 / S-9 are closed**, with the not-observed rule that decides
+  whether the first corpus pull after this is read correctly.
+* **Two superseded decisions were re-aimed deliberately**, not deleted: one
+  harness gate and one B-142 test. §7 says why that distinction matters.
 
 ---
 
@@ -29,10 +54,23 @@ than by a patient.
 ## 1. Where we are
 
 ```
-production     337fbd9e   T1 + T1b, deployed 10 Sep 09:4x, all three clinics
-latency-eval   20c13378   = 337fbd9e + docs + 40a67ea8 (S-1a). NOT pushed yet.
-revert target  fc47e508   the pre-T1 engine. Keep this to hand.
+production        337fbd9e   T1 + T1b, deployed 10 Sep 09:4x, all three clinics
+origin/latency-eval 7654561c = 337fbd9e + the rev. 1 plan doc
+local (unpushed)  1508df0c   = 7654561c + S-1a + rev.2/3 docs + S-3 + S-2 + S-5
+                             + S-6/S-8/S-9.  NOT PUSHED, NOT CALL-VERIFIED.
+revert target     fc47e508   the pre-T1 engine. Keep this to hand.
 ```
+
+The five commits, oldest first:
+
+| sha | what |
+|---|---|
+| `40a67ea8` | S-1 lever (a) — the month is said once. 18.59 s → 17.93 s |
+| `d94c52d7` | rev. 2 of this document |
+| `dd15f2d7` | **S-3** — the first rung was audible outside the 3 s bar |
+| `afabb549` | **S-2** — the cross-day preference stopped firing after the first readout |
+| `ab5b6752` | **S-5** — the trim contract made enforceable |
+| `1508df0c` | **S-6 / S-8 / S-9** — the three harness blind spots |
 
 > **The local `latency-eval` branch ref is STALE** — measured 10 Sep at
 > `0421b72d` against origin's `7654561c`. A parallel session holds it in its own
@@ -78,22 +116,24 @@ A row without `file:line` is a lead, not a finding. All of these have one.
 
 ### 2.1 Caller-audible
 
-| id | what a caller experiences | anchor | evidence |
+| id | what a caller experiences | anchor | state |
 |---|---|---|---|
-| **S-3** | The filler's first rung fires at **~3.12 s**, just past the published 3-second dead-air bar, so **every slow turn breaches it structurally**. | filler ladder; the constant is not yet located | `[LAT] ttfa_ms` 3118 / 3120 / 3128 on three consecutive turns, CA8214b75c |
-| **S-2** | Once the caller names a day, the cross-day preference stops firing for the rest of the call — "twenty to ten" said for Monday and Tuesday **17 s apart**. | `slot_followup.py:3737`, the `today in heard days` stand-down | CA8214b75c, 10 Sep 09:35:46 → 09:36:03, reproduced offline |
-| **S-1** | A three-day readout takes **17.93 s** (was 18.59 s). Callers barge in on nearly every turn. | `slot_offer.py:50-52` caps; `build_slot_offer` `:359` | measured — see §4.4. Now a DECISION, not engineering. |
-| **S-4** | `last_bot_prompt` blows its 200-char cap and loses its "?" 3–4 times per call, disarming clinical screening's orphan matcher. | `clinical_screening.py:530` `_LAST_BOT_PROMPT_CAP` | both calls today. Improves for free as the readout shortens. **Do not touch the cap** — 34 writers, marked RED. |
+| ~~**S-3**~~ | The filler's first rung was AUDIBLE at ~3.12 s, past the 3 s bar. | `config.py` `LLM_FIRST_CHUNK_TIMEOUT_MS` | **FIXED `dd15f2d7`**, 3000 → 2750. §4.1. Not call-verified. |
+| ~~**S-2**~~ | "Twenty to ten" said for Monday and again for Tuesday, 17 s apart. | `slot_followup.py` `_prefer_unheard_clock_times` | **FIXED `afabb549`**. Corpus: heard-day repeats **29 → 1**. Not call-verified. |
+| **S-11** | **NEW, and it is the larger half of S-3.** The ladder cancels on the first LLM **token**, but dead air ends at the first **audio**. Everything between — `chunk_gate`, p50 1.46 s / p95 2.95 s on the breaching turns — is unguarded, and **190 of 302 corpus breaches (63%) live there**. | `llm_stream.py:5604` `got_first_chunk = True` cancels `_filler_task` | measured; **no deadline fixes it** and the obvious fix is a bad trade at every value. §4.1. |
+| **S-12** | **NEW.** On the caller's real clock (`endpoint_wait_ms` + `ttfa_ms`) **47.1% of turns exceed the 3 s bar**, p50 2.83 s, p95 5.04 s — not the 18.8% `ttfa` alone shows, because `t0` starts AFTER the endpointer. | `latency_timing.py`, `endpoint_wait_ms` is documented "pre-t0 dead-time" | 1,579 turns. No ladder tuning reaches it; it is the general latency work. |
+| **S-1** | A three-day readout takes **17.93 s**. Callers barge in on nearly every turn. | `slot_offer.py:50-52` caps; `build_slot_offer` `:359` | **owner decision, unchanged** — see §4.4. Two minutes of work whenever it is taken. |
+| **S-4** | `last_bot_prompt` blows its 200-char cap and loses its "?" 3–4 times per call, disarming clinical screening's orphan matcher. | `clinical_screening.py:530` `_LAST_BOT_PROMPT_CAP` | open. Improves for free as the readout shortens. **Do not touch the cap** — 34 writers, marked RED. |
 
 ### 2.2 Structural — no caller sees these today, they are how the next one gets in
 
 | id | finding | anchor |
 |---|---|---|
-| **S-5** | **Five producers call `build_slot_offer`; four honour the selection rule.** Nothing enforces it. | `llm_stream.py:7097`, `:7175`; `slot_followup.py:5212`, `:5295`, `:5535` |
-| **S-6** | Stage C's gate watches **one of two** reverse-parse sites. `_record_stood_down_slots` returns silently when it resolves nothing — "named no slots" is indistinguishable from "could not parse". | site A `llm_stream.py:4021` (logs); site B `llm_stream.py:3717` (silent) |
+| ~~**S-5**~~ | Five producers, four honouring the rule, nothing enforcing it. | **FIXED `ab5b6752`** — `pretrimmed` parameter + runtime warning + AST census. The guard found a real fifth site on its first run. §4.3. |
+| ~~**S-6**~~ | `_record_stood_down_slots` returned silently when it resolved nothing. | **FIXED `1508df0c`** — nothing-parsed is a WARNING, already-held is INFO. ⚠️ **The Stage C gate WORDING still needs amending** in `ONE_PRESENTATION_LAYER.md`; that is a document edit and is the one piece of this item left. |
 | **S-7** | **13 % of recorded offers were never spoken.** `record_offer` fires where the offer is BUILT, above the P6/P6b stand-downs. **No code needed** — it is a fact every future harness author must know. | `llm_stream.py:7353` |
-| **S-8** | `presented_days` is populated on all 53 `multi_day` offers and **empty on all 24 `single_day`** ones, so B-95's presented-vs-bookable split is invisible in the mode a caller reaches by naming a day. | `record_offer` call site, `llm_stream.py:7353` |
-| **S-9** | `calls.latency` carries **no tool-result marker**, so the tool-vs-plain latency split cannot be measured at all. One field on `TurnTiming`. | `latency_timing.py` |
+| ~~**S-8**~~ | `presented_days` empty on every `single_day` offer. | **FIXED `1508df0c`** — the single_day path records `[_fd]`. Confirmed by the corpus pull after the next call, not by this diff. |
+| ~~**S-9**~~ | No tool marker on `calls.latency`. | **FIXED `1508df0c`** — `TurnTiming.tool_calls`, and `latency_percentiles.py` reports the real split. **It reads 0 today and says so**: all 3,578 stored turns predate the field and are NOT OBSERVED. |
 | **S-10** | **NEW.** `operational.speak_part_of_day` is **half-wired**. It changes the deterministic labels, but the *rendered* northgate prompt instructs the model to speak the band in **three separate places** — so flipping it makes the READOUT bare while confirmations and read-backs stay banded. | rendered prompt (105 k chars); `SLOT_FORMATTER_SYSTEM_PROMPT` line 36 also still carries a band-form reference table |
 
 ### 2.3 Adjacent — real, not slot presentation
@@ -172,98 +212,210 @@ re-ordered by **audible damage per hour of work**.
 
 ---
 
-### 4.1 · S-3 — the filler fires AT the dead-air bar, not before it **← start here**
+### 4.1 · S-3 — DONE in part, and rev. 2's remedy was wrong
 
-`ttfa` of 3118 / 3120 / 3128 ms on three consecutive turns is a constant, not a
-coincidence. The published bar is *no dead air over 3 s without a filler*, and
-the first rung lands just the wrong side of it, so **every slow turn breaches the
-bar by construction**.
+**`dd15f2d7`. Not call-verified.**
 
-Cheapest fix in the register, worst failure mode behind it, and it needs nothing
-from the owner.
+Rev. 2 said "find the constant, confirm it is a single threshold". Both halves
+of that were right, and the conclusion drawn from them was not.
 
-**Scope it before changing it.** Find the constant, confirm it is a single
-threshold, and enumerate what else reads it. This is a number, not a redesign —
-but it sits on the hot path and it interacts with barge-in, which this codebase
-has already been bitten by: the teardown fires on the PARTIAL and the noise
-filter on the FINAL, and a caller's "uh" cut Susie off
-([[barge-in-tears-down-before-the-noise-filter]]).
+**The constant is `LLM_FIRST_CHUNK_TIMEOUT_MS`, and it was 3000 — the bar
+itself.** That is the whole defect, stated in one sentence: *the constant is a
+DEADLINE and the bar is about AUDIO*, and between them sit synthesis and the
+wire. Measured over the 84 corpus turns where the first rung demonstrably
+spoke, that gap is **p50 128 ms / p90 246 ms / p95 313 ms** — so the rung's
+audio landed at p50 3128 ms and **79 of 84 (94%) put the caller past the bar**.
+The three live readings that opened S-3 (3118 / 3120 / 3128) are that constant
+plus synthesis, which is why they looked suspiciously constant.
 
-**Gate:** one call; `ttfa` p95 under 3 s in the next corpus pull.
-**Est:** ¼ day of change, plus scoping.
+**3000 → 2750** puts the sound inside the bar at p90 (2996 ms). The cost was
+measured *before* it was taken, because this file's history is a series of
+arguments about exactly that cost: the rung now fires on **16.3% of turns
+instead of 14.1%** (+2.2 points over 3,170 turns). Nowhere near the 42% that
+made 1800 ms untenable, and a smaller move than the 1800 → 3000 change it
+corrects.
+
+`DEAD_AIR_BAR_MS` and `FIRST_RUNG_SYNTH_MS` now name the missing half of the
+relationship. **The test that "pinned the bar" was pinning the deadline** —
+`assert LLM_FIRST_CHUNK_TIMEOUT_MS / 1000.0 <= 3.0` passed at exactly 3000
+while 94% of the audio was outside — and now asserts the SUM. It fails at 3000
+and passes at 2750; both directions were run.
+
+#### S-11 — the 63% no constant can reach ← **read this before touching S-3 again**
+
+The ladder cancels on the first **token**:
+
+```
+if not got_first_chunk:
+    got_first_chunk = True          # llm_stream.py:5604
+    if _filler_task and not _filler_task.done():
+        _filler_task.cancel()
+```
+
+But `ttfa = llm_ttft + chunk_gate + tts_first_byte + wire`. The timer guards
+only the first term. Of the 302 corpus turns whose caller waited over 3 s for
+any sound:
+
+| | turns | |
+|---|---|---|
+| the timer had FIRED (`llm_ttft ≥ 3000`) | 104 | 34.4% — this is the ladder, now fixed |
+| the timer was **CANCELLED** (`llm_ttft < 3000`) | **190** | **62.9% — UNGUARDED** |
+| no `llm_ttft` recorded | 8 | 2.6% |
+
+On that unguarded population the token arrives at **p50 1.9 s**, comfortably
+inside any candidate deadline, and then `chunk_gate` alone spends **p50 1.46 s,
+p95 2.95 s** before a sound. **No value of `LLM_FIRST_CHUNK_TIMEOUT_MS` reaches
+these turns.**
+
+**The obvious fix — watch the first CHUNK instead of the first token — was
+costed and is a bad trade at every deadline:**
+
+| deadline | buys (of 167 harmed) | costs (turns newly speaking) |
+|---|---|---|
+| 3000 ms | 127 (76%) | **567 / 2895 = 19.6%**, 175 land <300 ms before the content |
+| 3400 ms | 65 (39%) | 353 = 12.2% |
+| 4000 ms | 30 (18%) | 228 = 7.9% |
+
+The curve is bad because the breaches are *marginal* — the unguarded set's
+`ttfa` is p50 3445 ms. Paying 8–20 points of extra hold phrases to cover ~450 ms
+of extra silence buys the wrong thing, and 175 of the 567 would hear the content
+within 300 ms of the phrase, which is the "empty marker in front of an instant
+reply" defect the config comment already documents.
+
+**The predicate that WOULD separate them** is time since the LAST token — a
+steadily streaming turn will release soon; a stalled one will not. The corpus
+does not store inter-token times, so it cannot be measured, and shipping an
+unmeasurable predicate onto the hot path is the trap this codebase keeps
+falling into. **Left open deliberately. Do not "fix" it without evidence.**
+
+#### S-12 — the bar is being missed by more than anyone has been reporting
+
+`ttfa_ms` is measured from `t0`, and `endpoint_wait_ms` is documented in
+`latency_timing.py` as **"pre-t0 dead-time"**. So the caller's real silence is
+`endpoint_wait + ttfa`, and every S-3 figure above understates it by p50 1.1 s.
+
+| | p50 | p75 | p90 | p95 | over 3 s |
+|---|---|---|---|---|---|
+| `ttfa` alone | 1.92 s | 2.65 s | 3.26 s | 3.69 s | 18.8% |
+| **caller's clock** | **2.83 s** | **3.80 s** | **4.56 s** | **5.04 s** | **47.1%** |
+
+The config comment already said this in prose — *"3000 ms here is ~4.1 s of real
+silence … moving this number cannot fix that"* — and it is right. Meeting the
+bar means cutting `llm_ttft` (p50 1.63 s) and `chunk_gate` (p50 0.67 s), which
+is the general latency work §"Explicitly not this week" excludes. **Recorded so
+that nobody reports 18.8% as the dead-air rate again.**
 
 ---
 
-### 4.2 · S-2 — the cross-day preference stands down too early
+### 4.2 · S-2 — DONE
 
-Once a day has been heard, `_prefer_unheard_clock_times` returns unchanged and
-B-116 owns the readout — and B-116's rule is "unheard **on this day**". So from
-the moment a caller names their first day, the cross-day preference never fires
-again.
+**`afabb549`. Not call-verified.** This is the item with the largest measured
+effect and it is the one that most needs a phone.
 
-This is the **worst-sounding** defect left. It is also the same class as T1/T1b,
-so the verification path is already built and understood.
+Rev. 2's diagnosis was right and its mechanism was slightly off, in a way worth
+recording. The stand-down is per-DAY:
 
-**The refinement, and it is a strict one:** keep B-116's pool exactly as-is —
-never offer a time already heard on that day — but *within* that pool prefer
-clock times not heard on **any** day. Same all-or-nothing guard as T1: apply it
-only when the fresh-anywhere subset can fill the readout alone, otherwise stand
-down. Checked against the live call: Tuesday's unheard-on-Tuesday pool held six
-clock times unheard anywhere, so the rule would have applied and given roughly
-10:30 / 12:10 / 14:40 instead of 08:00 / 09:40 / 15:30.
+```
+if not today or today in {str(s)[:10] for s in spoken}:
+    return chosen
+```
 
-**This changes a rule that was explicitly protected by a test**
-(`test_the_same_day_rule_is_untouched`). That test must be re-aimed
-**deliberately**, with the reason recorded — it is not a stale test, it is a
-superseded decision.
+so it is not "once the caller NAMES a day". It is **once a day has been read
+out at all** — and a multi-day readout makes *every* day it named a heard day.
+From the first readout onwards, every day the caller can then ask about takes
+the early return. That is why it bit on a call where the caller was comparing
+days, which is exactly when a repeat is most audible.
 
-**Watch `_spread`.** The owner decided on 1 Sep that two slots fifty minutes
-apart are not a choice. T1b's first cut filled a short pool back up and produced
-08:00 + 08:50. Any new selection rule must be all-or-nothing against it.
+**B-116's pool is NOT widened**, and that is the whole of the design. On a heard
+day the candidates are exactly the slots B-116 would have chosen from — unheard
+*on this day* — and the preference picks among those. A time already offered
+that day can no more come back than before. All-or-nothing against `_spread` is
+unchanged.
 
-**Anchor:** `slot_followup.py:3737`, the `today in heard days` early return.
-**Gate:** replay diff read **by direction**; failing-set diff empty; call script
-step 4. **Est:** ½ day.
+**Measured, 416 replayed days:**
+
+| | before | after |
+|---|---|---|
+| heard-day readouts (S-2's own population, n=38) — repeated clock times | 29 | **1** |
+| `lost_a_slot` / `invented_a_slot` | 0 / 0 | 0 / 0 |
+| multi-day loop (61 readouts) — repeats / identical openers | 4 / 0 | 4 / 0 |
+| `replay_slot_decisions`, 1,851 turns scored | — | **CHANGED: 0** |
+
+**`test_the_same_day_rule_is_untouched` did NOT need re-aiming**, contrary to
+rev. 2's expectation, and the reason is worth keeping: with only one day heard
+there is no sibling day to be fresh against, so the preference finds nothing to
+do and hands B-116's answer straight back. The rule rev. 2 thought it was
+overturning turns out to be a special case of the new one.
+
+**Two things DID need re-aiming, both deliberately.** See §7 — the distinction
+between a stale test and a superseded decision is the single most reusable thing
+in this document.
 
 ---
 
-### 4.3 · S-5 — enforce the trim contract, and close the harness blind spots
+### 4.3 · S-5 / S-6 / S-8 / S-9 — DONE
 
-*Make today's defect class unrepresentable. This is the stage that stops you
-spending hours correcting.*
+**`ab5b6752` and `1508df0c`.**
 
-**S-5.** Five producers, four correct, nothing enforcing it. Two options:
+**S-5 took option (ii), as rev. 2 recommended, plus one thing rev. 2 did not
+ask for and should have.** The contract moved out of the docstring and into the
+signature as `pretrimmed`, with a runtime warning naming the offending
+`file:line` once per call site per process.
 
-* **(i) `build_slot_offer` performs the trim itself**, taking the session. One
-  owner, no contract to violate. Cleanest, larger diff.
-* **(ii) `build_slot_offer` refuses a day it can tell is untrimmed** — assert or
-  log-and-trim. Smaller, and it turns a silent violation into a loud one.
+The detection is **not** "did you pass `more_times`" — all five producers pass
+it, so that would catch nothing. It is **"am I about to drop a slot"**: a
+properly trimmed day has nothing left to drop, so dropping one means
+`_pick_times_for_day` is about to select by POSITION, blind to what the caller
+heard. That is T1b-2 exactly.
 
-**Recommendation: (ii) this week, (i) inside Phase 2**, where the signature is
-changing anyway.
+It **logs and does not repair**. Repairing would make `build_slot_offer` a
+second owner of "how many, and which", which is the defect it exists to prevent
+— and a live-call exception would cost a caller their offer on a path that
+already treats a raise as "fall back to the model".
 
-Add a **census test** that walks the module for callers of `build_slot_offer` and
-asserts each is reached through the owner. A census test is the only thing that
-catches producer number six.
+> **The guard found a real fifth site on its first run:**
+> `numbered_more_times_speech` (P9's "more times that day"). It turned out to
+> be a **deliberate** untrimmed hand-in — the batch is what the caller has NOT
+> been read, so B-116's subtraction already happened upstream — and it now
+> declares itself with `pretrimmed=False`. Without that, the warning would have
+> fired on every "tell me the others" turn and been noise inside a week.
 
-> **A contract written in a docstring is not a contract.** `build_slot_offer`'s
-> docstring states the trim contract explicitly. It was violated at one of five
-> call sites (T1b-2) and nothing noticed. This item exists solely for that.
+**The census** walks `app/` by AST, so producer six fails in CI whether or not
+any test drives its path. Verified in **both** directions — an unaccounted
+producer fails, and a *stale entry* fails too, because a census describing a
+codebase nobody runs is how a guard quietly stops guarding.
 
-Then the three harness blind spots, each a one-line-ish change:
+> **Its first cut took 26 MINUTES against a 6-minute suite** — it re-walked all
+> of `app/` for each of five tests, and `flow.py` alone is 24,820 lines. Cached,
+> with a substring pre-filter deciding only which files are worth parsing: **4
+> seconds**. A correctness guard that quadruples the suite is a guard someone
+> deletes. §7.
 
-* **S-6** — give `_record_stood_down_slots` a failure line. **Amend the Stage C
-  gate wording too:** a gate that cannot observe half of what it covers is not a
-  gate.
-* **S-8** — pass `presented_days` on the single_day path.
-* **S-9** — carry a tool-call count on `TurnTiming`, so T2's central question
-  becomes answerable.
+**S-6** now distinguishes the two arms: nothing-parsed is a WARNING (it is the
+one that can leave a caller's next sentence resolving against a slot they were
+never read); already-held is INFO. ⚠️ **The Stage C gate WORDING in
+`ONE_PRESENTATION_LAYER.md` still needs amending to match** — a document edit,
+and the one piece of this item left undone.
 
-**S-7 needs no code.** Already handled in `replay_presented_times.py`
-(`_was_spoken`).
+**S-8** records `[_fd]` on the single_day path, read off the OFFER's mode rather
+than a mode variable, so it records what was built and not what was intended.
 
-**Gate:** the deliberately-untrimmed case is refused in a unit test; each blind
-spot verified **from the corpus**, not from the diff. **Est:** ¾ day.
+**S-9** adds `TurnTiming.tool_calls`, incremented at the one point every
+`tool_use` block passes through so a tool loop accumulates across iterations.
+
+> **The NOT-OBSERVED rule is the load-bearing part of S-9, not the field.** All
+> 3,578 stored turns predate it and carry no key. A reader that treats the
+> absence as 0 puts every historical tool turn in the plain bucket — a split
+> strictly **worse** than the proxy it replaces. `latency_percentiles.py` counts
+> those separately and, run today, prints: *"the real split is empty. Every
+> stored turn predates the field; read the PROXY above and nothing else."* The
+> proxy is kept alongside rather than deleted, because it is what can be said
+> about the turns already stored.
+
+**S-6's and S-8's call sites are not unit-testable** — they are inside Gate 5's
+streaming path and need a WebSocket, a model and a tool result. Everything they
+depend on is driven by tests; the sites themselves are confirmed by the corpus
+pull after the next call, which is what this item's gate already said.
 
 ---
 
@@ -369,7 +521,20 @@ B-146 is excluded **pending an explicit decision**, not by default.
 
 **The suite is red on purpose. Do not look for green; diff the failing sets.**
 
-Baseline at `337fbd9e` / `7654561c`, measured 10 Sep: **98 failed**, 9688 passed.
+Baseline at `7654561c`, **re-measured from scratch 10 Sep evening: 98 failed,
+9688 passed, 22 skipped — 96 excluding `test_acuity_live`.** Identical to the
+morning's figure, so the number in this document is reproducible rather than
+remembered.
+
+Every commit in §1 was gated against it in a SEPARATE frozen worktree, never
+the tree being edited:
+
+| commit | failing set vs baseline |
+|---|---|
+| `dd15f2d7` S-3 | **EMPTY** (96 = 96, 9696 passed) |
+| `afabb549` S-2 | **one new failure**, investigated and re-aimed — see §7 |
+| `ab5b6752` S-5 | see the run log |
+| `1508df0c` S-6/8/9 | see the run log |
 
 > **EXCLUDE `tests/auto/test_acuity_live.py` from the failing-set diff.** It hits
 > the live Acuity API, which is returning `ProviderUnavailable` today, and its
@@ -413,7 +578,13 @@ python scripts/replay_multi_day_spread.py                  # before / after
 
 Both `--diff` flags take **two** arguments, base and candidate.
 
-Gates that must read 0: `lost_a_slot`, `invented_a_slot`, `changed_a_heard_day`.
+Gates that must read 0: `lost_a_slot`, `invented_a_slot`, and — since 10 Sep —
+`re_offered_a_heard_time`. **`changed_a_heard_day` is NO LONGER a gate.** It
+asserted T1's stand-down as an invariant, which S-2 supersedes; it is replaced
+by the rule it was really protecting (a selection may never re-offer a time
+already read out *on that day*), narrowed to exclude the case B-116 deliberately
+allows — a day that cannot fill the readout without it. The old count is still
+printed. §7.
 Read the rest **by direction** — a pick changing to a *different* slot is
 dangerous; a pick *lost* is usually a guard working.
 
@@ -556,25 +727,106 @@ northgate's rendered prompt; three other places instruct the band instead.
 **The local `latency-eval` ref goes stale** because a parallel session holds the
 branch in its own worktree. Fetch first, or diagnose an already-fixed bug.
 
+### New, 10 Sep evening
+
+**A STALE TEST AND A SUPERSEDED DECISION ARE NOT THE SAME THING, and this is
+the most reusable paragraph here.** S-2 made two existing assertions fail. Both
+had to be re-aimed; neither was stale, and deleting either would have thrown
+away a real rule:
+
+* `replay_presented_times`' third gate, `changed_a_heard_day MUST be 0`. That
+  was T1's stand-down restated as an invariant. What it was actually protecting
+  is B-116's pool, so **that** is now asserted directly — a selection may never
+  re-offer a time already read out on that day. The old count is still printed,
+  just no longer a failure.
+* `test_b142_soonest_means_earliest.py::test_what_else_still_leads_with_the_unheard`,
+  which asserted `second == LIVE_OFFER_2` byte for byte. `LIVE_OFFER_2` is what
+  a caller heard **on the defective build**, and it contains 08:50 on Monday —
+  a clock time they had been read on Tuesday one offer earlier. It was pinning
+  the S-2 defect as the expectation. What the test was FOR is now asserted
+  directly (the second offer repeats nothing from the first), the single
+  difference has its own named test, and a third test drives the loop WITH
+  `also_heard_clock_times`.
+
+The rule: **find what the assertion was protecting, assert that, and keep the
+old number visible.** An assertion deleted for going red is a rule deleted.
+
+**A GATE CAN BE STRICTER THAN THE RULE IT DEFENDS.** The first cut of
+`re_offered_a_heard_time` failed on one day — and it was right that it failed,
+because the day held exactly two times and one had been heard, so B-116's
+"never starves a repeat" branch offered it correctly. Base and candidate were
+identical there. **Always find out whether a new gate's first failure is yours.**
+It was narrowed to "…and the day could have filled the readout without it".
+
+**A MOCK OF THE LOOP CANNOT SEE THE LOOP — the second time in two days.**
+`test_b142`'s `_two_offers` calls `choose_presented_indices` per day WITHOUT
+`also_heard_clock_times`, so nothing stops two days in one readout picking the
+same clock time — which is how `LIVE_OFFER_2` came to hold 16:20 on both Monday
+and Tuesday. After S-2 that mock produced a *second* collision, which looked
+like a regression and was not: driven through the real carry, the same diary
+yields **no cross-day repeat and nothing already heard**. `replay_multi_day_spread`
+agreed (61 readouts, 4 repeats, unchanged). **Check the harness that drives the
+real entry point before believing a mock.**
+
+**A CORRECTNESS GUARD THAT QUADRUPLES THE SUITE IS A GUARD SOMEONE DELETES.**
+The S-5 census re-walked all of `app/` once per test: **26 minutes** against a
+6-minute suite, because `flow.py` is 24,820 lines and the parent map over its
+AST is millions of entries. Cached, plus a substring pre-filter deciding only
+which files are worth *parsing* (a file that never mentions the name cannot
+call it): **4 seconds**. Time the test you just added.
+
+**A DEADLINE IS NOT A SOUND.** `LLM_FIRST_CHUNK_TIMEOUT_MS` was set to the bar
+exactly, and a test asserted `deadline <= 3.0s` and passed while 94% of the
+audio it schedules landed outside. Any threshold whose purpose is something the
+caller PERCEIVES must be checked against perception, with the intervening cost
+named as its own constant.
+
+**`t0` IS NOT WHEN THE CALLER STOPPED TALKING.** `endpoint_wait_ms` is
+documented as "pre-t0 dead-time", so every `ttfa` figure understates the
+caller's silence by p50 1.1 s. Reading `ttfa > 3000` as the dead-air rate gives
+18.8%; the caller's clock gives **47.1%**.
+
+**A COUNT ADDED TODAY IS NOT OBSERVED YESTERDAY.** Every row in `calls.latency`
+predates `tool_calls`. Treating a missing key as 0 would have put ~3,500 tool
+turns in the plain bucket and produced a split worse than the proxy it replaces.
+A new field needs its absent case decided in the same commit, and printed.
+
+**A GUARD MUST BE SILENT ON CORRECT CODE.** The S-5 warning fires once per call
+site per process, and the one legitimate untrimmed producer opts out explicitly.
+A warning that repeats every turn is a warning nobody reads.
+
 ---
 
 ## 8. Order of work, on one page
 
+### Done, unpushed, NOT call-verified
+
+| # | item | commit | offline gate |
+|---|---|---|---|
+| 1 | **S-3** the rung was audible outside the bar | `dd15f2d7` | failing-set diff EMPTY; fails-before/passes-after both run |
+| 2 | **S-2** cross-day preference stopped firing | `afabb549` | heard-day repeats 29 → 1; decisions CHANGED 0; one re-aim (§7) |
+| 3 | **S-5** trim contract enforceable | `ab5b6752` | census verified in both directions; guard found a real 5th site |
+| 4 | **S-6/S-8/S-9** harness blind spots | `1508df0c` | 9 tests; the real split correctly reports 0 and says why |
+
+### What is left, in the order I recommend
+
 | # | item | gate | est. |
 |---|---|---|---|
-| 1 | **S-3** filler fires at the dead-air bar | `ttfa` p95 < 3 s, one call | ¼ day + scoping |
-| 2 | **S-2** cross-day preference stands down | replay by direction, call script step 4 | ½ day |
-| 3 | **S-5** trim contract + census test | untrimmed day refused in a test | ½ day |
-| 4 | **S-6/S-8/S-9** harness blind spots | verified from the corpus | ¼ day |
-| 5 | **Phase 2** one record, then delete the guards | its own plan's gates | ≥ 2 days |
+| **1** | **THE CALL.** §5's script, twice, on two diaries. S-2 and S-3 both change what a caller hears. | the script | ½ hour |
+| 2 | Push `latency-eval`, call the demo line, then fast-forward `production` | §6, and a revert target written down | — |
+| 3 | Amend the **Stage C gate wording** in `ONE_PRESENTATION_LAYER.md` to match S-6 | a document edit | 10 min |
+| 4 | **Phase 2** — one record, then delete the guards | its own plan's gates | ≥ 2 days |
 | — | **S-1 remainder** | **owner decision, not queued** — §4.4 | 2 min |
+| — | **S-11 / S-12** | **do not touch without new evidence** — §4.1 | — |
 
-Items 1–4 are the week. Item 5 is what stops the week decaying.
+**If you have time for exactly one thing: item 1.** Four engine commits are
+sitting on evidence that stops at the edge of a phone call. Every offline gate
+this repo has was run and they all pass; none of them can hear a hold phrase
+arrive 250 ms earlier, or a Tuesday read at times the caller has not heard.
 
-**If you have time for exactly one thing: item 1.** Cheapest fix in the register,
-worst failure mode behind it, and it needs nothing from the owner.
-
-**Landed already:** S-1 lever (a), `40a67ea8` — not pushed, not call-verified.
+**B-146 still has no explicit decision recorded against it** (§2.3). It was
+excluded from this session's diff, which is right, but that is still the scope
+rule making the decision by default.
 
 ---
 
@@ -587,4 +839,11 @@ worst failure mode behind it, and it needs nothing from the owner.
 * **If these documents and the code disagree, the code wins.** Record the
   correction here. Rev. 2 exists because rev. 1's central estimate was wrong by
   sevenfold, and the one thing that has consistently worked on this codebase is
-  measuring rather than believing.
+  measuring rather than believing. Rev. 3 exists because rev. 2's remedy for
+  S-3 could not reach 63% of the thing it was aimed at -- found by measuring,
+  invisible from reading.
+* **Say what has NOT been verified, in the same breath as what has.** The four
+  engine commits in §1 have every offline gate this repo can offer and no
+  call. "Not call-verified" is doing real work at the top of this document and
+  in every one of those commit messages; do not let it be dropped by whoever
+  promotes them.
