@@ -5308,7 +5308,11 @@ def more_days_speech(session: Dict[str, Any]) -> Optional[str]:
     # only the producer knows which days it trimmed -- that gap between payload
     # and presented IS B-95's split, and a row that guessed it would be worse
     # than no row. Never raises; `record_offer` swallows everything itself.
-    _rec_offer(session, payload_days=session.get("available_days"),
+    # S-7: born spoken. This records BESIDE `apply_offer_to_session`, on the
+    # path that says the sentence -- unlike gate5, which records where the
+    # offer is BUILT and may still stand it down.
+    _rec_offer(session, source="producer", spoken=True,
+               payload_days=session.get("available_days"),
                offer=offer, presented_days=presented)
     logger.info(
         "[slot_followup] 'what else' answered with %d day(s) he has not heard: "
@@ -5400,7 +5404,11 @@ def numbered_more_times_speech(
     # S-14, and the one producer whose `presented` is the WHOLE day on purpose:
     # `pretrimmed=False` above says the batch arrived already subtracted, so the
     # payload/presented gap here is genuinely nil and the row must say so.
-    _rec_offer(session, payload_days=session.get("available_days"),
+    # S-7: born spoken. This records BESIDE `apply_offer_to_session`, on the
+    # path that says the sentence -- unlike gate5, which records where the
+    # offer is BUILT and may still stand it down.
+    _rec_offer(session, source="producer", spoken=True,
+               payload_days=session.get("available_days"),
                offer=offer, presented_days=[day])
     logger.info(
         "[slot_followup] 'more times that day' answered with %d numbered "
@@ -5678,7 +5686,11 @@ def speak_one_day_from_payload(
     # only the producer knows which days it trimmed -- that gap between payload
     # and presented IS B-95's split, and a row that guessed it would be worse
     # than no row. Never raises; `record_offer` swallows everything itself.
-    _rec_offer(session, payload_days=session.get("available_days"),
+    # S-7: born spoken. This records BESIDE `apply_offer_to_session`, on the
+    # path that says the sentence -- unlike gate5, which records where the
+    # offer is BUILT and may still stand it down.
+    _rec_offer(session, source="producer", spoken=True,
+               payload_days=session.get("available_days"),
                offer=offer, presented_days=[_spoken_day])
     logger.info(
         "[slot_followup] '%s' answered from the payload -- %d of %d bookable "

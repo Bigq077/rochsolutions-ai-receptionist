@@ -3895,6 +3895,17 @@ class LLMStream:
             from app.tools.slot_offer import apply_offer_to_session
             apply_offer_to_session(session, _prebuilt, _det_chunks)
 
+            # S-7. The one place a BUILT offer becomes speech. Deliberately not
+            # in `_record_stood_down_slots` above: that branch speaks the
+            # MODEL's sentence and stands this offer down, which is exactly the
+            # population this field exists to make countable.
+            try:
+                from app.obs.slot_offers import mark_offer_spoken as _mark_spoken
+
+                _mark_spoken(session, _det_chunks)
+            except Exception:  # pragma: no cover - defensive; live call path
+                logger.warning("[ms_gate5] offer not marked spoken", exc_info=True)
+
             for _i, _c in enumerate(_det_chunks):
                 logger.info(
                     "[ms_gate5] deterministic TTS chunk %d/%d: %r — len=%d",
@@ -7417,6 +7428,13 @@ class LLMStream:
                             _presented = [_fd]
                         _rec_offer(
                             session,
+                            # S-7. BUILT here, above the P6/P6b stand-downs, so
+                            # 13% of these are never said. `mark_offer_spoken`
+                            # flips it where the offer actually becomes speech;
+                            # a row still reading False at teardown was stood
+                            # down and the caller heard the model instead.
+                            source="gate5",
+                            spoken=False,
                             payload_days=result.get("available_days"),
                             offer=_offer,
                             presented_days=_presented,

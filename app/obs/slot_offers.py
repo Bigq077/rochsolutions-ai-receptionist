@@ -93,8 +93,30 @@ def record_offer(
     payload_days: Any,
     offer: Any,
     presented_days: Any = None,
+    source: str = "gate5",
+    spoken: bool = False,
 ) -> None:
     """Append one lookup and the offer built from it. NEVER RAISES.
+
+    ``source`` and ``spoken`` are S-7 and S-14 answered together, and they are
+    the difference between a row that describes a readout and a row that merely
+    describes an intention. There are two kinds of writer:
+
+      ``gate5``    records where the offer is BUILT, above the P6/P6b
+                   stand-downs -- so it may never be said. Measured over the
+                   first 120 calls carrying this column: **77 built, 67 spoken,
+                   10 (13%) discarded and replaced by model speech.** Those
+                   rows pass `spoken=False` and are flipped by
+                   `mark_offer_spoken` at the moment the offer is applied.
+      ``producer`` records where the offer is SPOKEN, beside
+                   `apply_offer_to_session`. Those rows are born `spoken=True`.
+
+    Until S-14 the column held roughly one row per call and was almost entirely
+    the first kind, so "recorded" and "spoken" could be conflated with a
+    footnote. S-14 added three producers and the corpus went to four rows a
+    call, which makes the second kind the majority within a week. **A footnote
+    does not survive that; a field does.** Anything asking "what did the caller
+    hear" filters on `spoken`.
 
     ``payload_days`` is `available_days` -- everything the diary returned.
     ``presented_days`` is what `_cap_presented_slots` decided should be spoken.
@@ -113,6 +135,10 @@ def record_offer(
             return
         offers.append({
             "seq": len(offers),
+            "source": str(source or "")[:16],
+            # Never inferred from `source`: a gate5 row becomes spoken later,
+            # and the whole point is that the two are separate facts.
+            "spoken": bool(spoken),
             "mode": getattr(offer, "mode", None),
             "payload": _trim_days(payload_days),
             "presented": _trim_days(presented_days),
@@ -133,6 +159,39 @@ def record_offer(
         })
     except Exception:  # pragma: no cover - defensive; live call path
         logger.warning("[obs.slot_offers] record failed", exc_info=True)
+
+
+def mark_offer_spoken(session: Any, chunks: Any = None) -> None:
+    """The offer just applied was SAID. Flip its row. NEVER RAISES.
+
+    Called from the one place a built offer becomes speech -- the
+    `apply_offer_to_session` on the deterministic-offer-in-force branch. It is
+    deliberately NOT called from `_record_stood_down_slots`: that branch speaks
+    the MODEL's sentence and stands the built offer down, which is precisely
+    the 13% this field exists to make visible.
+
+    Matches on `chunks` when given, because a row is identified by the words it
+    would have said; falls back to the most recent unspoken row, which within a
+    turn is the offer just built. Marking the wrong row is not possible in
+    either case today -- the producers record `spoken=True` at birth, so the
+    only unspoken rows are gate5's.
+    """
+    try:
+        offers = (session or {}).get(_KEY)
+        if not isinstance(offers, list) or not offers:
+            return
+        want = [str(c) for c in chunks] if isinstance(chunks, (list, tuple)) else None
+        for row in reversed(offers):
+            if not isinstance(row, dict) or row.get("spoken"):
+                continue
+            if want is not None:
+                have = list((row.get("offer") or {}).get("chunks") or [])
+                if [str(c) for c in have] != want:
+                    continue
+            row["spoken"] = True
+            return
+    except Exception:  # pragma: no cover - defensive; live call path
+        logger.warning("[obs.slot_offers] mark spoken failed", exc_info=True)
 
 
 def offers_block(session: Any) -> "list | None":
