@@ -338,7 +338,7 @@ A row without `file:line` is a lead, not a finding. All of these have one.
 
 | id | what a caller experiences | anchor | state |
 |---|---|---|---|
-| **S-13** | **NEW, P1, and the only open caller-audible defect.** A caller who names a TIME on a day already on the table is answered without it. "Anything around midday on Tuesday" → 08:00 / 09:40 / 15:30; asked again, 10:30 / 11:20 / 14:40. 12:10 and 13:00 were bookable and had been read out 16 s earlier. | `slot_followup.py:3687` reads `REQUESTED_TIMES_KEY`; its only three writers are `receptionist_tools.py:6658`, `:7319`, `:7642` — all inside `check_availability` | CAb8ac636017de7d35370fd7951c54d3cf, 13:44:22 and 13:44:36. **D8's pin is structurally dead on every payload-answered turn**, which is the path `speak_one_day_from_payload` takes (`no tool call needed (D-B)`). §4.4. |
+| ~~**S-13**~~ | **FIXED `8ab39703`, verified on a phone 14:42 — the D8 line fired for the first time in its life, through B-145 not D-B (§1.6, §4.4's correction box).** Was: A caller who names a TIME on a day already on the table is answered without it. "Anything around midday on Tuesday" → 08:00 / 09:40 / 15:30; asked again, 10:30 / 11:20 / 14:40. 12:10 and 13:00 were bookable and had been read out 16 s earlier. | `slot_followup.py:3687` reads `REQUESTED_TIMES_KEY`; its only three writers are `receptionist_tools.py:6658`, `:7319`, `:7642` — all inside `check_availability` | CAb8ac636017de7d35370fd7951c54d3cf, 13:44:22 and 13:44:36. **D8's pin is structurally dead on every payload-answered turn**, which is the path `speak_one_day_from_payload` takes (`no tool call needed (D-B)`). §4.4. |
 | ~~**S-3**~~ | The filler's first rung was AUDIBLE at ~3.12 s, past the 3 s bar. | `config.py` `LLM_FIRST_CHUNK_TIMEOUT_MS` | **FIXED `dd15f2d7`**, 3000 → 2750. §4.1. Not call-verified. |
 | ~~**S-2**~~ | "Twenty to ten" said for Monday and again for Tuesday, 17 s apart. | `slot_followup.py` `_prefer_unheard_clock_times` | **FIXED `afabb549`**. Corpus: heard-day repeats **29 → 1**. Not call-verified. |
 | **S-11** | **NEW, and it is the larger half of S-3.** The ladder cancels on the first LLM **token**, but dead air ends at the first **audio**. Everything between — `chunk_gate`, p50 1.46 s / p95 2.95 s on the breaching turns — is unguarded, and **190 of 302 corpus breaches (63%) live there**. | `llm_stream.py:5604` `got_first_chunk = True` cancels `_filler_task` | measured; **no deadline fixes it** and the obvious fix is a bad trade at every value. §4.1. |
@@ -353,8 +353,8 @@ A row without `file:line` is a lead, not a finding. All of these have one.
 | ~~**S-5**~~ | Five producers, four honouring the rule, nothing enforcing it. | **FIXED `ab5b6752`** — `pretrimmed` parameter + runtime warning + AST census. The guard found a real fifth site on its first run. §4.3. |
 | ~~**S-6**~~ | `_record_stood_down_slots` returned silently when it resolved nothing. | **FIXED `1508df0c`** — nothing-parsed is a WARNING, already-held is INFO. **Stage C's gate re-worded to match** (`ONE_PRESENTATION_LAYER.md`): zero of BOTH reverse-parse lines, read as a pair. Not yet measurable — no call since. |
 | **S-7** | **13 % of recorded offers were never spoken.** `record_offer` fires where the offer is BUILT, above the P6/P6b stand-downs. **No code needed** — it is a fact every future harness author must know. | `llm_stream.py:7353` |
-| **S-14** | **NEW.** `record_offer` has ONE call site (`llm_stream.py:7394`, Gate 5). The three `slot_followup` producers write session state via `apply_offer_to_session` but **no obs row**. On the 13:43 call, **4 of 5 readouts left no trace in `calls.slot_offers`** — and they were the four that exposed S-13. The offer corpus systematically under-represents the payload-answered path. | `llm_stream.py:7394` is the only writer; `slot_followup.py:5276`, `:5365`, and `speak_one_day_from_payload` record nothing |
-| ~~**S-8**~~ | `presented_days` empty on every `single_day` offer. | **FIXED `1508df0c`** — the single_day path records `[_fd]`. Confirmed by the corpus pull after the next call, not by this diff. |
+| ~~**S-14**~~ | **FIXED `aa4c324c`, verified in the corpus 19:36 — four readouts, four rows, `presented` populated on every single_day row (which is S-8 on a phone).** Was: `record_offer` had ONE call site (`llm_stream.py:7394`, Gate 5). The three `slot_followup` producers write session state via `apply_offer_to_session` but **no obs row**. On the 13:43 call, **4 of 5 readouts left no trace in `calls.slot_offers`** — and they were the four that exposed S-13. The offer corpus systematically under-represents the payload-answered path. | `llm_stream.py:7394` is the only writer; `slot_followup.py:5276`, `:5365`, and `speak_one_day_from_payload` record nothing |
+| ~~**S-8**~~ | `presented_days` empty on every `single_day` offer. | **FIXED `1508df0c`, CONFIRMED ON A PHONE 10 Sep 19:36** — `presented` populated on all three single_day rows of `CA5f45b7aa0d8720f3fa22c9c58b81f0f4`. It could not be confirmed until S-14 gave those producers a row to write. |
 | ~~**S-9**~~ | No tool marker on `calls.latency`. | **FIXED `1508df0c`** — `TurnTiming.tool_calls`, and `latency_percentiles.py` reports the real split. **It reads 0 today and says so**: all 3,578 stored turns predate the field and are NOT OBSERVED. |
 | **S-10** | **NEW.** `operational.speak_part_of_day` is **half-wired**. It changes the deterministic labels, but the *rendered* northgate prompt instructs the model to speak the band in **three separate places** — so flipping it makes the READOUT bare while confirmations and read-backs stay banded. | rendered prompt (105 k chars); `SLOT_FORMATTER_SYSTEM_PROMPT` line 36 also still carries a band-form reference table |
 
@@ -362,14 +362,27 @@ A row without `file:line` is a lead, not a finding. All of these have one.
 
 | id | finding | anchor |
 |---|---|---|
-| B-146 | A booking request that never says "book" gets *"Sorry, still with you —"* **on the caller's first sentence**. `classify_intent` cannot see `v3_treatment_mentioned`, which the engine set one line earlier. | `hold_speech.py:619` |
+| ~~B-146~~ | **ALREADY FIXED — this row was stale through three revisions.** `hold_speech.py:832` carries the `service_named` gate with the B-146 exhibit in its own comment, and `llm_stream.py:5195` passes it. Verified 10 Sep: `classify_intent('yeah can i have a good sports massage please', service_named=True)` → `Intent.BOOK_NEW`, so a head fires. The row's diagnosis was also wrong in a way worth keeping: the fix deliberately reads the UTTERANCE, never `v3_treatment_mentioned` — that key is a call-scoped latch and a head keyed on it fires on every later turn of the call (B-138). | `hold_speech.py:832`, `llm_stream.py:5195` |
 | — | STT drops numerals: `'the 30-minute session'` → `'the 5-minute session'`. Keyterm list carries no numbers. | 6 Sep register, secondary |
 | — | `GOOGLE_SERVICE_ACCOUNT_JSON` invalid → Sheets skipped; ElevenLabs 401 on `/v1/models`. **Known-accepted on the demo line**, not on the live lines. | log, every call |
 
-> **B-146 deserves an explicit decision rather than the scope rule making it by
-> default.** It is not slot presentation and it does not belong in this week's
-> diff. It is also a first-sentence defect on exactly the call being rehearsed
-> for a partner. Decide it; do not simply inherit the exclusion.
+> **B-146 needed a decision for three revisions and had already been fixed.**
+> Rev. 5 went looking for it as the last caller-audible item before the live
+> clinic calls and found the gate, the exhibit and the wiring all present. The
+> lesson is the register's own rule turned on itself: *a row without file:line
+> is a lead, not a finding* — and a row WITH a file:line still decays, because
+> `hold_speech.py:619` is no longer where that code lives. **Re-verify an
+> anchor before scheduling work against it**, exactly as §7 says to re-verify
+> a mechanism before believing a call step.
+>
+> **Live-line item that is NOT closed:** `GOOGLE_SERVICE_ACCOUNT_JSON` is
+> invalid on the demo service (`JSONDecodeError: Invalid \escape: line 5
+> column 46`), so every call-summary row is dropped. That is known-accepted on
+> the demo line. **Nobody has checked whether the three clinic services carry
+> the same broken value** — and if they do, every live call produces no
+> `CallSummaries` row, which is §0's bar 4 (visibility) failing silently on the
+> lines where it matters. It is a Render dashboard check, not a code change,
+> and it is worth doing BEFORE the live calls rather than after.
 
 ---
 
