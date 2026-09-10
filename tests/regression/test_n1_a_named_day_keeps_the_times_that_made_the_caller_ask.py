@@ -339,7 +339,8 @@ def test_what_else_after_the_monday_readout_still_withholds_what_they_heard():
 
 
 @pytest.mark.xfail(strict=True, reason=(
-    "N5, PRE-EXISTING -- verified on the untouched base 5bfdface, 11 Sep 2026. "
+    "N6, PRE-EXISTING -- verified on the untouched base 5bfdface, 11 Sep 2026. "
+    "(Not N5: that id is the 9 Sep stall-ladder owner decision.) "
     "After a multi-day spread, 'what else have you got on monday' (and even "
     "'... on monday the 14th') is answered by more_days_speech with Thursday, "
     "Friday and Saturday: day_named_by_caller does not resolve a bare weekday, "
@@ -348,7 +349,7 @@ def test_what_else_after_the_monday_readout_still_withholds_what_they_heard():
     "strict=True: when it is fixed this XPASSes and fails, so the marker cannot "
     "outlive the defect."
 ))
-def test_n5_what_else_on_a_named_day_stays_on_that_day():
+def test_n6_what_else_on_a_named_day_stays_on_that_day():
     session = _after_the_spread()
 
     assert try_unspoken_followup_speech(session, "what else have you got on monday")

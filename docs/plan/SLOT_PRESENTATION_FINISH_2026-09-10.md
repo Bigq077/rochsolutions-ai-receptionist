@@ -1,7 +1,54 @@
-# Finishing slot presentation — plan of record, rev. 7 (2026-09-10, night)
+# Finishing slot presentation — plan of record, rev. 8 (2026-09-11)
 
 **Goal (owner, 10 Sep):** slot presentation is *finished* by the end of this week.
 **Time available:** Friday 11th, weekend buffer 12–13th.
+
+> ## rev. 8 — N1 and N4 are FIXED, neither is call-verified. Read this first.
+>
+> ```
+> 88f801f5  N4  a time asked for on Monday was answered with Thursday
+> 822d1ed4  N1  "what about Monday" withdrew every time Monday was offered at
+> 5bfdface      rev. 7 call log          <- revert target for both
+> ```
+>
+> **Gated as §5 requires, in frozen worktrees at `5bfdface` and `88f801f5`:**
+>
+> | gate | result |
+> |---|---|
+> | failing-set diff (excl. `test_acuity_live`) | **EMPTY** — 96 = 96; passed 9798 → 9894 (new tests), +1 strict xfail (N6) |
+> | `replay_presented_times` | 544 = 544 days, **0 changed**, lost / invented / re_offered / named_day_withheld_all all **0** |
+> | `replay_slot_decisions` | 1891 = 1891 turns, **CHANGED: 0** |
+> | `replay_multi_day_spread` | byte-identical |
+> | corpus probe (scratch, by shape) | 9 re-readouts of a spread-offered day: kept an offered time **2 → 9** |
+>
+> ⚠️ **Read the harness rows as "nothing ELSE moved", not "N1 works".**
+> `producer` is forward-only, so no stored row replays as a named-day readout
+> ("named-day kept offered 0" is the harness being blind, not the fix doing
+> nothing). N4 is on the refusal path, which no harness replays at all. The
+> probe is the only corpus evidence for N1, and only a call proves either.
+>
+> **Corrections to rev. 7, each with the place it is fixed:**
+>
+> 1. **N1's fix went to B-116's subtraction as a wrapper**, keyed on WHICH
+>    PRODUCER answered (`named_day=True`, one AST-pinned caller) — not on a
+>    session key, which rev. 7 told the builder to find. §1.8.
+> 2. **"The 12:00 pin proves it was still trying" (N4) is unproven and probably
+>    wrong.** No refusal ever wrote `REQUESTED_TIMES_KEY`; the last writer on
+>    that call wrote `[]`. The refusal now writes it from this turn's words.
+>    §1.9.
+> 3. **Three measurements encoded N1 as the rule, not one** — the harness gate,
+>    `test_t1b` Site 2 (×2), `test_s13` (×2) — **and §5's call script step 3**.
+>    All re-aimed with the exhibit named.
+> 4. **N-ids collide.** `OPEN_DEFECTS_2026-09-09.md` has its own N1–N5: its N5
+>    is the stall-ladder owner decision, its N1 is the model-composed readout
+>    that invents a slot (CA2ac47ad588, still OPEN, untouched here). Rev. 7
+>    reused N1–N4. The new defect below is therefore **N6**.
+> 5. **N6, NEW and PRE-EXISTING:** after a spread, *"what else have you got on
+>    Monday"* is answered with Thursday/Friday/Saturday. Verified on the
+>    untouched base. Strict xfail; not fixed. §2.1.
+>
+> **Next:** one call — `CALL_SHEET_N1_N4_2026-09-11.md` — proves N1, N4, N3 and
+> B-151. Do not promote before it.
 
 > ## rev. 7 — read this before anything below it
 >
@@ -552,6 +599,17 @@ guard against.
 
 ## 1.8 N1 — asking about a day withdraws the times you were offered for it
 
+> **rev. 8: FIXED `822d1ed4`, not call-verified.** The fix went where *"The
+> cause"* below puts it — B-116's within-day subtraction, as a wrapper
+> (`_keep_times_heard_on_named_day`) — and **not** where *"The fix shape"*
+> puts it (an arm on `_prefer_unheard_clock_times`); that paragraph was
+> written before the 23:10 log line corrected the owner and was never
+> updated. The signal is not a session key: `speak_one_day_from_payload`
+> passes `named_day=True`, and it is the only caller allowed to (AST-pinned).
+> **Three** measurements encoded this defect as the rule, not one: the harness
+> gate below, two T1b Site-2 tests and two S-13 tests. All re-aimed, each
+> naming the exhibit.
+
 **P1, caller-audible, systematic, and it is slot presentation.** Found by
 reading the `slot_offers` corpus that rev. 6 shipped; it is the first thing that
 corpus has been asked and the first answer it gave was a defect.
@@ -713,6 +771,20 @@ about an offered day and hears at least one of its offered times back.
 
 ## 1.9 N4 — asking for a time on Monday is answered with Thursday
 
+> **rev. 8: FIXED `88f801f5`, not call-verified.** The guard is untouched. The
+> `already_retrieved` refusal is extracted to `_already_retrieved_result`,
+> which scopes the READOUT to the one payload day the refused request named
+> (`day_window == 1`, `after_date` in the payload, a `date_hint` weekday
+> agreeing) and keeps `available_days` whole.
+>
+> ⚠️ **The "12:00 pin proves it" paragraph below is unproven and probably
+> wrong.** `REQUESTED_TIMES_KEY` had no writer on a refusal; on this call its
+> last writer was the named-day producer, which wrote `[]` for "how about
+> monday". Thursday's `12:10` is what S-2 picks anyway (the earliest clock time
+> unheard on any day). **The same fix closes it:** the refusal now writes the
+> key from this turn's words, empty included — S-13's remedy, on the path S-13
+> did not reach.
+
 **P1, caller-audible, and it is the sharper half of the 11 Sep call.** New;
 found by the call sheet's step 3, which was aimed at N2 and hit something else.
 
@@ -783,7 +855,9 @@ A row without `file:line` is a lead, not a finding. All of these have one.
 
 | id | what a caller experiences | anchor | state |
 |---|---|---|---|
-| **N1** | 🔴 **NEW, rev. 7, and it is the top of §8.** "What about Monday?" — and both times she offered for Monday are gone, replaced by three the caller has never heard. Nothing invented; every time is real and bookable. | `slot_followup.py:3798` `_prefer_unheard_clock_times`; the multi-day spread makes every day it named a **heard** day | **open, unbuilt.** 6 of 8 corpus re-readouts, and the 2 exceptions are two-slot days with no alternative. CA12036a4529 21:57. **The `replay_presented_times` gate forbids the fix** and must move with it. §1.8. |
+| ~~**N1**~~ | "What about Monday?" — and both times she offered for Monday are gone, replaced by three the caller has never heard. Nothing invented; every time is real and bookable. | `slot_followup.py` `_choose_presented_indices_b116` (dated-ISO subtraction) — **not** `_prefer_unheard_clock_times`, rev. 7's first guess | **FIXED `822d1ed4` (rev. 8), not call-verified.** Harness gate re-aimed in the same commit. §1.8. |
+| ~~**N4**~~ | Mid-conversation about Monday, asks for midday — read Thursday, Friday and Saturday. Hung up; 12:10 bookable on Monday throughout. | `llm_stream.py` `already_retrieved` refusal → `_presentation_for_refusal` handed the whole payload; and no refusal wrote `REQUESTED_TIMES_KEY` | **FIXED `88f801f5` (rev. 8), not call-verified.** CA91d1f123 23:11. §1.9. |
+| **N6** | **NEW rev. 8, PRE-EXISTING.** (Not N5 — that id is `OPEN_DEFECTS_2026-09-09.md`'s stall-ladder owner decision. ⚠️ And that same 9 Sep series has its OWN **N1** — the model-composed readout that invents a slot, CA2ac47ad588 — which rev. 7 collided with. This register's N1–N4 are rev. 7's.) After a spread, *"what else have you got on Monday"* (even *"…on Monday the 14th"*) is answered with Thursday, Friday and Saturday. Same family as N4: the named day is dropped. | `slot_followup.py` `try_unspoken_followup_speech` more-slots branch: `day_named_by_caller` does not resolve a bare weekday, so the request reads as unscoped and `more_days_speech` answers | **open.** Verified on the untouched base `5bfdface`. Held as a **strict xfail** in `test_n1_…py` so the marker cannot outlive the defect. Not in the corpus yet. |
 | ~~**B-151**~~ | 13.7 s of dead air; the caller said "hello" because they thought the line had dropped, and that "hello" discarded the reply they were waiting for. **Not slot presentation.** | `connection.py` `on_llm_finished`; `_rearm_no_input_watchdog` | **FIXED (rev. 7), not call-verified.** Renumbered from B-149 — that id was taken on 6 Sep. §1.7. |
 | ~~**N2**~~ | Asked for midday three times; read the three times FURTHEST from noon out of the five the day held. | `requested_clock_times` — "as" is not a preposition; "12 am" → `00:00` blanks the text | **FIXED `dfc8b914`**, not call-verified. CA2ac47ad588. |
 | ~~**N3**~~ | "Say that again" dropped as a meaningless fragment; the caller waited 19 s and had to add a fourth word to be heard. | `_COMMUNICATIVE_WORDS`; fourth eaten answer at that site, third of this shape | **FIXED `ba3374ff`**, not call-verified. CAb2fc0c23f1. |
@@ -1492,9 +1566,16 @@ the easy case).
 
 1. *"I'd like to book an appointment — my ankle."*
 2. *"Anytime next week."* → three days, no shared clock time
-3. *"Tell me about Monday."* → **nothing you already heard for Monday**
-4. *"And what about Tuesday?"* → nothing you heard for Tuesday, **and no time
-   repeated from step 3**
+3. *"Tell me about Monday."* → **both times you were offered for Monday, plus
+   one you have not heard on any day** (N1).
+   > rev. 8: this step used to read *"nothing you already heard for Monday"*.
+   > That was N1 written as a pass criterion — every call that "passed" it was
+   > a caller who lost the two times they asked about.
+4. *"And what about Tuesday?"* → Tuesday's offered times kept, **and its new
+   time not repeated from step 3**
+4b. Straight after step 4, *"as close as possible to 12 please"* → **Tuesday**,
+   near noon — never another day (N4). Log: `(N4)`, and `(D8)` if the pin had
+   to reach past the selection.
 5. *"Anything around midday on Tuesday?"* → **midday is offered** (D8)
 6. Take a slot, and check the diary entry matches what you were told.
 
@@ -1742,11 +1823,18 @@ whether the mechanism could have fired at all.
 
 ## 8. What happens next, in dependency order
 
+> **rev. 8:** N1 and N4 are built (`822d1ed4`, `88f801f5`), neither
+> call-verified. **N3 and B-151 are still unproven** from rev. 7's list — the
+> 11 Sep call exercised neither. **One call now proves four things**: §5 steps
+> 3, 4 and 4b (N1, N4), then "say that again" (N3), then talk over her (B-151).
+> N6 is open and not queued ahead of that call.
+>
 > **rev. 7 re-orders this list.** Rev. 6's text is kept below it unchanged.
 >
 > | | | |
 > |---|---|---|
-> | **0** | **N1 — §1.8** | 🔴 unbuilt. Systematic (6 of 6 on days with slots to spare), caller-audible, and it IS slot presentation. Comes with a harness gate that has to move in the same commit. |
+> | **0** | ~~**N1 — §1.8**~~ | **FIXED rev. 8, `822d1ed4`.** Harness gate re-aimed in the same commit. Needs §5 step 3 on a phone. |
+> | **0b** | ~~**N4 — §1.9**~~ | **FIXED rev. 8, `88f801f5`.** Needs §5 step 4b on a phone. |
 > | **1** | **One call** | Proves **B-151**, **N2** and **N3** in one go — three unverified fixes on two different axes, distinguishable in the log. See below for exactly what to say. |
 > | **2** | Promote | `latency-eval` → `production`, fast-forward, out of hours. Revert target `2658f727`. **Not before the call.** |
 > | **3** | Non-grid diary | Rev. 6's item 2, unchanged and still the honest gap. |
