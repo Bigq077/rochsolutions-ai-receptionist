@@ -22,23 +22,26 @@ answered me". `ttfa_ms` is how long until she made ANY sound, which the filler
 ladder exists to keep low, and the two must be read as a pair: a low ttfa with a
 high content_ttfa is the ladder working, not latency being fine.
 
-THE SPLIT THE RUNBOOK ASKS FOR, AND WHY IT IS NOT HERE
-------------------------------------------------------
-"Split by turn kind (tool-result vs plain)" cannot be done from this column.
-Nothing stored per turn records whether the turn ran a tool: `path` separates
-llm / scripted / slot_followup, `flags` are the A/B lever letters
-(WS_A_FAST_FIRST_CHUNK etc., see latency_timing.py), and `capture_phase` is
-which question was on the table. None of them is a tool marker.
+THE SPLIT THE RUNBOOK ASKS FOR
+------------------------------
+"Split by turn kind (tool-result vs plain)" is now answerable. S-9 added
+`tool_calls` to `TurnTiming` -- the number of tools the model asked for on the
+turn, summed across its tool loop -- so the real split is reported below under
+REAL SPLIT.
 
-So this reports a PROXY and names it as one: `covered` -- turns where a filler
-played before the content (content_ttfa_ms - ttfa_ms > 1s). Every tool turn slow
-enough to matter is in that set, but so is any slow plain generation, so the
-`covered` percentiles are an UPPER bound on the tool-turn cost, never the tool
-figure itself.
+IT WILL BE EMPTY UNTIL NEW TRAFFIC ARRIVES, and that is not a fault. No row
+written before 10 Sep 2026 carries the key, and a missing key is NOT OBSERVED,
+never zero: counting the ~3,500 stored turns as "no tools ran" would put every
+historical tool turn in the plain bucket and make the split worse than the
+proxy it replaces. The REAL SPLIT section prints its own n, so an empty one is
+visible rather than silently mistaken for a finding.
 
-Making the real split possible is a one-line change: carry a tool-call count on
-`TurnTiming` and emit it in the record. That is a code change with a call gate,
-so it is written down here rather than made tonight.
+The PROXY is therefore kept alongside it rather than deleted -- it is what can
+be said about the turns already stored. It is `covered`: turns where a filler
+played before the content (content_ttfa_ms - ttfa_ms > 1s). Every tool turn
+slow enough to matter is in that set, but so is any slow plain generation, so
+its percentiles are an UPPER bound on the tool-turn cost, never the tool figure
+itself. Retire it once the real split has enough turns to stand on.
 """
 from __future__ import annotations
 
@@ -200,6 +203,29 @@ def main() -> int:
     _header("PROXY: no filler needed")
     for field in FIELDS:
         print(_row(field, series(plain, field)))
+
+    # S-9: the real thing the proxy above was standing in for. A turn with no
+    # `tool_calls` key was written before the field existed -- NOT OBSERVED,
+    # and it must not fall into either bucket.
+    tool_turns, plain_turns, unobserved = [], [], 0
+    for turn in turns:
+        count = turn.get("tool_calls")
+        if not isinstance(count, (int, float)) or count < 0:
+            unobserved += 1
+            continue
+        (tool_turns if count > 0 else plain_turns).append(turn)
+    _header("REAL SPLIT: the turn ran a tool (S-9, tool_calls > 0)")
+    for field in FIELDS:
+        print(_row(field, series(tool_turns, field)))
+    _header("REAL SPLIT: no tool ran")
+    for field in FIELDS:
+        print(_row(field, series(plain_turns, field)))
+    print()
+    print(f"  turns with no tool_calls key (written before S-9, NOT "
+          f"observed): {unobserved}")
+    if not tool_turns and not plain_turns:
+        print("  -- the real split is empty. Every stored turn predates the "
+              "field; read the PROXY above and nothing else.")
 
     by_clinic = defaultdict(list)
     for turn in turns:

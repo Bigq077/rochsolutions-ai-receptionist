@@ -3732,6 +3732,41 @@ class LLMStream:
                         if str(_s.get("start") or "")[:19] not in _already
                     ]
                     if not _fresh:
+                        # S-6. This used to `return` in silence, and the two
+                        # ways of arriving here are NOT the same fact:
+                        #
+                        #   nothing parsed  -- `payload_slots_named_in` could
+                        #     not resolve the sentence at all. The record may
+                        #     now be wrong and NOBODY would know.
+                        #   already held    -- it parsed, and the record
+                        #     already describes what was said. Correct, and the
+                        #     commonest case.
+                        #
+                        # Stage C's gate watches this function. Told only
+                        # "returned", it cannot distinguish a reverse-parse
+                        # failure from a healthy no-op, so half of what it
+                        # covers is unobservable and it is not a gate. The
+                        # `nothing parsed` arm is a WARNING because it is the
+                        # one that can leave a caller's next sentence
+                        # resolving against a slot they were never read.
+                        if not _spoken_slots:
+                            logger.warning(
+                                "[ms_gate5] B-134 (%s): the stood-down "
+                                "sentence resolved to NO payload slots - "
+                                "either it named none, or the reverse parse "
+                                "could not read it. The record is unchanged "
+                                "and may not describe what was spoken. "
+                                "spoken=%r",
+                                _why, (_text or "")[:160],
+                            )
+                        else:
+                            logger.info(
+                                "[ms_gate5] B-134 (%s): the stood-down "
+                                "sentence named %d payload slot(s), all of "
+                                "which the record already holds - nothing to "
+                                "record",
+                                _why, len(_spoken_slots),
+                            )
                         return
                     # An empty dtmf_map arms no keypad -- the model numbered
                     # nothing there is to press -- and SUPERSEDES the stale day
@@ -5758,6 +5793,12 @@ class LLMStream:
                             "name":  block.name,
                             "input": block.input,
                         })
+                        # S-9. Counted HERE, the one point every tool the model
+                        # asks for passes through, so the tool loop's later
+                        # iterations add to it rather than replacing it. The
+                        # turn's timing object outlives this call.
+                        if self._timing is not None:
+                            self._timing.tool_calls += 1
                 # full_text may include pre-tool speech; extract it cleanly
                 text_parts = [
                     block.text
@@ -7352,11 +7393,33 @@ class LLMStream:
                     try:
                         from app.obs.slot_offers import record_offer as _rec_offer
 
+                        # S-8. This passed `result["presented_days"]`
+                        # unconditionally, and that key is
+                        # `_cap_presented_slots`' MULTI-DAY output -- so it was
+                        # populated on all 53 multi_day offers in the corpus
+                        # and EMPTY on all 24 single_day ones. B-95's
+                        # presented-vs-bookable split was therefore invisible
+                        # in the mode a caller reaches by naming a day, which
+                        # is the mode most of these defects have been found in.
+                        #
+                        # On the single_day path the day that was presented is
+                        # `_fd`, which the comment above this branch already
+                        # states is "ALREADY trimmed to the positions
+                        # choose_presented_indices picked". Read off the OFFER
+                        # rather than off a mode variable, so this records what
+                        # was actually built and not what was intended.
+                        _presented = result.get("presented_days")
+                        if (
+                            not _presented
+                            and getattr(_offer, "mode", None) == "single_day"
+                            and isinstance(_fd, dict)
+                        ):
+                            _presented = [_fd]
                         _rec_offer(
                             session,
                             payload_days=result.get("available_days"),
                             offer=_offer,
-                            presented_days=result.get("presented_days"),
+                            presented_days=_presented,
                         )
                     except Exception:  # pragma: no cover - defensive
                         pass

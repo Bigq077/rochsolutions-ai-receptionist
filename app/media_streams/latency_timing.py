@@ -235,6 +235,25 @@ class TurnTiming:
     model: str = ""                      # claude model id (set by the llm path)
     eot_confident: Optional[bool] = None  # WS-C: confidence-driven vs silence fallback
     capture_phase: str = "conversation"  # conversation | phone | name
+    # S-9. How many tools the model asked for on this turn, summed across the
+    # iterations of its tool loop.
+    #
+    # THE ONE THING calls.latency could not answer. The runbook asks for the
+    # tool-result vs plain split, and nothing stored per turn recorded whether
+    # a tool ran: `path` separates llm / scripted / slot_followup, `flags` are
+    # the A/B lever letters, `capture_phase` is which question was on the
+    # table. So `latency_percentiles.py` reported a PROXY -- turns where a
+    # filler covered the wait -- and had to name it an upper bound, because it
+    # also catches any slow plain generation.
+    #
+    # 0 is a real reading and means a plain turn. Rows written before this
+    # field existed carry no key at all, and every reader must treat that as
+    # NOT OBSERVED rather than as zero -- the whole stored corpus to 10 Sep
+    # 2026 is in that state, and counting it as "no tools ran" would put ~3,500
+    # tool turns into the plain bucket and make the split worse than the proxy
+    # it replaces. Reported as -1 for exactly that reason, the same sentinel
+    # and the same rule as the cache-token fields above.
+    tool_calls: int = 0
     endpoint_wait_ms: int = -1           # WS-C: t_end_of_turn - t_last_partial (pre-t0 dead-time)
     # Anthropic prompt-cache accounting for the SAME API call that llm_ttft_ms
     # measures — the turn's FIRST iteration, first-write-wins. A turn can make
@@ -354,6 +373,7 @@ class TurnTiming:
             "eot_confident":     self.eot_confident,
             "capture_phase":     self.capture_phase,
             "endpoint_wait_ms":  self.endpoint_wait_ms,               # WS-C
+            "tool_calls":        self.tool_calls,                     # S-9
             # -1 = not observed; 0 = observed cold. See the field comments.
             "cache_read_tokens":   -1 if self.cache_read_tokens is None else self.cache_read_tokens,
             "cache_write_tokens":  -1 if self.cache_write_tokens is None else self.cache_write_tokens,
