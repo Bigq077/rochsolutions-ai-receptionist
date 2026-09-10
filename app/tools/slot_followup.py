@@ -3549,6 +3549,21 @@ def requested_clock_times(text: Any) -> List[str]:
         h = int(m.group(1))
         if 1 <= h <= 12:
             _add(h % 12 + (12 if m.group(2) == "p" else 0), 0, True)
+            # "12 am" is MIDDAY far more often than midnight on a clinic line.
+            # N2, CA2ac47ad5889388b2974ccf19ee37ff5b (10 Sep 2026 21:11,
+            # jv_v1): "um do you have around 12 am is that a slot you have"
+            # resolved to 00:00 alone, and because this arm BLANKS the text
+            # the looser "around 12" arm below never ran. No clinic opens at
+            # midnight, so the candidate matched nothing and the pin failed as
+            # silently as if he had named no time at all.
+            #
+            # The literal reading is KEPT, not replaced. This function returns
+            # CANDIDATES and the day's real bookable times decide between
+            # them, so a diary that does hold 00:00 is unaffected -- and a
+            # caller who means midnight on a clinic line is a caller whose
+            # request cannot be served either way.
+            if h == 12 and m.group(2) == "a":
+                _add(12, 0, True)
         return " " * len(m.group(0))
 
     t = re.sub(r"\b(\d{1,2})\s*([ap])\.?\s?m\.?\b", _meridiem, t)
@@ -3575,6 +3590,30 @@ def requested_clock_times(text: Any) -> List[str]:
         _add(int(m.group(1)), 0, False)
     for m in re.finditer(
         r"\b(?:at|around|about|near|by|for)\s+(\d{1,2})\b"
+        r"(?!\s*[:.]?\s*\d)"
+        r"(?!\s*" + _DURATION_UNIT + r")",
+        t,
+    ):
+        _add(int(m.group(1)), 0, False)
+
+    # "as close as possible as 12", "closest to 12", "close to 1".
+    #
+    # N2, same call, 21:11:55. The arm above requires a preposition from
+    # at|around|about|near|by|for and the caller said "as", so "yeah saturday
+    # as close as possible as 12 please" named no time at all. 11:45 was
+    # bookable, D8 had nothing to pin, and he was read the three times
+    # FURTHEST from noon out of the five that day held -- 11:45 and 12:30 both
+    # dropped. He asked three times before he was offered it, and booked it.
+    #
+    # "as" was deliberately NOT added to the preposition list above. On this
+    # clinic 18:00 and 20:00 are real bookable times, so "he's as old as 18"
+    # would invent a candidate that pins a REAL slot rather than dying
+    # quietly -- the same age reading the corpus caught on the "at N N" arm,
+    # which is closed above for exactly this reason. What the caller actually
+    # said is a PROXIMITY word, so that is what is matched, and the bounded
+    # gap keeps the match inside the clause the number is in.
+    for m in re.finditer(
+        r"\b(?:close|closest|closer|nearest|near)\b[^\d\n]{0,20}?\b(\d{1,2})\b"
         r"(?!\s*[:.]?\s*\d)"
         r"(?!\s*" + _DURATION_UNIT + r")",
         t,
