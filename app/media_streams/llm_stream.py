@@ -4068,6 +4068,31 @@ class LLMStream:
                     "%r against available_days — offer record left unchanged",
                     _spoken_labels[:4],
                 )
+        # W2 / Stage C. Reaching here at all means NO deterministic offer was
+        # built for this turn and the model composed the readout itself -- the
+        # one condition under which site A is reachable
+        # (`STAGE_C_EVIDENCE_2026-09-10.md` §2). That population has never left
+        # a row, so nobody can say how often the repair layer is load-bearing,
+        # and §5 of that document names this as the measurement the ~900-line
+        # deletion is blocked on.
+        #
+        # Recorded whatever the parse did, including the healthy case: the rate
+        # is the finding, and a row written only on failure would make a quiet
+        # day and a dead instrument look identical -- which is S-6 exactly, one
+        # layer out.
+        try:
+            from app.obs.slot_offers import record_model_readout as _rec_model
+
+            _rec_model(
+                session,
+                payload_days=session.get("available_days"),
+                labels=_spoken_labels,
+                resolved=_spoken_opts,
+                text=_joined,
+            )
+        except Exception:  # pragma: no cover - defensive; live call path
+            logger.warning("[ms_gate5] model readout not recorded", exc_info=True)
+
         if _spoken_opts:
             # Cumulative FIRST: last_offered_slots is about to be overwritten
             # and is the only other record that these were ever spoken.

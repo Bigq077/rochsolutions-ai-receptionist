@@ -161,6 +161,70 @@ def record_offer(
         logger.warning("[obs.slot_offers] record failed", exc_info=True)
 
 
+def record_model_readout(
+    session: Any,
+    *,
+    payload_days: Any,
+    labels: Any,
+    resolved: Any,
+    text: Any = None,
+) -> None:
+    """A readout the MODEL composed, with no deterministic offer behind it.
+
+    THE POPULATION THAT LEAVES NO ROW. `STAGE_C_EVIDENCE_2026-09-10.md` §5, in
+    its own words: *"Site A is only reachable when no deterministic offer was
+    built, and this corpus cannot show how often that happens -- `slot_offers`
+    only records the turns where one WAS built, so the population that reaches
+    site A leaves no row. That measurement needs its own instrumentation before
+    the layer can be retired."*
+
+    This is that instrumentation, and it is the reason it exists: the ~900-line
+    reverse-parse repair layer cannot honestly be deleted on a clean Render
+    grep, because the grep only speaks about turns nobody can count. A row per
+    model-composed readout makes "how often, on which clinic, and did the parse
+    succeed" a SQL question instead of a guess.
+
+    `resolved` is what the reverse parse got back. Recorded as a COUNT rather
+    than a verdict, because zero-resolved and zero-labels are different facts:
+    a sentence naming no options is healthy, and a sentence naming four that
+    resolve to none is site A failing.
+
+    Same shape as every other row so one column stays queryable -- `source` is
+    `model`, and `spoken` is True because this text IS what went to TTS. There
+    is no build/speak split here; by the time this runs the model's sentence is
+    the readout.
+    """
+    try:
+        if not isinstance(session, dict):
+            return
+        offers = session.setdefault(_KEY, [])
+        if not isinstance(offers, list) or len(offers) >= _MAX_OFFERS:
+            return
+        _labels = [str(x) for x in labels] if isinstance(labels, (list, tuple)) else []
+        _n_res = len(resolved) if isinstance(resolved, (list, tuple, set)) else 0
+        offers.append({
+            "seq": len(offers),
+            "source": "model",
+            "spoken": True,
+            "mode": "model_composed",
+            "payload": _trim_days(payload_days),
+            # No `presented`: nothing trimmed this readout. An empty list would
+            # read as "trimmed to nothing", which is a different claim.
+            "presented": [],
+            "offer": {
+                "chunks": [str(text)[:400]] if text else [],
+                "slots": [],
+                "dtmf_map": {},
+                "more_times": False,
+            },
+            # The two numbers Stage C's gate is actually about.
+            "labels_read": len(_labels),
+            "labels_resolved": _n_res,
+        })
+    except Exception:  # pragma: no cover - defensive; live call path
+        logger.warning("[obs.slot_offers] model readout not recorded", exc_info=True)
+
+
 def mark_offer_spoken(session: Any, chunks: Any = None) -> None:
     """The offer just applied was SAID. Flip its row. NEVER RAISES.
 
