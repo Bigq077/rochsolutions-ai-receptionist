@@ -1,26 +1,30 @@
-# Finishing slot presentation — plan of record, rev. 3 (2026-09-10, evening)
+# Finishing slot presentation — plan of record, rev. 4 (2026-09-10, evening)
 
 **Goal (owner, 10 Sep):** slot presentation is *finished* by the end of this week.
 **Time available:** Friday 11th, weekend buffer 12–13th.
-**Author's note:** rev. 3 records a session that worked rev. 2's queue in order
-and closed items 1–4. Read §1 and §7 before touching anything.
+**Author's note:** rev. 4 adds the first call against these fixes (§1.5). Read
+§1.5 and §7 before touching anything, and §8 for what to do next — it is
+ordered by what blocks what, not by size.
 
-> ### ⚠️ NOTHING BELOW HAS BEEN CALL-VERIFIED
+> ### STATUS — called once, 10 Sep 13:43. Three fixes verified, one new P1.
 >
-> Four engine commits are now on **`latency-eval` — pushed 10 Sep evening,
-> `7654561c` → `04dd2bbb`**, which `autoDeploy` puts on the DEMO LINE
-> (+447366263180) and nothing else. `production` is **untouched at
-> `337fbd9e`**.
+> On **`latency-eval` (`9259595f`)**, demo line only. `production` is
+> **untouched at `337fbd9e`**.
 >
-> Every gate that can be met without a phone has been met — failing-set diff
-> EMPTY against a freshly re-measured baseline, three replay harnesses, 34 new
-> tests — and the one gate that cannot has not. **S-2 changes what a caller
-> hears on a named-day follow-up and S-3 changes when the hold phrase speaks.**
+> | | |
+> |---|---|
+> | **VERIFIED ON A PHONE** | S-2 (script steps 2, 3, 4 — four log lines), S-1a (wording + 17.85 s), S-9 (tool marker on all six turns) |
+> | **SHIPPED, NOT EXERCISED** | S-3 (both slow turns had a situational head), S-6, S-8 |
+> | **NEW, P1, OPEN** | **S-13** — a caller who names a time on a day already on the table is answered without it. Asked twice for midday, offered neither time, hung up. §4.4 |
+> | **NEW, structural** | **S-14** — 4 of 5 readouts on that call left no obs row. §2.2 |
 >
-> **NEXT: call +447366263180 and work §5's script.** Confirm the Render log
-> says `[build_info] running build 04dd2bbb` first — that line is the only
-> proof of what is running. Do not fast-forward `production` until the call is
-> done.
+> **DO NOT PROMOTE TO `production` YET.** S-13 is on the same code path S-2
+> just changed, and no call has reached script step 6, so the readout and the
+> diary have never been checked against each other on this build.
+>
+> **NEXT: §8 step 1.** Confirm the Render log says
+> `[build_info] running build <sha>` before trusting any call — `/health`
+> returns a hardcoded 1.0.0 and always has.
 
 **What rev. 3 changes about rev. 2's plan, in one line each:**
 
@@ -35,6 +39,9 @@ and closed items 1–4. Read §1 and §7 before touching anything.
   whether the first corpus pull after this is read correctly.
 * **Two superseded decisions were re-aimed deliberately**, not deleted: one
   harness gate and one B-142 test. §7 says why that distinction matters.
+* **The call found S-13 and S-14**, and §4.5 records the uncomfortable part:
+  S-2 did not cause S-13, but it removed the coincidence that had been hiding
+  it. A call step that passes without its mechanism firing is not a pass.
 
 ---
 
@@ -53,6 +60,18 @@ Unchanged from rev. 1, and still the exit criteria:
 **What this explicitly does not promise:** that no new slot defect will ever be
 found. The change this week is that the next one is found by a harness rather
 than by a patient.
+
+### Scored against the bar, 10 Sep evening
+
+| | | |
+|---|---|---|
+| 1 | No known defect a caller can hear | ❌ **S-13 is open and P1.** S-2, S-3 and the T1/T1b family are closed. S-1 and S-4 have owner decisions recorded. |
+| 2 | The defect class cannot recur silently | ✅ for the trim contract (S-5: parameter + runtime warning + census, verified both directions). ⚠️ **not yet true of D8** — S-13 was invisible for days because no test and no log distinguished "the pin fired" from "B-116 left the time in the pool". |
+| 3 | Measured, not asserted | ✅ three harnesses run, all gates 0. ⚠️ but S-14 means the offer corpus sees only the Gate 5 path — 4 of 5 readouts on the last call are absent from it. |
+| 4 | A defined call script sounds right, twice, on two diaries | ❌ **one call, one diary, steps 1–4 of 6.** Step 6 — the only step that proves the readout and the diary agree — has never been reached. |
+
+Two of four. The honest summary is that the readout is now *correct where it
+has been measured*, and the measurement stops short of a booking.
 
 ---
 
@@ -79,6 +98,9 @@ The five commits, oldest first:
 | `afabb549` | **S-2** — the cross-day preference stopped firing after the first readout |
 | `ab5b6752` | **S-5** — the trim contract made enforceable |
 | `1508df0c` | **S-6 / S-8 / S-9** — the three harness blind spots |
+| `2abea957` | rev. 3 of this document |
+| `04dd2bbb` | Stage C's gate re-worded (S-6) |
+| `9259595f` | the push record — **this is the SHA that was called** |
 
 > **The local `latency-eval` branch ref is STALE** — measured 10 Sep at
 > `0421b72d` against origin's `7654561c`. A parallel session holds it in its own
@@ -98,10 +120,11 @@ few distinct times to vary — the documented stand-down, not a defect. Re-measu
 this afternoon on a corpus grown to 61 readouts: still 4 repeats, still 0
 identical openers, northgate still 0.
 
-### Landed this afternoon, not yet pushed
+### Landed this afternoon, pushed 10 Sep evening
 
 **`40a67ea8` — S-1 lever (a): the month is said once.** Days two and three of a
-multi-day readout now say *"Tuesday the 15th"*. **18.59 s → 17.93 s.**
+multi-day readout now say *"Tuesday the 15th"*. **18.59 s → 17.93 s predicted,
+17.85 s measured live on the 13:43 call** — see §1.5.
 
 It carries two things that were not in rev. 1 and are worth more than the 0.66 s:
 
@@ -118,6 +141,99 @@ It carries two things that were not in rev. 1 and are worth more than the 0.66 s
 
 ---
 
+## 1.5 The call — CAb8ac636017de7d35370fd7951c54d3cf, 10 Sep 13:43, northgate
+
+**Build confirmed from the Render log: `[build_info] running build 9259595f50f5`.**
+105 s, `outcome=abandoned`, judge score 1. Six turns, all six stored.
+
+### Steps 1–4 PASS. S-2 is verified live, four times.
+
+The rule fired and logged itself on every readout after the first:
+
+```
+13:43:33  B-116 picked ['08:00','16:20']            for 2026-09-15 -> reading ['08:50','16:20']
+13:43:33  B-116 picked ['08:00','17:10']            for 2026-09-16 -> reading ['09:40','15:30']
+13:43:54  B-116 picked ['08:50','09:40','16:20']    for 2026-09-14 -> reading ['10:30','11:20','14:40']
+13:44:07  B-116 picked ['08:00','09:40','15:30']    for 2026-09-15 -> reading ['12:10','13:00','13:50']
+```
+
+| step | asked | heard | verdict |
+|---|---|---|---|
+| 2 | "anything next week" | Mon 08:00/17:10 · Tue 08:50/16:20 · Wed 09:40/15:30 | ✅ three days, **no shared clock time** |
+| 3 | "tell me about Monday" | 10:30 / 11:20 / 14:40 | ✅ nothing heard on Monday or anywhere |
+| 4 | "and what about Tuesday" | 12:10 / 13:00 / 13:50 | ✅ nothing from Tuesday, **and nothing repeated from step 3** |
+
+Step 4's second clause is the whole of S-2, and it is the first time in this
+defect's life that it has held on a phone.
+
+**S-1a verified live too:** *"Number 2, Tuesday **the 15th**"*, *"Number 3,
+Wednesday **the 16th**"* — day one carries the month, the rest inherit it.
+
+### The synthesis calibration is confirmed to within 0.5%
+
+First chunk synthesised 13:43:33.046; terminal chunk `tts_finished` 13:43:50.897.
+**Live readout = 17.85 s against the 17.93 s predicted in §4.0.** The
+18.2 chars/sec calibration is sound, which means §4.4's numbers can be trusted
+as a basis for the owner decision (§4.6) — including **12.76 s** for
+`speak_part_of_day: false`.
+
+It also confirms S-1's premise the hard way: the caller barged in on four
+consecutive turns (13:43:51, 13:44:05, 13:44:18, 13:44:32), each time within a
+second of the readout ending.
+
+### Steps 5 and 6 FAIL — a new defect, S-13
+
+| you said | she offered |
+|---|---|
+| *"do you have anything around midday on tuesday"* | 08:00, 09:40, 15:30 |
+| *"what's the closest slot to midday do you have on tuesday **then**"* | 10:30, 11:20, 14:40 |
+
+12:10 and 13:00 were bookable throughout — she had read them out sixteen
+seconds earlier. The caller asked twice, explicitly, was answered with neither,
+and hung up. **Step 6 was never reached, so the readout-vs-diary agreement is
+still unproven.**
+
+See **S-13** in §2.1 for the anchor. It is not an S-2 regression, but S-2 is
+what stopped luck from hiding it — see §4.5.
+
+### What this call did NOT exercise
+
+* **S-3.** Neither slow turn reached the ladder's first rung. Both had a
+  situational head, and `_hold_delay_s` is `HOLD_HEAD_DELAY_MS` (600 ms)
+  whenever one exists — `LLM_FIRST_CHUNK_TIMEOUT_MS` governs only turns with
+  **no** situational head. Turn 1 `llm_ttft=4833 ms` and turn 2 `3406 ms` both
+  cleared 2750 ms and still never touched it. **S-3 remains uncalled.** §8 says
+  how to force one.
+* **S-8.** Only ONE offer row was written for the whole call, and it was
+  `multi_day`. The four named-day readouts produced none — which is **S-14**,
+  new, below.
+
+### S-9 IS verified live — the first field to survive a call
+
+```
+seq=1 path=llm            tool_calls=0
+seq=2 path=llm            tool_calls=1     <- check_availability
+seq=3 path=slot_followup  tool_calls=0
+seq=4 path=slot_followup  tool_calls=0
+seq=5 path=slot_followup  tool_calls=0
+seq=6 path=slot_followup  tool_calls=0
+```
+
+Present on every turn, 0 where no tool ran, 1 on the one that did. The
+tool-vs-plain split is now real data rather than a proxy — with n=6.
+
+### Two more readings worth keeping
+
+* **S-4 fired on every single turn**: `last_bot_prompt truncated at 200 chars
+  and lost its '?'`, four times. Unchanged, and it will stay so until the
+  readout shortens (§4.6).
+* **`endpoint_wait_ms` 182–1401 ms** on this call, so S-12's correction applies
+  here too: turn 3's real silence was 1397 + 131 = 1.53 s, and turn 1's was
+  1198 + 873 = 2.07 s.
+
+
+---
+
 ## 2. The register — every open item, with anchors
 
 A row without `file:line` is a lead, not a finding. All of these have one.
@@ -126,11 +242,12 @@ A row without `file:line` is a lead, not a finding. All of these have one.
 
 | id | what a caller experiences | anchor | state |
 |---|---|---|---|
+| **S-13** | **NEW, P1, and the only open caller-audible defect.** A caller who names a TIME on a day already on the table is answered without it. "Anything around midday on Tuesday" → 08:00 / 09:40 / 15:30; asked again, 10:30 / 11:20 / 14:40. 12:10 and 13:00 were bookable and had been read out 16 s earlier. | `slot_followup.py:3687` reads `REQUESTED_TIMES_KEY`; its only three writers are `receptionist_tools.py:6658`, `:7319`, `:7642` — all inside `check_availability` | CAb8ac636017de7d35370fd7951c54d3cf, 13:44:22 and 13:44:36. **D8's pin is structurally dead on every payload-answered turn**, which is the path `speak_one_day_from_payload` takes (`no tool call needed (D-B)`). §4.4. |
 | ~~**S-3**~~ | The filler's first rung was AUDIBLE at ~3.12 s, past the 3 s bar. | `config.py` `LLM_FIRST_CHUNK_TIMEOUT_MS` | **FIXED `dd15f2d7`**, 3000 → 2750. §4.1. Not call-verified. |
 | ~~**S-2**~~ | "Twenty to ten" said for Monday and again for Tuesday, 17 s apart. | `slot_followup.py` `_prefer_unheard_clock_times` | **FIXED `afabb549`**. Corpus: heard-day repeats **29 → 1**. Not call-verified. |
 | **S-11** | **NEW, and it is the larger half of S-3.** The ladder cancels on the first LLM **token**, but dead air ends at the first **audio**. Everything between — `chunk_gate`, p50 1.46 s / p95 2.95 s on the breaching turns — is unguarded, and **190 of 302 corpus breaches (63%) live there**. | `llm_stream.py:5604` `got_first_chunk = True` cancels `_filler_task` | measured; **no deadline fixes it** and the obvious fix is a bad trade at every value. §4.1. |
 | **S-12** | **NEW.** On the caller's real clock (`endpoint_wait_ms` + `ttfa_ms`) **47.1% of turns exceed the 3 s bar**, p50 2.83 s, p95 5.04 s — not the 18.8% `ttfa` alone shows, because `t0` starts AFTER the endpointer. | `latency_timing.py`, `endpoint_wait_ms` is documented "pre-t0 dead-time" | 1,579 turns. No ladder tuning reaches it; it is the general latency work. |
-| **S-1** | A three-day readout takes **17.93 s**. Callers barge in on nearly every turn. | `slot_offer.py:50-52` caps; `build_slot_offer` `:359` | **owner decision, unchanged** — see §4.4. Two minutes of work whenever it is taken. |
+| **S-1** | A three-day readout takes **17.93 s**. Callers barge in on nearly every turn. | `slot_offer.py:50-52` caps; `build_slot_offer` `:359` | **owner decision, unchanged** — see §4.6. Two minutes of work whenever it is taken. |
 | **S-4** | `last_bot_prompt` blows its 200-char cap and loses its "?" 3–4 times per call, disarming clinical screening's orphan matcher. | `clinical_screening.py:530` `_LAST_BOT_PROMPT_CAP` | open. Improves for free as the readout shortens. **Do not touch the cap** — 34 writers, marked RED. |
 
 ### 2.2 Structural — no caller sees these today, they are how the next one gets in
@@ -140,6 +257,7 @@ A row without `file:line` is a lead, not a finding. All of these have one.
 | ~~**S-5**~~ | Five producers, four honouring the rule, nothing enforcing it. | **FIXED `ab5b6752`** — `pretrimmed` parameter + runtime warning + AST census. The guard found a real fifth site on its first run. §4.3. |
 | ~~**S-6**~~ | `_record_stood_down_slots` returned silently when it resolved nothing. | **FIXED `1508df0c`** — nothing-parsed is a WARNING, already-held is INFO. **Stage C's gate re-worded to match** (`ONE_PRESENTATION_LAYER.md`): zero of BOTH reverse-parse lines, read as a pair. Not yet measurable — no call since. |
 | **S-7** | **13 % of recorded offers were never spoken.** `record_offer` fires where the offer is BUILT, above the P6/P6b stand-downs. **No code needed** — it is a fact every future harness author must know. | `llm_stream.py:7353` |
+| **S-14** | **NEW.** `record_offer` has ONE call site (`llm_stream.py:7394`, Gate 5). The three `slot_followup` producers write session state via `apply_offer_to_session` but **no obs row**. On the 13:43 call, **4 of 5 readouts left no trace in `calls.slot_offers`** — and they were the four that exposed S-13. The offer corpus systematically under-represents the payload-answered path. | `llm_stream.py:7394` is the only writer; `slot_followup.py:5276`, `:5365`, and `speak_one_day_from_payload` record nothing |
 | ~~**S-8**~~ | `presented_days` empty on every `single_day` offer. | **FIXED `1508df0c`** — the single_day path records `[_fd]`. Confirmed by the corpus pull after the next call, not by this diff. |
 | ~~**S-9**~~ | No tool marker on `calls.latency`. | **FIXED `1508df0c`** — `TurnTiming.tool_calls`, and `latency_percentiles.py` reports the real split. **It reads 0 today and says so**: all 3,578 stored turns predate the field and are NOT OBSERVED. |
 | **S-10** | **NEW.** `operational.speak_part_of_day` is **half-wired**. It changes the deterministic labels, but the *rendered* northgate prompt instructs the model to speak the band in **three separate places** — so flipping it makes the READOUT bare while confirmations and read-backs stay banded. | rendered prompt (105 k chars); `SLOT_FORMATTER_SYSTEM_PROMPT` line 36 also still carries a band-form reference table |
@@ -432,7 +550,96 @@ pull after the next call, which is what this item's gate already said.
 
 ---
 
-### 4.4 · S-1 remainder — an owner decision, takeable at any time
+### 4.4 · S-13 — the requested-time pin is dead on the payload path **← do this first**
+
+**Found by the 10 Sep 13:43 call. P1, caller-audible, and it ended the call.**
+
+D8 exists to force a time the caller ASKED FOR back into a readout B-116 has
+dropped. It reads one session key:
+
+```python
+wanted = session.get(REQUESTED_TIMES_KEY)      # slot_followup.py:3687
+```
+
+That key has **exactly three writers, and all three are inside
+`check_availability`** — `receptionist_tools.py:6658`, `:7319`, `:7642`. Its own
+docstring says so:
+
+> *"Set once per availability lookup by the three `check_availability` entry
+> points, from that lookup's own `date_hint`."*
+
+A named-day follow-up does not run a tool. The live log says it in as many
+words:
+
+```
+[slot_followup] 'Tuesday 15th September' answered from the payload
+                -- 3 of 11 bookable times spoken, ... no tool call needed (D-B)
+```
+
+So on that path the key is never written from the caller's own words, and D8
+pins nothing. **Two failure modes, not one:**
+
+* **Dead** — the last lookup named no time, so the key is empty and the pin is
+  a no-op. This is what happened: the lookup was `date_hint="next week"`.
+* **Stale** — if the last lookup DID name a time, the pin fires with a time
+  from a question the caller has moved on from. The docstring's "written on
+  EVERY lookup, empty included" defends against staleness *between lookups* and
+  cannot defend against a turn that performs none.
+
+**The parser is not the problem, and do not go near it.**
+`requested_clock_times("around midday")` correctly returns `12:00`
+(`slot_followup.py:3498`, `\b(?:midday|noon)\b`). It is simply never called on
+this path.
+
+**The fix, smallest form:** write `REQUESTED_TIMES_KEY` from the caller's
+utterance on the payload-answered path, immediately before
+`choose_presented_indices` is called, using the same `requested_clock_times`
+the tool path uses. One writer added, no new rule, and D8's own decline logic
+(two readings decline, `nearest_time_index` tolerance) is unchanged.
+
+**Watch three things:**
+
+1. **Write it on EVERY payload turn, empty included.** Partial writing
+   re-creates the staleness the docstring guards against, one layer down.
+2. **`_pin_requested_time_index` runs INSIDE `_pin_accepted_index`** — an
+   accepted slot outranks a time merely asked about. Do not reorder.
+3. **B-116's pool has already removed the heard time.** On the exhibit, 12:10
+   and 13:00 had been spoken one turn earlier, so they are *correctly* outside
+   the pool — the pin's whole job is to reach past that. Verify the pin
+   displaces rather than filters.
+
+**Gate:** the exhibit reproduced offline as a failing test first; then
+replay by direction; then failing-set diff; then **the call script all the way
+to step 6**, which no call has yet reached.
+
+---
+
+### 4.5 · S-2 did not cause S-13, but it removed the luck
+
+Stated plainly because the next reader will suspect it, and they should.
+
+On the exhibit, S-2 changed Tuesday's step-4 readout from
+`['08:00','09:40','15:30']` to `['12:10','13:00','13:50']`. That spent the
+midday slots one turn before the caller asked for midday. Without S-2, step 4
+would have read the earlier times, midday would still have been in B-116's
+unheard pool at step 5, and `_spread` over
+`10:30 11:20 12:10 13:00 13:50 14:40` would probably have surfaced one of them.
+
+**The caller would have got midday by accident.** D8 would still have been dead;
+nothing would have been logged; and the register would still say step 5 passes.
+
+Two conclusions, and the second matters more:
+
+* **This is not a reason to revert S-2.** Steps 2, 3 and 4 pass for the first
+  time and the corpus effect is 29 → 1. A rule that works by coincidence on one
+  wording is not a rule.
+* **A passing call step is not a working mechanism.** Step 5 has been in the
+  script for days and had never distinguished "D8 fired" from "B-116 happened
+  to leave midday in the pool". **When a step passes, check that the thing it
+  names actually ran** — the D8 log line, `pinned the requested time back into
+  the readout`, has never appeared in any stored call.
+
+### 4.6 · S-1 remainder — an owner decision, takeable at any time
 
 **Not queued. Not blocking. Two minutes of work whenever it is decided.**
 
@@ -504,7 +711,7 @@ banded.
 
 ---
 
-### 4.5 · Phase 2 — weekend buffer, or next week
+### 4.7 · Phase 2 — weekend buffer, or next week
 
 *Only if §4.1–4.3 are closed and called.*
 
@@ -808,37 +1015,152 @@ A new field needs its absent case decided in the same commit, and printed.
 site per process, and the one legitimate untrimmed producer opts out explicitly.
 A warning that repeats every turn is a warning nobody reads.
 
+### New, from the 10 Sep 13:43 call
+
+**A CALL STEP THAT PASSES WITHOUT ITS MECHANISM FIRING IS NOT A PASS.** Step 5
+of §5 has been in the script for days and had never once distinguished "D8
+pinned the requested time" from "B-116 happened to leave midday in the pool".
+The log line D8 emits when it fires — `pinned the requested time back into the
+readout` — **has never appeared in any stored call.** When a step passes, grep
+for the thing it is supposed to be testing. §4.5.
+
+**A SESSION KEY IS ONLY AS LIVE AS ITS WRITERS.** `REQUESTED_TIMES_KEY` has
+three writers and all three are inside `check_availability`. Every path that
+answers WITHOUT a tool call — and `speak_one_day_from_payload` is the commonest
+one on a booking call — reads a key nothing on that turn wrote. Before trusting
+any `session[...]` guard, enumerate its writers and ask which turn types reach
+none of them. This is the fourth defect in this family
+([[config-keys-that-never-reach-the-model]] is the same shape one layer up).
+
+**THE OBS CORPUS IS NOT THE SYSTEM.** `record_offer` has ONE call site, in
+Gate 5. Four of the five readouts on this call went through `slot_followup`
+producers and left no row at all. Any statement of the form "N of M offers in
+the corpus..." is a statement about the Gate 5 path. S-14.
+
+**A FIX CAN REMOVE A COINCIDENCE THAT WAS DOING REAL WORK.** S-2 is correct and
+its corpus effect is 29 → 1, and it also spent the midday slots one turn before
+the caller asked for midday — which is what turned a dormant D8 into a hung-up
+call. Not a reason to revert it. It IS a reason to expect the first call after
+any selection change to surface something, and to read that call for what it
+uncovered rather than for what it broke.
+
 ---
 
-## 8. Order of work, on one page
+## 8. What happens next, in dependency order
 
-### Done, unpushed, NOT call-verified
+Ordered by what BLOCKS what, not by size. Each step names the thing that must
+be true before the next one starts.
 
-| # | item | commit | offline gate |
-|---|---|---|---|
-| 1 | **S-3** the rung was audible outside the bar | `dd15f2d7` | failing-set diff EMPTY; fails-before/passes-after both run |
-| 2 | **S-2** cross-day preference stopped firing | `afabb549` | heard-day repeats 29 → 1; decisions CHANGED 0; one re-aim (§7) |
-| 3 | **S-5** trim contract enforceable | `ab5b6752` | census verified in both directions; guard found a real 5th site |
-| 4 | **S-6/S-8/S-9** harness blind spots | `1508df0c` | 9 tests; the real split correctly reports 0 and says why |
+### Shipped, on `latency-eval` (`9259595f`), demo line only
 
-### What is left, in the order I recommend
+| | item | commit | offline gate | on a phone |
+|---|---|---|---|---|
+| ✅ | **S-1a** month said once | `40a67ea8` | 18.59 → 17.93 s in synthesis | **VERIFIED** — 17.85 s live, and the wording is right |
+| ✅ | **S-3** rung audible outside the bar | `dd15f2d7` | failing-set EMPTY; fails-before/passes-after | **NOT EXERCISED** — see step 3 |
+| ✅ | **S-2** cross-day preference | `afabb549` | heard-day repeats 29 → 1; decisions CHANGED 0 | **VERIFIED** — script steps 2, 3, 4 |
+| ✅ | **S-5** trim contract | `ab5b6752` | census both directions; found a real 5th producer | n/a — structural |
+| ✅ | **S-6** stand-down logging | `1508df0c` | 9 tests | not exercised — no stand-down occurred |
+| ✅ | **S-8** presented on single_day | `1508df0c` | 9 tests | **NOT EXERCISED** — blocked by S-14, step 5 |
+| ✅ | **S-9** tool marker | `1508df0c` | 9 tests | **VERIFIED** — 0/1/0/0/0/0 across six turns |
 
-| # | item | gate | est. |
-|---|---|---|---|
-| **1** | **THE CALL.** §5's script, twice, on two diaries. S-2 and S-3 both change what a caller hears. | the script | ½ hour |
-| 2 | Push `latency-eval`, call the demo line, then fast-forward `production` | §6, and a revert target written down | — |
-| 4 | **Phase 2** — one record, then delete the guards | its own plan's gates | ≥ 2 days |
-| — | **S-1 remainder** | **owner decision, not queued** — §4.4 | 2 min |
-| — | **S-11 / S-12** | **do not touch without new evidence** — §4.1 | — |
+---
 
-**If you have time for exactly one thing: item 1.** Four engine commits are
-sitting on evidence that stops at the edge of a phone call. Every offline gate
-this repo has was run and they all pass; none of them can hear a hold phrase
-arrive 250 ms earlier, or a Tuesday read at times the caller has not heard.
+### 1. Fix S-13 — the requested-time pin. **BLOCKS EVERYTHING BELOW.**
 
-**B-146 still has no explicit decision recorded against it** (§2.3). It was
-excluded from this session's diff, which is right, but that is still the scope
-rule making the decision by default.
+The only open caller-audible defect, it is P1, and it is the reason the last
+call ended. §4.4 has the anchor, the two failure modes, the smallest fix and
+the three things to watch.
+
+**Why it blocks:** it is on the same code path S-2 just changed, so it must be
+fixed and the whole script re-run *together* — not layered on a promotion that
+is already half-verified.
+
+**Exit:** the exhibit reproduced as a failing test first, then replay by
+direction, then failing-set diff EMPTY.
+
+### 2. Re-run the call script, all the way to step 6
+
+No call has yet reached step 6, so **the readout and the diary have never been
+checked against each other on this build.** That is the only step that proves a
+booking matches what the caller was told, and it is CLAUDE.md §6's first bar.
+
+**Exit:** steps 1–6 pass, AND the log shows `pinned the requested time back
+into the readout` — a step that passes without its mechanism firing is what
+§4.5 is about.
+
+### 3. Force ONE turn with no situational head, to exercise S-3
+
+`_hold_delay_s` is `HOLD_HEAD_DELAY_MS` (600 ms) whenever a situational head
+exists, so `LLM_FIRST_CHUNK_TIMEOUT_MS` governs only the turns that get none.
+Turn 1 (`llm_ttft=4833 ms`) and turn 2 (`3406 ms`) both cleared 2750 ms and
+still never touched it.
+
+Ask something the head arbiter has no subject for — a general question with no
+day, no service and no body part ("what should I know before I come in?").
+Then read the `[LAT]` line: `ttfa_ms` should be ~2870 ms, not ~3120 ms.
+
+**Exit:** one `[LAT]` line with a filler-covered `ttfa` under 3000 ms.
+**If it cannot be forced in two attempts, say so and promote anyway** — the
+change is a constant with a unit test either side of it, and blocking three
+verified fixes on it is the wrong trade.
+
+### 4. Promote to `production`
+
+Only after 1–3. §6 has the discipline; the grep for `SMS_ENABLED` /
+`APPOINTMENT_REMINDERS_ENABLED` is not optional.
+
+```
+revert target   337fbd9e     write it down before you push
+```
+
+**Then call a live line.** Vital Edge or JV — **neither has been called since
+T1b**, and both are non-grid diaries where northgate's uniform 50-minute ladder
+cannot flatter the result.
+
+### 5. S-14 — make the payload-answered readouts visible in the corpus
+
+`record_offer` has ONE call site. On the 13:43 call **4 of 5 readouts left no
+obs row**, and they were the four that exposed S-13. Every harness reading
+`calls.slot_offers` is therefore measuring the Gate 5 path and calling it the
+system.
+
+Not caller-audible, so it sits below the promotion — but it is above Phase 2,
+because Phase 2's gates are read from this corpus. **Fixing S-14 also unblocks
+the live confirmation of S-8**, which cannot be observed until the single_day
+producers record anything.
+
+### 6. S-1 remainder — the owner decision (§4.6)
+
+Two minutes of work, takeable at any time, blocked on nobody but the owner.
+`speak_part_of_day: false` on northgate only: **17.93 s → 12.76 s**, verified
+resolution-identical on 7/7 utterances, and the patient still gets am/pm in the
+SMS. §4.6 has what is genuinely lost and the S-10 half-wiring caveat.
+
+Worth noting now that the calibration is confirmed live to 0.5%: **the rendered
+northgate prompt already asks for "under about eight seconds".**
+
+### 7. Phase 2 — one record, then delete the guards
+
+`SLOT_PRESENTATION_CONVERGENCE.md`, in its own order. Then step 5 of the 31 Aug
+document. ≥ 2 days, and it needs S-14 first.
+
+---
+
+### Open, deliberately not queued
+
+| id | why it is not in the list |
+|---|---|
+| **S-11** | The ladder watches the token, not the audio — 63% of breaches. Costed at every deadline and a bad trade at all of them; the predicate that would work cannot be measured from the stored corpus. **Do not touch without new evidence.** §4.1 |
+| **S-12** | 47.1% of turns breach the 3 s bar on the caller's clock. Real, and it is the general latency work — `llm_ttft` p50 1.63 s and `chunk_gate` p50 0.67 s — not a slot-presentation item. §4.1 |
+| **S-4** | `last_bot_prompt` truncation, fired on all four turns of the last call. Improves for free when the readout shortens. **Do not touch the cap** — 34 writers, RED. |
+| **S-10** | `speak_part_of_day` is half-wired: the flag changes the labels, the prompt still instructs the band in three places. Decide it WITH item 6, not separately. |
+| **B-146** | *"Sorry, still with you —"* on a caller's first sentence. **Still has no explicit decision recorded against it.** It was excluded from this session's diff, which was right, but that is the scope rule deciding by default — and it is a first-sentence defect on exactly the call being rehearsed for a partner. |
+
+---
+
+**If you have time for exactly one thing: step 1, then step 2.** Three fixes are
+verified on a phone and one defect is open on the same code path. Promoting
+without S-13 ships a call that ends the way the last one did.
 
 ---
 
