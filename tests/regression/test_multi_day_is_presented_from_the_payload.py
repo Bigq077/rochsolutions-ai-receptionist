@@ -102,9 +102,18 @@ async def test_the_payload_speaks_and_the_model_is_discarded():
     session = {"_slot_offer_prebuilt": _prebuilt(), "available_days": PRESENTED}
     spoken = await _flush(session)
     text = " ".join(spoken)
-    assert "Monday 7th September" in text
-    assert "Tuesday 8th September" in text
-    assert "Wednesday 9th September" in text
+    # Wording-independent: S-1(a) says the month once, so days two and three
+    # are spoken as "Tuesday the 8th". The property under test is that the
+    # PAYLOAD's days are the ones named, not how they are worded.
+    _said = text.replace(" the ", " ")
+    assert "Monday 7th September" in text     # day one still carries the month
+    assert "Tuesday 8th" in _said
+    assert "Wednesday 9th" in _said
+    # ...and the RECORD keeps the full label, which is what the keypad and
+    # `day_selected_by_position` resolve against.
+    assert list(session["v3_dtmf_slot_map"].values()) == [
+        "Monday 7th September", "Tuesday 8th September", "Wednesday 9th September",
+    ]
     assert "half nine" not in text          # the model's words, gone
     assert "Friday" not in text
     assert session["_slotbuf_emitted"] is True

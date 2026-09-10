@@ -208,12 +208,15 @@ async def test_what_else_is_answered_with_fresh_days_AND_records_them():
     spoken = try_unspoken_followup_speech(session, "uh what else have you got")
 
     assert spoken, "'what else' fell through instead of offering more days"
-    for fresh in ("Thursday 10th September", "Friday 11th September",
-                  "Monday 14th September"):
-        assert fresh in spoken, "{} missing from {!r}".format(fresh, spoken)
-    for heard in ("Monday 7th September", "Tuesday 8th September",
-                  "Wednesday 9th September"):
-        assert heard not in spoken, (
+    # Compared on a WORDING-INDEPENDENT form. S-1(a) shortens every day after
+    # the first to "Friday the 11th", and matching the full payload label would
+    # have made the negative assertions below pass VACUOUSLY -- a day re-read
+    # in the short form is still a day re-read, which is the whole defect.
+    _said = spoken.replace(" the ", " ")
+    for fresh in ("Thursday 10th", "Friday 11th", "Monday 14th"):
+        assert fresh in _said, "{} missing from {!r}".format(fresh, spoken)
+    for heard in ("Monday 7th", "Tuesday 8th", "Wednesday 9th"):
+        assert heard not in _said, (
             "re-read a day he had already heard: {}".format(heard)
         )
 

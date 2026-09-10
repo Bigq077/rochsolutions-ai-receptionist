@@ -4575,7 +4575,7 @@ def _is_extra_slots_claim(sentence: str) -> bool:
     return any(_qs != _fs for _qs in _q for _fs in _f)
 
 
-def append_other_dates_offer(text: str, other_dates) -> Tuple[str, str]:
+def append_other_dates_offer(text: str, other_dates, also_named=None) -> Tuple[str, str]:
     """Name the further dates matching the caller's weekday, deterministically.
 
     B-111. B-109/B-110 put `other_dates_for_requested_day` in the payload and
@@ -4597,6 +4597,18 @@ def append_other_dates_offer(text: str, other_dates) -> Tuple[str, str]:
 
     Returns `(text, action)` with action "appended" or "unchanged".
 
+    `also_named` is what the reply NAMED, when the caller knows that better
+    than the prose does. The dedupe below reads the rendered sentence, so it
+    silently stops working the moment a producer words a date differently
+    from the payload label -- which S-1(a) then did: a multi-day readout says
+    "Tuesday the 15th" from day two onward, the haystack no longer contains
+    "Tuesday 15th September", and Susie offered "another Tuesday, the 15th"
+    one sentence after reading it out. Caught by
+    `test_a_date_already_named_in_an_earlier_chunk_is_not_said_twice`.
+
+    So the caller passes its RECORD of the days it named and the dedupe stops
+    depending on wording. Optional, and absent it behaves exactly as before.
+
     No times are ever spoken for these dates: the payload deliberately carries
     none (naming a time for a date nobody heard is the B-108b defect). Only
     dates that reached the payload are named, so this cannot invent one.
@@ -4612,9 +4624,13 @@ def append_other_dates_offer(text: str, other_dates) -> Tuple[str, str]:
     if not spoken:
         return text, "unchanged"
 
-    # Already named by the reply itself: say nothing twice.
-    _low = text.lower()
-    if any(s.lower() in _low for s in spoken):
+    # Already named by the reply itself: say nothing twice. Matched against
+    # the sentence AND against what the caller says it named -- see the
+    # docstring; the sentence alone is a wording dependency, not a record.
+    _hay = [text.lower()]
+    if isinstance(also_named, (list, tuple, set)):
+        _hay.extend(str(n).lower() for n in also_named if str(n or "").strip())
+    if any(s.lower() in h for s in spoken for h in _hay):
         return text, "unchanged"
 
     # "Tuesday 8th September" -> weekday "Tuesday", day "8th". When every date

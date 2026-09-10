@@ -34,6 +34,7 @@ owner decision and now live in one place, rather than disagreeing across
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from app.tools.slot_followup import (
@@ -356,6 +357,50 @@ def days_were_held_back(result: Any) -> bool:
     return False
 
 
+_ORDINAL_DATE_LABEL_RE = re.compile(
+    r"^(?P<weekday>[A-Za-z]+)\s+(?P<day>\d{1,2}(?:st|nd|rd|th))\s+[A-Za-z]+$"
+)
+
+
+def _short_day_label(label: Any) -> Any:
+    """"Tuesday 15th September" -> "Tuesday the 15th". PURE, deny-by-default.
+
+    S-1(a), `SLOT_PRESENTATION_FINISH_2026-09-10.md`. The month is worth six
+    characters a day in a readout measured at 18.5 s, and it is worth saying
+    once. Day one says it; the days after it inherit it.
+
+    Deny-by-default on the SHAPE: anything that is not exactly
+    "<Weekday> <ordinal> <Month>" is returned untouched, so "that day" and any
+    label a future producer invents keep the wording they have rather than
+    being half-parsed into something a caller has to decode.
+
+    SPEECH ONLY. The caller hears the short form; `dtmf_map` keeps the full
+    label, because `day_selected_by_position` matches the map's value against
+    `available_days[].day_label` by CONTAINMENT -- shortening the record would
+    make "the second one" resolve to no day at all.
+    """
+    m = _ORDINAL_DATE_LABEL_RE.match(str(label or "").strip())
+    if not m:
+        return label
+    return "{} the {}".format(m.group("weekday"), m.group("day"))
+
+
+def _shares_calendar_month(first_day: Any, day: Any) -> bool:
+    """Do these two payload days fall in the same calendar month? PURE.
+
+    The guard on `_short_day_label`, and it is not cosmetic. A readout that
+    straddles a month end -- "Monday 30th September", then "Tuesday 1st
+    October" -- would drop the ONE word that stops the caller hearing the
+    second day as September. Compared on the ISO `date`, not on the label, so
+    the decision never depends on parsing prose.
+
+    False whenever it cannot be established, which keeps the full month.
+    """
+    a = str((first_day or {}).get("date") or "")
+    b = str((day or {}).get("date") or "")
+    return len(a) >= 7 and len(b) >= 7 and a[:7] == b[:7]
+
+
 def build_slot_offer(
     available_days: Any,
     *,
@@ -531,7 +576,13 @@ def build_slot_offer(
             label = day.get("day_label") or "that day"
             dtmf_map[str(i)] = label
             series = _spoken_series([s["spoken"] for s in picked])
-            piece = "Number {}, {} — {}.".format(i, label, series)
+            # S-1(a). Day one carries the month; the days after it say
+            # "Tuesday the 15th". Speech only -- `dtmf_map` above keeps the
+            # full label, which its readers match by containment.
+            spoken_label = label
+            if i > 1 and _shares_calendar_month(spoken_days[0], day):
+                spoken_label = _short_day_label(label)
+            piece = "Number {}, {} — {}.".format(i, spoken_label, series)
             if i == 1:
                 # Same rule the single-day opener follows: only claim to be
                 # showing everything when everything is what is being shown.
@@ -595,7 +646,14 @@ def build_slot_offer(
     # which is the one place this can happen.
     if other_dates:
         _full = " ".join(chunks)
-        _with_dates, _action = append_other_dates_offer(_full, list(other_dates))
+        # The dedupe is keyed on what this offer NAMED, not on how it worded
+        # it: from day two onward the speech says "Tuesday the 15th" while the
+        # payload label is "Tuesday 15th September", and a sentence-only match
+        # re-offers a date the caller has just heard.
+        _with_dates, _action = append_other_dates_offer(
+            _full, list(other_dates),
+            also_named=[d.get("day_label") or "" for d in spoken_days],
+        )
         if _action == "appended":
             chunks[-1] = chunks[-1] + _with_dates[len(_full):]
 
