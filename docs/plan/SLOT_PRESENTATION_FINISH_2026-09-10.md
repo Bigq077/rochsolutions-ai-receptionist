@@ -7,15 +7,20 @@ and closed items 1–4. Read §1 and §7 before touching anything.
 
 > ### ⚠️ NOTHING BELOW HAS BEEN CALL-VERIFIED
 >
-> Four commits sit on `latency-eval` unpushed. Every gate that can be met
-> without a phone has been met — failing-set diffs, three replay harnesses,
-> 40 new tests — and the one gate that cannot has not. **S-2 changes what a
-> caller hears on a named-day follow-up and S-3 changes when the hold phrase
-> speaks.** Both need the §5 call script before `production`.
+> Four engine commits are now on **`latency-eval` — pushed 10 Sep evening,
+> `7654561c` → `04dd2bbb`**, which `autoDeploy` puts on the DEMO LINE
+> (+447366263180) and nothing else. `production` is **untouched at
+> `337fbd9e`**.
 >
-> The safe move is to push `latency-eval` (demo line only, +447366263180),
-> call it, and promote afterwards. Do not fast-forward `production` on the
-> strength of this document.
+> Every gate that can be met without a phone has been met — failing-set diff
+> EMPTY against a freshly re-measured baseline, three replay harnesses, 34 new
+> tests — and the one gate that cannot has not. **S-2 changes what a caller
+> hears on a named-day follow-up and S-3 changes when the hold phrase speaks.**
+>
+> **NEXT: call +447366263180 and work §5's script.** Confirm the Render log
+> says `[build_info] running build 04dd2bbb` first — that line is the only
+> proof of what is running. Do not fast-forward `production` until the call is
+> done.
 
 **What rev. 3 changes about rev. 2's plan, in one line each:**
 
@@ -54,11 +59,14 @@ than by a patient.
 ## 1. Where we are
 
 ```
-production        337fbd9e   T1 + T1b, deployed 10 Sep 09:4x, all three clinics
-origin/latency-eval 7654561c = 337fbd9e + the rev. 1 plan doc
-local (unpushed)  1508df0c   = 7654561c + S-1a + rev.2/3 docs + S-3 + S-2 + S-5
-                             + S-6/S-8/S-9.  NOT PUSHED, NOT CALL-VERIFIED.
-revert target     fc47e508   the pre-T1 engine. Keep this to hand.
+production          337fbd9e  T1 + T1b, deployed 10 Sep 09:4x, all three clinics
+origin/latency-eval 04dd2bbb  = 337fbd9e + S-1a + S-3 + S-2 + S-5 + S-6/8/9
+                              PUSHED 10 Sep evening. NOT CALL-VERIFIED.
+
+revert targets, written down before the push:
+  latency-eval      7654561c  what it was before this session
+  production        337fbd9e  where it still is
+  the pre-T1 engine fc47e508  keep this to hand
 ```
 
 The five commits, oldest first:
