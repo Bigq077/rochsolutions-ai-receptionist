@@ -612,26 +612,48 @@ whole day, so there was nothing else to reach for. **On every day with slots to
 spare, the offered times were withheld: 6 of 6.** This is deterministic, not a
 model slip, and it will reproduce on the next call that asks about a day.
 
-### The cause is one wrapper, and it is doing exactly what it was told
+### The cause — corrected 11 Sep by a live log line, and this changes where the fix goes
 
-`choose_presented_indices` → `_prefer_unheard_clock_times`
-(`app/tools/slot_followup.py:3798`). The multi-day spread makes every day it
-named a **heard day**; the rule then prefers clock times the caller has not
-heard, so the two times they were offered are precisely the two it removes.
+**The first reading of this was wrong and is worth keeping, because it is the
+expensive kind of wrong: it named a real rule that really does fire here, and
+would have sent the fix to the wrong function.**
 
-**This is S-2's edge.** `afabb549`, shipped 10 Sep, deliberately removed the
-early return that made this rule stand down on any heard day — correctly, since
-"a multi-day readout makes every day it named a heard day, so from the first
-readout onwards … the cross-day preference never fired again". S-2 fixed
-repeats *across* days (29 → 1 on the heard-day readouts) and opened this on the
-re-readout of *one* day. Rev. 6 marked S-2 **VERIFIED** on the 13:43 call; that
-call never asked about a day it had been offered, so the step passed without the
-case existing. §4.5's rule again — a step that passes without its mechanism
-firing is not a pass.
+The call of 23:10 on 11 Sep (CA91d1f12332f6230ed51ad1a427f91f5c, build
+`6e556ad0`) reproduced N1 on demand and printed the whole decision:
 
-**Do not revert S-2.** The two rules compose and neither replaces the other;
-reverting reinstates "twenty to ten" offered for Monday and again for Tuesday
-seventeen seconds apart.
+```
+[slot_followup] B-116 had picked ['08:50', '09:40', '16:20'] for 2026-09-14
+  -- clock times this caller already heard on another day (T1/S-2).
+  Reading ['10:30', '11:20', '14:40'] instead, chosen from 10 candidates;
+  heard clocks ['08:00','08:50','09:40','15:30','16:20','17:10']
+```
+
+**Read B-116's own pick: `08:50 / 09:40 / 16:20`. `08:00` and `17:10` are
+already gone before T1/S-2 is consulted at all.**
+
+* **B-116 (`_choose_presented_indices_b116`, `:4089`) is the owner.** It
+  subtracts by **dated ISO start**, so the two times spoken *for Monday* in the
+  spread are removed as "heard on this day" — which is exactly the rule it was
+  built to enforce, for "what else have you got".
+* **T1 / S-2 (`_prefer_unheard_clock_times`, `:3798`) only picks the
+  replacements**, swapping `08:50/09:40/16:20` for `10:30/11:20/14:40` because
+  the first three were heard on Tuesday and Wednesday.
+
+**So reverting S-2 would not fix N1** — it would hand the caller
+`08:50 / 09:40 / 16:20`, still zero overlap with what they were offered. Do not
+revert it for this, and do not revert it at all: it fixed cross-day repeats
+29 → 1 and the two rules compose.
+
+**The fix belongs on B-116's within-day subtraction, not on the cross-day
+wrapper.** The distinction the code cannot currently draw is between a time
+withheld because *the caller has heard it and wants something else*, and a time
+withheld because *the caller heard it and is asking to hear it again*.
+
+Rev. 6 marked S-2 **VERIFIED** on the 13:43 call; that call never asked about a
+day it had been offered, so the step passed without the case existing. §4.5's
+rule again — a step that passes without its mechanism firing is not a pass.
+**The same rule caught this correction:** the defect was measured from the
+corpus and mis-attributed from the source, and one live log line settled it.
 
 ### The fix shape already exists in this file
 
@@ -686,6 +708,70 @@ Monday containing `08:00` or `17:10`; `replay_presented_times` re-aimed in the
 same commit and green on its re-aimed terms; `lost` / `invented` still 0 — those
 two are untouched by this and stay the real safety line; then a call that asks
 about an offered day and hears at least one of its offered times back.
+
+---
+
+## 1.9 N4 — asking for a time on Monday is answered with Thursday
+
+**P1, caller-audible, and it is the sharper half of the 11 Sep call.** New;
+found by the call sheet's step 3, which was aimed at N2 and hit something else.
+
+**CA91d1f12332f6230ed51ad1a427f91f5c, 11 Sep 23:11, northgate, build
+`6e556ad0`.** The caller is mid-conversation about **Monday** — she has just
+read Monday's times — and asks for a time:
+
+```
+23:11:58  Susie : Monday 14th September — half past ten, twenty past eleven,
+                  twenty to three. And I've a few others that day.
+23:12:14  caller: "as close as possible to 12 please"
+23:12:18  tool  : check_availability day_window=1 after_date=2026-09-14
+                  date_hint="around 12 noon"          <- N2's parse WORKED
+23:12:18  [ms_llm] check_availability BLOCKED — slots already retrieved this
+                   turn (last_offered_slots present); returning cached result
+23:12:18  [slot_followup] 3 of 6 days already offered
+                   -- leading with the 3 the caller has not heard
+23:12:20  Susie : Number 1, THURSDAY 17th — ten past twelve, or ten to seven.
+                  Number 2, Friday the 18th…  Number 3, Saturday the 19th…
+```
+
+**He asked for midday on Monday and was given Thursday, Friday and Saturday.**
+He hung up. `12:10` was bookable on Monday the entire time and was never spoken.
+
+### Three correct mechanisms, composing into a wrong answer
+
+Nothing here is a model failure and nothing is a hallucination.
+
+1. **N2's fix worked.** `"as close as possible to 12"` parsed, and the model
+   asked for `day_window=1` from Monday with `date_hint="around 12 noon"` — the
+   right question. Before `dfc8b914` it would have parsed to nothing.
+2. **The re-entrancy guard fired,** correctly: `check_availability` had already
+   run this turn, so the cached 6-day payload was returned instead.
+3. **The "lead with days they have not heard" rule then applied to that cached
+   payload** — and Monday, Tuesday and Wednesday were all heard, so it led with
+   Thursday, Friday and Saturday.
+
+**The day the caller was talking about is discarded between steps 2 and 3.**
+`day_window=1 after_date=2026-09-14` says Monday and only Monday; the cached
+result carries no memory that this turn was about one day, so the presenter
+treats it as a fresh open-ended offer.
+
+**The 12:00 pin proves it was still trying to answer him:** Thursday's readout
+is `12:10 / 18:50`, and `12:10` is there *because* of the pin. It found his
+time. It just put it on the wrong day — the one thing worse than not finding it,
+because the answer sounds responsive.
+
+**Same family as N1, one level up.** N1 forgets that the caller asked about a
+day they had already heard; N4 forgets *which day they asked about at all*.
+Both are the presenter treating "already heard" as a reason to move on, when
+the caller is asking to stay.
+
+**Anchor before scheduling this.** The seam is where `day_window=1` /
+`after_date` survive into the cached branch — the block at
+`llm_stream.py` "check_availability BLOCKED", and whatever reads
+`last_offered_slots` after it. **Do not weaken the re-entrancy guard**; it
+exists because a second live lookup mid-turn is its own defect. The narrow
+question is whether a cached result should be re-presented as a multi-day
+spread when the request that hit the cache named one day.
 
 ---
 
