@@ -335,10 +335,24 @@ def apply_offer_to_session(
         # B-120: the readout TEXT, not just its count. A readout torn down at
         # PLAYBACK has to be spoken again, so the words must survive it.
         session["_slot_readout_chunks"] = [c.strip() for c in chunks if c.strip()]
+        # The MODE of the readout those chunks are, recorded beside them and by
+        # the same owner so the two cannot drift.
+        #
+        # `_slot_presentation_mode` is NOT this. It has one writer, inside tool
+        # execution, so on a named-day follow-up -- which runs no tool -- it
+        # still holds the mode of the last LOOKUP. A caller who asks "anything
+        # next week" and then "tell me about Monday" gets a single_day readout
+        # while that key still says `multi_day`, which is the stale-latch family
+        # this file has been bitten by before.
+        session["_slot_readout_mode"] = str(record.get("mode") or "")
     else:
         session.pop("_slot_chunks_sent", None)
         session.pop("_slot_chunks_inhibited", None)
         session.pop("_slot_readout_chunks", None)
+        # Dies WITH the chunks. A mode left behind would describe a readout
+        # that no longer exists, and the next one to arm a map would inherit a
+        # pace it never chose.
+        session.pop("_slot_readout_mode", None)
         # FEWER THAN TWO OPTIONS, SO NO NEW MAP -- BUT THE OLD ONE MUST DIE.
         #
         # A one-option offer has nothing worth numbering, which is why no map

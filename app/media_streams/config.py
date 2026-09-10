@@ -120,6 +120,43 @@ ELEVENLABS_PHONE_SPEED = _clamped_speed(os.getenv("ELEVENLABS_PHONE_SPEED", ""),
 # should sound like it.
 ELEVENLABS_HEAD_SPEED  = _clamped_speed(os.getenv("ELEVENLABS_HEAD_SPEED", ""), 0.88)
 
+# ELEVENLABS_SLOT_SPEED applies to a SINGLE-DAY slot readout, and to nothing
+# else. Owner report, 2026-09-10: "the slot readout is too quick... it's fine
+# when there are multiple days".
+#
+# MEASURED FIRST, because the obvious reading is wrong. On
+# CA5f45b7aa0d8720f3fa22c9c58b81f0f4 the two readouts run at the SAME rate --
+# multi_day 318 chars in 17.63s (18.0 chars/sec), single_day 201 chars in
+# 11.20s (17.9) -- and single_day gives MORE time per slot, 3.73s against 2.94s.
+# There was no speed difference to correct.
+#
+# What differs is what the caller must DO with it. In a multi-day readout each
+# number is a DAY and carries its own landmark ("Number 2, Tuesday the 15th -")
+# which resets attention before the times arrive. In a single-day readout each
+# number is a TIME, with only "Number 2," between them: three values to hold
+# and compare in about six seconds, with nothing to grip in between. Same
+# seconds, more decisions per second.
+#
+# SINGLE-DAY ONLY, deliberately. The multi-day readout was reported as fine and
+# is already the longer of the two at 17.63s, and S-1 measures callers barging
+# in on nearly every turn -- slowing that one would make a length problem worse
+# to fix a density problem it does not have.
+#
+# DEFAULT 1.0, so a deployment that has not tuned anything sends a request
+# byte-identical to today's. The number needs an ear, not a guess: set it from
+# the Render dashboard against a live call, which is what these constants are
+# env-overridable for. 0.92 is a sensible first try -- slower than ordinary
+# speech, not the careful digit-by-digit articulation of 0.8.
+#
+# The cost is real and should be chosen knowingly: at 0.92 a three-time
+# single-day readout goes from 11.2s to about 12.2s.
+#
+# NOT PUNCTUATION. " - " and "..." both read as longer pauses and both split a
+# chunk -- see the pacing note in tts_stream.py, and the phone number that once
+# straddled two synthesis calls because of it. Pacing slower than a comma
+# belongs here.
+ELEVENLABS_SLOT_SPEED  = _clamped_speed(os.getenv("ELEVENLABS_SLOT_SPEED", ""), 1.0)
+
 # ---------------------------------------------------------------------------
 # AssemblyAI STT constants
 # ---------------------------------------------------------------------------

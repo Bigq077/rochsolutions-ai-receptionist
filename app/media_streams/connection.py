@@ -68,6 +68,7 @@ from .config import (
     ws_c_profile_for_phase,
     ELEVENLABS_SPEED,
     ELEVENLABS_PHONE_SPEED,
+    ELEVENLABS_SLOT_SPEED,
 )
 from .filler_guard import FillerGuard, expect_slot_presentation
 from .reask_variants import classify_question, normalize_phrase, variant_for
@@ -15890,6 +15891,37 @@ class WebSocketCallHandler:
                 # The obs entry above was written before any of it was
                 # synthesised, so without this a fragment cut off one sub-chunk
                 # in is stored identically to one spoken in full.
+                # Owner report 2026-09-10: a SINGLE-DAY slot readout is too
+                # quick. Decided here rather than in `synthesise_chunk`, which
+                # picks phone and head rates off the text itself: a slot
+                # readout is ordinary English with no shape that distinguishes
+                # it, and matching a literal of generated speech is a failure
+                # this codebase has shipped three times. This layer does not
+                # have to guess -- `apply_offer_to_session` recorded both the
+                # exact chunks and their mode.
+                #
+                # `_obs_chunk_text` is the string `_slot_readout_chunks`
+                # compares by equality (see the note above), so the membership
+                # test is the one already established here. Every sub-chunk of
+                # a readout chunk inherits the rate, which is what keeps a
+                # split readout sounding like one sentence.
+                #
+                # Never raises and never blocks a chunk: a pacing preference
+                # must not be able to cost a caller the words. At the 1.0
+                # default this passes None and the request is byte-identical.
+                _slot_readout_speed = None
+                try:
+                    if (
+                        ELEVENLABS_SLOT_SPEED != 1.0
+                        and str(self.session.get("_slot_readout_mode") or "")
+                        == "single_day"
+                        and _obs_chunk_text
+                        in (self.session.get("_slot_readout_chunks") or [])
+                    ):
+                        _slot_readout_speed = ELEVENLABS_SLOT_SPEED
+                except Exception:  # pragma: no cover - defensive; live path
+                    _slot_readout_speed = None
+
                 _subs_spoken = 0
                 for sub_text in sub_chunks:
                     # Track current sub-chunk so barge-in resume is accurate.
@@ -15900,6 +15932,7 @@ class WebSocketCallHandler:
                             text=sub_text,
                             audio_out_queue=self.audio_out_queue,
                             audio_out_processor=self._audio_out_proc,
+                            speed=_slot_readout_speed,
                         )
                     )
                     try:

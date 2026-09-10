@@ -52,6 +52,8 @@ from .config import (
     ELEVENLABS_SIMILARITY_BOOST,
     ELEVENLABS_SPEED,
     ELEVENLABS_HEAD_SPEED,
+    _SPEED_MAX,
+    _SPEED_MIN,
     ELEVENLABS_PHONE_SPEED,
     TTS_STREAM_CHUNK_SIZE,
 )
@@ -599,6 +601,7 @@ class TTSStream:
         text: str,
         audio_out_queue: asyncio.Queue,
         audio_out_processor: AudioOutputProcessor,
+        speed: "float | None" = None,
     ) -> None:
         """
         Send a single text chunk to ElevenLabs, stream PCM16 audio back,
@@ -685,6 +688,18 @@ class TTSStream:
             _speed = ELEVENLABS_PHONE_SPEED
         elif _is_head:
             _speed = ELEVENLABS_HEAD_SPEED
+        elif speed is not None:
+            # An explicit rate from the caller of this function, for a class it
+            # can identify and this one cannot: the single-day slot readout is
+            # ordinary English and has no shape that distinguishes it from any
+            # other sentence. Matching it here would mean matching a literal of
+            # generated speech, which is the failure this codebase has shipped
+            # three times.
+            #
+            # Below phone and head on purpose. A phone number inside a readout
+            # is still a phone number, and both of those rates were chosen
+            # against a specific reported defect.
+            _speed = max(_SPEED_MIN, min(_SPEED_MAX, float(speed)))
         else:
             _speed = ELEVENLABS_SPEED
         if abs(_speed - 1.0) > 1e-9 and not _ELEVENLABS_SPEED_UNSUPPORTED:
