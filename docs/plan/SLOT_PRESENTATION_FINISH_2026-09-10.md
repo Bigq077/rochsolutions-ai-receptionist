@@ -130,7 +130,7 @@ A row without `file:line` is a lead, not a finding. All of these have one.
 | id | finding | anchor |
 |---|---|---|
 | ~~**S-5**~~ | Five producers, four honouring the rule, nothing enforcing it. | **FIXED `ab5b6752`** — `pretrimmed` parameter + runtime warning + AST census. The guard found a real fifth site on its first run. §4.3. |
-| ~~**S-6**~~ | `_record_stood_down_slots` returned silently when it resolved nothing. | **FIXED `1508df0c`** — nothing-parsed is a WARNING, already-held is INFO. ⚠️ **The Stage C gate WORDING still needs amending** in `ONE_PRESENTATION_LAYER.md`; that is a document edit and is the one piece of this item left. |
+| ~~**S-6**~~ | `_record_stood_down_slots` returned silently when it resolved nothing. | **FIXED `1508df0c`** — nothing-parsed is a WARNING, already-held is INFO. **Stage C's gate re-worded to match** (`ONE_PRESENTATION_LAYER.md`): zero of BOTH reverse-parse lines, read as a pair. Not yet measurable — no call since. |
 | **S-7** | **13 % of recorded offers were never spoken.** `record_offer` fires where the offer is BUILT, above the P6/P6b stand-downs. **No code needed** — it is a fact every future harness author must know. | `llm_stream.py:7353` |
 | ~~**S-8**~~ | `presented_days` empty on every `single_day` offer. | **FIXED `1508df0c`** — the single_day path records `[_fd]`. Confirmed by the corpus pull after the next call, not by this diff. |
 | ~~**S-9**~~ | No tool marker on `calls.latency`. | **FIXED `1508df0c`** — `TurnTiming.tool_calls`, and `latency_percentiles.py` reports the real split. **It reads 0 today and says so**: all 3,578 stored turns predate the field and are NOT OBSERVED. |
@@ -393,9 +393,14 @@ codebase nobody runs is how a guard quietly stops guarding.
 
 **S-6** now distinguishes the two arms: nothing-parsed is a WARNING (it is the
 one that can leave a caller's next sentence resolving against a slot they were
-never read); already-held is INFO. ⚠️ **The Stage C gate WORDING in
-`ONE_PRESENTATION_LAYER.md` still needs amending to match** — a document edit,
-and the one piece of this item left undone.
+never read); already-held is INFO.
+
+> **Stage C's gate was re-worded to match, and the amendment is the point of
+> S-6.** It read "no `could not resolve spoken option(s)` on any clinic" — a
+> string only site A emits. Site B was silent, so an absence of that line was
+> evidence of nothing. The gate is now ZERO OF BOTH lines, read as a pair, and
+> `ONE_PRESENTATION_LAYER.md` records that it cannot be met until the corpus
+> pull after the next call.
 
 **S-8** records `[_fd]` on the single_day path, read off the OFFER's mode rather
 than a mode variable, so it records what was built and not what was intended.
@@ -814,7 +819,6 @@ A warning that repeats every turn is a warning nobody reads.
 |---|---|---|---|
 | **1** | **THE CALL.** §5's script, twice, on two diaries. S-2 and S-3 both change what a caller hears. | the script | ½ hour |
 | 2 | Push `latency-eval`, call the demo line, then fast-forward `production` | §6, and a revert target written down | — |
-| 3 | Amend the **Stage C gate wording** in `ONE_PRESENTATION_LAYER.md` to match S-6 | a document edit | 10 min |
 | 4 | **Phase 2** — one record, then delete the guards | its own plan's gates | ≥ 2 days |
 | — | **S-1 remainder** | **owner decision, not queued** — §4.4 | 2 min |
 | — | **S-11 / S-12** | **do not touch without new evidence** — §4.1 | — |

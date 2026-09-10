@@ -554,7 +554,31 @@ claim no longer needs `single_day`, so nothing is blocked on converging it. The
 divergence stays documented, contained, and out of scope until something else
 needs it. With Stage A in, `build_slot_offer`
 and `apply_offer_to_session` run on Theorem, so the reverse-parse and its repair
-layer go dead there. Gate: no `could not resolve spoken option(s)` on any clinic.
+layer go dead there.
+
+**Gate, AMENDED 2026-09-10 (S-6). The old wording was "no
+`could not resolve spoken option(s)` on any clinic", and it could not be met
+because it could not be OBSERVED.** There are two reverse-parse sites, not one.
+Site A (`llm_stream.py:4021`) emits that string. Site B — the
+`_record_stood_down_slots` closure at `llm_stream.py:3717` — returned in
+silence when it resolved nothing, so on that half of the surface "the sentence
+named no slots" and "the reverse parse could not read the sentence" were the
+same observation. An absence of the log line was therefore evidence of nothing,
+and a gate that cannot see half of what it covers is not a gate.
+
+Site B now logs both arms separately (`1508df0c`): nothing-parsed is a WARNING,
+because that is the one that can leave a caller's next sentence resolving
+against a slot they were never read; already-held is INFO, because it is the
+healthy common case.
+
+**The gate is now:** across a corpus pull covering all clinics, ZERO of both —
+`could not resolve spoken option(s)` from site A, and
+`resolved to NO payload slots` from site B. Read them as a pair. Site A alone
+was never the whole surface.
+
+**Not yet met, and not yet measurable:** no call has been placed since the site
+B line was added, so the first pull that can answer this is the one after the
+next call.
 
 **Stage D — extract the provider interface.** Only now is `fetch_free_slots` a
 small function. Four acquisition strategies, one signature — see §7 decision 5
