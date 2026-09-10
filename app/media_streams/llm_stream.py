@@ -793,7 +793,7 @@ def _caller_named_an_unoffered_date(txt: str, session) -> bool:
     return not _named.issubset(_offered_days)
 
 
-def _presentation_for_refusal(session, days):
+def _presentation_for_refusal(session, days, only_date=None):
     """Carry diary data on a REFUSAL in the shape a real lookup returns.
 
     B-118, CA14c0707a (28 Aug 2026, theorem_v3, build f2cc28dc -- B-116 and
@@ -818,14 +818,184 @@ def _presentation_for_refusal(session, days):
 
     Never raises: a refusal must still refuse if the presentation helper is
     unavailable, and the fallback is the raw payload this replaced.
+
+    `only_date` (N4) SCOPES the readout to one day of the payload, when the
+    refused request named exactly one -- see `_day_named_by_lookup`. The
+    readout is built from that day alone, and `available_days` / `total_days`
+    are then put back to the WHOLE payload, so every reader this docstring
+    keeps whole stays whole. A date the payload does not hold scopes nothing.
     """
     try:
         from app.tools.receptionist_tools import _cap_presented_slots
         if not isinstance(days, list) or not days:
             return {"available_days": days}
+        if only_date:
+            scoped = [
+                d for d in days
+                if isinstance(d, dict)
+                and str(d.get("date") or "")[:10] == str(only_date)[:10]
+            ]
+            if scoped:
+                return _restore_the_whole_payload(
+                    _cap_presented_slots({"available_days": scoped}, session),
+                    session, days, str(only_date)[:10],
+                )
         return _cap_presented_slots({"available_days": days}, session)
     except Exception:
         return {"available_days": days}
+
+
+def _restore_the_whole_payload(out, session, days, only_date):
+    """Undo what scoping a refusal to one day did to the PAYLOAD-level fields.
+
+    N4. `_cap_presented_slots` decides three things from the day list it is
+    handed, and handed one day it gets all three wrong for the payload:
+
+      * `available_days` / `total_days` -- the bookable set B-118 keeps whole
+        for `_resolve_slot_iso`, DTMF and the unspoken follow-up. Put back.
+      * the earliest lead-in -- ANY day is the earliest of a one-day list, so
+        a caller who asked for the soonest and then named Wednesday would be
+        told Wednesday is "the earliest I have". Kept only when it is true of
+        the whole payload.
+      * B-137's sparse-rota note -- one day looks like a sparse rota. Decided
+        again against the whole payload, which is what it is a claim about.
+    """
+    from app.tools.receptionist_tools import (
+        _earliest_available_date, _sparse_rota_note,
+    )
+    out = dict(out)
+    out["available_days"] = days
+    out["total_days"] = len(days)
+    if out.get("lead_in") and _earliest_available_date(days) != only_date:
+        out.pop("lead_in", None)
+    out.pop("sparse_rota_note", None)
+    try:
+        _note = _sparse_rota_note({"available_days": days}, session, days)
+    except Exception:
+        _note = None
+    if _note:
+        out["sparse_rota_note"] = _note
+    return out
+
+
+def _day_named_by_lookup(args: Any, days: Any) -> Optional[str]:
+    """The ONE payload day a refused `check_availability` asked about, or None.
+
+    N4, CA91d1f12332f6230ed51ad1a427f91f5c (11 Sep 2026 23:11, northgate,
+    build 6e556ad0). Susie had just read Monday's times. The caller said "as
+    close as possible to 12 please", and the model asked the right question:
+
+        check_availability day_window=1 after_date=2026-09-14
+                           date_hint="around 12 noon"
+        check_availability BLOCKED -- slots already retrieved this turn
+        3 of 6 days already offered -- leading with the 3 the caller has
+        not heard
+        "Number 1, Thursday 17th -- ten past twelve, or ten to seven ..."
+
+    He asked for midday on Monday and was read Thursday, Friday and Saturday.
+    He hung up. 12:10 was bookable on Monday the whole time.
+
+    Three correct mechanisms composed into it: the parse (N2) worked, the
+    re-entrancy guard correctly refused a second lookup, and B-137's "lead with
+    the days they have not heard" is the right answer to "what else". But the
+    refusal handed the presenter the WHOLE payload, so the day the request
+    named was discarded between the question and the answer. THE GUARD IS NOT
+    WEAKENED HERE -- a second live lookup mid-turn is its own defect. Only the
+    day set its readout is built from is narrowed.
+
+    `after_date` + `day_window=1` is the model's own encoding of "one named
+    day": B-105's SPECIFIC DAY rule tells it to send exactly that. Deny by
+    default -- every condition returns None, and None is the old behaviour:
+
+      * `day_window` is exactly 1. An `after_date` alone means "not before",
+        which is "next week", and a multi-day answer is right for it;
+      * `after_date` is a real ISO date and that day is IN THE PAYLOAD with
+        bookable times. A day the payload does not hold was never looked at,
+        and a refusal can say nothing about it -- the real lookup owns that;
+      * a weekday named in `date_hint` AGREES with `after_date`. B-86 recorded
+        that `day_window=1` beside a weekday can be the model's arithmetic
+        rather than the caller's day. When the two disagree this cannot know
+        which was meant, so it scopes to neither.
+
+    PURE. Never raises.
+    """
+    try:
+        if not isinstance(args, dict) or not isinstance(days, list):
+            return None
+        window = args.get("day_window")
+        if window is None or isinstance(window, bool):
+            return None
+        if float(str(window).strip()) != 1:
+            return None
+        from datetime import date as _iso_date
+        date = str(args.get("after_date") or "").strip()[:10]
+        weekday = _iso_date.fromisoformat(date).weekday()
+        day = next(
+            (d for d in days
+             if isinstance(d, dict) and str(d.get("date") or "")[:10] == date),
+            None,
+        )
+        if not day or not (day.get("slot_times") or []):
+            return None
+        from app.tools.receptionist_tools import _named_weekdays
+        named = _named_weekdays(str(args.get("date_hint") or ""))
+        if named and weekday not in named:
+            return None
+        return date
+    except Exception:
+        return None
+
+
+def _already_retrieved_result(
+    session: Dict[str, Any], args: Any, user_text: Any,
+) -> Dict[str, Any]:
+    """The `already_retrieved` refusal, with its readout aimed at what was asked.
+
+    Extracted from the re-query guard for the reason `_note_availability_seen`
+    was: a refusal reachable only through a 15k-line method is a refusal whose
+    tests pass when it is deleted.
+
+    TWO things this turn's words decide, and before N4 neither reached here:
+
+      1. WHICH DAYS -- `_day_named_by_lookup`, above.
+      2. WHICH TIME. D8's pin reads `REQUESTED_TIMES_KEY`. A refusal runs no
+         tool, so nothing on this turn wrote that key and the pin read whatever
+         the last writer left -- on the N4 call, the named-day producer's `[]`
+         from "how about monday". So on a refusal the pin could never answer
+         the words that triggered it. Same family as S-13 and the same remedy:
+         WRITE IT ON EVERY TURN THAT PRESENTS, EMPTY INCLUDED, so a time named
+         three turns ago cannot pin a slot into a readout that is not about it.
+
+    Never raises: a refusal must still refuse.
+    """
+    days = (session or {}).get("available_days") or []
+    try:
+        from app.tools.slot_followup import (
+            REQUESTED_TIMES_KEY, requested_clock_times,
+        )
+        session[REQUESTED_TIMES_KEY] = requested_clock_times(user_text)
+    except Exception:
+        logger.exception("[ms_llm] requested-time resolve failed on a refusal")
+    only = _day_named_by_lookup(args, days)
+    if only:
+        logger.info(
+            "[ms_llm] the refused lookup named ONE day (%s, day_window=1) -- "
+            "reading that day, not the days the caller has not heard (N4)",
+            only,
+        )
+    return {
+        "status": "already_retrieved",
+        "message": (
+            "check_availability has already returned slot data. "
+            "Do NOT call it again. Read out ONLY the times in "
+            "first_day.slot_times_spoken, verbatim and in the order "
+            "given — they have already been chosen and limited for "
+            "you. Do NOT read anything from available_days and do "
+            "NOT re-order them. If more_times is true, say you have "
+            "a few others that day rather than naming them."
+        ),
+        **_presentation_for_refusal(session, days, only_date=only),
+    }
 
 
 def _note_availability_seen(session: Dict[str, Any], result: Any) -> bool:
@@ -6460,21 +6630,11 @@ class LLMStream:
                                 "this turn (last_offered_slots present); returning cached result "
                                 "call_sid=%s", call_sid,
                             )
-                            result = {
-                                "status": "already_retrieved",
-                                "message": (
-                                    "check_availability has already returned slot data. "
-                                    "Do NOT call it again. Read out ONLY the times in "
-                                    "first_day.slot_times_spoken, verbatim and in the order "
-                                    "given — they have already been chosen and limited for "
-                                    "you. Do NOT read anything from available_days and do "
-                                    "NOT re-order them. If more_times is true, say you have "
-                                    "a few others that day rather than naming them."
-                                ),
-                                **_presentation_for_refusal(
-                                    session, session.get("available_days") or []
-                                ),
-                            }
+                            # N4. `args` carries the day the refused request
+                            # named and `_user` the time -- both used to be
+                            # dropped here, and the caller who asked for
+                            # midday on Monday was read Thursday.
+                            result = _already_retrieved_result(session, args, _user)
                 elif (
                     tool_name == "book_appointment"
                     and under_age_blocks_booking(session)
