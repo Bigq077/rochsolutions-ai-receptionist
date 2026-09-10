@@ -168,18 +168,43 @@ def test_a_fresh_day_never_starves():
     assert len(idx) == LIMIT, idx
 
 
-def test_a_short_preferred_pool_is_filled_back_up():
-    """B-119 declines to pad, because there the padding repeats a time the
-    caller was just told about. Across days it does not: every slot on a fresh
-    day is an appointment they have never been offered."""
+def test_the_preference_stands_down_rather_than_spoil_the_spread():
+    """`_spread` outranks this rule, and the owner settled that on 1 Sep 2026:
+    two slots fifty minutes apart are not a choice a caller experiences as two
+    options.
+
+    The first cut of T1 filled a short unheard pool back up from the rest of
+    the day, which put 08:00 and 08:50 in one breath -- the exact pairing that
+    decision forbids. `test_slot_presentation_cap.py` caught it in two places.
+
+    So the preference is ALL OR NOTHING. With only two unheard clock times
+    against a limit of three it stands down entirely, B-116's selection is
+    returned untouched, and a clock time repeats across days -- the lesser
+    harm, because the caller can still book any of them.
+    """
     # Ten of the twelve clock times heard, so only 08:50 and 17:10 are fresh.
     heard = [t for t in GRID if t not in ("08:50", "17:10")]
     session = _after_hearing(WED, heard)
     monday = _day(MON)
+
     spoken = _clocks(monday, choose_presented_indices(session, monday, LIMIT))
+    untouched = _clocks(monday, choose_presented_indices({}, monday, LIMIT))
 
     assert len(spoken) == LIMIT, spoken
-    assert {"08:50", "17:10"} <= set(spoken), spoken
+    assert spoken == untouched, (spoken, untouched)
+
+
+def test_the_preference_applies_when_it_can_fill_the_readout_alone():
+    """The other side of the all-or-nothing rule: three unheard clock times
+    against a limit of three, so it applies in full and `_spread` still picks
+    among them."""
+    heard = [t for t in GRID if t not in ("08:50", "12:10", "17:10")]
+    session = _after_hearing(WED, heard)
+    monday = _day(MON)
+
+    spoken = _clocks(monday, choose_presented_indices(session, monday, LIMIT))
+
+    assert set(spoken) == {"08:50", "12:10", "17:10"}, spoken
 
 
 def test_a_desynchronised_day_is_not_reordered():

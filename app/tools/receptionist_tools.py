@@ -289,7 +289,10 @@ def _spoken_starts_for(session: Dict[str, Any]) -> set:
         return set()
 
 
-def _presented_indices(session: Dict[str, Any], day: Dict[str, Any], limit: int) -> list:
+def _presented_indices(
+    session: Dict[str, Any], day: Dict[str, Any], limit: int,
+    also_heard_clock_times: Any = None,
+) -> list:
     """Which of a day's times to SPEAK -- unheard ones first. See B-116.
 
     Thin adapter over slot_followup.choose_presented_indices, which owns the
@@ -299,7 +302,10 @@ def _presented_indices(session: Dict[str, Any], day: Dict[str, Any], limit: int)
     """
     try:
         from app.tools.slot_followup import choose_presented_indices
-        return choose_presented_indices(session or {}, day, limit)
+        return choose_presented_indices(
+            session or {}, day, limit,
+            also_heard_clock_times=also_heard_clock_times,
+        )
     except Exception:
         _n = len((day or {}).get("slot_times") or [])
         return list(range(min(limit, _n)))
@@ -5841,6 +5847,13 @@ def _cap_presented_slots(
 
     presented: List[Dict[str, Any]] = []
     truncated = False
+    # T1b, CAfb09f66e (10 Sep 2026, northgate). Every day in a multi-day
+    # readout was evaluated against the SAME spoken record -- empty on a
+    # first lookup -- so each one independently picked position 0 and the
+    # caller heard "eight in the morning" for Monday, Tuesday AND
+    # Wednesday. The days are chosen in a loop, so only the loop knows
+    # what its earlier iterations have already committed; it carries them.
+    _clocks_used: set = set()
     for day in kept:
         if not isinstance(day, dict):
             presented.append(day)
@@ -5857,7 +5870,12 @@ def _cap_presented_slots(
         # One index list for all three arrays: they are aligned 1:1, and
         # slicing them independently against a non-contiguous choice would
         # speak a label from one slot and book another.
-        _idx = _presented_indices(session or {}, trimmed, per_day)
+        _idx = _presented_indices(session or {}, trimmed, per_day, _clocks_used)
+        for _i in _idx:
+            try:
+                _clocks_used.add(str((trimmed["slots"][_i] or {}).get("start"))[11:16])
+            except (IndexError, KeyError, TypeError, AttributeError):
+                pass
         for key in ("slot_times", "slot_times_spoken", "slots"):
             value = trimmed.get(key)
             if isinstance(value, list):

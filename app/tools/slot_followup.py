@@ -3735,7 +3735,8 @@ def _day_iso_of(day: Dict[str, Any]) -> str:
 
 
 def _prefer_unheard_clock_times(
-    session: Dict[str, Any], day: Dict[str, Any], chosen: List[int], limit: int
+    session: Dict[str, Any], day: Dict[str, Any], chosen: List[int], limit: int,
+    also_heard: Any = None,
 ) -> List[int]:
     """On a day the caller has NOT heard, prefer clock times they have not heard.
 
@@ -3778,13 +3779,19 @@ def _prefer_unheard_clock_times(
     offered, repeated clock times and all, so this stands down for them rather
     than pushing the day's real earliest out of the readout.
 
-    IT PREFERS, IT DOES NOT WITHHOLD. B-119 declines to pad a short unheard
-    list back up to `limit`, because there the padding speaks a time the caller
-    has just been told about and contradicts the sentence before it. Nothing of
-    the sort is true across days: every slot on a fresh day is a bookable
-    appointment this caller has never been offered, and dropping one to avoid a
-    clock-time coincidence would cost them a real option. So a short preferred
-    pool is filled back up from the rest of the day.
+    `_spread` OUTRANKS THIS. The owner decided on 1 Sep 2026 that two slots
+    fifty minutes apart are not a choice a caller experiences as two options,
+    and `_spread` exists to make every pair span the day. The first cut of
+    this rule filled a short preferred pool back up from the rest of the day,
+    which put 08:00 and 08:50 in one breath -- exactly the pairing that
+    decision forbids, and two regression tests said so within the minute.
+
+    So the preference is ALL OR NOTHING: it applies only when the unheard
+    clock times can fill the readout on their own. When they cannot, B-116's
+    selection stands unchanged and a clock time repeats across days. That is
+    the lesser harm -- a repeated time is a readout that carries less new
+    information, while a bad pair is a readout that offers the caller no real
+    choice at all, on a day they can still book either way.
     """
     if not isinstance(session, dict) or not isinstance(day, dict):
         return chosen
@@ -3809,13 +3816,20 @@ def _prefer_unheard_clock_times(
         spoken = spoken_starts_for_offer(session)
     except Exception:      # never let a readout fail on its own preference
         return chosen
-    if not spoken:
-        return chosen      # the first lookup of a call -- nothing to differ from
     today = _day_iso_of(day)
     if not today or today in {str(s)[:10] for s in spoken}:
         # A day the caller has already heard. B-116 owns this case entirely.
         return chosen
     heard_clocks = {str(s)[11:16] for s in spoken if len(str(s)) >= 16}
+    # T1b. Clock times committed to SIBLING days earlier in this same
+    # readout. Nothing has been spoken yet when a multi-day offer is
+    # assembled, so `spoken` is empty and cannot carry them -- which is
+    # why a first lookup read 08:00 on all three days. Passed in by the
+    # loop that owns the readout, because only it knows the order.
+    if also_heard:
+        heard_clocks = heard_clocks | {
+            str(c)[:5] for c in also_heard if str(c)[:5]
+        }
     if not heard_clocks:
         return chosen
 
@@ -3833,12 +3847,11 @@ def _prefer_unheard_clock_times(
         return chosen
     if all(_clock(i) not in heard_clocks for i in chosen):
         return chosen      # B-116 already picked clean -- do not disturb it
-    if len(fresh) >= limit:
-        out = _spread(slots, fresh, limit)
-    else:
-        # Prefer, do not withhold: fill back up from the day's remaining times.
-        rest = [i for i in range(n) if i not in set(fresh)]
-        out = sorted(set(fresh) | set(_spread(slots, rest, limit - len(fresh))))
+    if len(fresh) < limit:
+        # Not enough unheard clock times to fill the readout on their own.
+        # Mixing them with heard ones defeats `_spread` -- see the docstring.
+        return chosen
+    out = _spread(slots, fresh, limit)
     logger.info(
         "[slot_followup] %s is a day this caller has not heard, and B-116 had "
         "picked %r -- the same clock times as another day (T1). Reading %r "
@@ -3850,7 +3863,8 @@ def _prefer_unheard_clock_times(
 
 
 def choose_presented_indices(
-    session: Dict[str, Any], day: Dict[str, Any], limit: int
+    session: Dict[str, Any], day: Dict[str, Any], limit: int,
+    *, also_heard_clock_times: Any = None,
 ) -> List[int]:
     """Which positions in a day's parallel slot arrays should be SPOKEN.
 
@@ -3901,7 +3915,7 @@ def choose_presented_indices(
             session, day,
             _prefer_unheard_clock_times(
                 session, day, _choose_presented_times(session, day, limit),
-                limit,
+                limit, also_heard_clock_times,
             ),
             limit,
         ),
@@ -5176,9 +5190,24 @@ def more_days_speech(session: Dict[str, Any]) -> Optional[str]:
         return None
 
     presented: List[Dict[str, Any]] = []
+    # T1b's twin in this producer. Same reason as `_cap_presented_slots`:
+    # the days are picked in a loop against one spoken record, so without
+    # this every day of a "what else have you got" answer opens at the
+    # same clock time.
+    _clocks_used: set = set()
     for day in fresh:
         trimmed = dict(day)
-        idx = choose_presented_indices(session, trimmed, _MAX_PRESENTED_TIMES_MULTI_DAY)
+        idx = choose_presented_indices(
+            session, trimmed, _MAX_PRESENTED_TIMES_MULTI_DAY,
+            also_heard_clock_times=_clocks_used,
+        )
+        for _i in idx:
+            try:
+                _clocks_used.add(
+                    str(((trimmed.get("slots") or [])[_i] or {}).get("start"))[11:16]
+                )
+            except (IndexError, TypeError, AttributeError):
+                pass
         for key in ("slot_times", "slot_times_spoken", "slots"):
             if isinstance(trimmed.get(key), list):
                 trimmed[key] = pick_by_index(trimmed[key], idx)
@@ -5458,10 +5487,57 @@ def speak_one_day_from_payload(
         return None
 
     from app.tools.slot_offer import (
-        apply_offer_to_session, build_slot_offer, offer_as_record,
+        SINGLE_DAY_MAX_TIMES, apply_offer_to_session, build_slot_offer,
+        offer_as_record,
     )
 
-    offer = build_slot_offer([day])
+    # WHICH times, not just how many. T1b, CAfb09f66e (10 Sep 2026,
+    # northgate, build 8ed9e195), judge 2, outcome=abandoned:
+    #
+    #     Susie : Monday 14th / Tuesday 15th / Wednesday 16th -- eight in
+    #             the morning, or ...            [the multi-day offer]
+    #     caller: "um yeah can you tell me about monday"
+    #     Susie : Monday 14th -- eight in the morning, one in the
+    #             afternoon, ten past five in the evening
+    #     caller: "and what about tuesday"
+    #     Susie : Tuesday 15th -- eight in the morning, ten past twelve,
+    #             twenty past four
+    #
+    # He heard "eight in the morning" four times in one call and hung up.
+    # Both Monday times and both Tuesday times he was re-read had been
+    # spoken to him thirty seconds earlier in the multi-day offer.
+    #
+    # This handed `build_slot_offer` the WHOLE day, and that function's own
+    # docstring states the contract being broken: "PASS `more_times` when
+    # the days handed in have ALREADY been trimmed to what should be
+    # spoken. `_cap_presented_slots` selects those positions through
+    # `choose_presented_indices`, which prefers times this caller has not
+    # heard (B-116) -- knowledge this function does not have and must not
+    # overrule." It was never given that trim, so it fell back to the
+    # chronological head of the day, which is precisely the slice B-116
+    # exists to replace.
+    #
+    # The blast radius was every named-day answer on every clinic -- both
+    # callers of this function, D-B and B-145 -- and it took the D8
+    # requested-time pin down with it, since that also lives inside
+    # `choose_presented_indices`. A caller who named a day AND a time was
+    # read neither preference.
+    #
+    # `more_times` must be passed explicitly now, for the reason the
+    # docstring gives: a pre-trimmed day looks complete to the formatter,
+    # and it would fall silent about the rest of the diary (B-97).
+    _times = list(day.get("slot_times") or [])
+    _idx = choose_presented_indices(session, day, SINGLE_DAY_MAX_TIMES)
+    _spoken_day = dict(day)
+    for _key in ("slot_times", "slot_times_spoken", "slots"):
+        if isinstance(_spoken_day.get(_key), list):
+            _spoken_day[_key] = pick_by_index(_spoken_day[_key], _idx)
+    _more = (
+        len(_spoken_day.get("slot_times") or []) < len(_times)
+        or int(day.get("times_not_shown") or 0) > 0
+    )
+
+    offer = build_slot_offer([_spoken_day], more_times=_more)
     if offer is None or not offer.chunks:
         return None
 
