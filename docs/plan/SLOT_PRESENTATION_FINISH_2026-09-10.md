@@ -1,15 +1,34 @@
-# Finishing slot presentation — plan of record, rev. 5 (2026-09-10, night)
+# Finishing slot presentation — plan of record, rev. 6 (2026-09-10, late)
 
 **Goal (owner, 10 Sep):** slot presentation is *finished* by the end of this week.
 **Time available:** Friday 11th, weekend buffer 12–13th.
-**Author's note:** rev. 5 closes S-13 and S-14, records the two calls that
-verified them (§1.6), and promotes everything to `production`. Read §1.6 and §7
-before touching anything, and §8 for what is left — it is short now.
+**Author's note:** rev. 6 is a HANDOVER. Slot presentation is finished and
+verified; the two items left are a NEW P1 that is not slot presentation
+(**B-149**, §1.7) and one call on a non-grid diary. Read §1.7 first if you are
+picking this up cold — a caller heard 13.7 seconds of silence tonight and it is
+the only thing on this page that a patient can hear.
 
-> ### STATUS — three calls, 10 Sep. Slot presentation is verified end to end.
+> ### STATUS — four calls, 10 Sep. Slot presentation is DONE. One new P1.
 >
-> **`latency-eval` and `production` are both at `aa4c324c`.**
-> **Revert target: `8ab39703`.** (One further back is `337fbd9e`.)
+> **`latency-eval` and `production` are both at `2658f727`.**
+>
+> ```
+> revert ladder   2658f727  <- HEAD, pacing
+>                 ebc99d76     S-7 + Stage C instrumentation
+>                 aa4c324c     S-14
+>                 8ab39703     S-13
+>                 337fbd9e     before any of it
+> ```
+>
+> **`ELEVENLABS_SLOT_SPEED=0.92` is SET on the demo service** and the owner
+> confirmed the pace is right. It is NOT set on the three clinic services; the
+> code default is 1.0, so they are unchanged until someone sets it. §4.9.
+>
+> 🔴 **B-149 is open, P1, caller-audible, and NOT slot presentation.** 13.7 s of
+> dead air on tonight's 20:57 call; the caller said "hello" because they thought
+> the line had dropped. **It is not new and not from today's work** — the
+> mechanism is described verbatim in a code comment dated 20 Aug. §1.7 has the
+> timeline, the anchor and why the obvious fix is the wrong one.
 >
 > | | |
 > |---|---|
@@ -21,6 +40,10 @@ before touching anything, and §8 for what is left — it is short now.
 > **The remaining gap is the diary shape, not the code.** Every call that
 > verified any of this was northgate, a uniform 50-minute grid. **Vital Edge
 > and JV have not been called since T1b** and both are non-grid. §8 step 1.
+>
+> **That call was being placed as this revision was written.** Its log went to a
+> different session. If you are that session: score it against §5's script,
+> then read §1.7 before filing anything about silence.
 >
 > **Confirm `[build_info] running build <sha>` before trusting any call** —
 > `/health` returns a hardcoded 1.0.0 and always has.
@@ -327,6 +350,79 @@ This is §4.1's warning reproduced exactly — *"the rung cancels on the first
 TOKEN, and the wait from the token to the first CHUNK is unguarded."* **Do not
 read this as S-3 underdelivering.** No value of `LLM_FIRST_CHUNK_TIMEOUT_MS`
 reaches this turn, which is precisely why S-11 is filed and not queued.
+
+---
+
+## 1.7 B-149 — a turn that speaks nothing leaves no safety net
+
+**CAc9a7976f516be8d816c367500a0fd130, 10 Sep 20:57, northgate, build
+`2658f7272216`. 104 s, `outcome=abandoned`, judge 2. P1, caller-audible.**
+
+Reported as *"about 8 seconds of silence, which is the watchdog firing"*. It was
+**13.7 seconds**, and the watchdog was not firing — **it was never armed.**
+
+```
+20:58:15.024   +0.00s  'Apologies for that -' ENDS. LAST AUDIO.
+20:58:15.270   +0.25s  barge-in partial "nothing's there"  -> tts_inhibit set
+20:58:16.571   +1.55s  FINAL 'nothing serious though'      -> queued, not yet dequeued
+20:58:19.769   +4.74s  tts_inhibit: DISCARDING 'ankles can be tricky...'
+20:58:19.794   +4.77s  B-76: every chunk dropped before TTS
+20:58:19.855   +4.83s  incomplete utterance HELD (mid-clause)
+20:58:22.357   +7.33s  LAT turn_seq=2  outcome=no_content   content_ttfa=-1
+20:58:24.569   +9.54s  barge-in 'have'                     -> tts_inhibit set AGAIN
+20:58:25.569  +10.54s  FINAL 'hello'   <- the caller thinks the line has dropped
+20:58:25.938  +10.91s  tts_inhibit: DISCARDING 'Ankles can be a bit unpredictable...'
+20:58:25.979  +10.96s  LAT turn_seq=3  outcome=superseded
+20:58:28.741  +13.72s  'Sorry, still with you -'  FIRST AUDIO SINCE 20:58:15
+```
+
+**The loop is self-sustaining, and the caller's own rescue attempt is what kills
+the next reply.** Barge-in sets `tts_inhibit`; the reply arrives and is
+discarded; the silence makes the caller speak; that speech is a new barge-in;
+the next reply is discarded. `'hello'` at +10.54s is what killed turn 2's answer.
+
+**Why nothing broke the loop.** `WATCHDOG_DEFERRED_CLEAR reason=tts_still_playing`
+(`connection.py:4855`) hands arming to `on_tts_finished()`. When every chunk is
+inhibited that callback never runs, `_restart_timer()` is never called, and no
+watchdog is armed. **Measured on this call: unarmed for 24.4 s**, from the
+`WATCHDOG_CANCEL` at 20:58:12.370 to the next `WATCHDOG_START` at 20:58:36.773.
+The safety net is armed BY SPEECH, so it is missing exactly on the turns that
+produced none.
+
+**The codebase already knows.** `connection.py:17206`, in B-67's own comment:
+
+> *"arming was handed to `on_tts_finished()` by `WATCHDOG_DEFERRED_CLEAR` —
+> which never fires, because every chunk of that turn was inhibited."*
+
+and the exhibit beside it is CAa0f76e2c (Vital Edge, 20 Aug) where the caller
+also said **"hello"** into the same silence.
+
+**So this is B-67 recurring through a different door.** B-67 closed the door
+where the final is GARBAGE and gets dropped at the socket boundary, and its
+repair hangs on `_is_garbage_fc`. Tonight's final was real — `'nothing serious
+though'` — and WAS enqueued. It simply arrived while the loop was mid-turn, so
+`_resolve_barge_in()` did not run for another 3.3 s and the in-flight reply died
+in that window. The garbage gate cannot see this case.
+
+**NOT CAUSED BY TODAY'S WORK.** Nothing shipped on 10 Sep touches barge-in,
+`tts_inhibit` or the watchdog; the pacing commit adds one `speed` kwarg. The
+mechanism is documented from 20 Aug. Do not bisect today's commits for it.
+
+**The fix direction, and why it was NOT taken tonight.** A turn that ends having
+spoken nothing must arm the watchdog itself; `_rearm_no_input_watchdog`
+(`connection.py:6102`) already exists for the "cancelled speculatively, put it
+back on its ORIGINAL deadline" case and is the right tool. It was deliberately
+not attempted at 21:00 on a night with live clinic calls pending:
+
+* it is the barge-in/watchdog seam in a 12,000-line file, where the record says
+  the obvious fix is the wrong one — teardown is on the PARTIAL, resolution is
+  on the FINAL, and a change on the wrong side of that seam makes silence worse;
+* it needs a fails-before test built from the timeline above, which is an hour
+  of careful work rather than fifteen minutes; and
+* the clinic calls test the DIARY SHAPE, a different axis entirely, and are
+  unaffected by it.
+
+**If it bites during a call:** speak again. The turn after next lands.
 
 ---
 
@@ -896,6 +992,49 @@ obs made to raise, the caller still hears the offer.
 
 ---
 
+### 4.9 · The single-day readout pace — DONE, `2658f727`, and the guess was wrong
+
+Owner report: *"the slot readout is too quick... it's fine when there are
+multiple days"*, with the guess that week and day presentation are configured
+differently.
+
+**MEASURED FIRST, and there was no difference to correct.** On
+CA5f45b7aa0d8720f3fa22c9c58b81f0f4 both readouts run at the same rate and both
+synthesise at `speed=default`:
+
+```
+multi_day   318 chars   17.63s   18.0 chars/sec   2.94s per time offered
+single_day  201 chars   11.20s   17.9 chars/sec   3.73s per time offered
+```
+
+Single-day is if anything the more generous per slot. **What differs is
+decisions per second, not words per second**: in a multi-day readout each number
+is a DAY carrying its own landmark ("Number 2, Tuesday the 15th —") which resets
+attention; in a single-day readout each number is a TIME with only "Number 2,"
+between them.
+
+`ELEVENLABS_SLOT_SPEED`, single-day only, **default 1.0** so an untuned
+deployment is byte-identical. **Set to 0.92 on the demo service and confirmed
+right by ear.** Not set on the three clinic services.
+
+**THE TRAP, and the whole change turns on it.** `_slot_presentation_mode` has
+ONE writer, inside tool execution. A named-day follow-up runs no tool, so on
+exactly the turn this feature is for it still holds the mode of the last LOOKUP
+and says `multi_day` — steering off it would have slowed the readout the owner
+said was FINE and left the reported one untouched. `apply_offer_to_session`
+records `_slot_readout_mode` beside the chunks instead, and pops it with them.
+The test suite caught the missing pop in the first cut.
+
+**Pacing never goes in punctuation.** `" — "` and `"…"` both split a chunk;
+that is how a phone number once straddled two synthesis calls.
+
+**Still open, and it is an owner call:** this pulls against S-1, which says the
+readout is too LONG. `speak_part_of_day: false` cuts 5.17 s and would more than
+pay for 0.92. **Fewer words, spoken more slowly** is probably better than
+either alone, and both are env vars — it can be heard on one call. §4.6.
+
+---
+
 ### Explicitly not this week
 
 Stage D (provider interface) · Stage E (clinic policy) · the STT numeral gap ·
@@ -1250,94 +1389,124 @@ whether the mechanism could have fired at all.
 
 ## 8. What happens next, in dependency order
 
-Ordered by what BLOCKS what. Short now — the engine work of this document is
-done and verified; what is left is one diary shape, one owner decision, and
-Phase 2.
+**Slot presentation is finished.** Nine items verified on a phone, script step 6
+passed twice, both branches at `2658f727`. What follows is one open P1 that is
+not slot presentation, one call, one owner decision, and Phase 2.
 
-### Shipped, on `latency-eval` AND `production` (`aa4c324c`)
+### Shipped and promoted — `latency-eval` AND `production` at `2658f727`
 
 | | item | commit | on a phone |
 |---|---|---|---|
-| ✅ | **S-1a** month said once | `40a67ea8` | **VERIFIED** — 17.85 s live vs 17.93 s predicted |
-| ✅ | **S-3** rung audible outside the bar | `dd15f2d7` | **NOT EXERCISED** — two attempts, closed below |
-| ✅ | **S-2** cross-day preference | `afabb549` | **VERIFIED** — script steps 2, 3, 4 |
+| ✅ | **S-1a** month said once | `40a67ea8` | **VERIFIED** — 17.85 s live vs 17.93 predicted |
+| ✅ | **S-3** rung inside the bar | `dd15f2d7` | **NOT EXERCISED** — two attempts, closed §8.3 |
+| ✅ | **S-2** cross-day preference | `afabb549` | **VERIFIED** — steps 2, 3, 4 |
 | ✅ | **S-5** trim contract | `ab5b6752` | n/a — structural |
-| ✅ | **S-6** stand-down logging | `1508df0c` | not exercised — no stand-down has occurred |
-| ✅ | **S-8** presented on single_day | `1508df0c` | **VERIFIED** — 19:36, via S-14 |
+| ✅ | **S-6** stand-down logging | `1508df0c` | no stand-down has yet occurred |
+| ✅ | **S-8** presented on single_day | `1508df0c` | **VERIFIED** 19:36, via S-14 |
 | ✅ | **S-9** tool marker | `1508df0c` | **VERIFIED** — 0/1/0/0/0/0 |
-| ✅ | **S-13** requested-time pin | `8ab39703` | **VERIFIED** — 14:42, the D8 line, through B-145 |
-| ✅ | **S-14** payload readouts in the corpus | `aa4c324c` | **VERIFIED** — 4 readouts, 4 rows |
-
-**Script step 6 has now passed twice**, on 12:10 and on 11:20. Readout, pick,
-readback, tool arg and diary agree at every link. That is §0's first bar, and
-until 10 Sep it had never been checked on a call.
+| ✅ | **S-13** requested-time pin | `8ab39703` | **VERIFIED** 14:42 — through B-145, not D-B |
+| ✅ | **S-14** payload readouts recorded | `aa4c324c` | **VERIFIED** — 4 readouts, 4 rows |
+| ✅ | **S-7** spoken vs built | `e57f2d6c` | not yet read back |
+| ✅ | **Stage C** model-readout counter | `ebc99d76` | not yet read back |
+| ✅ | **single-day pace** | `2658f727` | **CONFIRMED BY EAR** at `ELEVENLABS_SLOT_SPEED=0.92` |
 
 ---
 
-### 1. Call a non-grid diary. **This is the only real gap left.**
+### 1. B-149 — the only caller-audible defect open. §1.7.
 
-Every call verifying any of the above was **northgate, a uniform 50-minute
-grid** — the easy case, and the one where positional selection and clock-time
-selection happen to agree. **Vital Edge and JV have not been called since
-T1b**, and both are on production at `aa4c324c`.
+13.7 s of dead air, `outcome=abandoned`, and the safety net absent for 24.4 s
+because it is armed by speech and the turn produced none.
 
-Six steps, §5's script. Two hazards northgate does not have:
+**Do this with a fails-before test built from §1.7's timeline, not by
+inspection.** The seam is barge-in/watchdog inside a 12,000-line file and the
+record says the obvious fix is wrong: teardown is on the PARTIAL, resolution is
+on the FINAL. `_rearm_no_input_watchdog` (`connection.py:6102`) is the right
+tool; the hole is `connection.py:4855`.
 
-* **`SMS_ENABLED` and `APPOINTMENT_REMINDERS_ENABLED` are ON for clinic
-  services.** A real confirmation text goes out and a real 24h/2h reminder is
-  queued.
-* **`nearest_time_index` may legitimately decline on an irregular diary.** If
-  the nearest bookable time to noon is more than 20 minutes away, D8 declines
-  and no pin line appears — correctly. **Pick a time you can see in the diary**
-  rather than "midday", or step 5 proves nothing.
+**Exit:** the timeline reproduced offline as a failing test; failing-set diff
+EMPTY; then a call where a barge-in lands on an in-flight reply and the watchdog
+is observed arming anyway.
 
-**Exit:** steps 1–6 pass, the `pinned the requested time back into the readout`
-line is present, and `slot_offers` holds one row per readout.
+### 2. Call a non-grid diary
 
-### 2. S-3 — CLOSED as unexercised, deliberately
+Every call verifying anything above was **northgate, a uniform 50-minute grid**.
+Vital Edge and JV have not been called since T1b. **A call was placed the night
+of 10 Sep and its log went to a different session** — find it before repeating
+the work.
 
-Two attempts. The headless turn IS forceable — *"what should I know before I
-come in?"* produced one on the 19:36 call, with no situational head and no
-filler. What could not be forced is a headless turn that is also SLOW:
-`llm_ttft` was 2542 ms against a 2750 ms deadline, and the token cancels the
-rung.
+Two hazards northgate does not have: `SMS_ENABLED` and
+`APPOINTMENT_REMINDERS_ENABLED` are ON for clinic services, so a real text goes
+out and a real reminder is queued; and `nearest_time_index`'s 20-minute
+tolerance may legitimately decline on an irregular diary — **pick a time you can
+see in the diary** rather than "midday", or step 5 proves nothing.
 
-**Do not spend a third call on this.** It is a constant with a unit test either
-side of it, it is on production, and §1.6 records what a live instance of the
-class it CANNOT reach looks like (turn 7, S-11).
+**Cancel every test booking through Susie, never the calendar.** §7: one booking
+disabled two of the three things the script exists to test.
 
-### 3. S-1 remainder — the owner decision (§4.6)
+### 3. Read the new corpus fields back
 
-Two minutes of work, blocked on nobody but the owner. `speak_part_of_day:
-false` on northgate only: **17.93 s → 12.76 s**, resolution-identical on 7/7
-utterances, and the patient still gets am/pm in the SMS. The calibration behind
-that number is confirmed live to 0.5%, and the rendered northgate prompt
-already asks for "under about eight seconds". Decide it WITH S-10 (§4.6).
+First time these can be answered in SQL rather than guessed:
 
-### 4. Phase 2 — one record, then delete the guards
+```
+what did the caller actually HEAR?        source / spoken     (S-7)
+how often is the repair layer reachable?  source = 'model'    (Stage C)
+does the reverse parse succeed there?     labels_read vs labels_resolved
+```
 
-`SLOT_PRESENTATION_CONVERGENCE.md`, in its own order. Then step 5 of the 31 Aug
-document. ≥ 2 days. **S-14 is done, so its gates now have a corpus to read** —
-but note that corpus starts on 10 Sep and cannot be back-filled, so give it
-traffic before reading gates off it.
+**The corpus is forward-only and starts 10 Sep.** A small clean sample is not a
+clean gate — that is S-6's shape. Give it traffic before deciding anything.
+
+**Stage C's amended gate**, still unmet because it needs all clinics: ZERO of
+BOTH `could not resolve spoken option(s)` (site A) and `resolved to NO payload
+slots` (site B), read as a pair.
+
+### 4. S-1 remainder — the owner decision. §4.6, and now §4.9 too.
+
+`speak_part_of_day: false` on northgate: **17.93 s → 12.76 s**, resolution
+identical on 7/7, calibration confirmed live to 0.5%. It pulls the opposite way
+from the pace change just shipped, and **fewer words spoken more slowly is
+probably better than either alone.** Both are env vars; it can be heard on one
+call without shipping anything. Decide it WITH S-10 (half-wired, §2.2).
+
+### 5. Phase 2 — one producer, one record, fewer guards
+
+`SLOT_PRESENTATION_CONVERGENCE.md` in its own order, then step 5 of the 31 Aug
+document. ≥ 2 days. **Now genuinely unblocked**: the model-readout counter is
+the measurement `STAGE_C_EVIDENCE` §5 said the ~900-line deletion was waiting
+on. Test surface is one literal pin plus one negative assertion to preserve.
+
+### 6. Stop needing a call per clinic — the thing that survives 15 of them
+
+Not queued, and the largest lever on this page. `tests/harness/` already drives
+the live turn loop in-process with no phone and no calendar writes, and
+`fake_clinic.py:231` runs the REAL `_exec_check_availability`, **faking only the
+reader**. `FakeDiary(slots={date: [times]})` is the seam.
+
+**Snapshot each clinic's real availability read-only and feed it to
+`FakeDiary`**, and clinic 15 costs what clinic 3 costs. What it will still NOT
+catch, and must be said out loud whenever it is relied on: per-service env vars,
+`theorem_v3`'s hardcoded prompt, Theorem's Acuity short-circuit, and everything
+the phone owns. Calls do not go to zero — they go from every clinic on every
+change to one representative clinic per release.
 
 ---
 
 ### Open, deliberately not queued
 
-| id | why it is not in the list |
+| id | why |
 |---|---|
-| **S-11** | The ladder watches the token, not the audio — 63% of breaches. **Now has a live instance on this build** (§1.6, turn 7: ttfa 3144 ms, headless, over the bar). That is evidence of the shape, not new evidence about the remedy: costed at every deadline and a bad trade at all of them, and the predicate that would work cannot be measured from the stored corpus. **Do not touch without a new idea, not just a new instance.** §4.1 |
-| **S-12** | 47.1% of turns breach the 3 s bar on the caller's clock. The general latency work, not a slot-presentation item. §4.1 |
-| **S-4** | `last_bot_prompt` truncation, fired on all four turns of every call this week. Improves for free when the readout shortens. **Do not touch the cap** — 34 writers, RED. |
-| **S-10** | `speak_part_of_day` is half-wired: the flag changes the labels, the prompt still instructs the band in three places. Decide it WITH item 3. |
-| **B-146** | *"Sorry, still with you —"* on a caller's first sentence. **Still has no explicit decision recorded against it**, and it fired again on the 19:36 call. It keeps being excluded by the scope rule deciding by default — and it is a first-sentence defect on exactly the call being rehearsed for a partner. |
+| **S-11** | The ladder watches the token, not the audio — 63% of breaches. Has a live instance on this build (§1.6, turn 7: ttfa 3144 ms, headless, over the bar). Evidence of the shape, not new evidence about the remedy. **Do not touch without a new idea, not just a new instance.** |
+| **S-12** | 47.1% of turns breach the 3 s bar on the caller's clock. General latency work. |
+| **S-4** | `last_bot_prompt` truncation, fires on every call. Improves free when the readout shortens. **Do not touch the cap** — 34 writers, RED. |
+| **S-10** | `speak_part_of_day` half-wired: flag changes labels, prompt still instructs the band in three places. Decide WITH item 4. |
+| **Sheets** | `GOOGLE_SERVICE_ACCOUNT_JSON` invalid on the demo service, so every call-summary row is dropped. Known-accepted there. **Nobody has checked the three clinic services** — if they carry the same value, every live call writes no `CallSummaries` row. Dashboard check, not code. |
+| ~~B-146~~ | **Already fixed, and the row was stale for three revisions.** §2.3. |
 
 ---
 
-**If you have time for exactly one thing: step 1.** Nine items are verified on
-a phone and all of them on one diary shape. The next thing this document does
-not know is what happens on an irregular one.
+**If you have time for exactly one thing: B-149.** Everything else on this page
+is verified, decided, or measurable. B-149 is the only item a patient can hear,
+and its safety net is the one that is supposed to catch everything else.
 
 ---
 
