@@ -929,6 +929,32 @@ _COMMUNICATIVE_WORDS: frozenset = frozenset({
     "early", "late", "earlier", "later",
     "weekend", "weekends", "weekday", "weekdays",
     "am", "pm",
+    # ── Asking Susie to repeat herself (added 2026-09-10, N3) ────────────
+    # CAb2fc0c23f14a5aff45a062992f02852a, 22:05:49. Susie read three times
+    # for Wednesday; the caller said "say that again" and it was DISCARDED
+    # here -- three words, none of them on this list. Twelve seconds later
+    # the watchdog re-asked "which of those would you like?", which is not
+    # a repeat, and he had to ask a second time. The second ask got through
+    # only because "say them again PLEASE" is four words and takes the
+    # length early return. Nineteen seconds, one caller, twice.
+    #
+    # Measured against the predicate at the time, every short form failed:
+    # "say that again", "say them again", "say it again", "repeat that",
+    # "pardon", "sorry", "again".
+    #
+    # This is T-15 again, one question later -- and T-15's own comment named
+    # the cause: "a hand-maintained vocabulary sitting between the caller
+    # and what they asked for ... the most likely answer to the question
+    # being asked was missing from it." The most likely thing a caller says
+    # after a list of three times is "say that again".
+    #
+    # NO NEW ARM AND NO PHRASE LIST. A repeat-request phrase list would
+    # enumerate an INTENT, which is the shape B-37's property test warns
+    # goes stale; these are words of MEANING, and this list only ever widens
+    # what the LLM is allowed to hear. The LLM already answers a repeat
+    # correctly -- it did exactly that at 22:06:08.9 once "please" let the
+    # utterance through -- so nothing new needs to learn how to speak.
+    "again", "repeat", "pardon", "sorry", "say", "tell", "more",
 })
 
 
