@@ -4888,6 +4888,51 @@ class SilenceHandler:
                 self._q_gen,
             )
 
+        # ── B-151: a turn that speaks nothing must arm its own safety net ────
+        # Every branch above hands arming to something that only happens if
+        # audio plays: _restart_timer runs off this turn's chunks, and
+        # DEFERRED_CLEAR hands it to on_tts_finished() explicitly.  When a
+        # barge-in set session["tts_inhibit"], the _tts_loop discards every
+        # chunk of this turn ABOVE the on_tts_started() call, so neither
+        # callback ever fires and the call is left with no timer, no watchdog
+        # and no speech.  The only exit is the caller speaking again — which is
+        # itself a fresh barge-in that kills the next reply the same way.
+        #
+        # northgate CAc9a7976f516be8d816c367500a0fd130, 2026-09-10 20:57:
+        # 13.7 s of dead air, nothing armed for 24.4 s, outcome=abandoned.  The
+        # caller said "hello" because they thought the line had dropped, and
+        # that "hello" is what discarded the answer they were waiting for.
+        # Same shape as B-67's exhibit (CAa0f76e2c, Vital Edge, 20 Aug) through
+        # a door B-67's garbage-final gate cannot see: this final was real words
+        # and WAS enqueued, so _resolve_barge_in ran — 3.3 s too late.
+        #
+        # _rearm_no_input_watchdog, not _restart_timer: the cancel this undoes
+        # was SPECULATIVE (on_speech_started fires on the PARTIAL, before there
+        # is any turn to judge), which is the case that function exists for, and
+        # the caller is still owed an answer to the SAME question.  Its own
+        # guards carry the teardown, already-live and re-ask-spent cases.
+        # Safe on the deadline because _no_input_watchdog takes
+        # max(armed_at, last_engagement_at, _watchdog_grace_until) + wait, so a
+        # caller who just spoke still gets a full window from their last word.
+        #
+        # Gated on tts_inhibit and nothing else.  _watchdog_armed_at is None
+        # until the first arming (_watchdog_q_gen is -1 there, which is truthy —
+        # do not gate on it).  A wider gate would arm on every ordinary turn
+        # whose audio is still playing and take the DEFERRED_CLEAR hand-off
+        # away; on_llm_started() has already cancelled the watchdog by here, so
+        # "no watchdog is live" is true on every turn and cannot narrow this.
+        if not self._cancelled and self._watchdog_armed_at is not None:
+            _sess_b151 = self._get_session() if self._get_session else None
+            if (_sess_b151 or {}).get("tts_inhibit"):
+                logger.info(
+                    "[ms_watchdog] WATCHDOG_REARM_SILENT_TURN"
+                    " reason=tts_inhibit q_gen=%d — this turn spoke nothing",
+                    self._watchdog_q_gen,
+                )
+                self._rearm_no_input_watchdog(
+                    self._watchdog_armed_at, self._watchdog_q_gen
+                )
+
     # ── Spec Z — prompt question check ──────────────────────────────────────────
 
     _WATCHDOG_QUESTION_SIGNALS = frozenset({
