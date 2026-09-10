@@ -203,6 +203,46 @@ because two of them change what the caller is offered:
 | **(b)** shorter time forms in the second slot | *"…or twenty past four"* | ~1 s/day, **~3 s** | **no** |
 | **(c)** `MULTI_DAY_MAX_DAYS` 3 → 2 | one fewer day | **~5.5 s** | **yes** |
 
+> **MEASURED 10 Sep, and the table above is wrong about (a).** Reproduced in
+> synthesis at **18.59 s**, calibrated at 18.2 chars/sec against CAb5b52d95's
+> own chunk timings -- independently the figure this repo already carries as
+> `SLOWEST_REAL_CHARS_PER_SEC` (17.9). On that readout:
+>
+> | lever | estimated | **measured** | result |
+> |---|---|---|---|
+> | (a) month after day one | ~4.5 s | **0.66 s** | 17.93 s |
+> | (b) suffix on the 2nd time | ~3 s | **2.69 s** | 15.89 s |
+> | (a)+(b) | ~7.5 s | **3.35 s** | **15.23 s** |
+> | `speak_part_of_day: false`, all times | -- | **5.17 s** | 13.42 s |
+>
+> (a) was over-credited about sevenfold: it drops ONE word of the six this
+> document counts in a date. **So (a)+(b) does not meet this item's own
+> "under 12 s" gate, and cannot.** The floor for three days at two times,
+> keeping the part-of-day suffix, is **14.85 s** -- with no opener at all,
+> weekday-only dates and minimal punctuation. Time labels are 47 % of the
+> readout and the suffix alone is 27.8 %, which independently reproduces the
+> LAT-1 measurement in `speaks_part_of_day` ("4.7 s of 17.3 s").
+>
+> **Under 12 s therefore requires an owner decision** -- the suffix or a day:
+>
+> * `operational.speak_part_of_day: false` is **already built and wired**
+>   (7 call sites, default true, a 2262-label corpus study behind it). One
+>   key in `clinic.json`, no engine change, 5.17 s. It is deliberately a
+>   clinic decision because what is lost is the caller's confirmation.
+> * `MULTI_DAY_MAX_DAYS` 3 -> 2, lever (c), ~6 s.
+>
+> **(b) as specified is NOT the neutral trim this table claims.**
+>   `_pick_times_for_day` deliberately picks the second slot in a DIFFERENT
+>   part of the day (3 of 4 representative rotas), so (b) strips the band
+>   from exactly the slot whose band the caller cannot carry over. It is
+>   also half of a wording decision this codebase already assigned to
+>   `clinic.json`, for less than half the saving. **Not taken.**
+>
+> (a) is landed as `40a67ea8`, with the two traps it turned up: the month-end
+> ("Tuesday the 1st" after "Monday 30th September" is heard as September)
+> and B-111's dedupe, which matched the payload label against the RENDERED
+> SENTENCE and went silently inert the moment the wording changed.
+
 **Recommendation: (a) and (b) first, together.** ~7.5 s off a 17 s readout — a
 44 % cut — with no change to what is offered and no owner decision required.
 Hold (c) in reserve; it is one constant (`slot_offer.py:50`) and can be taken
