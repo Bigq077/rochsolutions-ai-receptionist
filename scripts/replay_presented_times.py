@@ -29,6 +29,19 @@ For each stored lookup, in `seq` order within a call:
   * `choose_presented_indices` is then run against each day of this lookup's
     payload, at the limit the live cap actually used on that day.
 
+BUILT IS NOT SPOKEN
+-------------------
+`record_offer` is called where the deterministic offer is BUILT
+(`llm_stream.py:7353`), not where it is spoken -- and two stand-down branches
+below it, P6 and P6b, discard that offer and speak the model instead. Measured
+over this corpus: **10 of 77 recorded offers (13%) were never said out loud.**
+
+Feeding those to `record_spoken_slots` would tell the replay the caller had
+heard times they never did, which is the one thing that would make a
+"repeated clock times" measurement lie. So each offer's first chunk is checked
+against the call's assistant transcript, and an offer that does not appear
+there contributes nothing to the heard set. `skipped_unspoken` reports how many.
+
 WHAT IT CANNOT SEE, STATED SO THE OUTPUT IS NOT OVER-READ
 ---------------------------------------------------------
 `_requested_clock_times` is not stored, so D8's pin cannot fire in replay. On a
@@ -51,6 +64,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -79,7 +93,7 @@ def _load(clinic=None, limit=None):
 
     engine = create_engine(os.environ["OBS_DATABASE_URL"])
     query = (
-        "select call_sid, clinic_id, slot_offers from calls "
+        "select call_sid, clinic_id, slot_offers, transcript from calls "
         "where slot_offers is not null order by start_utc, call_sid"
     )
     with engine.connect() as conn:
@@ -87,6 +101,34 @@ def _load(clinic=None, limit=None):
     if clinic:
         rows = [r for r in rows if (r[1] or "") == clinic]
     return rows[: int(limit)] if limit else rows
+
+
+def _norm(text):
+    return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+
+
+def _assistant_speech(transcript):
+    """Everything Susie actually said on this call, normalised, as one string."""
+    return " || ".join(
+        _norm(t.get("text")) for t in _as_list(transcript)
+        if isinstance(t, dict) and (t.get("role") or "") == "assistant"
+    )
+
+
+def _was_spoken(offer_record, speech):
+    """Did this BUILT offer actually reach the caller?
+
+    `record_offer` fires where the offer is built (llm_stream.py:7353); P6 and
+    P6b below it can still stand it down and speak the model instead. 10 of 77
+    recorded offers in this corpus were never said. An offer whose opening
+    chunk is nowhere in the transcript did not happen, and must not be counted
+    as heard.
+    """
+    chunks = ((offer_record or {}).get("offer") or {}).get("chunks") or []
+    if not chunks:
+        return False
+    first = _norm(chunks[0])
+    return bool(first) and first in speech
 
 
 def _spoken_slots_of(offer_record):
@@ -116,7 +158,9 @@ def _stored_clocks_per_date(offer_record):
 def collect(rows):
     """One record per (call, lookup, day). Pure replay -- no engine, no network."""
     out = []
-    for sid, clinic, slot_offers in rows:
+    skipped_unspoken = 0
+    for sid, clinic, slot_offers, transcript in rows:
+        speech = _assistant_speech(transcript)
         offers = _as_list(slot_offers)
         if not offers:
             continue
@@ -131,6 +175,8 @@ def collect(rows):
             # The session as it stood when this lookup ran.
             session = {}
             for earlier in offers[:k]:
+                if not _was_spoken(earlier, speech):
+                    continue
                 spoken = _spoken_slots_of(earlier)
                 if spoken:
                     session["available_days"] = earlier.get("payload") or []
@@ -140,7 +186,7 @@ def collect(rows):
             )
             heard_dates = {
                 str(s.get("start"))[:10]
-                for earlier in offers[:k]
+                for earlier in offers[:k] if _was_spoken(earlier, speech)
                 for s in _spoken_slots_of(earlier)
             }
             limits = _presented_count_per_date(record)
@@ -180,11 +226,17 @@ def collect(rows):
                     "any_heard": bool(heard_dates),
                     "heard_clocks": sorted({
                         str(s.get("start"))[11:16]
-                        for earlier in offers[:k]
+                        for earlier in offers[:k] if _was_spoken(earlier, speech)
                         for s in _spoken_slots_of(earlier)
                     }),
                     "stored": stored.get(date, []),
                 })
+        skipped_unspoken += sum(
+            1 for o in offers if not _was_spoken(o, speech)
+        )
+    if skipped_unspoken:
+        print(f"skipped_unspoken        {skipped_unspoken}   "
+              f"offers built but never said (P6/P6b stood them down)")
     return out
 
 
