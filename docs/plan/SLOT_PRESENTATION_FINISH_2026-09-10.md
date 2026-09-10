@@ -1,12 +1,62 @@
-# Finishing slot presentation — plan of record, rev. 6 (2026-09-10, late)
+# Finishing slot presentation — plan of record, rev. 7 (2026-09-10, night)
 
 **Goal (owner, 10 Sep):** slot presentation is *finished* by the end of this week.
 **Time available:** Friday 11th, weekend buffer 12–13th.
-**Author's note:** rev. 6 is a HANDOVER. Slot presentation is finished and
-verified; the two items left are a NEW P1 that is not slot presentation
-(**B-149**, §1.7) and one call on a non-grid diary. Read §1.7 first if you are
-picking this up cold — a caller heard 13.7 seconds of silence tonight and it is
-the only thing on this page that a patient can hear.
+
+> ## rev. 7 — read this before anything below it
+>
+> Rev. 6 said slot presentation was DONE. **It is not.** Reading the new
+> `slot_offers` corpus back — the thing rev. 6 shipped and never read — turned
+> up a defect in the readout itself, and it is systematic rather than a slip.
+>
+> **Three corrections to rev. 6, in descending order of how much they change:**
+>
+> 1. 🔴 **N1 is a real, measured, systematic slot-presentation defect (§1.8).**
+>    When a caller asks about a day they were *just offered*, the re-readout
+>    withholds **every time they were offered** and reads three different ones.
+>    **6 of 8** such re-readouts in the corpus; the 2 exceptions are jv_v1 days
+>    holding only two slots, where the rule had nothing else to reach for.
+>    Nothing is invented — every time spoken is real and bookable — so the
+>    judge's `wrong_info` tag on CA12036a45 is **wrong**, and reading it as a
+>    hallucination sends the next reader to the wrong file. §1.8 has the
+>    payloads and the one-line cause.
+>
+> 2. ⚠️ **"B-149" was already taken.** `test_b149_b150_a_refused_day_after_
+>    narrowing.py` (6 Sep) is the promised-work defect — a head that promised a
+>    Tuesday lookup before Susie talked about Monday. Rev. 6 gave the same
+>    number to the dead-air defect. Two live defects under one id is how a fix
+>    gets reported closed against the wrong exhibit. **The dead-air defect is
+>    B-151 from here** (B-150 was the highest in use); §1.7 keeps its timeline.
+>
+> 3. ✅ **B-151 is FIXED, not call-verified.** `_rearm_no_input_watchdog` from
+>    `on_llm_finished()`, gated on `session["tts_inhibit"]`. 45 lines, one file,
+>    ten regression tests, all three harnesses clean against a same-corpus
+>    baseline. §1.7 carries the reasoning and the two measurements that changed
+>    the shape of it.
+>
+> **Also closed since rev. 6, neither call-verified:** **N2** `dfc8b914` (a
+> caller asked for midday three times and was read the three times furthest
+> from it) and **N3** `ba3374ff` ("say that again" was dropped as a meaningless
+> fragment and the caller waited 19 s). Both pushed to `latency-eval`.
+>
+> ```
+> origin/latency-eval  ba3374ff   N3       ← + B-151 local, unpushed
+>                      dfc8b914   N2
+>                      818793c3   rev. 6
+> origin/production    2658f727   ← 3 behind, clean fast-forward, nothing ahead
+> ```
+>
+> **Filed, not fixed:** `day_by_position` is `RAISED:TypeError` on all 2082
+> turns in every tree — `replay_slot_decisions.py:303` calls
+> `day_selected_by_position(slots, utterance)` against a signature of
+> `(available_days, session, text)`, and `safe()` swallows it into a string, so
+> the gate reads `CHANGED: 0` while one of its five dimensions has never
+> produced a value. B-105's rung is scored by nothing.
+
+**Author's note (rev. 6, kept):** rev. 6 was a HANDOVER. Read §1.7 first if you
+are picking this up cold — a caller heard 13.7 seconds of silence and it is the
+only thing on this page that a patient can hear. Rev. 7 adds §1.8, which is the
+only thing on this page a patient can *mis*hear.
 
 > ### STATUS — four calls, 10 Sep. Slot presentation is DONE. One new P1.
 >
@@ -24,7 +74,8 @@ the only thing on this page that a patient can hear.
 > confirmed the pace is right. It is NOT set on the three clinic services; the
 > code default is 1.0, so they are unchanged until someone sets it. §4.9.
 >
-> 🔴 **B-149 is open, P1, caller-audible, and NOT slot presentation.** 13.7 s of
+> ~~🔴 **B-149 is open**~~ — **superseded by rev. 7: renumbered B-151, and FIXED
+> (not call-verified).** Left below as rev. 6 wrote it. 13.7 s of
 > dead air on tonight's 20:57 call; the caller said "hello" because they thought
 > the line had dropped. **It is not new and not from today's work** — the
 > mechanism is described verbatim in a code comment dated 20 Aug. §1.7 has the
@@ -353,7 +404,12 @@ reaches this turn, which is precisely why S-11 is filed and not queued.
 
 ---
 
-## 1.7 B-149 — a turn that speaks nothing leaves no safety net
+## 1.7 B-151 — a turn that speaks nothing leaves no safety net
+
+> **rev. 7: renumbered from B-149 (collision, see the header) and FIXED — not
+> call-verified.** The diagnosis below stood up; two things measured while
+> building it changed the shape of the repair, and both are recorded at the end
+> of this section.
 
 **CAc9a7976f516be8d816c367500a0fd130, 10 Sep 20:57, northgate, build
 `2658f7272216`. 104 s, `outcome=abandoned`, judge 2. P1, caller-audible.**
@@ -424,6 +480,213 @@ not attempted at 21:00 on a night with live clinic calls pending:
 
 **If it bites during a call:** speak again. The turn after next lands.
 
+### rev. 7 — the fix, and the two measurements that changed its shape
+
+`on_llm_finished()`, after the two existing deferred branches. 45 lines, one
+file, ten regression tests in
+`tests/regression/test_b151_a_turn_that_speaks_nothing_still_arms_the_watchdog.py`.
+
+```python
+if not self._cancelled and self._watchdog_armed_at is not None:
+    _sess_b151 = self._get_session() if self._get_session else None
+    if (_sess_b151 or {}).get("tts_inhibit"):
+        self._rearm_no_input_watchdog(self._watchdog_armed_at, self._watchdog_q_gen)
+```
+
+**Reproduced before it was fixed**, against the real `SilenceHandler`, not by
+inspection: arm a question, `on_speech_started(stt_source=True)` during TTS,
+then an LLM turn that never calls `on_tts_started`. Three tests fail, seven
+guards already pass. Rev. 6 was right about the seam and right about the tool.
+
+**Two things measured while building it, both of which would have made a
+plausible fix wrong:**
+
+* **`_watchdog_q_gen` initialises to `-1`, which is truthy; `_watchdog_armed_at`
+  initialises to `None`.** The obvious guard — "we armed one once, so re-arm it"
+  — reads naturally as `if self._watchdog_q_gen:` and passes `None` into
+  `max(armed_at, …)` on the first turn of every call. Gate on `_watchdog_armed_at`.
+
+* **`on_llm_started()` calls `_cancel_timer()`, which kills the watchdog on
+  EVERY turn**, not only barged-in ones. So at `on_llm_finished()` there is
+  never a live watchdog to preserve, and an added `and not <watchdog live>`
+  clause would look careful and be a no-op. The whole weight of the gate falls
+  on `tts_inhibit`, which is why that flag — and nothing wider — is the
+  discriminator. `test_the_llm_turn_itself_is_what_leaves_the_call_unguarded`
+  pins this down so the next reader does not re-derive it.
+
+**The partial-inhibit case is safe by construction, and this is worth knowing
+before anyone "hardens" it.** A turn can play some chunks and have the rest
+discarded; `tts_inhibit` is still set at `on_llm_finished`, so this arms — and
+`on_tts_finished` for the chunks that DID play sets `_watchdog_grace_until`.
+`_no_input_watchdog` recomputes `max(armed_at, last_engagement_at,
+_watchdog_grace_until)` **on every loop iteration**, not once at start, so the
+later anchor simply wins and the window is never shorter than the audio
+warrants. Arming early cannot make Susie speak early.
+
+**Why not `_restart_timer()`.** It also arms on this state — measured, both
+candidates were run against the reproduction. It was not chosen because it
+cancels and recreates the W1/W2/W3 task, resets `currently_reasking` and re-runs
+every Spec Z gate; `connection.py` is 18k lines and frozen. The cancel being
+undone here is *speculative* (the teardown is on the PARTIAL), which is verbatim
+the case `_rearm_no_input_watchdog`'s docstring was written for, and it is the
+third defect of that family after B-67 and the DTMF one.
+
+**Verification.** 10/10 on the new file. The seven pre-existing failures in
+`test_silence_handler.py` / `test_dead_air_safety_net.py` are **identical on the
+baseline tree** — checked, not assumed, including
+`test_no_fire_while_tts_playing`, which is the one that would have looked like
+this change. `replay_slot_decisions` `CHANGED: 0` at **1889 = 1889 turns** (same
+corpus — the header, not the rows, per N3's note); `replay_presented_times`
+0 changed / 0 lost / 0 invented / 0 re-offered over 526 = 526 days;
+`replay_multi_day_spread` byte-identical.
+
+**On the call, this is what to listen for:** talk over Susie mid-reply. The log
+must show `WATCHDOG_REARM_SILENT_TURN reason=tts_inhibit` followed by a
+`WATCHDOG_START`, and there must be no hole. The fix cannot make her speak the
+*wrong* thing — it only decides whether anything is armed — so the risk on the
+call is a re-ask arriving too soon, which
+`test_the_caller_is_not_re_asked_the_instant_they_stop_talking` is the offline
+guard against.
+
+---
+
+## 1.8 N1 — asking about a day withdraws the times you were offered for it
+
+**P1, caller-audible, systematic, and it is slot presentation.** Found by
+reading the `slot_offers` corpus that rev. 6 shipped; it is the first thing that
+corpus has been asked and the first answer it gave was a defect.
+
+**CA12036a4529eaf8e46919432a9ebc1a6a, 10 Sep 21:57, northgate, build
+`dfc8b91454b8`.** 100 s, `outcome=abandoned`, judge 2.
+
+```
+Susie : I've got a few days — Number 1, Monday 14th September — eight in the
+        morning, or ten past five in the evening.
+        Number 2, Tuesday the 15th — ten to nine, or twenty past four.
+        Number 3, Wednesday the 16th — twenty to ten, or half past three.
+caller: um what about monday
+Susie : Monday 14th September — Number 1, half past ten in the morning.
+        Number 2, twenty past eleven. Number 3, twenty to three.
+caller: uh and what about tuesday
+Susie : Tuesday 15th September — Number 1, ten past twelve. Number 2, one.
+        Number 3, ten to two.
+caller: uh yeah as close as possible as 12 please
+Susie : Ten past twelve on Tuesday the 15th — could I take your first name…
+        [caller drops]
+```
+
+**Nothing was invented — this is the first thing to get right.** The stored
+payload for every one of those days is the same uniform grid:
+
+```
+08:00 08:50 09:40 10:30 11:20 12:10 13:00 13:50 14:40 15:30 16:20 17:10
+       spread PRESENTED  Mon 08:00 17:10 · Tue 08:50 16:20 · Wed 09:40 15:30
+       single-day        Mon 10:30 11:20 14:40   ← zero overlap with the above
+```
+
+Every time spoken is real and bookable. **The judge tagged this call
+`wrong_info` + `booking_error`, and the `wrong_info` half is wrong** — read as a
+hallucination it sends the next reader to the LLM and the prompt, which is the
+one place the defect is not. Same misread as the sweep's "one safety FAIL".
+
+**What the caller experiences.** They are offered Monday *at eight or ten past
+five*, they say "what about Monday" — and both of those times are gone,
+replaced by three they have never heard, with no explanation. The two times
+that made them ask about the day in the first place are the two the readout
+guarantees to withhold.
+
+### Measured, with the denominator
+
+Scanned every call carrying `slot_offers` (134 calls). The instrumentation that
+makes this measurable — `presented` on `single_day` rows, **S-14 `aa4c324c`** —
+starts on 10 Sep and cannot be back-filled, so **5 calls** can be scored at all.
+
+| | |
+|---|---|
+| re-readouts of a day the caller had already been offered | **8** |
+| kept at least one of the offered times | **2** |
+| kept **none** of them | **6** |
+
+The 2 that kept them are jv_v1 days holding only `19:15` and `20:00` — the
+whole day, so there was nothing else to reach for. **On every day with slots to
+spare, the offered times were withheld: 6 of 6.** This is deterministic, not a
+model slip, and it will reproduce on the next call that asks about a day.
+
+### The cause is one wrapper, and it is doing exactly what it was told
+
+`choose_presented_indices` → `_prefer_unheard_clock_times`
+(`app/tools/slot_followup.py:3798`). The multi-day spread makes every day it
+named a **heard day**; the rule then prefers clock times the caller has not
+heard, so the two times they were offered are precisely the two it removes.
+
+**This is S-2's edge.** `afabb549`, shipped 10 Sep, deliberately removed the
+early return that made this rule stand down on any heard day — correctly, since
+"a multi-day readout makes every day it named a heard day, so from the first
+readout onwards … the cross-day preference never fired again". S-2 fixed
+repeats *across* days (29 → 1 on the heard-day readouts) and opened this on the
+re-readout of *one* day. Rev. 6 marked S-2 **VERIFIED** on the 13:43 call; that
+call never asked about a day it had been offered, so the step passed without the
+case existing. §4.5's rule again — a step that passes without its mechanism
+firing is not a pass.
+
+**Do not revert S-2.** The two rules compose and neither replaces the other;
+reverting reinstates "twenty to ten" offered for Monday and again for Tuesday
+seventeen seconds apart.
+
+### The fix shape already exists in this file
+
+B-142 is the precedent, and its comment states the principle outright: *"'sooner'
+and 'what else' are opposite questions"*, so `caller_wants_soonest` makes the
+unheard filter **stand down** rather than widening anyone's pool. N1 is the
+third question-shape the filter gets wrong:
+
+* **"what else have you got?"** → withhold what they heard. B-116. Correct.
+* **"anything sooner?"** → repeat the earliest. B-142. Correct, already built.
+* **"what about Monday?"** → **hear the day, including the times that made me
+  ask.** Not built. This is N1.
+
+So the change is one more stand-down arm on an existing wrapper, not a new
+selection rule — and it must be an arm on `_prefer_unheard_clock_times`, not a
+widening of B-116's pool, for the reason that file gives at length.
+
+**The one thing to prove before building it:** the signal. A day named right
+after a spread that offered it is not the same as a day named cold, and
+`_prefer_unheard_clock_times` currently cannot tell them apart. Establish which
+session key carries "this day came from the spread I just read" before writing
+anything — `[[anchor-defect-rows-before-scheduling]]`, and the fourth wrapper on
+this function is where a wrong guess is expensive.
+
+### 🔴 The harness gate forbids the fix — re-aim it deliberately, do not delete it
+
+`replay_presented_times.py:304` counts a **gate** failure, `MUST be 0`:
+
+```python
+own   = set(c.get("heard_clocks_this_day") or [])
+spare = set(c.get("day_times") or []) - own
+if own & set(cc) and len(spare) >= (c.get("limit") or 0):
+    re_offered += 1
+```
+
+That is *verbatim* the thing N1's fix has to start doing: put a time the caller
+already heard **on that day** back into the readout, on a day with plenty spare.
+So the N1 fix cannot pass this gate as written, and the exemption already there
+(a day too short to fill the readout) is the wrong exemption — it is the one
+that produced the two `KEPT` rows above, which were never the defect.
+
+**This is the third measurement in this project to encode a rule that a later
+defect proved too broad**, and rev. 6 §7 already records the right treatment:
+re-aim, never delete, and say in the commit which case moved it. The honest
+re-aim is that "re-offered" means *re-offered in answer to "what else"* — the
+same distinction B-142 drew in the code. Whoever builds N1 must move the gate in
+the same commit as the fix, with the exhibit named, or the next reader reads a
+red gate as a regression and reverts a correct change.
+
+**Exit:** the 21:57 payload replayed offline as a failing test, `presented` for
+Monday containing `08:00` or `17:10`; `replay_presented_times` re-aimed in the
+same commit and green on its re-aimed terms; `lost` / `invented` still 0 — those
+two are untouched by this and stay the real safety line; then a call that asks
+about an offered day and hears at least one of its offered times back.
+
 ---
 
 ## 2. The register — every open item, with anchors
@@ -434,6 +697,10 @@ A row without `file:line` is a lead, not a finding. All of these have one.
 
 | id | what a caller experiences | anchor | state |
 |---|---|---|---|
+| **N1** | 🔴 **NEW, rev. 7, and it is the top of §8.** "What about Monday?" — and both times she offered for Monday are gone, replaced by three the caller has never heard. Nothing invented; every time is real and bookable. | `slot_followup.py:3798` `_prefer_unheard_clock_times`; the multi-day spread makes every day it named a **heard** day | **open, unbuilt.** 6 of 8 corpus re-readouts, and the 2 exceptions are two-slot days with no alternative. CA12036a4529 21:57. **The `replay_presented_times` gate forbids the fix** and must move with it. §1.8. |
+| ~~**B-151**~~ | 13.7 s of dead air; the caller said "hello" because they thought the line had dropped, and that "hello" discarded the reply they were waiting for. **Not slot presentation.** | `connection.py` `on_llm_finished`; `_rearm_no_input_watchdog` | **FIXED (rev. 7), not call-verified.** Renumbered from B-149 — that id was taken on 6 Sep. §1.7. |
+| ~~**N2**~~ | Asked for midday three times; read the three times FURTHEST from noon out of the five the day held. | `requested_clock_times` — "as" is not a preposition; "12 am" → `00:00` blanks the text | **FIXED `dfc8b914`**, not call-verified. CA2ac47ad588. |
+| ~~**N3**~~ | "Say that again" dropped as a meaningless fragment; the caller waited 19 s and had to add a fourth word to be heard. | `_COMMUNICATIVE_WORDS`; fourth eaten answer at that site, third of this shape | **FIXED `ba3374ff`**, not call-verified. CAb2fc0c23f1. |
 | ~~**S-13**~~ | **FIXED `8ab39703`, verified on a phone 14:42 — the D8 line fired for the first time in its life, through B-145 not D-B (§1.6, §4.4's correction box).** Was: A caller who names a TIME on a day already on the table is answered without it. "Anything around midday on Tuesday" → 08:00 / 09:40 / 15:30; asked again, 10:30 / 11:20 / 14:40. 12:10 and 13:00 were bookable and had been read out 16 s earlier. | `slot_followup.py:3687` reads `REQUESTED_TIMES_KEY`; its only three writers are `receptionist_tools.py:6658`, `:7319`, `:7642` — all inside `check_availability` | CAb8ac636017de7d35370fd7951c54d3cf, 13:44:22 and 13:44:36. **D8's pin is structurally dead on every payload-answered turn**, which is the path `speak_one_day_from_payload` takes (`no tool call needed (D-B)`). §4.4. |
 | ~~**S-3**~~ | The filler's first rung was AUDIBLE at ~3.12 s, past the 3 s bar. | `config.py` `LLM_FIRST_CHUNK_TIMEOUT_MS` | **FIXED `dd15f2d7`**, 3000 → 2750. §4.1. Not call-verified. |
 | ~~**S-2**~~ | "Twenty to ten" said for Monday and again for Tuesday, 17 s apart. | `slot_followup.py` `_prefer_unheard_clock_times` | **FIXED `afabb549`**. Corpus: heard-day repeats **29 → 1**. Not call-verified. |
@@ -1389,9 +1656,41 @@ whether the mechanism could have fired at all.
 
 ## 8. What happens next, in dependency order
 
+> **rev. 7 re-orders this list.** Rev. 6's text is kept below it unchanged.
+>
+> | | | |
+> |---|---|---|
+> | **0** | **N1 — §1.8** | 🔴 unbuilt. Systematic (6 of 6 on days with slots to spare), caller-audible, and it IS slot presentation. Comes with a harness gate that has to move in the same commit. |
+> | **1** | **One call** | Proves **B-151**, **N2** and **N3** in one go — three unverified fixes on two different axes, distinguishable in the log. See below for exactly what to say. |
+> | **2** | Promote | `latency-eval` → `production`, fast-forward, out of hours. Revert target `2658f727`. **Not before the call.** |
+> | **3** | Non-grid diary | Rev. 6's item 2, unchanged and still the honest gap. |
+>
+> **The one call, three things, in order:**
+>
+> 1. **N2** — ask for "around 12" on a day that has no noon slot, then
+>    *"as close as possible as 12"*. Expect times either side of midday, not the
+>    three furthest from it.
+> 2. **N3** — after any slot readout, say **"say that again"**. Expect the times
+>    re-read, and `lost_total=0` in the call summary. That number is the tell;
+>    it was `1`.
+> 3. **B-151** — talk over Susie mid-reply. Expect
+>    `WATCHDOG_REARM_SILENT_TURN reason=tts_inhibit` and no hole.
+>
+> And while you are there, **N1 reproduces for free**: ask for a few days, then
+> ask about one of the days she just offered. Today she reads three times you
+> have never heard and withholds both of the ones that made you ask.
+>
+> **Confirm `[build_info] running build <sha>` before trusting any of it.**
+
 **Slot presentation is finished.** Nine items verified on a phone, script step 6
 passed twice, both branches at `2658f727`. What follows is one open P1 that is
 not slot presentation, one call, one owner decision, and Phase 2.
+
+> ⚠️ **rev. 7: the sentence above is wrong.** It was true of everything rev. 6
+> could see, and §1.8 is the thing it could not — the corpus that proves it
+> landed the same evening. Left in place because deleting it hides how the
+> claim was reached: every item was verified on a call, and no call happened to
+> ask about a day it had just been offered.
 
 ### Shipped and promoted — `latency-eval` AND `production` at `2658f727`
 
@@ -1412,7 +1711,7 @@ not slot presentation, one call, one owner decision, and Phase 2.
 
 ---
 
-### 1. B-149 — the only caller-audible defect open. §1.7.
+### 1. B-151 — FIXED, not call-verified. §1.7.   (was "B-149, the only one open")
 
 13.7 s of dead air, `outcome=abandoned`, and the safety net absent for 24.4 s
 because it is armed by speech and the turn produced none.
@@ -1426,6 +1725,12 @@ tool; the hole is `connection.py:4855`.
 **Exit:** the timeline reproduced offline as a failing test; failing-set diff
 EMPTY; then a call where a barge-in lands on an in-flight reply and the watchdog
 is observed arming anyway.
+
+> **rev. 7: the first two are done** — reproduced offline (3 of 10 tests failed
+> before, 10/10 after), failing-set diff EMPTY, all three harnesses clean
+> against a same-corpus baseline. **The call is the only thing left**, and it is
+> the same call as N2's and N3's. §1.7's rev. 7 block has the fix, the two
+> measurements that changed its shape, and what to listen for.
 
 ### 2. Call a non-grid diary
 
@@ -1504,8 +1809,10 @@ change to one representative clinic per release.
 
 ---
 
-**If you have time for exactly one thing: B-149.** Everything else on this page
-is verified, decided, or measurable. B-149 is the only item a patient can hear,
+**If you have time for exactly one thing: N1 (§1.8).** B-151 is fixed and needs
+only a call; N1 is unbuilt, systematic, and a caller hears it every time they
+ask about a day. Everything else on this page
+is verified, decided, or measurable.
 and its safety net is the one that is supposed to catch everything else.
 
 ---
