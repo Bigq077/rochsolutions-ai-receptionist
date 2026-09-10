@@ -481,7 +481,49 @@ STT_SILENCE_TIMEOUT_MS = 1000
 # is ~4.1s of real silence - the bar is already being missed on the caller's
 # clock, and moving this number cannot fix that. Only cutting the endpointer
 # wait and the 1656ms first-token time can.
-LLM_FIRST_CHUNK_TIMEOUT_MS = 3000
+#
+# S-3, 2026-09-10: 3000 -> 2750, and it is a correction of an off-by-one-step,
+# not a re-opening of the argument above.
+#
+# This number is a DEADLINE. The bar is about AUDIO. Between the two sits
+# synthesis and the wire, and nothing in code said so, so the two were treated
+# as the same number and the rung was set to the bar exactly. Measured over the
+# 84 corpus turns where the first rung demonstrably spoke, the gap from this
+# deadline to audio on the wire is p50 128ms / p90 246ms / p95 313ms -- so the
+# rung's audio landed at p50 3128ms and 79 of those 84 turns (94%) put the
+# caller past the 3.0s bar. That is the whole of S-3: the deadline was inside
+# the bar and the sound it exists to make was not.
+#
+# 2750 + the measured p90 synthesis gap = 2996ms, i.e. inside the bar at p90.
+# The cost is small and was measured before it was taken: the rung fires on
+# 16.3% of turns instead of 14.1% (+2.2 points, 3,170 turns). That is nowhere
+# near the 42% that made 1800ms untenable, and it is a smaller move than the
+# 1800 -> 3000 change it corrects.
+#
+# FIRST_RUNG_SYNTH_MS below is the missing half of the relationship. Name it,
+# and a future change to this number cannot silently put the sound back outside
+# the bar the way this one did -- test_b19_filler_rearm.py asserts the sum.
+#
+# What this does NOT fix, and do not let it be reported as if it did: the rung
+# cancels on the first TOKEN, and the wait from the token to the first CHUNK is
+# unguarded. 190 of the 302 corpus breaches (63%) are in that gap, and no value
+# of this constant reaches them -- their token arrives at p50 1.9s, before any
+# candidate deadline. See S-11 in the plan of record for the sweep and why the
+# obvious fix is a bad trade.
+LLM_FIRST_CHUNK_TIMEOUT_MS = 2750
+
+# The bar itself, from CLAUDE.md section 6: "no dead air over 3s without a
+# filler or acknowledgement". Stated here so the ladder can be checked against
+# it in code rather than in a comment.
+DEAD_AIR_BAR_MS = 3000
+
+# Deadline -> audio on the wire, for the first rung. Measured p90 over the 84
+# corpus turns where that rung spoke (p50 128ms, p90 246ms, p95 313ms); 250 is
+# the p90 rounded. This is not a tunable -- it is an observation about
+# ElevenLabs and the Twilio wire, and it is here so that
+# LLM_FIRST_CHUNK_TIMEOUT_MS can be checked against DEAD_AIR_BAR_MS as the
+# caller experiences it rather than as the timer sees it.
+FIRST_RUNG_SYNTH_MS = 250
 
 # How long to wait before speaking a SITUATIONAL head -- one chosen from what
 # the caller just asked for rather than from the work in flight.

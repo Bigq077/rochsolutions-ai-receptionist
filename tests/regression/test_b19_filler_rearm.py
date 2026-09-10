@@ -21,7 +21,9 @@ import pytest
 
 from app.media_streams import llm_stream
 from app.media_streams.config import (
+    DEAD_AIR_BAR_MS,
     FILLER_PHRASES,
+    FIRST_RUNG_SYNTH_MS,
     LLM_FILLER_SECOND_MIN_GAP_MS,
     LLM_FILLER_SECOND_STALL_MS,
     LLM_FIRST_CHUNK_TIMEOUT_MS,
@@ -155,8 +157,17 @@ def test_silence_under_the_stall_threshold_is_a_deliberate_trade():
     5.6s is 13.9% of turns, over 10s is 2.0%, so this buys back 86% of the
     doubles while still covering the stalls B-19 was written for.
     """
-    first_at_s = LLM_FIRST_CHUNK_TIMEOUT_MS / 1000.0
-    assert first_at_s <= 3.0, "the FIRST phrase must still land inside the bar"
+    # S-3: this used to read `LLM_FIRST_CHUNK_TIMEOUT_MS / 1000.0 <= 3.0`, and
+    # it passed at 3000ms while 94% of the rung's audio landed OUTSIDE the bar.
+    # A deadline is not a sound. The caller hears the rung a synthesis-and-wire
+    # gap later -- measured p90 246ms over the 84 corpus turns where it spoke --
+    # so the thing that has to be inside the bar is the SUM, not the deadline.
+    assert LLM_FIRST_CHUNK_TIMEOUT_MS + FIRST_RUNG_SYNTH_MS <= DEAD_AIR_BAR_MS, (
+        "the FIRST phrase must be AUDIBLE inside the bar, not merely scheduled "
+        "inside it: %dms deadline + %dms synthesis = %dms, bar is %dms"
+        % (LLM_FIRST_CHUNK_TIMEOUT_MS, FIRST_RUNG_SYNTH_MS,
+           LLM_FIRST_CHUNK_TIMEOUT_MS + FIRST_RUNG_SYNTH_MS, DEAD_AIR_BAR_MS)
+    )
     assert LLM_FILLER_SECOND_STALL_MS >= 8000, (
         "below ~8s the second phrase stacks often enough to be the defect "
         "rather than the fix"
