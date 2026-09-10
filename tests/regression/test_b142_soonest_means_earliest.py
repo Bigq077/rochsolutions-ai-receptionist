@@ -162,13 +162,72 @@ def test_every_soonest_preference_reaches_the_time_level(preference):
 
 def test_what_else_still_leads_with_the_unheard():
     """B-116/B-119 must survive intact. Without a soonest preference the second
-    offer is still the times the caller has not heard — this is the behaviour
-    that answers "anything else that day", and it is byte-identical to the
-    live second offer, which is what makes it the right rule for that question
-    and the wrong one for "sooner"."""
+    offer is still the times the caller has not heard — the behaviour that
+    answers "anything else that day", and the wrong one for "sooner".
+
+    S-2, 10 Sep 2026: this used to assert `second == LIVE_OFFER_2`, byte for
+    byte, and that assertion is now retired DELIBERATELY. `LIVE_OFFER_2` is
+    what a caller heard on the defective build, and it contains 08:50 on
+    Monday — a clock time they had already been read on Tuesday one offer
+    earlier. Pinning it pinned the S-2 defect as the expectation.
+
+    What the test was FOR survives and is asserted directly below: without a
+    soonest preference the second offer repeats nothing from the first, which
+    is what makes it the right rule for "what else" and the wrong one for
+    "sooner". The `LIVE_OFFER_2` list is kept in the fixture as the historical
+    record, and `test_the_second_offer_no_longer_repeats_a_heard_time` states
+    the one place the two now differ.
+    """
     first, second = _two_offers("")
     assert first == LIVE_OFFER_1
-    assert second == LIVE_OFFER_2
+    assert not set(second) & set(first), (first, second)
+    assert len(second) == len(LIVE_OFFER_2)
+
+
+def test_the_second_offer_no_longer_repeats_a_heard_time():
+    """The single difference from the live readout, named so it cannot drift
+    back. Monday's second read was 08:50, which the caller had already heard on
+    Tuesday; it is now a clock time they have heard on no day at all."""
+    first, second = _two_offers("")
+
+    assert "08:50" in first                       # heard on Tuesday, offer 1
+    assert "08:50" in LIVE_OFFER_2                # and read back on Monday
+    assert "08:50" not in second, second
+
+
+def test_the_real_loop_carries_what_it_has_committed():
+    """`_two_offers` above is a MOCK of the multi-day loop: it calls
+    `choose_presented_indices` per day without `also_heard_clock_times`, so
+    nothing stops two days in ONE readout picking the same clock time. That is
+    how `LIVE_OFFER_2` came to hold 16:20 on both Monday and Tuesday.
+
+    The real loop (`_cap_presented_slots`, T1b site 1) carries what its earlier
+    iterations committed. Driven that way the same diary produces a second
+    offer with no cross-day repeat and nothing the caller has already heard —
+    and this test exists because a mock of the loop cannot see the loop's bug,
+    which is the lesson of 9-10 September twice over.
+    """
+    session = {
+        "clinic_id": "northgate", "day_preference": "", "available_days": DAYS,
+    }
+    offers = []
+    for _ in range(2):
+        picked, committed = [], set()
+        for day in DAYS:
+            idx = choose_presented_indices(
+                session, day, 2, also_heard_clock_times=committed,
+            )
+            for i in idx:
+                committed.add(day["slots"][i]["start"][11:16])
+            picked += [day["slots"][i] for i in idx]
+        offers.append([s["start"][11:16] for s in picked])
+        record_spoken_slots(session, picked)
+    first, second = offers
+
+    assert len(first) == len(second) == 6
+    assert len(set(first)) == 6, first        # no clock time twice in one readout
+    assert len(set(second)) == 6, second
+    assert not set(second) & set(first), (first, second)
 
 
 def test_an_unrelated_preference_does_not_trip_the_soonest_arm():

@@ -34,7 +34,9 @@ owner decision and now live in one place, rather than disagreeing across
 """
 from __future__ import annotations
 
+import logging
 import re
+import sys as _sys
 from typing import Any, Dict, List, Optional
 
 from app.tools.slot_followup import (
@@ -48,9 +50,62 @@ from app.tools.slot_followup import (
     more_times_tail,
 )
 
+logger = logging.getLogger(__name__)
+
 MULTI_DAY_MAX_DAYS = 3
 MULTI_DAY_TIMES_PER_DAY = 2
 SINGLE_DAY_MAX_TIMES = 3
+
+#: One line per process per violating call site. A readout runs on the hot path
+#: of a live call and a contract breach is a property of the CODE, not of the
+#: caller, so the thousandth occurrence tells an operator nothing the first did
+#: not -- and a warning that repeats every turn is a warning nobody reads.
+_TRIM_WARNED: set = set()
+
+
+def _warn_untrimmed(what: str, held: int, spoken: int) -> None:
+    """S-5. Say out loud that this function is about to make a selection it is
+    not qualified to make.
+
+    THE CONTRACT, which until now lived only in `build_slot_offer`'s docstring:
+    the days handed in have ALREADY been trimmed to what should be spoken, by
+    `choose_presented_indices`, which is the single owner of "how many, and
+    which" (B-116) and the only layer that knows what this caller has already
+    heard. A properly trimmed day therefore has nothing left for this function
+    to drop.
+
+    So dropping anything IS the violation, whatever the caller passed. When it
+    happens, `_pick_times_for_day` picks by POSITION instead -- blind to what
+    was heard -- which is T1b-2 exactly: `speak_one_day_from_payload` handed in
+    the whole day, read its chronological head, and a caller heard "eight in
+    the morning" four times in one call. Five producers, four honouring the
+    contract, and nothing noticing the fifth.
+
+    LOGS, does not raise. A caller mid-booking must not lose their offer to a
+    contract check, and the surrounding call site already treats an exception
+    here as "fall back to the model's presentation". A loud, greppable line and
+    a census test that fails in CI are the two things that were missing; a
+    live-call exception is not one of them.
+
+    `_sys._getframe` is only reached on the violation path, so the normal
+    readout pays nothing for it.
+    """
+    try:
+        frame = _sys._getframe(2)
+        where = "{}:{}".format(frame.f_code.co_filename, frame.f_lineno)
+    except Exception:                      # never let a warning break a readout
+        where = "<unknown>"
+    if where in _TRIM_WARNED:
+        return
+    _TRIM_WARNED.add(where)
+    logger.warning(
+        "[slot_offer] S-5: handed an UNTRIMMED payload -- %d %s available "
+        "against %d that will be spoken, so this function is about to select "
+        "by POSITION, blind to what this caller has already heard. "
+        "choose_presented_indices is the only owner of that decision (B-116); "
+        "trim through it before calling here. Producer: %s",
+        held, what, spoken, where,
+    )
 
 
 class SlotOffer:
@@ -411,6 +466,7 @@ def build_slot_offer(
     more_times: Optional[bool] = None,
     more_days: Optional[bool] = None,
     other_dates: Any = None,
+    pretrimmed: bool = True,
 ) -> Optional[SlotOffer]:
     """Build the spoken offer, its record and its keypad map from the payload.
 
@@ -440,6 +496,25 @@ def build_slot_offer(
     (B-116) — knowledge this function does not have and must not overrule. Given
     a pre-trimmed day it would see nothing held back and would wrongly fall
     silent about the rest of the diary, so the retrieval path's own answer wins.
+
+    `pretrimmed` is that same contract, moved OUT of this docstring and into the
+    signature. S-5: the paragraph above has said it since it was written, and it
+    was still violated at one of five call sites (T1b-2, `speak_one_day_from_
+    payload`) with nothing noticing — a caller heard "eight in the morning" four
+    times in one call. A contract a producer cannot fail to see is the only kind
+    that holds.
+
+    Leave it True and this function will say so, loudly and once per call site,
+    if it is about to drop a slot — because a properly trimmed day has nothing
+    left to drop, so dropping one means `_pick_times_for_day` is about to select
+    by POSITION, blind to what the caller has already heard.
+
+    Set it False ONLY where the hand-in is deliberately untrimmed AND the
+    caller-heard knowledge has already been applied by another route. There is
+    exactly one such producer today: P9's "more times that day" batch, which is
+    built from the slots this caller has NOT been read, so the only question
+    left is which three of the remainder — and that is `_pick_times_for_day`'s
+    to answer. Anything else setting this False is a defect wearing a keyword.
 
     `lead_in` selects the opener: "earliest" for a ranking claim (guarded by
     `earliest_lead_in_is_true`), "also" for a CONTINUATION of a day already
@@ -482,6 +557,8 @@ def build_slot_offer(
 
     spoken_days = days[:max_days]
     more = len(days) > len(spoken_days)
+    if more and pretrimmed:
+        _warn_untrimmed("days", len(days), len(spoken_days))
     #: Days the sweep found and this readout will NOT name. Kept separate from
     #: `more`, which the single-day branch goes on to overload with "this day
     #: holds times we are not reading". The multi-day opener is a claim about
@@ -503,6 +580,8 @@ def build_slot_offer(
         all_slots = by_day[day["date"]]
         picked = _pick_times_for_day(all_slots, single_day_max_times)
         named = picked
+        if len(all_slots) > len(picked) and pretrimmed:
+            _warn_untrimmed("times on a single day", len(all_slots), len(picked))
         if len(all_slots) > len(picked) or _hidden(day):
             more = True
         label = day.get("day_label") or "that day"
@@ -571,6 +650,9 @@ def build_slot_offer(
             all_slots = by_day[day["date"]]
             picked = _pick_times_for_day(all_slots, times_per_day)
             named.extend(picked)
+            if len(all_slots) > len(picked) and pretrimmed:
+                _warn_untrimmed("times on a day of a multi-day readout",
+                                len(all_slots), len(picked))
             if len(all_slots) > len(picked) or _hidden(day):
                 more = True
             label = day.get("day_label") or "that day"

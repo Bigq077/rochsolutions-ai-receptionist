@@ -5340,8 +5340,18 @@ def numbered_more_times_speech(
         # `more_times=None` lets it decide from the data -- the batch is NOT
         # pre-trimmed, so its own count is the honest one. Forced True only
         # when the nine-slot keypad ceiling already hid some.
+        #
+        # S-5: `pretrimmed=False` says the same thing to the contract check,
+        # and it is the ONE producer entitled to say it. `batch` is what
+        # `all_remaining_on_next_day` / `next_slot_batch` left -- the slots
+        # this caller has NOT been read -- so B-116's subtraction has already
+        # happened upstream and the only question left is which three of the
+        # remainder, which is `_pick_times_for_day`'s to answer. Without this
+        # the check would fire on every "tell me the others" turn and the
+        # warning would be noise instead of a finding.
         offer = build_slot_offer(
-            [day], lead_in="also", more_times=True if more else None
+            [day], lead_in="also", more_times=True if more else None,
+            pretrimmed=False,
         )
     except Exception:
         logger.exception(
