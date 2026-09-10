@@ -24,6 +24,25 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
+def _rec_offer(session: Any, **kwargs: Any) -> None:
+    """`app.obs.slot_offers.record_offer`, imported at call time. NEVER RAISES.
+
+    S-14. Lazy because `app.obs` pulls the store in and this module is imported
+    by the pure-predicate replay harnesses, which must keep running without a
+    database. One definition rather than three inline imports, so the three
+    producers below cannot drift into three ways of failing to record.
+
+    `record_offer` already swallows everything itself; this second guard is for
+    the import, which is the part it cannot defend. An observability row must
+    never be able to cost a caller their booking.
+    """
+    try:
+        from app.obs.slot_offers import record_offer
+        record_offer(session, **kwargs)
+    except Exception:  # pragma: no cover - defensive; live call path
+        logger.warning("[slot_followup] offer not recorded to obs", exc_info=True)
+
+
 def _slot_start(slot: Dict[str, Any]) -> str:
     return str(slot.get("start") or "")
 
@@ -5276,6 +5295,21 @@ def more_days_speech(session: Dict[str, Any]) -> Optional[str]:
     apply_offer_to_session(
         session, offer_as_record(offer, day_iso=_anchor), offer.chunks
     )
+    # S-14. `record_offer` had ONE call site -- Gate 5 -- so the offer corpus
+    # held only the offers the MODEL's tool turn produced. On
+    # CAb8ac636017de7d35370fd7951c54d3cf, 4 of the 5 readouts left no row, and
+    # they were the four that exposed S-13. Every harness reading
+    # `calls.slot_offers` was measuring the Gate 5 path and calling it the
+    # system. Recorded here, beside the `apply_offer_to_session` that already
+    # owns "anything that speaks an offer calls this", because a producer that
+    # SPEAKS and does not RECORD is the same class of omission one layer out.
+    #
+    # `presented` is passed from this producer rather than derived, because
+    # only the producer knows which days it trimmed -- that gap between payload
+    # and presented IS B-95's split, and a row that guessed it would be worse
+    # than no row. Never raises; `record_offer` swallows everything itself.
+    _rec_offer(session, payload_days=session.get("available_days"),
+               offer=offer, presented_days=presented)
     logger.info(
         "[slot_followup] 'what else' answered with %d day(s) he has not heard: "
         "%s", len(presented), [d.get("date") for d in presented],
@@ -5363,6 +5397,11 @@ def numbered_more_times_speech(
         return None
 
     apply_offer_to_session(session, offer_as_record(offer, day_iso=date), offer.chunks)
+    # S-14, and the one producer whose `presented` is the WHOLE day on purpose:
+    # `pretrimmed=False` above says the batch arrived already subtracted, so the
+    # payload/presented gap here is genuinely nil and the row must say so.
+    _rec_offer(session, payload_days=session.get("available_days"),
+               offer=offer, presented_days=[day])
     logger.info(
         "[slot_followup] 'more times that day' answered with %d numbered "
         "option(s) of %d remaining on %s (more=%s)",
@@ -5626,6 +5665,21 @@ def speak_one_day_from_payload(
     apply_offer_to_session(
         session, offer_as_record(offer, day_iso=date), offer.chunks
     )
+    # S-14. `record_offer` had ONE call site -- Gate 5 -- so the offer corpus
+    # held only the offers the MODEL's tool turn produced. On
+    # CAb8ac636017de7d35370fd7951c54d3cf, 4 of the 5 readouts left no row, and
+    # they were the four that exposed S-13. Every harness reading
+    # `calls.slot_offers` was measuring the Gate 5 path and calling it the
+    # system. Recorded here, beside the `apply_offer_to_session` that already
+    # owns "anything that speaks an offer calls this", because a producer that
+    # SPEAKS and does not RECORD is the same class of omission one layer out.
+    #
+    # `presented` is passed from this producer rather than derived, because
+    # only the producer knows which days it trimmed -- that gap between payload
+    # and presented IS B-95's split, and a row that guessed it would be worse
+    # than no row. Never raises; `record_offer` swallows everything itself.
+    _rec_offer(session, payload_days=session.get("available_days"),
+               offer=offer, presented_days=[_spoken_day])
     logger.info(
         "[slot_followup] '%s' answered from the payload -- %d of %d bookable "
         "times spoken, offer and keypad recorded, no tool call needed (%s)",
