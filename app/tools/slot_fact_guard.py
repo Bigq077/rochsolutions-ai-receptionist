@@ -135,13 +135,15 @@ _MAX_ROWS = 12
 #: offer still on the table.
 RECOVERY_SENTENCE = "Sorry — let me just double-check that one for you."
 
+#: The mode is announced ONCE per process, the first time it is resolved. Two
+#: demo calls on 2026-09-11 produced zero `[slot_guard]` lines -- which is the
+#: expected result of a clean call in EVERY mode, so the log could not say
+#: whether the `enforce` flip had taken. Same reasoning as `[build_info]`: the
+#: process knows; it should say so rather than have it inferred.
+_announced_mode: Optional[str] = None
 
-def guard_mode() -> str:
-    """`off` / `log` / `enforce`, from the environment. Default `log`.
 
-    Anything unrecognised reads as `log` rather than `enforce`: a typo in a
-    Render env var must not be able to start replacing live speech.
-    """
+def _resolve_mode() -> str:
     try:
         raw = str(os.getenv("SLOT_FACT_GUARD") or "").strip().lower()
     except Exception:                      # pragma: no cover - defensive
@@ -153,6 +155,24 @@ def guard_mode() -> str:
     if raw in ("1", "true", "yes"):
         return MODE_ENFORCE
     return MODE_LOG
+
+
+def guard_mode() -> str:
+    """`off` / `log` / `enforce`, from the environment. Default `log`.
+
+    Anything unrecognised reads as `log` rather than `enforce`: a typo in a
+    Render env var must not be able to start replacing live speech.
+    """
+    global _announced_mode
+    mode = _resolve_mode()
+    if mode != _announced_mode:
+        _announced_mode = mode
+        try:
+            logger.info("[slot_guard] mode=%s (SLOT_FACT_GUARD=%r)",
+                        mode, os.getenv("SLOT_FACT_GUARD"))
+        except Exception:                  # pragma: no cover - defensive
+            pass
+    return mode
 
 
 # ───────────────────────────────────────────────────────────────────────────

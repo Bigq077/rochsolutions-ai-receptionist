@@ -290,6 +290,23 @@ def test_an_unrecognised_mode_reads_as_log_not_enforce(monkeypatch):
     assert guard.guard_mode() == guard.MODE_ENFORCE
 
 
+def test_the_mode_is_announced_once_so_the_render_log_can_prove_the_flip(
+        monkeypatch, caplog):
+    """Two demo calls on 2026-09-11 produced zero `[slot_guard]` lines -- the
+    expected result of a clean call in EVERY mode -- so nothing in the log could
+    say whether `SLOT_FACT_GUARD=enforce` had taken on the service. The mode is
+    announced the first time it is resolved, and again only if it changes."""
+    monkeypatch.setenv("SLOT_FACT_GUARD", "enforce")
+    monkeypatch.setattr(guard, "_announced_mode", None)
+    with caplog.at_level(logging.INFO, logger="app.tools.slot_fact_guard"):
+        assert guard.guard_mode() == guard.MODE_ENFORCE
+        assert guard.guard_mode() == guard.MODE_ENFORCE
+        assert guard.guard_mode() == guard.MODE_ENFORCE
+    lines = [r.getMessage() for r in caplog.records
+             if "[slot_guard] mode=" in r.getMessage()]
+    assert lines == ["[slot_guard] mode=enforce (SLOT_FACT_GUARD='enforce')"]
+
+
 @pytest.mark.parametrize("session", [None, "not a session", 42, {}])
 def test_a_malformed_session_speaks_the_words_anyway(session):
     """Fail open, always. This sits between the words and the caller."""
