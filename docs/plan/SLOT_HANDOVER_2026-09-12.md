@@ -1,5 +1,16 @@
 # Overnight handover — 11→12 Sep 2026
 
+> **State at 11 Sep evening (later session).** The branch now carries **nine
+> commits** over `origin/latency-eval` (`54b17145`): the four below, plus
+> `4fbd0d2c` (D-n/o/p/q recorded), `a4a383e8` (DT-30/31 REPEAT producer),
+> `d585450a` (DT-7/8 day-scoped resolver), `9a55cdac` (B-114 loose path),
+> `6944ffd9` (hour inside "five past eight"), `1bc7fc52` (DT-21 clarifier).
+> Scorer **72 pass / 0 FAIL / 33 unreachable**. `tests/regression`: the same
+> 5 pre-existing failures, 8,807 pass. **Still nothing pushed.** The owner's
+> four answers are in the spec §3; D-q (DT-4b, "what about Monday" as a
+> day-scoped repeat) is the one not yet built. Section 1 below is unchanged
+> and is still the next thing: one call on the demo line, then the flip.
+
 **Branch** `feat/slot-spec-and-verifier`, cut from `origin/latency-eval` at
 `66f7dec3`. **Four commits. Nothing pushed. Nothing deployed.**
 

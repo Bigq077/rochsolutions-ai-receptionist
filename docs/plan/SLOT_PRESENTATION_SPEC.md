@@ -417,8 +417,12 @@ is the migration, and this is the argument for it — not elegance, measurabilit
 | row | defect | state |
 |---|---|---|
 | DT-14 | **N6** — "what else have you got on Monday" answered with Thursday–Saturday | open, pre-existing |
-| DT-21 | 11 Sep 00:04 — "10 to 12 works" confirmed as "twenty to twelve" (11:40) | prompt fixed 11 Sep; guard catches the sentence in `enforce` |
-| DT-7/8 | 11 Sep 00:04 — "as close as possible to 12" answered with 14:40 and 16:20 | **open**: a relevance failure the guard cannot see |
+| DT-21 | 11 Sep 00:04 — "10 to 12 works" confirmed as "twenty to twelve" (11:40) | **closed** `1bc7fc52` (D-p): `accept_clarify_speech` asks "did you mean ten past twelve?" and narrows the offer to it; scorer row DT-21 4 pass / 0 FAIL. Prompt fixed 11 Sep; guard catches any leak in `enforce` |
+| DT-7/8 | 11 Sep 00:04 — "as close as possible to 12" answered with 14:40 and 16:20; 11 Sep 08:51 "around 12" reached no producer | **closed** `d585450a`: the resolver runs on the day under discussion first, the sweep second; scorer row DT-8b |
+| DT-30/31 | 11 Sep 08:44, 08:52 — "say that again" served by the model | **closed** `a4a383e8` (D-o): `repeat_speech` above every selector; scorer rows DT-30/31 |
+| B-114 (loose) | found 11 Sep building DT-21 — "yeah that one works" resolved to 13:00 through the loose after-marker "works" | **closed** `9a55cdac`: a pointer word before the number ends the question |
+| N4 (component) | found 11 Sep by scorer row DT-21 on `uniform50` — "five past eight in the morning works" also read as 08:00 and answered with **Thursday's** eight | **closed** `6944ffd9`: relative-time phrases removed before the bare-hour and label passes |
+| parser | "half three" (UK 15:30) is read by neither parser — now yields no candidate (model) rather than 15:00; `requested_clock_times("at ten to twelve")` also emits 10:00 (the resolver then declines: two picks); `requested_clock_times("from nine to five")` → 04:51 | open, leads — none reproduced on a call |
 | inv. 20 | four availability readers, five refusal branches, two named-day producers | open; the migration |
 | inv. 16 | 13% of recorded offers were never spoken | open; instrumented |
 
@@ -474,4 +478,5 @@ and the correction belongs here, dated, not in a commit message.
 | date | correction |
 |---|---|
 | 2026-09-11 | created; §3 D-c and the B1 prompt rule recorded as SUPERSEDED rather than deleted, because a superseded decision left in a test becomes a defect pin (B1 in `test_collection_sequence_prompt`, N1 in five measurements) |
+| 2026-09-11 (evening) | D-o (DT-30/31), DT-7/8 and D-p (DT-21) implemented — `a4a383e8`, `d585450a`, `1bc7fc52` — each with a scorer row and a regression file; §9.1 brought up to date (DT-7/8 had been left "open" after its fix). Two defects found by the work itself and closed on the way: the B-114 loose path (`9a55cdac`) and the hour-inside-"five past eight" read (`6944ffd9`), the second found by the new DT-21 scorer row on `uniform50` and answering a Monday caller with Thursday. Scorer 72 pass / 0 FAIL / 33 unreachable. D-q (DT-4b) not started. Nothing pushed. |
 | 2026-09-11 | §9.2 closed: D-n confirmed, D-o/D-p/D-q added from the owner's answers. Two morning demo calls (CA778651b7, CA34942aee) on build `a590abaa`: guard clean on 15 slot sentences; DT-1/4/12/28 verified live; DT-30 served by the model on both; DT-7/8 served by the model on the second with its sentence stripped by Gate 5 (`closest_ive_got`), leaving *"Does that work?"* about nothing. N6 shape not exercised. |
