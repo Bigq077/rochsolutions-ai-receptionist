@@ -1059,6 +1059,136 @@ def repeat_speech(session: Dict[str, Any], user_text: str) -> Optional[str]:
     return " ".join(chunks)
 
 
+# ── ACCEPT that resolves to no offered slot (spec DT-21; D-p) ─────────────
+#
+# CA7ebc0083, demo line, 11 Sep 00:04. Offer: 10:30, 11:20, 12:10. The caller
+# said "10 to 12 works" -- STT for "ten past twelve", or a genuine slip -- and
+# the model confirmed "Monday the 14th of September at twenty to twelve",
+# three times. 11:40 was never offered and is not on the diary. The guard
+# (invariant 1) now catches that SENTENCE; this catches the ACT one step
+# earlier, so there is no sentence to catch.
+#
+# D-p: an accept that resolves to no offered slot is never confirmed. When
+# exactly ONE offered time is a plausible match, ask a targeted yes/no naming
+# that time. Otherwise re-read the offer and ask. Plausible means:
+#   * within 10 minutes;
+#   * the to/past mirror -- "ten TO twelve" (11:50) for "ten PAST twelve"
+#     (12:10): the midpoint is on the hour and they are under an hour apart.
+#     This is the 00:04 shape and the commonest STT confusion on a UK grid;
+#   * a 12-hour twin, which `requested_clock_times` already emits as a
+#     second candidate.
+#
+# Sits BELOW the DT-7/8 resolvers in the dispatcher on purpose: a named time
+# the diary holds, offered or not, is answered as that time ("half ten works"
+# against an unoffered 10:30 is a real request), and only what those decline
+# reaches here. An accept reader (`slot_accepted_by_caller`, P6) runs before
+# the dispatcher and takes every pick that resolves, so what arrives is by
+# construction a pick that did not.
+_ACCEPT_SHAPE_RE = re.compile(
+    r"\b(?:works|that one|that'?ll do|that'?s (?:fine|good|great|perfect|the one)"
+    r"|please|book|fine|good|perfect|great|take|go (?:with|for)|suits"
+    r"|do me|yes|yeah|yep|okay|ok|let'?s do)\b",
+    re.IGNORECASE,
+)
+_CLARIFY_PLAUSIBLE_MIN = 10
+
+
+def _minutes(hhmm: str) -> int:
+    return int(hhmm[:2]) * 60 + int(hhmm[3:5])
+
+
+def _plausible_slip(asked: str, offered: str) -> bool:
+    """Could `asked` be a mishearing of `offered`? See the note above."""
+    try:
+        a, o = _minutes(asked), _minutes(offered)
+    except Exception:
+        return False
+    # A round hour gets the resolver's own tolerance (invariant 18: drift is
+    # allowed on round times only) -- "eleven works" against 11:20 is the
+    # question "did you mean twenty past eleven?", not a re-read.
+    near = NEAREST_TIME_TOLERANCE_MIN if a % 60 == 0 else _CLARIFY_PLAUSIBLE_MIN
+    if abs(a - o) <= near:
+        return True
+    # Mirror: the midpoint is on the hour, i.e. (a + o) / 2 is a multiple of
+    # 60, and both sit strictly inside the half-hour either side of it --
+    # "half eleven" and "half twelve" straddle noon at 60 apart and are two
+    # different times, not a to/past slip.
+    return abs(a - o) < 60 and (a + o) % 120 == 0
+
+
+def accept_clarify_speech(
+    session: Dict[str, Any], user_text: str
+) -> Optional[str]:
+    """DT-21: 'did you mean <the one offered time this could be>?', or the
+    offer again. None when no clock time was named, when the offer is empty,
+    or when the utterance does not read as an accept and nothing is close.
+    """
+    offered = session.get("last_offered_slots") or []
+    if not offered:
+        return None
+    t = (user_text or "").lower()
+    # `requested_clock_times` only: the hardened parser, zero inventions over
+    # 2,509 stored turns. `_candidate_hhmm_from_text` reads "that ONE works"
+    # as 13:00 -- the B-114 pronoun -- and the resolver guards that inside
+    # itself; this must not bypass the guard. A bare hour word ("eleven
+    # works") is admitted only under the resolver's own test for whether it
+    # is being USED as a time.
+    asked = _requested_clock_times_safe(t)
+    # ...and ONLY when that found nothing. "quarter to eleven works" parses
+    # to 10:45; the "eleven" inside it is a component, not a second request,
+    # and admitting it as 11:00 made 11:20 the one plausible match.
+    if not asked:
+        for word, hour in _BARE_HOUR_WORDS.items():
+            if re.search(rf"\b{word}\b", t) and _bare_hour_word_is_a_clock_reference(t, word):
+                for h in (hour, hour + 12):
+                    c = f"{h % 24:02d}:00"
+                    if c not in asked:
+                        asked.append(c)
+    if not asked:
+        return None
+    if utterance_requests_more_slots(t) or utterance_requests_different_day(t):
+        return None
+    by_start = {
+        str(s.get("start") or "")[:19]: s
+        for s in flatten_bookable_slots(session.get("available_days") or [])
+    }
+    plausible: List[Dict[str, Any]] = []
+    for o in offered:
+        start = str((o or {}).get("start") or "")[:19]
+        slot = by_start.get(start)
+        if not slot or not slot.get("time"):
+            continue
+        if any(_plausible_slip(a, slot["time"]) for a in asked):
+            plausible.append(slot)
+    if len(plausible) == 1:
+        slot = plausible[0]
+        # The same record a resolved time leaves: the offer is now this one
+        # time, so the caller's "yes" books it and a keypress cannot pick a
+        # stale option (B-80). The SENTENCE is a question, not a confirmation.
+        apply_resolved_time_to_session(session, slot)
+        logger.info(
+            "[slot_followup] an accept resolved to no offered slot; asking "
+            "about the one plausible match %s rather than confirming (DT-21)",
+            slot.get("time"),
+        )
+        return (
+            f"Just to check — did you mean {slot.get('spoken') or slot.get('time')} "
+            f"on {slot.get('day_label') or 'that day'}?"
+        )
+    if not _ACCEPT_SHAPE_RE.search(t):
+        return None
+    saved = session.get(LAST_READOUT_KEY) or {}
+    chunks = [str(c) for c in (saved.get("chunks") or []) if str(c).strip()]
+    if not chunks:
+        return None
+    logger.info(
+        "[slot_followup] an accept named a time matching %d offered slot(s); "
+        "re-reading the offer rather than guessing (DT-21)", len(plausible),
+    )
+    session["_slot_readout_chunks"] = list(chunks)
+    return "Sorry — I didn't catch which one. " + " ".join(chunks)
+
+
 # Job 3c.1 / CAce1457d1: caller accepting an already-offered slot must not be
 # steered to "present the existing slots" again (forced a second accept).
 _SLOT_ACCEPT_PHRASES: frozenset = frozenset({
@@ -5225,11 +5355,13 @@ def format_time_available_speech(
     if asked and got and got not in asked:
         try:
             from app.tools.receptionist_tools import _spoken_slot_time
-            # The candidate on the same side of noon as the slot, else the
-            # first -- "two" asked, 14:40 offered, reads back "two", not "two
-            # in the morning".
-            _same = [a for a in asked if (int(a[:2]) >= 12) == (int(got[:2]) >= 12)]
-            _asked_spoken = _spoken_slot_time((_same or asked)[0])
+            # The candidate NEAREST the slot in minutes -- "two" asked, 14:40
+            # offered, reads back "two in the afternoon" and not "two in the
+            # morning"; "ten to twelve" against 12:10 reads back 11:50, not
+            # 23:50, which is on the same side of noon and eleven hours away.
+            _g = int(got[:2]) * 60 + int(got[3:])
+            _near = min(asked, key=lambda a: abs(int(a[:2]) * 60 + int(a[3:]) - _g))
+            _asked_spoken = _spoken_slot_time(_near)
             return (
                 f"The nearest I've got to {_asked_spoken} is {spoken} on {day}. "
                 f"Shall I book that in for you?"
@@ -6432,6 +6564,15 @@ def try_unspoken_followup_speech(
     # Cumulative, not just the current offer — see B-78b above.
     remaining = remaining_unspoken(session)
     if not remaining:
+        # DT-21 (D-p) first: with nothing unspoken the resolvers below have
+        # nothing to search, so a named time that is not an offered one can
+        # only be a slip -- and this block otherwise returns None for every
+        # utterance that is not a more-slots request, which sent "10 to 12
+        # works" against a fully-read day to the model. Declines on more-slots
+        # and different-day asks, so the exhaustion sentence keeps its turn.
+        _clarify = accept_clarify_speech(session, user_text)
+        if _clarify:
+            return _clarify
         # The day is genuinely exhausted. Say so HERE rather than falling to
         # the model: "have you got anything else?" with nothing left is the
         # exact prompt that produced "Those are the two available slots on that
@@ -6507,6 +6648,13 @@ def try_unspoken_followup_speech(
     hit = resolve_requested_time(user_text, remaining, days)
     if hit is not None:
         return apply_resolved_time_to_session(session, hit, asked=_asked)
+
+    # DT-21 (D-p): a time was named and nothing above could honour it. If it
+    # is a plausible slip for exactly one OFFERED time, ask about that one;
+    # if it reads as an accept and is not, re-read the offer. Never confirm.
+    _clarify = accept_clarify_speech(session, user_text)
+    if _clarify:
+        return _clarify
 
     # "What about Wednesday" after a MULTI-DAY readout. Answered from the
     # payload, for the same reason "what else have you got" is: on D-B the

@@ -542,6 +542,71 @@ def dt19(days, shape):
     return PASS, f"{len(offer.dtmf_map)} options, all mapped"
 
 
+@row("DT-21", "an accept naming NO offered time is a question, never a "
+              "confirmation", invariant="inv 2")
+def dt21(days, shape):
+    """D-p, from CA7ebc0083 (11 Sep 00:04): "10 to 12 works" against
+    10:30 / 11:20 / 12:10 was confirmed as "twenty to twelve", three times.
+
+    Drives the dispatcher with the to/past mirror of one offered time
+    ("ten TO twelve" for an offered ten PAST twelve), or five past it when
+    the offered time is on the hour. Passes only when the reply names the
+    ONE offered time it could be as a question, never speaks the time the
+    caller mis-said, and leaves the offer narrowed to that one slot so a
+    "yes" books it (V5)."""
+    from app.tools import slot_fact_guard as guard
+    from app.tools.slot_offer import apply_offer_to_session, offer_as_record
+    s = _session(days)
+    first = build_slot_offer(days[:3], pretrimmed=False)
+    if first is None:
+        return UNREACHABLE, "no offer"
+    apply_offer_to_session(s, offer_as_record(first), first.chunks)
+    s["_slot_presentation_mode"] = first.mode
+    if first.mode == "multi_day":
+        # The 00:04 offer was one day's three times. On a week menu the same
+        # clock time sits on several days, so a slip is plausible for all of
+        # them and the honest answer is the re-read -- a different branch.
+        if not sf.try_unspoken_followup_speech(
+            s, f"tell me about {_label(days[0]['date']).split()[0].lower()}"
+        ):
+            return UNREACHABLE, "the named-day producer declined"
+    held = {t for d in days for t in d["slot_times"]}
+    offered = [(o["start"][:10], o["start"][11:16]) for o in s["last_offered_slots"]]
+    pick = None
+    for date, t in offered:
+        h, m = int(t[:2]), int(t[3:])
+        slip = "%02d:%02d" % (h - 1, 60 - m) if 0 < m < 30 else \
+               ("%02d:05" % h if m == 0 else None)
+        if slip is None or slip in held:
+            continue                       # a diary time is DT-7's, not this row's
+        alone = [x for _, x in offered if sf._plausible_slip(slip, x)]
+        if alone == [t]:
+            pick = (date, t, slip)
+            break
+    if pick is None:
+        return UNREACHABLE, "no offered time has a slip that is plausible for it alone"
+    date, t, slip = pick
+    said = f"{_spoken_slot_time(slip)} works"
+    guard.note_caller_speech(s, said)
+    out = sf.try_unspoken_followup_speech(s, said)
+    if not out:
+        return FAIL, f"{said!r} reached no producer (the model would answer it)"
+    want = _spoken_slot_time(t)
+    if not out.startswith(f"Just to check — did you mean {want}"):
+        return FAIL, f"{said!r} -> {out!r}"
+    if _spoken_slot_time(slip) in out:
+        return FAIL, f"the mis-said time was spoken back: {out!r}"
+    if out.lower().startswith(("so that's", "yes")) or not out.rstrip().endswith("?"):
+        return FAIL, f"not a question: {out!r}"
+    narrowed = [o["start"][:16] for o in s.get("last_offered_slots") or []]
+    if narrowed != [f"{date}T{t}"]:
+        return FAIL, f"the offer did not narrow to {t}: {narrowed}"
+    v = guard.check_outgoing(s, out)
+    if not v.clean:
+        return FAIL, f"guard: {v.reason}"
+    return PASS, f"{said!r} -> {out[:60]!r}"
+
+
 @row("DT-24", "an accepted slot is pinned back into a later readout",
      invariant="inv 3")
 def dt24(days, shape):
