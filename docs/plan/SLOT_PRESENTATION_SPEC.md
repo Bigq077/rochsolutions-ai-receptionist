@@ -132,13 +132,24 @@ test becomes a defect pin — that is what happened to B1 and to N1.**
 | D-k | (standing) | caps are per clinic, in `clinic.json` | D2 |
 | D-l | (standing) | never volunteer prices | template prompt |
 | D-m | (standing) | a readout claims completeness only when it is true | B-97…B-99, D10, P10 |
-| D-n | 2026-09-11 | **the engine is the only author of a slot day, date or time; the model states none** | §7, `clinic_template_prompt` Steps 5–7, `slot_fact_guard.py` |
+| D-n | 2026-09-11 | **the engine is the only author of a slot day, date or time; the model states none** — CONFIRMED by the owner 2026-09-11 after two demo calls | §7, `clinic_template_prompt` Steps 5–7, `slot_fact_guard.py` |
+| D-o | 2026-09-11 | `REPEAT` re-speaks the last SPOKEN numbered list verbatim; with no offer on the table it rebuilds from the last spoken record, **never by re-running the selector** (that applies novelty and changes the times — N3) and never by re-query; with no spoken record at all it says it is checking and re-queries | DT-30, DT-31 |
+| D-p | 2026-09-11 | an `ACCEPT` that resolves to no offered slot is never confirmed: when exactly ONE offered time is a plausible match (≤10 min, or a known STT confusion — "10 to 12" ↔ 12:10, "eight" ↔ 08:00/20:00) ask a targeted yes/no naming that one time; otherwise re-read the list and ask | DT-21 |
+| D-q | 2026-09-11 | *"what about <day>"* means *"tell me about <day>"* whatever the count heard: re-speak the last readout for that day verbatim if there was one; if the only times heard for it came from the week menu, keep them and fill to three (DT-4 as it stands). Novelty is reached by *"what else"*, never inferred from the count | DT-4, DT-4b |
 
-> **D-n is the one decision on this list I took tonight rather than recorded
-> from you.** It is not a new policy so much as the removal of a contradiction:
+> **D-n was taken by the author overnight and confirmed by the owner the same
+> day.** It is not a new policy so much as the removal of a contradiction:
 > `SLOT_FORMATTER_SYSTEM_PROMPT` and theorem_v3's prompt already said numbered
 > options from `slot_times_spoken` verbatim, and only the `template_v1` prompt
-> said otherwise. Flagged here so it can be confirmed or reversed deliberately.
+> said otherwise. Its consequence is that every act during selection MUST have
+> a producer — the model can no longer paper over a gap. The two gaps found by
+> the 2026-09-11 morning calls (CA778651b7, CA34942aee) are DT-30 (`REPEAT`
+> served by the model, both calls) and DT-7/8 (*"around 12"* served by the
+> model on call 2, its sentence stripped by Gate 5, the caller left with
+> *"Does that work?"* about nothing).
+>
+> **D-o, D-p and D-q were the owner's answers to §9.2, 2026-09-11**, taken on
+> the recommendation recorded there. They apply from the commits that name them.
 
 ---
 
@@ -181,7 +192,7 @@ listed again in §9.2 so they are not buried.
 | DT-1 | first ask, no constraint | `multi_day`: up to 3 days, 2 times each, numbered | O, H | owner D-e/D-h | — |
 | DT-2 | first ask, `sooner` | the soonest day, and SAYS it is the soonest | O, H, A.sooner | owner D-j | CA1c6c836 |
 | DT-3 | `day` named, day is in Ph | that day, 3 numbered times, + more-times tail if it holds more | O, H, A.day | owner D-h | N6 |
-| DT-4 | `day` named, day already offered | **the same times offered for that day, kept** — novelty must not withdraw them | O (unchanged times), H | defect | N1 (6 of 6) |
+| DT-4 | `day` named, day already offered | **the same times offered for that day, kept** — novelty must not withdraw them; once a full readout has been heard for that day, that readout verbatim (day-scoped `REPEAT`) | O (unchanged times), H | owner D-q | N1 (6 of 6); DT-4b |
 | DT-5 | `day` named, day not in Ph, day is closed | "we're not open on <day>" — CLOSED, not "fully booked" | A.day | defect | northgate CAf4e4a3a6 |
 | DT-6 | `day` named, day open but empty | "<day> is fully booked" + alternatives, alternatives presented per DT-1 | O, H, A.day | defect | requested_day_empty |
 | DT-7 | `time` named, Ph holds it on a named/implied day | **that time**, first | O, H, A.time | defect | D8, S-13, N2 |
@@ -203,7 +214,7 @@ listed again in §9.2 so they are not buried.
 | DT-18 | `slot` resolves in O | confirm THAT slot — day, date, time — then ask the next question | O.accepted | defect | Step 7 |
 | DT-19 | `slot` named by ordinal ("number two") | the slot at that position in the LAST spoken numbered list | O.accepted | defect | P12, B-80, P9, P11 |
 | DT-20 | `slot` named by time, ambiguous 12-hour ("8") | resolve against the day's real times; if both are real, ask which | — | defect | f93a4d2a 3 Sep |
-| DT-21 | `slot` named by time, matches NO offered time | **do not guess** — re-read the option and ask which they mean | — | judgement | 11 Sep 00:04 ("10 to 12" → 11:40) |
+| DT-21 | `slot` named by time, matches NO offered time | **do not guess** — if exactly one offered time is a plausible match, ask *"did you mean <that time>?"*; otherwise re-read the list and ask | — | owner D-p | 11 Sep 00:04 ("10 to 12" → 11:40) |
 | DT-22 | `day` accepted, that day has an offer on the table | keep it and present that day per DT-3 | O, H, A.day | defect | B-145 |
 | DT-23 | `day` accepted, no offer on the table for it | look it up, then DT-3 | O, H | defect | B-145 |
 | DT-24 | a later readout would drop the accepted slot | **it is pinned back in** | O | defect | P6b |
@@ -222,8 +233,8 @@ listed again in §9.2 so they are not buried.
 
 | # | ledger state | Susie says | records | conf. | exhibit |
 |---|---|---|---|---|---|
-| DT-30 | O is on the table | **the same offer, verbatim** — same times, same numbers, same order | nothing changes | defect | N3 (dropped as a fragment, 19 s) |
-| DT-31 | O is empty | the last payload's presentation, rebuilt | O, H | judgement | — |
+| DT-30 | O is on the table | **the same offer, verbatim** — same times, same numbers, same order, spoken by a PRODUCER, not the model | nothing changes | owner D-o | N3 (dropped as a fragment, 19 s); 11 Sep 08:44 and 08:52 (served by the model, 2.0–2.4 s) |
+| DT-31 | O is empty | the last SPOKEN list, re-spoken — never the selector re-run, never a re-query; with no spoken record, say so and re-query | O, H | owner D-o | — |
 
 A `REPEAT` must never be treated as `ASK_OPTIONS`: re-deriving the offer applies
 novelty (level 4) and silently changes the times, which is how "say that again"
@@ -411,37 +422,22 @@ is the migration, and this is the argument for it — not elegance, measurabilit
 | inv. 20 | four availability readers, five refusal branches, two named-day producers | open; the migration |
 | inv. 16 | 13% of recorded offers were never spoken | open; instrumented |
 
-### 9.2 Rows needing your yes/no
+### 9.2 Rows needing your yes/no — CLOSED 2026-09-11
 
-Marked `judgement` in §5 — my call tonight, not a recorded decision:
+All four were answered by the owner on 2026-09-11, on the recommendations
+below, and are now D-n, D-o, D-p and D-q in §3. Kept here so the reasoning is
+not lost; the rows in §5 carry `owner` confidence from that date.
 
-1. **DT-21** — when the caller names a time that matches no offered slot, Susie
-   re-reads the option and asks, rather than picking the nearest. Safer, and one
-   extra turn. *(This is the 11 Sep defect. I have made it the rule.)*
-2. **DT-31** — `REPEAT` with an empty offer rebuilds from the last payload
-   rather than re-querying. Faster, and it cannot change the times under the
-   caller.
-3. **D-n** — the engine as the only author of slot facts (§3). Already applied
-   to the prompt; reversible in one commit.
-4. **DT-4b — the one the scorer found.** N1's fix keeps the times a caller was
-   already offered on a day they name — but only while FEWER than three were
-   heard on it. Once they have heard a full three, *"what about Monday"* is
-   treated as *"what else"*, and measured on both shapes that can reach it the
-   overlap is **zero**:
+| row | decided | the reasoning that carried it |
+|---|---|---|
+| **D-n** | confirmed | The engine is the only author of slot facts. Its consequence is that every act during selection must have a producer; the two gaps the morning calls found (DT-30, DT-7/8) are the price, and they are findable offline once. |
+| **DT-31** → D-o | rebuild from the last SPOKEN list | Re-running the selector applies novelty against `Heard` and changes the times — which is how "say that again" became a new readout (N3). Re-query is dead air plus the five refusal branches. With no spoken record, say so and re-query. |
+| **DT-21** → D-p | do not guess; targeted confirm | An `ACCEPT` that does not resolve is the act that makes a wrong booking. When one offered time is a plausible match, "did you mean ten past twelve?" is a two-second turn naming a real time; otherwise re-read. Invariant 2. |
+| **DT-4b** → D-q | "what about <day>" is a day-scoped `REPEAT` | Neither "leave it" (zero overlap — N1 one step on) nor "keep one" (a mixed list: "is half past ten gone, then?"). The most recent thing Susie said about that day, verbatim; novelty is reached by "what else", which already works. DT-4 and DT-30 become one rule. |
 
-   ```
-   uniform50   heard 08:00, 08:50, 09:40  ->  re-read 10:30, 11:20, 16:20
-   twelve      heard 08:00, 09:00, 10:00  ->  re-read 11:00, 16:00, 19:00
-   ```
-
-   The code's reasoning is sound as far as it goes — re-reading the same three
-   carries no new time. But this is N1's own complaint one condition further
-   along, and N1 was filed because zero overlap is what makes a caller repeat
-   themselves. **My read: "what about Monday" is "tell me about Monday", and
-   should keep at least one time they heard, whatever the count.** Not changed
-   tonight, because it is a live selection rule and §7 of the analysis says stop
-   shipping per-exhibit selection fixes until the table is agreed. It is a
-   two-line change to `_keep_times_heard_on_named_day` when you say so.
+Implementation order, each one commit with a row-named regression test on
+`latency-eval` only: D-n (in), D-o `REPEAT` producer, DT-7/8 time-request route,
+D-p targeted confirm, D-q day-scoped repeat.
 
 ---
 
@@ -478,3 +474,4 @@ and the correction belongs here, dated, not in a commit message.
 | date | correction |
 |---|---|
 | 2026-09-11 | created; §3 D-c and the B1 prompt rule recorded as SUPERSEDED rather than deleted, because a superseded decision left in a test becomes a defect pin (B1 in `test_collection_sequence_prompt`, N1 in five measurements) |
+| 2026-09-11 | §9.2 closed: D-n confirmed, D-o/D-p/D-q added from the owner's answers. Two morning demo calls (CA778651b7, CA34942aee) on build `a590abaa`: guard clean on 15 slot sentences; DT-1/4/12/28 verified live; DT-30 served by the model on both; DT-7/8 served by the model on the second with its sentence stripped by Gate 5 (`closest_ive_got`), leaving *"Does that work?"* about nothing. N6 shape not exercised. |
