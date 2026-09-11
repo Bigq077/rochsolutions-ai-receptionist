@@ -6805,9 +6805,19 @@ def try_unspoken_followup_speech(
         # A refusal therefore un-scopes: the caller who ruled a day out is
         # asking about the others, so they get the days they have not heard.
         _day_ruled_out = bool(_DAY_REFUSE_RE.search(user_text or ""))
+        # N6 (spec DT-14), CAf80eb02d, demo line, 11 Sep 2026 10:47. "what
+        # else have you got on monday" was answered with Thursday, Friday and
+        # Saturday. `day_named_by_caller` resolves the FULL label and a bare
+        # weekday is a partial naming to it (B-148), so "on monday" counted as
+        # no day named and the unscoped branch took the turn. The scoped
+        # branch below already honours the weekday -- `remaining_unspoken_on_
+        # current_day` resolves it through `_payload_day_by_weekday` -- so the
+        # only change is that a bare weekday now counts as a day named HERE,
+        # the same reader DT-7/8 added to the resolver for the same reason.
         if _day_ruled_out or (
             not day_named_by_caller(_payload_days, user_text)
             and not day_selected_by_position(_payload_days, session, user_text)
+            and not _payload_day_by_weekday(_payload_days, user_text)
         ):
             _more_days = more_days_speech(session)
             if _more_days:

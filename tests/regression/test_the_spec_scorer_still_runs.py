@@ -55,12 +55,22 @@ def test_every_shape_and_row_is_exercised(scorer):
 
 
 def test_a_row_that_cannot_be_scored_says_so_and_never_passes(scorer):
-    """N6 lives in the routing. The rows call producers directly, so this
-    harness structurally cannot see it -- and must not claim to."""
-    results = scorer.run("DT-14", None)
-    assert results
-    assert {r[2] for r in results} == {scorer.UNREACHABLE}
-    assert any("ROUTING" in r[3] for r in results)
+    """An UNREACHABLE verdict always carries a reason, and is never counted
+    as a pass. Until 11 Sep this pinned DT-14 as the example -- "N6 lives in
+    the routing, the harness cannot see it". Half true: the routing was
+    `try_unspoken_followup_speech`, which the harness drives, and once DT-14
+    was driven that way it reproduced N6 on the first run and now scores it.
+    The property outlives the example."""
+    unreachable = [r for r in scorer.run(None, None) if r[2] == scorer.UNREACHABLE]
+    assert unreachable, "no row is unreachable on any shape -- suspicious"
+    for r in unreachable:
+        assert r[3].strip(), f"{r[0]} on {r[1]}: UNREACHABLE with no reason"
+
+
+def test_n6_is_now_scored_not_declared_invisible(scorer):
+    """DT-14 drives the dispatcher and passes on the demo line's shape."""
+    results = {r[1]: r[2] for r in scorer.run("DT-14", None)}
+    assert results["uniform50"] == scorer.PASS, results
 
 
 def test_every_diary_shape_builds_a_payload_the_engine_can_read(scorer):

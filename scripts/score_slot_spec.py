@@ -474,46 +474,56 @@ def dt13(days, shape):
 @row("DT-14", "'what else on <day>' is answered ON THAT DAY (N6)",
      invariant="inv 4")
 def dt14(days, shape):
-    """N6, OPEN at the time of writing -- and THIS SCORER CANNOT SEE IT.
+    """N6. Until 2026-09-11 this row called the producer directly and
+    reported UNREACHABLE, on the argument that N6 was a ROUTING defect and
+    only `handle_transcript` could show it. That was half right: the routing
+    that took the turn is `try_unspoken_followup_speech`'s more-slots branch,
+    which IS drivable offline -- DT-8b, DT-21 and DT-4b already drive it. The
+    defect reproduced on the first attempt: `day_named_by_caller` resolves
+    the FULL label, a bare weekday is a partial naming to it, so "on monday"
+    counted as no day named and `more_days_speech` answered with the days not
+    yet heard. CAf80eb02d, 10:47 the same morning, said Thursday, Friday and
+    Saturday to it.
 
-    Read this before trusting a PASS here. N6 is a ROUTING defect: "what else
-    have you got on Monday" never reaches `speak_one_day_from_payload` at all,
-    it is taken by B-137's "lead with unheard days" and answered with
-    Thursday-Saturday. The row below calls the named-day producer DIRECTLY, so
-    it measures what that producer does once reached, and says nothing about
-    whether it is reached.
-
-    That is the scorer's structural limit, and it is the same blind spot as
-    every existing harness (`replay_slot_decisions` cannot see selection;
-    `replay_multi_day_spread` cannot see the named-day producers). The
-    dispatcher is `handle_transcript`, a single 15,734-line method, and nothing
-    can drive it offline today.
-
-    So this returns UNREACHABLE whatever the producer says, with the producer's
-    answer in the detail for information. Reporting a PASS would be worse than
-    reporting nothing: it would retire the only thing currently catching N6,
-    which is a phone call.
-    """
+    Driven as the call was: week menu, "tell me about <day 0>", then "what
+    else have you got on <day 0>". Passes only when the reply names day 0,
+    names NO other day, and every time in it is one the caller had not heard
+    (inv. 12: novelty is the point of "what else")."""
+    from app.tools.slot_offer import apply_offer_to_session, offer_as_record
     times = days[0]["slot_times"]
-    if len(times) < 3 or len(days) < 2:
-        return UNREACHABLE, "needs a multi-day payload with 3+ times on day 0"
+    if len(times) < 4 or len(days) < 2:
+        return UNREACHABLE, "needs a multi-day payload with 4+ times on day 0"
     s = _session(days)
     first = build_slot_offer(days[:3], pretrimmed=False)
     if first is None:
         return UNREACHABLE, "no first offer"
-    sf.record_spoken_slots(s, first.slots)
-    text = sf.speak_one_day_from_payload(
-        s, days, days[0]["date"], why="scorer",
-        user_text="what else have you got on monday")
-    if not text:
-        return FAIL, "no answer"
-    other = [d for d in days[1:]
-             if str(d["day_label"]).split()[0].lower() in text.lower()]
-    verdict = ("names " + str([d["day_label"] for d in other])) if other \
-        else "answered on the named day"
-    return UNREACHABLE, (
-        f"the named-day PRODUCER {verdict}; but N6 is a ROUTING defect and this "
-        f"row calls the producer directly -- only a call can see it")
+    apply_offer_to_session(s, offer_as_record(first), first.chunks)
+    s["_slot_presentation_mode"] = first.mode
+    wd = _label(days[0]["date"]).split()[0].lower()
+    if first.mode == "multi_day":
+        if not sf.try_unspoken_followup_speech(s, f"tell me about {wd}"):
+            return UNREACHABLE, "the named-day producer declined"
+    heard = {t[11:16] for t in (s.get(sf._SPOKEN_KEY) or []) if t.startswith(days[0]["date"])}
+    if len(heard) >= len(times):
+        return UNREACHABLE, "every time on the day has been heard already"
+    said = f"uh what else have you got on {wd}"
+    out = sf.try_unspoken_followup_speech(s, said)
+    if not out:
+        return FAIL, f"{said!r} reached no producer (the model would answer it)"
+    low = out.lower()
+    other = [d["day_label"] for d in days[1:]
+             if str(d["day_label"]).split()[0].lower() in low]
+    if other:
+        return FAIL, f"{said!r} -> named {other}: {out[:80]!r}"
+    if wd not in low:
+        return FAIL, f"{said!r} did not name the day: {out[:80]!r}"
+    spoken = _spoken_times_in(out, [days[0]])
+    if not spoken:
+        return FAIL, f"no time of day 0 in {out[:80]!r}"
+    repeats = [t for t in spoken if t in heard]
+    if repeats:
+        return FAIL, f"'what else' re-read heard times {repeats}"
+    return PASS, f"{said!r} -> {len(spoken)} unheard {wd} time(s): {spoken}"
 
 
 @row("DT-17", "'nothing sooner' says what the earliest IS", invariant="inv 5")
