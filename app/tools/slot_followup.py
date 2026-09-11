@@ -145,6 +145,15 @@ LOSSY_SPOKEN_DAYS_KEY = "_lossy_spoken_days"
 # is load-bearing.
 LAST_READOUT_KEY = "_slot_last_readout"
 
+# The last SINGLE-DAY readout PER DAY, durably (D-q, spec DT-4 / DT-4b).
+# {date: {"chunks": [...], "record": <offer_as_record>}}. Written beside
+# `LAST_READOUT_KEY` by `apply_offer_to_session`; read by
+# `speak_one_day_from_payload`, so that "what about Monday" after Monday has
+# been read out is the same sentence again -- a REPEAT scoped to a day --
+# rather than three different times (N1 one step further on). Novelty is
+# reached by "what else on Monday", which writes a new entry here.
+LAST_READOUT_BY_DAY_KEY = "_slot_last_readout_by_day"
+
 
 def _day_fingerprints(available_days: Any) -> Dict[str, str]:
     """One fingerprint PER DAY, so a fetch can invalidate a day without
@@ -6003,8 +6012,14 @@ def named_day_speech(
     answer, which is what they got before this existed.
     """
     try:
-        if str(session.get("_slot_presentation_mode") or "") != "multi_day":
-            return None
+        # Step 1 as stated above, with ONE opening (D-q, 2026-09-11): on a
+        # single-day offer this producer may still answer "what about Monday"
+        # when Monday has already been READ OUT -- with that readout again,
+        # verbatim, and nothing else. Before this, the turn went to the model,
+        # which answered from its own context (D-n). The gate is applied
+        # after the day resolves, below; every other single-day case still
+        # declines here exactly as before.
+        _multi = str(session.get("_slot_presentation_mode") or "") == "multi_day"
         if utterance_requests_more_slots(user_text):
             return None
         if utterance_requests_different_day(user_text):
@@ -6069,12 +6084,66 @@ def named_day_speech(
             date = _payload_day_by_weekday(days, user_text)
         if not date:
             return None
+        if not _multi:
+            _day = next((d for d in days if isinstance(d, dict)
+                         and d.get("date") == date), None)
+            if not _day or _day_readout_to_repeat(session, _day, user_text) is None:
+                return None
 
         return speak_one_day_from_payload(
             session, days, date, why="D-B", user_text=user_text,
         )
     except Exception:  # pragma: no cover - defensive; live call path
         logger.exception("[slot_followup] named-day offer unavailable")
+        return None
+
+
+def _day_readout_to_repeat(
+    session: Dict[str, Any], day: Dict[str, Any], user_text: Any
+) -> Optional[Dict[str, Any]]:
+    """The recorded readout of `day` to say again, or None. PURE. See D-q.
+
+    Deny by default, every step:
+
+      * nothing has been read out for this day -- the only times heard for it
+        came from the week menu, and DT-4 (keep them, fill to three) applies;
+      * the caller narrowed the ask: a part of the day ("Monday afternoon"),
+        a clock time ("Monday around twelve") or a meridiem hour. Those are
+        requests for a DIFFERENT selection and the rules below own them;
+      * a recorded time is no longer on the day's payload -- the diary has
+        moved (a fetch, a booking) and the words would name a time that is
+        gone. Fresh selection instead; never a stale sentence;
+      * the words are empty.
+    """
+    try:
+        by_day = session.get(LAST_READOUT_BY_DAY_KEY)
+        if not isinstance(by_day, dict):
+            return None
+        saved = by_day.get(str(day.get("date") or ""))
+        if not isinstance(saved, dict):
+            return None
+        chunks = [str(c) for c in (saved.get("chunks") or []) if str(c).strip()]
+        record = saved.get("record")
+        if not chunks or not isinstance(record, dict):
+            return None
+        text = str(user_text or "")
+        if _band_named(text) or _meridiem_hour_named(text) is not None:
+            return None
+        if _requested_clock_times_safe(text) or _candidate_hhmm_from_text(text):
+            return None
+        held = {str(s.get("start") or "")[:16] for s in (day.get("slots") or [])
+                if isinstance(s, dict)}
+        for s in record.get("slots") or []:
+            if str((s or {}).get("start") or "")[:16] not in held:
+                logger.info(
+                    "[slot_followup] not repeating the last readout of %s -- "
+                    "%s is no longer on the diary (D-q declines)",
+                    day.get("date"), s.get("start"),
+                )
+                return None
+        return {"chunks": chunks, "record": record}
+    except Exception:  # pragma: no cover - defensive; live call path
+        logger.exception("[slot_followup] day-readout repeat check failed")
         return None
 
 
@@ -6173,6 +6242,26 @@ def speak_one_day_from_payload(
         # The standing rule in this file: a readout preference must never fail
         # a lookup. A dead pin reads the day as it did before D8 existed.
         logger.exception("[slot_followup] requested-time resolve failed")
+
+    # D-q (spec DT-4 / DT-4b). "What about Monday" means "tell me about
+    # Monday", whatever the count heard: once Monday has been READ OUT, the
+    # answer is that readout again, verbatim. Before this, N1's keep-rule
+    # declined at three heard and B-116 then withheld all three -- N1 one
+    # step further on, measured on both diary shapes that can reach it. A
+    # caller who wants new times says "what else on Monday", and that path
+    # writes a new entry here, so "the most recent thing said about Monday"
+    # follows them. Declines to the selection below when the utterance
+    # narrows the ask (a band, a clock time) or when the diary has moved
+    # under the recorded words; the guard (inv. 1) is the backstop.
+    _again = _day_readout_to_repeat(session, day, user_text)
+    if _again is not None:
+        apply_offer_to_session(session, _again["record"], _again["chunks"])
+        logger.info(
+            "[slot_followup] '%s' answered with the last readout of that day "
+            "verbatim -- %d chunk(s), no selector run (D-q, %s)",
+            day.get("day_label") or date, len(_again["chunks"]), why,
+        )
+        return " ".join(_again["chunks"])
 
     _times = list(day.get("slot_times") or [])
     # N1. This producer answers a request about ONE named day -- both of its

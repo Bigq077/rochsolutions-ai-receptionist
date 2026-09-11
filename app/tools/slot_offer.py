@@ -40,6 +40,7 @@ import sys as _sys
 from typing import Any, Dict, List, Optional
 
 from app.tools.slot_followup import (
+    LAST_READOUT_BY_DAY_KEY,
     LAST_READOUT_KEY,
     LOSSY_SPOKEN_DAYS_KEY,
     record_spoken_slots,
@@ -339,6 +340,22 @@ def apply_offer_to_session(
             "mode": str(record.get("mode") or ""),
             "options": len(dtmf),
         }
+        # ...and PER DAY for a single-day readout (D-q, spec DT-4/4b), so a
+        # later "what about Monday" is answered with the most recent thing
+        # said about Monday, verbatim. The record travels with the words so
+        # the re-speak can put the same offer and keypad back on the table.
+        # Keyed on the day the readout is OF -- the one date its slots share
+        # -- NOT `day_iso`, which is the conversation's anchor and stays on
+        # Monday while "what else" reads out Thursday. A multi-day menu is
+        # not a readout of any one day and writes nothing here.
+        _dates = {str(s.get("date") or s.get("start", "")[:10]) for s in slots}
+        _day_of = _dates.pop() if len(_dates) == 1 else None
+        if str(record.get("mode") or "") == "single_day" and _day_of:
+            by_day = session.get(LAST_READOUT_BY_DAY_KEY)
+            if not isinstance(by_day, dict):
+                by_day = {}
+            by_day[str(_day_of)] = {"chunks": list(chunks), "record": dict(record)}
+            session[LAST_READOUT_BY_DAY_KEY] = by_day
 
     # 3. The keypad.
     if len(dtmf) >= 2:

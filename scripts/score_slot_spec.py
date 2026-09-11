@@ -264,37 +264,50 @@ def dt4(days, shape):
     return PASS, f"heard {heard}, kept in {kept}"
 
 
-@row("DT-4b", "after a FULL day readout, 'what about <day>' reads new times",
-     invariant="inv 7 boundary")
+@row("DT-4b", "after a FULL day readout, 'what about <day>' is that readout "
+              "again, verbatim (D-q)", invariant="inv 7, inv 10")
 def dt4b(days, shape):
-    """The other side of N1's boundary, reported as a DIVERGENCE rather than a
-    pass or a fail, because which answer is right is the owner's call.
+    """D-q, 2026-09-11. Until then this row reported a DIVERGENCE: a caller
+    who had heard all three of Monday's times and said "what about Monday"
+    was read three DIFFERENT ones -- zero overlap, N1 one step on. The owner's
+    answer: "what about <day>" means "tell me about <day>" whatever the count,
+    so the most recent thing said about that day is said again. Novelty is
+    "what else on Monday", never inferred from the count.
 
-    Today: a caller who has heard all three of Monday's offered times and then
-    says "what about Monday" is read three DIFFERENT times -- zero overlap with
-    what prompted the question, which is N1's own complaint one condition
-    further along. The code's reasoning is that re-reading the same three
-    carries no new time. The caller's reading of "what about Monday" may well be
-    "tell me about Monday", in which case overlap is the point.
-
-    §9.2 of the spec. No behaviour change is proposed here.
-    """
-    if len(days[0]["slot_times"]) < 6:
-        return UNREACHABLE, "needs 6+ times so a full readout still leaves 3"
+    Driven through the dispatcher as a call would: week menu, "tell me about
+    <day 0>" (the readout), then "what about <day 0>" again. Passes only when
+    the second is byte-equal to the first, the keypad map is unchanged (inv.
+    10) and nothing new was recorded as heard (inv. 16)."""
+    from app.tools.slot_offer import apply_offer_to_session, offer_as_record
+    if len(days[0]["slot_times"]) < 3:
+        return UNREACHABLE, "needs a day holding 3+ times for a full readout"
     s = _session(days)
-    day = days[0]
-    heard = day["slot_times"][:3]
-    sf.record_spoken_slots(s, [
-        {"start": f"{day['date']}T{t}:00", "date": day["date"]} for t in heard])
-    text = sf.speak_one_day_from_payload(
-        s, days, day["date"], why="scorer", user_text="what about monday")
-    if not text:
-        return UNREACHABLE, "no answer"
-    kept = _spoken_times_in(text, [day])
-    overlap = [t for t in kept if t in heard]
-    return (PASS if overlap else UNREACHABLE), (
-        f"heard {heard} -> re-read {kept}; overlap {overlap or 'NONE'}"
-        + ("" if overlap else "  <-- divergence, owner call (spec §9.2)"))
+    first = build_slot_offer(days[:3], pretrimmed=False)
+    if first is None:
+        return UNREACHABLE, "no offer"
+    apply_offer_to_session(s, offer_as_record(first), first.chunks)
+    s["_slot_presentation_mode"] = first.mode
+    wd = _label(days[0]["date"]).split()[0].lower()
+    if first.mode == "multi_day":
+        readout = sf.try_unspoken_followup_speech(s, f"tell me about {wd}")
+        if not readout:
+            return UNREACHABLE, "the named-day producer declined"
+    else:
+        # A single-day offer IS the day's readout; "what about <day>" after
+        # it is the same act, and before D-q it went to the model.
+        readout = first.text
+    keypad = dict(s.get("v3_dtmf_slot_map") or {})
+    heard = list(s.get(sf._SPOKEN_KEY) or [])
+    again = sf.try_unspoken_followup_speech(s, f"um what about {wd}")
+    if not again:
+        return FAIL, "'what about <day>' after its readout reached no producer"
+    if again != readout:
+        return FAIL, f"differs:\n    first: {readout!r}\n    again: {again!r}"
+    if dict(s.get("v3_dtmf_slot_map") or {}) != keypad:
+        return FAIL, "the keypad map changed on a day-scoped repeat (inv 10)"
+    if list(s.get(sf._SPOKEN_KEY) or []) != heard:
+        return FAIL, "a day-scoped repeat recorded something new as heard (inv 16)"
+    return PASS, f"verbatim: {again[:60]!r}"
 
 
 @row("DT-7", "a named time the diary HOLDS is spoken", invariant="inv 4")
