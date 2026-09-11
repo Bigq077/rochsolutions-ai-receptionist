@@ -15466,6 +15466,16 @@ class WebSocketCallHandler:
                 # state between caller turns so fresh identical phrases are not suppressed.
                 if chunk_text == "\x00DEDUP_RESET\x00":
                     _last_tts_chunk = ""
+                    # Same sentinel, same meaning, one more consumer: a new
+                    # caller turn lapses the slot guard's poisoned-turn flag, so
+                    # one replaced sentence silences the rest of its own
+                    # paragraph and nothing after it. This is the only per-turn
+                    # boundary the TTS loop can see.
+                    try:
+                        from app.tools import slot_fact_guard as _slot_guard
+                        _slot_guard.turn_boundary(self.session)
+                    except Exception:      # pragma: no cover - defensive
+                        pass
                     continue
 
                 if not chunk_text or not chunk_text.strip():
@@ -15794,6 +15804,55 @@ class WebSocketCallHandler:
                         chunk_text[:80],
                     )
                 _last_tts_chunk = chunk_text.strip()
+
+                # ── Invariant 1: never speak a slot the diary does not hold ────
+                # `app/tools/slot_fact_guard.py`; spec in
+                # docs/plan/SLOT_PRESENTATION_SPEC.md. HERE, and not in a
+                # producer, because the defect it exists for happens on turns no
+                # producer claimed: CA7ebc00839bf773bcf7cbaa52d7c60f7e (11 Sep
+                # 2026 00:04) confirmed "Monday the 14th at twenty to twelve"
+                # three times, and 11:40 is not on northgate's 50-minute grid.
+                # No tool ran that turn, so Gate 5, the reverse-parse layer and
+                # every read-back guard were somewhere else. This loop is the
+                # one seam every utterance passes through, which is the same
+                # reason the obs transcript is recorded immediately below.
+                #
+                # AFTER every suppression check and BEFORE the obs record, on
+                # purpose. Earlier would log violations for chunks the dedup or
+                # inhibit guards were about to discard -- speech nobody heard --
+                # and later would leave the transcript claiming words that were
+                # replaced.
+                #
+                # Reads `_obs_chunk_text`, the PRE-substitution form: the guard
+                # compares clock times against the payload and must not have to
+                # reason about "Awlstuh". Anything it substitutes goes back
+                # through `_apply_tts_subs` so the spoken form is built the same
+                # way as every other chunk's.
+                #
+                # Default mode is `log` -- detect and record, speech untouched.
+                # Never raises: on any error the words go out unchanged.
+                try:
+                    from app.tools import slot_fact_guard as _slot_guard
+                    _sg = _slot_guard.check_outgoing(self.session, _obs_chunk_text)
+                    if _sg.text != _obs_chunk_text:
+                        if not str(_sg.text or "").strip():
+                            logger.warning(
+                                "[ms_conn] slot_guard dropped the tail of a "
+                                "retracted offer: %r", _obs_chunk_text[:80],
+                            )
+                            continue
+                        logger.error(
+                            "[ms_conn] slot_guard REPLACED a slot fact: %r -> %r",
+                            _obs_chunk_text[:120], _sg.text,
+                        )
+                        _obs_chunk_text = _sg.text
+                        chunk_text = _apply_tts_subs(_sg.text)
+                        _last_tts_chunk = chunk_text.strip()
+                except Exception:
+                    logger.warning(
+                        "[ms_conn] slot_guard failed; speaking unchanged",
+                        exc_info=True,
+                    )
 
                 # ── Obs transcript ────────────────────────────────────────────
                 # Recorded HERE and nowhere else. This is the one seam every

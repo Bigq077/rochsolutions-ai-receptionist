@@ -3315,6 +3315,23 @@ class LLMStream:
         # caller's line has to be inserted back at this mark, not appended.
         _obs_turns.mark_turn_start(session)
 
+        # Slot guard: the clock times the CALLER named, folded in before any
+        # reply is built. Step 5 REQUIRES naming a window back when the offer
+        # sits outside it -- "I haven't got anything from half five to nine, I
+        # do have half four" -- so a time the caller asked for is honestly
+        # speakable even when the diary does not hold it. Without this the
+        # guard convicts that sentence on the caller's own words: measured on
+        # CA7ebc00839bf773bcf7cbaa52d7c60f7e, "as close as possible to 12"
+        # against northgate's grid, which holds 12:10 and not 12:00.
+        #
+        # HERE, at turn START, and not beside `record_user` at turn end, which
+        # runs after the reply has already been spoken.
+        try:
+            from app.tools import slot_fact_guard as _slot_guard
+            _slot_guard.note_caller_speech(session, user_text)
+        except Exception:                  # pragma: no cover - defensive
+            pass
+
         # ── Step 1-3: Fast-path ──────────────────────────────────────────
         fp_result = try_fast_path(session, user_text)
         if fp_result is not None:
