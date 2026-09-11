@@ -46,17 +46,68 @@ def prompt() -> str:
     return f"{static}\n{dynamic}".lower()
 
 
-# ── B1 · two slots, not six ───────────────────────────────────────────────
-def test_slot_presentation_offers_two_times(prompt):
-    assert "offer exactly two times" in prompt
-    assert "two — not three, not six" in prompt
+# ── B1, SUPERSEDED · the engine speaks the times, numbered ────────────────
+#
+# B1 asked this prompt for "exactly TWO times ... as ONE natural sentence with
+# no numbered list", on a measurement that three days by two times took 24.1 s.
+# Two owner decisions superseded it, and `receptionist_tools` records both at
+# `_MAX_PRESENTED_TIMES_MULTI_DAY`:
+#
+#   1 Sep 2026 — two times per day across up to three days. Each day is ONE
+#                numbered option carrying two times, so the caller holds three
+#                choices and not six, and the deterministic sentence is fixed
+#                and short where the 24.1 s was a model improvising around the
+#                list. Its length is asserted by
+#                test_the_three_by_two_readout_stays_short.
+#   9 Sep 2026 — a week is a MENU OF DAYS; a named day is three numbered times.
+#
+# The prompt was never brought with them, so for ten days this file's clinics --
+# jv_v1, northgate, vital_edge, i.e. the demo line and two of the three live
+# ones -- told the model to present slots in a format the engine's own tests
+# forbid, while theorem_v3's prompt and SLOT_FORMATTER_SYSTEM_PROMPT both said
+# numbered. That is `SLOT_PRESENTATION_ANALYSIS_2026-09-11.md` §2.4, and the
+# turns where no producer claims the readout -- 74 of 104 since 3 Sep -- are
+# where the model followed it.
+#
+# THIS TEST WAS ONE OF THE PINS. It asserted the superseded decision as
+# correct, which is §3.6's third mechanism ("a correct test of an earlier
+# decision becomes a defect pin"), the same way N1 was pinned by the replay
+# gate and four tests. Rewritten to assert the decision that is actually in
+# force, with the supersession recorded above rather than in a commit message
+# nobody will find.
+
+def test_the_numbering_is_structure_not_decoration(prompt):
+    """The options are parsed for keypad entry: a flat list cannot be
+    selected by number, which is B-80/P9/P11's whole family."""
+    assert "number 1," in prompt
+    assert "parsed for keypad" in prompt
+    assert "flat sentence" in prompt
 
 
-def test_slot_presentation_no_longer_asks_for_three_days(prompt):
-    assert "present exactly three days" not in prompt
-    assert "number 3, [day] the [date]" not in prompt, (
-        "the three-day numbered list is what measured 24.1 s"
-    )
+def test_the_prompt_no_longer_forbids_the_format_the_engine_speaks(prompt):
+    assert "no numbered list" not in prompt
+    assert "offer exactly two times" not in prompt
+    assert "two — not three, not six" not in prompt
+
+
+def test_only_the_engine_authors_a_slot_time(prompt):
+    """Invariant 1 and the `one author` rule, as the model is told it."""
+    assert "the engine speaks the times, not you" in prompt
+    assert "slot_times_spoken" in prompt
+    assert "never convert a 24-hour time yourself" in prompt
+
+
+def test_a_confirmation_may_only_name_a_time_that_was_offered(prompt):
+    """CA7ebc00839bf773bcf7cbaa52d7c60f7e: "10 to 12 works" was confirmed as
+    "twenty to twelve", which is 11:40 and not on northgate's grid."""
+    assert "must be one you read out of the data" in prompt
+    assert "do not guess" in prompt
+
+
+def test_a_named_day_is_answered_with_that_day(prompt):
+    """N1 and N6. "What about Monday" withdrew both Monday times; "what else
+    on Monday" was answered with Thursday."""
+    assert "never answer with a different day" in prompt
 
 
 # ── A2 · reason before availability ───────────────────────────────────────

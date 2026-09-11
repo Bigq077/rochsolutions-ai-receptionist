@@ -265,7 +265,18 @@ UNCHANGED_CLINIC_PROMPTS = {
     # first-few-minutes-in-the-morning feeling" -- three findings nobody gave
     # her. The block's own docstring already said the caller is never told what
     # THEY have; nothing in the rendered text enforced it.
-    "jv_v1": "fd0fffed95c870da",
+    # Re-pinned 2026-09-11, fd0fffed95c870da -> 517e456b5ba29887. BOOKING STEPS
+    # 5-7 were brought into line with the engine: numbered options (the engine's
+    # format, and what the keypad map is parsed from), the engine as the only
+    # author of a slot day/date/time, and a confirmation that may only name a
+    # time the model actually read out of the data. The full note, including the
+    # containment proof, is on the same hash in
+    # `test_b57_theorem_cancel_gate.UNMOVED_PROMPTS` -- which is where
+    # vital_edge is pinned, and it moved too.
+    #
+    # Confined to `clinic_template_prompt.py`, so demo, theorem and theorem_v3
+    # are byte-identical across it: hashed either side, not assumed.
+    "jv_v1": "517e456b5ba29887",
     "theorem": "8565be9a48a7a9aa",
     # Re-pinned 2026-08-25: 'Children under fifteen not seen' -> 'Children
     # under seven not seen'. Mark's minimum age is 7 (owner-confirmed

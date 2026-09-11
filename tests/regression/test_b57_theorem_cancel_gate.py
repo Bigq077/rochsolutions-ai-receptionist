@@ -441,7 +441,39 @@ UNMOVED_PROMPTS = {
     # Found the hard way: the B-55 table was re-pinned first and the suite still
     # went +1, because the jv_v1 hash lives in TWO tables under two different
     # names (UNCHANGED_CLINIC_PROMPTS here is UNMOVED_PROMPTS). Re-pin both.
-    "jv_v1": "fd0fffed95c870da",
+    # Re-pinned 2026-09-11, fd0fffed95c870da -> 517e456b5ba29887 (jv_v1) and
+    # 8b1d639b71b2d23e -> 911689910174d5be (vital_edge, below). BOOKING STEPS
+    # 5-7 were brought into line with the engine.
+    #
+    # Until tonight this template told the model to "offer exactly TWO times
+    # ... as ONE natural sentence with no numbered list", while the engine's
+    # producers read three days of two times each, NUMBERED and parsed for
+    # keypad selection, and a named day as three numbered times. Both halves
+    # were correct decisions taken three weeks apart -- the two-sentence rule
+    # on a 24.1 s measurement, the numbered menu by owner decision on 1 and 9
+    # Sep -- and the prompt was never brought with the second. theorem_v3's own
+    # section and SLOT_FORMATTER_SYSTEM_PROMPT were both already numbered, so
+    # this template was the lone outlier, on the demo line and two of the three
+    # live clinics. `SLOT_PRESENTATION_ANALYSIS_2026-09-11.md` §2.4; the turns
+    # where no producer claims the readout, 74 of 104 since 3 Sep, are where
+    # the model followed it.
+    #
+    # Step 7 also gained the rule that a confirmation may only name a time the
+    # model actually read out of the data. CA7ebc00839bf773bcf7cbaa52d7c60f7e
+    # (11 Sep 00:04): "10 to 12 works" was confirmed as "twenty to twelve",
+    # three times. 11:40 is not on northgate's 50-minute grid.
+    #
+    # THE CONTAINMENT CLAIM, recomputed and not assumed: the change is confined
+    # to `clinic_template_prompt.py`, so exactly the template_v1 clinics move --
+    # jv_v1 and vital_edge here, northgate outside both tables -- and demo,
+    # theorem and theorem_v3 are byte-identical across it. Verified by hashing
+    # all five either side with this file's own `_sha`.
+    #
+    # BOTH TABLES re-pinned, per the note below: this hash also lives in
+    # `test_b55_provisional_reschedule_closing.UNCHANGED_CLINIC_PROMPTS`, and
+    # re-pinning one and not the other is how a previous re-pin left the suite
+    # +1.
+    "jv_v1": "517e456b5ba29887",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -541,7 +573,10 @@ UNMOVED_PROMPTS = {
     # else -- demo, theorem and theorem_v3 are byte-identical across it,
     # which is the property this table exists to prove. Recomputed with
     # this file's own _sha, never copied between tables.
-    "vital_edge": "8b1d639b71b2d23e",
+    # Re-pinned 2026-09-11 with jv_v1 above, 8b1d639b71b2d23e ->
+    # 911689910174d5be. Same one change to BOOKING STEPS 5-7; see the note
+    # there for the containment proof.
+    "vital_edge": "911689910174d5be",
 }
 
 
