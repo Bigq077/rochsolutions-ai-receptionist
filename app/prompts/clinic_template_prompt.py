@@ -3210,6 +3210,16 @@ _PHONE_STEP_MARKERS: Tuple[str, ...] = (
     # appear in the LOCATION rung ("on your keypad, just press 1 for Awlstuh"),
     # which is the collision that removed "on your keypad" from this list.
     "type your number",
+    # CAcae592ce, northgate demo line, 11 Sep 2026 10:12. The double name turn
+    # produced two replies; the one that stuck was "Is that number okay to use
+    # for the booking?" -- the model's own words, none of the above -- so the
+    # caller's "uh yes" fell through the question gate, Gate 5 held the CTA
+    # back as "phone missing", and the number was asked for a THIRD time
+    # ("you already asked me 3 times"). Both spellings the model uses.
+    "number okay to use",
+    "number ok to use",
+    "okay to use for the booking",
+    "ok to use for the booking",
 )
 
 

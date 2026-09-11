@@ -110,6 +110,13 @@ _PHONE_QUESTION_MARKERS: tuple = (
     # appear in the LOCATION rung ("on your keypad, just press 1 for Awlstuh"),
     # which is the collision that removed "on your keypad" from this list.
     "type your number",
+    # CAcae592ce, 11 Sep 2026: "Is that number okay to use for the booking?"
+    # -- the model's words -- matched nothing, and the caller's "uh yes" was
+    # not read as the phone confirm. See llm_stream._PHONE_STEP_MARKERS.
+    "number okay to use",
+    "number ok to use",
+    "okay to use for the booking",
+    "ok to use for the booking",
 )
 
 _NAME_QUESTION_MARKERS: tuple = ("your name", "first name", "surname", "full name")

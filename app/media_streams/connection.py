@@ -2678,7 +2678,43 @@ def _phone_question_on_the_table(session: Dict[str, Any]) -> bool:
         or session.get("last_bot_prompt", "")
         or ""
     ).lower()
-    return any(_mk in last_q for _mk in _PHONE_STEP_MARKERS)
+    if any(_mk in last_q for _mk in _PHONE_STEP_MARKERS):
+        return True
+    # The number itself is a marker. CAcae592ce (11 Sep 2026, demo line): the
+    # question that stuck was "Is that number okay to use for the booking?",
+    # in the model's own words, and the literal list above had been patched
+    # one wording at a time for two months. A prompt that reads the caller's
+    # OWN digits back cannot be the surname question or the clinic question,
+    # whatever words surround them -- so if Susie spoke the number, the phone
+    # question is on the table. Spoken ("oh seven five oh two...") or written.
+    return _prompt_reads_back_caller_number(last_q, _confirm_caller_number(session))
+
+
+_SPOKEN_DIGITS = {
+    "oh": "0", "zero": "0", "nought": "0", "one": "1", "two": "2",
+    "three": "3", "four": "4", "five": "5", "six": "6", "seven": "7",
+    "eight": "8", "nine": "9",
+}
+
+
+def _prompt_reads_back_caller_number(prompt: str, caller_number: str) -> bool:
+    """True when `prompt` contains the caller's number, spoken or written.
+
+    Digits are collected in order from digit words and digit characters, and
+    the caller's number must appear as a contiguous run -- the last SEVEN
+    digits suffice, because `last_bot_prompt` is clipped at 200 characters
+    (B-31) and a spoken UK mobile is ~60 characters, so the opener can be lost
+    while the number survives. "double seven" is not expanded; a partial read
+    simply fails closed, as before.
+    """
+    want = re.sub(r"\D", "", caller_number or "")
+    if len(want) < 7:
+        return False
+    heard = "".join(
+        _SPOKEN_DIGITS.get(tok, tok) if tok.isdigit() or tok in _SPOKEN_DIGITS else ""
+        for tok in re.findall(r"[a-z]+|\d", (prompt or "").lower())
+    )
+    return want[-7:] in heard
 
 
 def _is_phone_readback_rejection(transcript: str) -> bool:
