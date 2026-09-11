@@ -1158,6 +1158,19 @@ _NOT_A_TIME_BEFORE = (
 )
 
 
+# "<minutes> past|to <hour>", and the UK "half <hour>". The hour word inside
+# one of these is a component, not a time of its own -- see the bare-hour
+# pass in `_candidate_hhmm_from_text`.
+_RELATIVE_TIME_PHRASE_RE = re.compile(
+    r"\b(?:(?:twenty[\s-]*five|twenty|five|ten|quarter|half|\d{1,2})\s+)?"
+    r"(?:past|to)\s+(?:one|two|three|four|five|six|seven|eight|nine|ten"
+    r"|eleven|twelve|\d{1,2})\b"
+    r"|\bhalf\s+(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven"
+    r"|twelve)\b",
+    re.IGNORECASE,
+)
+
+
 def _bare_hour_word_is_a_clock_reference(text: str, word: str) -> bool:
     """True when `word` is used as a time somewhere in `text`.
 
@@ -1217,10 +1230,22 @@ def _candidate_hhmm_from_text(text: str) -> List[str]:
     # exactly one slot sat at 13:00, so "the one after that, not the one
     # coming up, the one after" resolved cleanly and confidently to a Friday
     # the caller had never mentioned (B-114).
+    #
+    # ...and not where it is the HOUR of a "<minutes> past/to <hour>" phrase.
+    # "five past eight in the morning works" carries a strong marker after
+    # "eight", so this loop also emitted 08:00 -- and on a four-day sweep
+    # where Monday's eight had been heard, Thursday's had not, and 08:05 sat
+    # on no day, the resolver answered "the nearest I've got to five past
+    # eight is eight in the morning on Thursday" to a caller discussing
+    # Monday. The N4 shape, through a component read as a whole. The phrase
+    # is `requested_clock_times`' to read; it is removed before this pass.
+    # "half three" (UK for 15:30) goes with it: 15:00 is wrong, and no
+    # candidate is the honest answer for a form neither parser reads.
+    t_bare = _RELATIVE_TIME_PHRASE_RE.sub(" ", t)
     for hour_word, h12 in _BARE_HOUR_WORDS.items():
-        if not re.search(rf"\b{hour_word}\b", t):
+        if not re.search(rf"\b{hour_word}\b", t_bare):
             continue
-        if not _bare_hour_word_is_a_clock_reference(t, hour_word):
+        if not _bare_hour_word_is_a_clock_reference(t_bare, hour_word):
             continue
         _add_hour_variants(h12, 0)
 
@@ -1393,9 +1418,25 @@ def resolve_requested_time(
     if not remaining or not (text or "").strip():
         return None
     t = text.lower()
+    # A label whose core is a bare hour word ("eight in the morning") is
+    # tested on the text with every "<minutes> past/to <hour>" phrase removed:
+    # "five past EIGHT IN THE MORNING works" contains that label and is not
+    # that time. Multi-word labels ("half past seven") keep the full text --
+    # they ARE the phrase. See `_RELATIVE_TIME_PHRASE_RE`.
+    t_bare = _RELATIVE_TIME_PHRASE_RE.sub(" ", t)
+
+    def _core(spoken: str) -> str:
+        return (spoken.replace(" in the evening", "")
+                .replace(" in the afternoon", "").replace(" in the morning", ""))
+
+    def _text_for(spoken: str) -> str:
+        return t_bare if _core(spoken) in _BARE_HOUR_WORDS else t
 
     # Prefer full spoken-label containment (most precise)
-    label_hits = [s for s in remaining if s.get("spoken") and s["spoken"].lower() in t]
+    label_hits = [
+        s for s in remaining
+        if s.get("spoken") and s["spoken"].lower() in _text_for(s["spoken"].lower())
+    ]
     if len(label_hits) == 1:
         return _reject_if_caller_named_another_day(
             label_hits[0], available_days, text,
@@ -1404,18 +1445,19 @@ def resolve_requested_time(
     soft_hits = []
     for s in remaining:
         spoken = (s.get("spoken") or "").lower()
-        core = spoken.replace(" in the evening", "").replace(" in the afternoon", "").replace(" in the morning", "")
+        core = _core(spoken)
         if not core:
             continue
+        tt = _text_for(spoken)
         # Word-boundary, not containment. "one" sits inside none, phone,
         # someone, anyone, money and gone; the old test matched every one of
         # them (B-114).
-        if not re.search(rf"\b{re.escape(core)}\b", t):
+        if not re.search(rf"\b{re.escape(core)}\b", tt):
             continue
         # A core that is a bare number word has to be USED as a time, exactly
         # as in _candidate_hhmm_from_text. Multi-word cores ("half past
         # seven") and named cores ("midday") are unambiguous and skip this.
-        if core in _BARE_HOUR_WORDS and not _bare_hour_word_is_a_clock_reference(t, core):
+        if core in _BARE_HOUR_WORDS and not _bare_hour_word_is_a_clock_reference(tt, core):
             continue
         soft_hits.append(s)
     if len(soft_hits) == 1:
