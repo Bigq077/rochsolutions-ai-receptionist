@@ -570,6 +570,14 @@ def check_outgoing(session: Any, text: Any) -> Verdict:
 
         violations: List[Dict[str, Any]] = []
         warnings: List[Dict[str, Any]] = []
+        # The caller's own times are speakable on ANY day, not just allowed:
+        # "the nearest I've got to midday is ten past twelve on Monday" names
+        # 12:00 in a Monday clause, and 12:00 is bookable nowhere. That is
+        # DT-8's sentence, not a wrong-day attribution.
+        _asked_any = (session or {}).get(_ASKED)
+        asked_set: Set[str] = (
+            {str(t)[:5] for t in _asked_any} if isinstance(_asked_any, list) else set()
+        )
 
         for clause in offer_clauses(text):
             padded = " " + clause.lower() + " "
@@ -578,7 +586,7 @@ def check_outgoing(session: Any, text: Any) -> Verdict:
             day_iso = _day_named(session, clause)
             for phrase, cands in spoken_time_mentions(clause):
                 if cands & allowed:
-                    if day_iso:
+                    if day_iso and not (cands & asked_set):
                         on_day = allowed_on_day(session, day_iso)
                         if on_day and not (cands & on_day):
                             warnings.append({

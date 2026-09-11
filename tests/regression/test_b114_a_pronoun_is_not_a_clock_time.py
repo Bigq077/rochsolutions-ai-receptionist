@@ -198,7 +198,11 @@ def test_every_call_site_passes_the_day_payload():
     silent omission is exactly what this catches.
     """
     sites = _call_sites()
-    assert len(sites) == 2, f"call-site count changed: {sites}"
+    # Three since 2026-09-11: the follow-up dispatcher resolves once over the
+    # day under discussion and once over the whole sweep (DT-7/8 -- a time
+    # present on every day of a uniform grid was non-unique across the sweep
+    # and declined on the very day being discussed). Both pass the payload.
+    assert len(sites) == 3, f"call-site count changed: {sites}"
     for mod, args in sites:
         assert args.count(",") >= 2, (
             f"{mod} calls resolve_requested_time without the day payload: {args!r}"

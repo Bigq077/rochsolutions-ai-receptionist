@@ -348,6 +348,54 @@ def dt8(days, shape):
     return PASS, f"asked {asked} -> {times[idx]}"
 
 
+@row("DT-8b", "a named time DURING SELECTION reaches a producer on the day "
+              "under discussion", invariant="inv 4, inv 20")
+def dt8b(days, shape):
+    """The dispatcher, driven the way CA34942aee (11 Sep 08:51) drove it: a
+    week readout, "tell me about <day 0>", then "anything around <round hour>".
+    Before 2026-09-11 the resolver ran over the whole sweep, the same clock
+    time on every day made the hit non-unique, and the turn went to the
+    model. DT-7/8 above score the selection pieces; this scores whether the
+    act reaches them."""
+    from app.tools.slot_offer import apply_offer_to_session, offer_as_record
+    times = days[0]["slot_times"]
+    if len(times) < 2:
+        return UNREACHABLE, "needs 2+ times so one can be unheard"
+    s = _session(days)
+    first = build_slot_offer(days[:3], pretrimmed=False)
+    if first is None:
+        return UNREACHABLE, "no offer"
+    apply_offer_to_session(s, offer_as_record(first), first.chunks)
+    s["_slot_presentation_mode"] = first.mode
+    if first.mode == "multi_day":
+        if not sf.try_unspoken_followup_speech(s, f"tell me about {_label(days[0]['date']).split()[0].lower()}"):
+            return UNREACHABLE, "the named-day producer declined"
+    # A round hour within tolerance of an UNHEARD time on day 0.
+    heard = set(s.get(sf._SPOKEN_KEY) or [])
+    unheard = [t for t in times if f"{days[0]['date']}T{t}:00" not in heard]
+    asked = None
+    for t in unheard:
+        h = round((int(t[:2]) * 60 + int(t[3:])) / 60)
+        cand = f"{h:02d}:00"
+        near = [x for x in times if abs((int(x[:2]) * 60 + int(x[3:])) - h * 60)
+                <= sf.NEAREST_TIME_TOLERANCE_MIN]
+        if 8 <= h <= 19 and near == [t]:
+            asked = (cand, t)
+            break
+    if asked is None:
+        return UNREACHABLE, "no unheard time is the unique nearest to a round hour"
+    said = f"have you got anything around {int(asked[0][:2])}"
+    out = sf.try_unspoken_followup_speech(s, said)
+    if not out:
+        return FAIL, f"{said!r} reached no producer (the model would answer it)"
+    want = sf._spoken_slot_time(asked[1]) if hasattr(sf, "_spoken_slot_time") else _spoken_slot_time(asked[1])
+    if want not in out:
+        return FAIL, f"asked {asked[0]}, said {out!r}"
+    if asked[0] != asked[1] and "nearest" not in out.lower():
+        return FAIL, f"offered {asked[1]} for {asked[0]} without saying so: {out!r}"
+    return PASS, f"{said!r} -> {out[:70]!r}"
+
+
 @row("DT-9", "a tie for nearest declines rather than guessing",
      shapes=["uniform50"], invariant="inv 4")
 def dt9(days, shape):

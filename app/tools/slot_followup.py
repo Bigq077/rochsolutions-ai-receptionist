@@ -5142,9 +5142,46 @@ def format_next_batch_speech(batch: List[Dict[str, Any]], more: bool) -> str:
     )
 
 
-def format_time_available_speech(slot: Dict[str, Any]) -> str:
+def _requested_clock_times_safe(text: Any) -> List[str]:
+    """`requested_clock_times`, never raising: this sits on the hot path."""
+    try:
+        return list(requested_clock_times(text) or [])
+    except Exception:
+        logger.exception("[slot_followup] requested_clock_times failed")
+        return []
+
+
+def format_time_available_speech(
+    slot: Dict[str, Any], asked: Optional[List[str]] = None
+) -> str:
+    """The one-time answer to a caller who named a time.
+
+    DT-8's "and says so": when the time being offered is not the one asked
+    for -- "around 12" against a grid that holds 12:10 -- the sentence names
+    the caller's time and says this is the nearest. "Yes — ten past twelve is
+    free" to a caller who said "twelve" invites "I said twelve". The caller's
+    own time is speakable by the guard's rules (`note_caller_speech`); the
+    offered one is real by construction. `asked` is HH:MM candidates from
+    `requested_clock_times`, so a 12-hour twin ("2" -> 02:00/14:00) that
+    matched exactly still reads as a plain yes.
+    """
     day = slot.get("day_label") or "that day"
     spoken = slot.get("spoken") or slot.get("time") or "that time"
+    got = str(slot.get("time") or "")
+    if asked and got and got not in asked:
+        try:
+            from app.tools.receptionist_tools import _spoken_slot_time
+            # The candidate on the same side of noon as the slot, else the
+            # first -- "two" asked, 14:40 offered, reads back "two", not "two
+            # in the morning".
+            _same = [a for a in asked if (int(a[:2]) >= 12) == (int(got[:2]) >= 12)]
+            _asked_spoken = _spoken_slot_time((_same or asked)[0])
+            return (
+                f"The nearest I've got to {_asked_spoken} is {spoken} on {day}. "
+                f"Shall I book that in for you?"
+            )
+        except Exception:
+            logger.exception("[slot_followup] nearest phrasing failed")
     return (
         f"Yes — {spoken} on {day} is free. "
         f"Shall I book that in for you?"
@@ -5198,8 +5235,14 @@ def apply_next_batch_to_session(
 def apply_resolved_time_to_session(
     session: Dict[str, Any],
     slot: Dict[str, Any],
+    asked: Optional[List[str]] = None,
 ) -> str:
-    """Present the resolved unspoken time as the current offer / selection."""
+    """Present the resolved unspoken time as the current offer / selection.
+
+    `asked` is what the caller said, as HH:MM candidates, so the sentence can
+    say "nearest" when it is not the same time (DT-8). Optional, and every
+    pre-existing caller passes nothing, which keeps their sentence unchanged.
+    """
     offered = {"start": slot["start"], "end": slot.get("end") or ""}
     session["last_offered_slots"] = [offered]
     session["slot_labels"] = [slot.get("spoken") or slot.get("time")]
@@ -5212,7 +5255,7 @@ def apply_resolved_time_to_session(
         pass
     # B-80: the offer is now this single time; the numbered map is stale.
     _supersede_slot_map(session)
-    return format_time_available_speech(slot)
+    return format_time_available_speech(slot, asked=asked)
 
 
 def build_followup_tool_result(
@@ -6366,9 +6409,50 @@ def try_unspoken_followup_speech(
     # Specific unspoken time first (V5).
     # `days` too: the guard needs the payload's labels to tell whether the
     # caller named a day (B-114). Both call sites pass it -- see test_b114.
+    #
+    # DT-7/8 (spec §5.1; precedence level 3): scoped to the DAY UNDER
+    # DISCUSSION first, whole sweep second. CA34942aee, demo line, 11 Sep
+    # 08:51:21 -- after "tell me about Monday" the caller asked "what have
+    # you got around 12". `remaining` spans every day of the sweep, 12:10 sits
+    # on all four of them, and the resolver's "exactly one" discipline --
+    # right for a 12-hour twin -- declined a time the diary held on the very
+    # day being discussed. The turn went to the model, whose sentence Gate 5
+    # stripped, and the caller heard "Does that work?" about nothing. On
+    # CA778651b7 the same question happened to trigger a tool call and D8
+    # pinned the time inside the executor; which of the two a caller gets
+    # depended on the model, which is invariant 20 exactly.
+    #
+    # `remaining_unspoken_on_current_day` is the same scope the more-times
+    # branch below uses: the day the caller named in this utterance, else the
+    # one picked by position, else the offer they were just given (B-103,
+    # B-105). A time on another day still resolves through the whole-sweep
+    # call underneath, exactly as before.
+    #
+    # `_asked` is for the SENTENCE only ("nearest I've got to ..."); the
+    # resolver reads word forms ("ten past twelve") the digit parser does not,
+    # so the scoped attempt is not gated on it.
+    _asked = _requested_clock_times_safe(user_text)
+    _scoped = remaining_unspoken_on_current_day(session, user_text)
+    # A bare weekday ("ten past twelve on tuesday") is a partial naming to
+    # `day_named_by_caller`, so the scope above falls to the offer's first
+    # day and the weekday refusal then (rightly) drops the hit -- and the
+    # named-day producer reads Tuesday's three with the asked time absent.
+    # `_payload_day_by_weekday` (B-148) resolves the weekday against the
+    # payload, deny-by-default, and the scope follows it.
+    _wk = _payload_day_by_weekday(days, user_text)
+    if _wk:
+        _scoped = [s for s in remaining if _day_key(s) == _wk]
+    hit = resolve_requested_time(user_text, _scoped, days) if _scoped else None
+    if hit is not None:
+        logger.info(
+            "[slot_followup] a time the caller named resolved on the day "
+            "under discussion (%s), not across the sweep (DT-7/8)",
+            _day_key(hit),
+        )
+        return apply_resolved_time_to_session(session, hit, asked=_asked)
     hit = resolve_requested_time(user_text, remaining, days)
     if hit is not None:
-        return apply_resolved_time_to_session(session, hit)
+        return apply_resolved_time_to_session(session, hit, asked=_asked)
 
     # "What about Wednesday" after a MULTI-DAY readout. Answered from the
     # payload, for the same reason "what else have you got" is: on D-B the
