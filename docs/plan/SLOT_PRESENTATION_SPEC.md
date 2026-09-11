@@ -1,0 +1,480 @@
+# Slot presentation — the specification
+
+**Status** AUTHORITATIVE for slot presentation from 2026-09-11. It replaces the
+lineage documents listed in §10 and the eight `OPEN_DEFECTS_*` registers as the
+source of truth for what Susie should say while a caller is choosing a slot.
+
+**Written** 2026-09-11 (overnight), from
+`SLOT_PRESENTATION_ANALYSIS_2026-09-11.md`, the dated owner decisions in the
+code, the ~110 numbered defects of 18 Aug – 11 Sep, and the rendered prompts of
+all four clinic engines.
+
+**What it is for.** Three weeks and ~180 commits treated slot presentation as a
+series of selection and formatting bugs. Each fix was correct for the call that
+found it; compositions of correct fixes failed on the next call, because there
+was no statement anywhere of what the right answer IS. This document is that
+statement. Its decision table is meant to be executed, not read: §8 describes
+the offline scorer, and a row that the engine fails is a defect whether or not
+anybody has phoned in and found it.
+
+**How to use it.** A proposed change to slot behaviour must name the row or the
+invariant it serves. A change that serves none of them is either a new owner
+decision — in which case add it to §3 with its date — or it should not ship.
+
+> **Read §4 before §5.** The precedence order is the part that was never written
+> down, and every row in the table is an application of it. Reading the rows
+> without it invites the same thing that happened in the code: each rule
+> inferring its own priority.
+
+---
+
+## 1. Where this fits
+
+```
+caller utterance
+  │
+  ├─ §2.1  ACT        one classification per turn, with its constraints
+  │
+  ├─ §2.2  LEDGER     one record, one reducer, once per turn
+  │
+  ├─ §4    PRECEDENCE which rule wins when two apply
+  │
+  ├─ §5    TABLE      act × ledger → what Susie says and what she records
+  │
+  ├─ §7    PROMPT     what the model may and may not say
+  │
+  └─ §6    INVARIANTS what must be true of the sentence, whoever wrote it
+                      (invariant 1 is enforced in code: app/tools/slot_fact_guard.py)
+```
+
+Today the engine has no ACT and no single LEDGER: 17 predicates each answer a
+fragment of the act question and at least ten session keys each claim to say
+what is on the table. §5 is therefore written as a specification of BEHAVIOUR,
+not of the current structure — it can be scored against the engine as it stands
+(§8), and it is also the gate for the migration that introduces the act and the
+ledger for real.
+
+---
+
+## 2. Glossary
+
+### 2.1 Caller acts
+
+A slot sub-dialogue has a small closed set of acts. Every caller turn during
+selection is exactly one of them, with its constraints extracted once.
+
+| act | constraints | examples |
+|---|---|---|
+| `ASK_OPTIONS` | `day?`, `date?`, `time?`, `band?`, `sooner?`, `more?` | "what about Monday", "anything around 12", "what else have you got", "what's the soonest", "any evenings" |
+| `ACCEPT` | `slot` or `day` | "yeah that one", "number two", "ten past twelve works", "Monday's fine" |
+| `REJECT` | `slot` or `day` | "no, not Monday", "neither of those", "that's too early" |
+| `REPEAT` | — | "sorry, say that again", "what was the second one" |
+| `OTHER` | — | "how much is it", "do you do sports massage", a new symptom |
+
+Three rules about the act, each bought with a defect:
+
+* **One classification per turn.** B-116 could not tell *"what else"* from
+  *"what about Monday"* because nothing told it which had been asked; N1's fix
+  had to smuggle the act in as a keyword argument from the one caller that
+  happened to know it.
+* **An act is not a standing preference.** B-90: an afternoon selection was
+  banked and filtered the rest of the call. B-138: "stiff every morning" was
+  read as a time filter. A constraint belongs to the turn that carried it
+  unless the caller restates it (invariants 13, 14).
+* **`OTHER` gets no slot facts.** The model handles it, and may not state a
+  day, date or time while doing so (§7).
+
+### 2.2 The ledger
+
+Four fields, updated by one reducer per turn. Today these are spread across
+`last_offered_slots`, `REQUESTED_TIMES_KEY`, `_slot_presentation_mode`,
+`v3_dtmf_slot_map`, `slot_starts_spoken` + its fingerprint,
+`_lossy_spoken_days`, `total_days`, `times_not_shown` and more, with different
+writers, lifetimes and per-turn wipes. That is the structural cause of S-13, N4,
+B-80, P9, P11, B-101 and B-102.
+
+| field | holds | must be true |
+|---|---|---|
+| `Offer` | the slots on the table: ISO starts, spoken order, keypad map, mode, the day under discussion | equals the last numbered list actually spoken (inv. 10) |
+| `Heard` | every ISO start SPOKEN to this caller, in order, per day | contains a slot only if it was spoken, not if it was built (inv. 16) |
+| `Asked` | named day(s), named time(s), band, `sooner`, refused day(s)/slot(s) | written on every turn type, including payload-answered ones |
+| `Payload` | the last availability result — bookable truth — with `found` distinguishable from `presented` | presented ≠ found always distinguishable (inv. 19) |
+
+### 2.3 Modes
+
+| mode | shape | source |
+|---|---|---|
+| `multi_day` | up to 3 days, 2 times each, one numbered option per day | owner 1 Sep (times/day), 9 Sep (week = menu of days) |
+| `single_day` | 3 numbered times, plus the more-times tail when the day holds more | owner 24 Aug (three times), 9 Sep (named day) |
+| `one_slot` | a single time, no numbering | falls out of a day holding one |
+
+---
+
+## 3. Owner decisions
+
+Each with its date and, where recorded, the call that prompted it. These are
+inputs to the table, not conclusions from it. **Where a decision has been
+superseded the supersession is shown, because a superseded decision left in a
+test becomes a defect pin — that is what happened to B1 and to N1.**
+
+| # | date | decision | where it lives |
+|---|---|---|---|
+| D-a | 2026-06-15 | ASAP shows the ONE soonest day as it is | `receptionist_tools.py:3651` |
+| D-b | 2026-08-24 | a single day speaks THREE times — the most a caller holds at once | `_MAX_PRESENTED_TIMES_SINGLE_DAY` |
+| D-c | 2026-08-24 | *superseded by D-e* — one time per day on multi_day | `_MAX_PRESENTED_TIMES_MULTI_DAY` history |
+| D-d | 2026-08-28 | B-109: the ASAP rule stops short of … (see call site) | `receptionist_tools.py:3882` |
+| D-e | 2026-09-01 | multi_day speaks TWO times per day, across up to three days: each day is one numbered option, so the caller holds three choices and not six | `_MAX_PRESENTED_TIMES_MULTI_DAY` |
+| D-f | 2026-09-01 | two times in one readout must SPAN the day — fifty minutes apart is not a choice | `_spread`, `slot_followup.py:4154` |
+| D-g | 2026-09-02 | after a multi-day readout, "what else have you got" means THREE MORE DAYS, not a second helping of Monday | `choose_presented_days`, `slot_followup.py:4306` |
+| D-h | 2026-09-09 | a week is a MENU OF DAYS; a named day is three numbered times plus "and I've a few others that day" | `slot_offer.py`, D9 |
+| D-i | 2026-09-09 | keep the part-of-day suffix ("in the morning") — LAT-1 reversed | `speaks_part_of_day`, default true |
+| D-j | 2026-09-09 | soonest-first opener, option B: say that the soonest IS the soonest, rather than changing the mode rule | `_set_earliest_lead_in`, `lead_in="soonest_first"` |
+| D-k | (standing) | caps are per clinic, in `clinic.json` | D2 |
+| D-l | (standing) | never volunteer prices | template prompt |
+| D-m | (standing) | a readout claims completeness only when it is true | B-97…B-99, D10, P10 |
+| D-n | 2026-09-11 | **the engine is the only author of a slot day, date or time; the model states none** | §7, `clinic_template_prompt` Steps 5–7, `slot_fact_guard.py` |
+
+> **D-n is the one decision on this list I took tonight rather than recorded
+> from you.** It is not a new policy so much as the removal of a contradiction:
+> `SLOT_FORMATTER_SYSTEM_PROMPT` and theorem_v3's prompt already said numbered
+> options from `slot_times_spoken` verbatim, and only the `template_v1` prompt
+> said otherwise. Flagged here so it can be confirmed or reversed deliberately.
+
+---
+
+## 4. Precedence
+
+**When two rules apply to one turn, the earlier level wins.** This order is the
+one a caller would recognise, and its inversion is the single biggest cause of
+the last three weeks: today novelty is the default and relevance is a set of
+exceptions added one exhibit at a time.
+
+| level | rule | why it is above the next one | exhibits |
+|---|---|---|---|
+| **1** | **Never speak a slot the diary does not hold.** | A false slot cannot be repaired by anything below it. A caller who books it gets no appointment. | 11 Sep 00:04 (11:40); B-102 |
+| **2** | **The slot they accepted.** | Withdrawing an accepted slot loses a booking that was already won. | P6, P6b |
+| **3** | **What they asked for** — the named day; the nearest bookable time to a named time; the band; "sooner". | This is the caller's actual goal. A relevant answer ends the call in one turn. | D8, S-13, N1, N2, N4, N6, B-137, B-142, D11, D12 |
+| **4** | **Novelty**, for *"what else"* only — never repeat a time heard on that day while unheard ones remain. | Novelty serves relevance ("bring me new times") and must not override it. | B-116, B-119, S-2, T1, T1b |
+| **5** | **Spread** — two times should span the day. | A presentation preference, real but the cheapest to give up. | D-f |
+
+Worked example, the owner's own from 11 Sep: *"as close as possible to 12."*
+Level 3 says the answer is **12:10, the nearest bookable time**. Level 4 — which
+is what the engine actually applied — asked instead "which times has this caller
+not heard?" and produced 14:40 and 16:20. *A person would have started at 12.*
+
+---
+
+## 5. The decision table
+
+Each row: the act and the ledger state that select it, what Susie says, and what
+the ledger records. `Ph` = payload, `H` = Heard, `A` = Asked, `O` = Offer.
+
+**Confidence column.** `owner` = a dated decision in §3. `defect` = fixed in
+response to a numbered exhibit, i.e. the behaviour is already agreed.
+`judgement` = **my engineering call tonight, needing your yes/no** — these are
+listed again in §9.2 so they are not buried.
+
+### 5.1 `ASK_OPTIONS`
+
+| # | ledger state | Susie says | records | conf. | exhibit |
+|---|---|---|---|---|---|
+| DT-1 | first ask, no constraint | `multi_day`: up to 3 days, 2 times each, numbered | O, H | owner D-e/D-h | — |
+| DT-2 | first ask, `sooner` | the soonest day, and SAYS it is the soonest | O, H, A.sooner | owner D-j | CA1c6c836 |
+| DT-3 | `day` named, day is in Ph | that day, 3 numbered times, + more-times tail if it holds more | O, H, A.day | owner D-h | N6 |
+| DT-4 | `day` named, day already offered | **the same times offered for that day, kept** — novelty must not withdraw them | O (unchanged times), H | defect | N1 (6 of 6) |
+| DT-5 | `day` named, day not in Ph, day is closed | "we're not open on <day>" — CLOSED, not "fully booked" | A.day | defect | northgate CAf4e4a3a6 |
+| DT-6 | `day` named, day open but empty | "<day> is fully booked" + alternatives, alternatives presented per DT-1 | O, H, A.day | defect | requested_day_empty |
+| DT-7 | `time` named, Ph holds it on a named/implied day | **that time**, first | O, H, A.time | defect | D8, S-13, N2 |
+| DT-8 | `time` named, Ph does not hold it | the NEAREST bookable time on that day, and says so ("the closest I've got to twelve is ten past twelve") | O, H, A.time | defect | D8, N2 |
+| DT-9 | `time` named, tie for nearest | decline to pick: read both | O, H | defect | `nearest_time_index` |
+| DT-10 | `band` named, band has times | times in band only | O, H, A.band | defect | B-90 |
+| DT-11 | `band` named, band exhausted on that day | say the band is spent, then open the day | O, H | defect | B-98 |
+| DT-12 | `more` after a single-day readout, unheard times remain **that day** | the next unheard times on that day, numbered, no padding with heard ones | O, H | defect | B-116, B-119 |
+| DT-13 | `more` after a multi-day readout | **three more DAYS**, not more times on the same day | O, H | owner D-g | demo 2 Sep 09:15 |
+| DT-14 | `more` + `day` ("what else on Monday") | more times **on Monday** | O, H, A.day | defect | **N6 — OPEN** |
+| DT-15 | `more`, nothing unheard remains on the day | say so truthfully, then offer other days | O, H | defect | D10, P10 |
+| DT-16 | `more`, nothing unheard remains anywhere in Ph | say so truthfully — once — and offer to look further out | — | defect | B-97…B-99 |
+| DT-17 | `sooner`, nothing is earlier than what they have heard | say that nothing is sooner, naming what the earliest is | — | defect | B-137, B-142, D11, D12 |
+
+### 5.2 `ACCEPT`
+
+| # | ledger state | Susie says | records | conf. | exhibit |
+|---|---|---|---|---|---|
+| DT-18 | `slot` resolves in O | confirm THAT slot — day, date, time — then ask the next question | O.accepted | defect | Step 7 |
+| DT-19 | `slot` named by ordinal ("number two") | the slot at that position in the LAST spoken numbered list | O.accepted | defect | P12, B-80, P9, P11 |
+| DT-20 | `slot` named by time, ambiguous 12-hour ("8") | resolve against the day's real times; if both are real, ask which | — | defect | f93a4d2a 3 Sep |
+| DT-21 | `slot` named by time, matches NO offered time | **do not guess** — re-read the option and ask which they mean | — | judgement | 11 Sep 00:04 ("10 to 12" → 11:40) |
+| DT-22 | `day` accepted, that day has an offer on the table | keep it and present that day per DT-3 | O, H, A.day | defect | B-145 |
+| DT-23 | `day` accepted, no offer on the table for it | look it up, then DT-3 | O, H | defect | B-145 |
+| DT-24 | a later readout would drop the accepted slot | **it is pinned back in** | O | defect | P6b |
+
+### 5.3 `REJECT`
+
+| # | ledger state | Susie says | records | conf. | exhibit |
+|---|---|---|---|---|---|
+| DT-25 | `slot` refused | next unheard times, never the refused one | A.refused | defect | B-119 |
+| DT-26 | `day` refused | **never that day again this call** | A.refused | defect | B-147 |
+| DT-27 | everything on the table refused | next two times or the next week, by absolute date | O, H | defect | POST-REJECTION |
+| DT-28 | refusal, and the tool call is refused (cached payload) | answer on the REQUEST's own day and time, not the cache's | O, H | defect | N4, B-118 |
+| DT-29 | refusal with no reason given | never ask why | — | owner D-l adj. | POST-REJECTION |
+
+### 5.4 `REPEAT`
+
+| # | ledger state | Susie says | records | conf. | exhibit |
+|---|---|---|---|---|---|
+| DT-30 | O is on the table | **the same offer, verbatim** — same times, same numbers, same order | nothing changes | defect | N3 (dropped as a fragment, 19 s) |
+| DT-31 | O is empty | the last payload's presentation, rebuilt | O, H | judgement | — |
+
+A `REPEAT` must never be treated as `ASK_OPTIONS`: re-deriving the offer applies
+novelty (level 4) and silently changes the times, which is how "say that again"
+became a new readout.
+
+### 5.5 `OTHER`
+
+| # | ledger state | Susie says | records | conf. | exhibit |
+|---|---|---|---|---|---|
+| DT-32 | mid-selection | acknowledge briefly, capture it, guide back to the choice — **the offer survives untouched** | note only | defect | MID-SLOT NEW INFORMATION |
+| DT-33 | mid-selection, red-flag symptom | the urgent-care net takes priority over booking | screening | owner | standing |
+| DT-34 | any `OTHER` | the model answers, and states **no** day, date or slot time | — | owner D-n | §7 |
+
+---
+
+## 6. Invariants
+
+Condensed from ~110 numbered defects to the 20 that are actually distinct. Each
+is a property of the OUTPUT, so each is checkable without knowing which code
+path produced it — which is the point, since the same act reaches different code
+today (analysis §2.5).
+
+| # | invariant | enforced by | status |
+|---|---|---|---|
+| 1 | No day, date or time is spoken that the payload does not hold. | `app/tools/slot_fact_guard.py`, in `_tts_loop` | **shipped 2026-09-11, mode `log`** |
+| 2 | No confirmation names a slot that is not on the table. | DT-21, §7, inv. 1 | prompt only |
+| 3 | An accepted slot is never withdrawn by a later readout. | `_pin_accepted_index` | code |
+| 4 | A named day is answered with that day; a named time with the nearest bookable time on that day (ties decline; no drift on non-round times). | DT-3/4/7/8/9 | partial — N6 open |
+| 5 | "Sooner" is answered with the earliest, and says so when nothing is earlier. | DT-2, DT-17 | code |
+| 6 | "What else" never repeats a time heard on that day while unheard ones remain, and never pads with heard ones. | `choose_presented_indices` | code |
+| 7 | "What about <day>" keeps the times already offered for that day. | DT-4 | code (N1 fixed 11 Sep) |
+| 8 | A refused day or slot is not offered again in the same call. | DT-25/26 | code |
+| 9 | Completeness is claimed only when true — of days and of times. | `exhaustion_claim_is_supported` | code |
+| 10 | The keypad map always equals the last spoken numbered list. | `_supersede_slot_map` | code |
+| 11 | Two times in one readout span the day. | `_spread` | code |
+| 12 | A clock time is not repeated across days in one readout when avoidable. | `_prefer_unheard_clock_times` | code |
+| 13 | A selection is never banked as a standing preference. | B-90 fix | code |
+| 14 | A reason is never banked as a time filter. | B-138 fix | code |
+| 15 | Every turn that presents slots records what was presented, with its producer. | `apply_offer_to_session`, `obs/slot_offers` | code; model turns partial |
+| 16 | Anything about slots is recorded as heard only if it was SPOKEN. | `mark_offer_spoken` | code (13% gap measured) |
+| 17 | A turn whose tool call is refused is answered on the request's own day and time. | DT-28 | code (N4 fixed 11 Sep) |
+| 18 | Parsing masks dates before reading hours; durations and ages are not times. | `_mask_dates`, `requested_clock_times` | code |
+| 19 | Presented ≠ found is always distinguishable in the record. | `times_not_shown`, `total_days` | code |
+| 20 | The same act reaches the same answer whichever path or reader serves it. | — | **NOT enforced; four readers, five refusal branches** |
+
+Invariants 1 and 20 are the two that are about the SYSTEM rather than a rule.
+1 is now enforced. 20 is the migration.
+
+---
+
+## 7. What the model may and may not say
+
+One prompt section, replacing the three that disagreed. Since 2026-09-11 the
+`template_v1` template carries this; `SLOT_FORMATTER_SYSTEM_PROMPT` and
+theorem_v3's section already did.
+
+**May**
+* call `check_availability`, with the timing gate observed, a named day as
+  `after_date` + `day_window=1`, and a named clock time inside `date_hint`;
+* say it is checking;
+* read labels out of `slot_times_spoken` **verbatim**, numbered;
+* handle an `OTHER` turn and return the caller to the choice;
+* name a time **the caller** asked for, in order to say what is available
+  instead of it.
+
+**May not**
+* convert a 24-hour time into words itself, or re-word a label;
+* state a day, date or clock time that is not in the result for the day being
+  named;
+* confirm a time it did not read out of the data and say to this caller;
+* present two or more options as a flat sentence — the numbering is what the
+  keypad map is parsed from;
+* claim or deny that more times exist — the engine adds that sentence;
+* say a day is "fully booked" when the clinic is closed that day.
+
+The three prompts must be **rendered and diffed per clinic** on any change, and
+the hash pins in `test_b55_provisional_reschedule_closing` and
+`test_b57_theorem_cancel_gate` recomputed — in **both** tables, since jv_v1
+appears in each under a different name.
+
+---
+
+## 8. Verification — table-first, phone-last
+
+The loop that produced the last three weeks was: one phone call per fix, on one
+clinic whose diary is a uniform 50-minute grid. Each call reaches a different
+path, so each call finds a different defect, and the fix is written against that
+exhibit. Documented cases where that misled us are in the analysis §1.3 — a step
+that passed without its mechanism firing, a step that failed without a defect,
+and three separate tests that pinned N1 as correct.
+
+The order is inverted here:
+
+1. **The decision table as generated tests**, over synthetic diaries: uniform
+   grid, sparse rota, single-slot day, band-filtered, month-end, closed day,
+   day with one time, day with twelve.
+   `scripts/score_slot_spec.py` — see §8.1.
+2. **Corpus replay** for regression: `calls.slot_offers` (payload + offer per
+   lookup, forward-only from 3 Sep), the three replay harnesses, the
+   528-diary synthetic sweep.
+3. **One call per clinic diary shape** — to CONFIRM rows, not to find them.
+
+Known blind spots, recorded rather than assumed: `replay_slot_decisions` cannot
+see selection; `replay_presented_times` cannot see the loop or D8;
+`replay_multi_day_spread` cannot see the named-day producers; Stage C
+(`record_model_readout`) cannot see no-tool turns and has recorded zero; nothing
+replays the refusal path; 13% of recorded offers were never spoken.
+
+### 8.1 The scorer
+
+`scripts/score_slot_spec.py` runs the table's rows against the engine as it
+stands and reports pass / fail / unreachable per row.
+
+```bash
+python scripts/score_slot_spec.py                 # all rows, all diaries
+python scripts/score_slot_spec.py --row DT-14     # one row
+python scripts/score_slot_spec.py --md            # markdown, for this file
+```
+
+**The rows that fail are the backlog.** The ~110 numbered ids are not: they are
+a history of which calls happened to be made. A row failing on a diary shape no
+clinic has is a lower priority than one failing on the uniform grid, and the
+scorer reports the shape.
+
+### 8.2 First run — 2026-09-11, build `fa4dca45`
+
+```
+87 checks: 58 pass, 0 FAIL, 29 unreachable
+```
+
+**Zero failures, and that is a weaker result than it looks.** Read it with §8.3.
+Every row the scorer can actually reach, the engine satisfies — including on the
+five diary shapes no phone call has ever used (sparse rota, single-slot day,
+twelve-slot day, band-filtered view, single-band day). That is real: it says the
+selection rules are not grid-shaped, which was an open worry.
+
+What it does not say is that slot presentation is correct. **29 of 87 checks are
+unreachable**, and the reasons are the architecture, not the harness:
+
+| reason | checks | what it means |
+|---|---|---|
+| the defect is in the ROUTING, not the producer | DT-14 ×6 | N6 is invisible offline (§8.3) |
+| the diary shape cannot exercise the rule | 17 | e.g. a one-slot day cannot be spread |
+| the rule declines by documented design | DT-4 ×3 | N1's boundary — see DT-4b |
+| divergence, needing an owner decision | DT-4b ×2 | §9.2 |
+
+**Four of the first run's eight "failures" were the scorer's own bugs**, and each
+one looked exactly like a finding: a non-round probe time that invariant 18
+declines *by design*; a bare string where `nearest_time_index` requires a list
+*by contract*; three invented session keys where `choose_presented_days` reads
+the spoken record; and DT-4 asserting past the documented boundary of N1's fix.
+Recorded here because it is the same failure mode as the last three weeks —
+measuring your own setup and calling it the engine's behaviour. **Reproduce any
+FAIL by hand before filing it.**
+
+### 8.3 What the scorer cannot see, and why it matters most
+
+It scores **producers**, not the **dispatcher**. Each row calls the engine
+function that should serve that act, so it measures what that function does once
+reached, and says nothing about *whether it is reached*.
+
+N6 is exactly that gap: *"what else have you got on Monday"* never arrives at
+the named-day producer — B-137's "lead with unheard days" takes it and answers
+with Thursday. The named-day producer, called directly, behaves perfectly. So
+DT-14 reports UNREACHABLE even though the producer passes, because a PASS there
+would retire the only thing currently catching N6, which is a phone call.
+
+The router is `handle_transcript`, one 15,734-line method, and nothing can drive
+it offline. **Making the dispatcher drivable is the highest-value thing missing
+from this harness**, and it is the same statement as invariant 20: the reason the
+same act reaches different code is that nothing owns the routing decision. That
+is the migration, and this is the argument for it — not elegance, measurability.
+
+---
+
+## 9. Open items
+
+### 9.1 Known defects, as rows
+
+| row | defect | state |
+|---|---|---|
+| DT-14 | **N6** — "what else have you got on Monday" answered with Thursday–Saturday | open, pre-existing |
+| DT-21 | 11 Sep 00:04 — "10 to 12 works" confirmed as "twenty to twelve" (11:40) | prompt fixed 11 Sep; guard catches the sentence in `enforce` |
+| DT-7/8 | 11 Sep 00:04 — "as close as possible to 12" answered with 14:40 and 16:20 | **open**: a relevance failure the guard cannot see |
+| inv. 20 | four availability readers, five refusal branches, two named-day producers | open; the migration |
+| inv. 16 | 13% of recorded offers were never spoken | open; instrumented |
+
+### 9.2 Rows needing your yes/no
+
+Marked `judgement` in §5 — my call tonight, not a recorded decision:
+
+1. **DT-21** — when the caller names a time that matches no offered slot, Susie
+   re-reads the option and asks, rather than picking the nearest. Safer, and one
+   extra turn. *(This is the 11 Sep defect. I have made it the rule.)*
+2. **DT-31** — `REPEAT` with an empty offer rebuilds from the last payload
+   rather than re-querying. Faster, and it cannot change the times under the
+   caller.
+3. **D-n** — the engine as the only author of slot facts (§3). Already applied
+   to the prompt; reversible in one commit.
+4. **DT-4b — the one the scorer found.** N1's fix keeps the times a caller was
+   already offered on a day they name — but only while FEWER than three were
+   heard on it. Once they have heard a full three, *"what about Monday"* is
+   treated as *"what else"*, and measured on both shapes that can reach it the
+   overlap is **zero**:
+
+   ```
+   uniform50   heard 08:00, 08:50, 09:40  ->  re-read 10:30, 11:20, 16:20
+   twelve      heard 08:00, 09:00, 10:00  ->  re-read 11:00, 16:00, 19:00
+   ```
+
+   The code's reasoning is sound as far as it goes — re-reading the same three
+   carries no new time. But this is N1's own complaint one condition further
+   along, and N1 was filed because zero overlap is what makes a caller repeat
+   themselves. **My read: "what about Monday" is "tell me about Monday", and
+   should keep at least one time they heard, whatever the count.** Not changed
+   tonight, because it is a live selection rule and §7 of the analysis says stop
+   shipping per-exhibit selection fixes until the table is agreed. It is a
+   two-line change to `_keep_times_heard_on_named_day` when you say so.
+
+---
+
+## 10. Retired documents
+
+Superseded by this file. Keep for history; they are no longer authoritative and
+should not be cited in a commit message.
+
+* `DETERMINISTIC_SLOT_PRESENTATION.md`
+* `SLOT_PRESENTATION_CONVERGENCE.md`
+* `SLOT_PRESENTATION_FINISH_2026-09-10.md`
+* `ONE_PRESENTATION_LAYER.md` — the presentation half; stages A/B remain a
+  record of what shipped
+* `SLOT_TIME_CHAIN_2026-09-09.md`
+* `OPEN_DEFECTS_*` — all eight registers, 2026-08-22 to 2026-09-06
+* the call sheets, 2026-08-09 to 2026-09-06
+
+`SLOT_PRESENTATION_ANALYSIS_2026-09-11.md` is **not** retired: it is the
+evidence this specification rests on, and the place to look when a row here
+seems arbitrary.
+
+---
+
+## Appendix — the correction log
+
+This document's ancestors were wrong in a specific, repeating way: they stated a
+POSTURE as if it were a standing truth when it was really a fact about that
+week's code. `CLAUDE.md` §2 records the same failure three times over about the
+branch topology.
+
+So, for the record: **if this document and the code disagree, the code wins** —
+and the correction belongs here, dated, not in a commit message.
+
+| date | correction |
+|---|---|
+| 2026-09-11 | created; §3 D-c and the B1 prompt rule recorded as SUPERSEDED rather than deleted, because a superseded decision left in a test becomes a defect pin (B1 in `test_collection_sequence_prompt`, N1 in five measurements) |
