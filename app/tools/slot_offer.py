@@ -40,6 +40,7 @@ import sys as _sys
 from typing import Any, Dict, List, Optional
 
 from app.tools.slot_followup import (
+    LAST_READOUT_KEY,
     LOSSY_SPOKEN_DAYS_KEY,
     record_spoken_slots,
     _closing_question,
@@ -322,6 +323,22 @@ def apply_offer_to_session(
     # B-126: this record is a transcript, not a projection, so no day of it
     # needs marking as unsafe to reason from.
     session.pop(LOSSY_SPOKEN_DAYS_KEY, None)
+
+    # 2b. The WORDS, durably (D-o, spec DT-30/31). `_slot_readout_chunks`
+    # below is B-120's and is popped the instant a later chunk plays, which is
+    # right for B-120 -- a torn-down readout is only worth re-reading while it
+    # is what the caller is hearing. "Say that again" is a different act: the
+    # caller is asking for the last thing Susie said about slots, and on both
+    # demo calls of 11 Sep morning that turn went to the model (2.0-2.4 s,
+    # model-authored slot facts, D-n). This copy is the producer's source. It
+    # is written for a one-option offer too: "say that again" after a single
+    # time is as real a request as after three.
+    if chunks:
+        session[LAST_READOUT_KEY] = {
+            "chunks": list(chunks),
+            "mode": str(record.get("mode") or ""),
+            "options": len(dtmf),
+        }
 
     # 3. The keypad.
     if len(dtmf) >= 2:

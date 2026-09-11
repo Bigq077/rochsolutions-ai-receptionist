@@ -540,18 +540,53 @@ def dt26(days, shape):
 def dt30(days, shape):
     """Rebuilding instead of replaying applies novelty (precedence level 4) and
     silently changes the times, which is how "say that again" became a new
-    readout (N3)."""
+    readout (N3).
+
+    Until 2026-09-11 this row called `build_slot_offer` twice, which scores
+    the FORMATTER's determinism and nothing about the act -- on both demo
+    calls that morning the act itself went to the model. Now it drives the
+    dispatcher with the caller's words, after the offer has been recorded as
+    heard, so that a selector re-run WOULD change the times: verbatim equality
+    is then evidence that nothing selected (D-o)."""
+    from app.tools.slot_offer import apply_offer_to_session, offer_as_record
     s = _session(days)
     first = build_slot_offer(days[:3], pretrimmed=False)
     if first is None:
         return UNREACHABLE, "no offer"
-    sf.record_spoken_slots(s, first.slots)
-    again = build_slot_offer(days[:3], pretrimmed=False)
-    if again is None:
-        return FAIL, "a repeat produced no offer"
-    if again.text != first.text:
-        return FAIL, f"repeat differs:\n    first: {first.text!r}\n    again: {again.text!r}"
-    return PASS, "identical"
+    apply_offer_to_session(s, offer_as_record(first), first.chunks)
+    keypad = dict(s.get("v3_dtmf_slot_map") or {})
+    heard = list(s.get(sf._SPOKEN_KEY) or [])
+    again = sf.try_unspoken_followup_speech(s, "sorry, say that again")
+    if not again:
+        return FAIL, "REPEAT reached no producer (the model would answer it)"
+    if again != first.text:
+        return FAIL, f"repeat differs:\n    first: {first.text!r}\n    again: {again!r}"
+    if dict(s.get("v3_dtmf_slot_map") or {}) != keypad:
+        return FAIL, "the keypad map changed on a repeat (inv 10)"
+    if list(s.get(sf._SPOKEN_KEY) or []) != heard:
+        return FAIL, "a repeat recorded something new as heard (inv 16)"
+    return PASS, "verbatim, keypad and heard record untouched"
+
+
+@row("DT-31", "REPEAT with the offer cleared re-speaks the last SPOKEN list",
+     invariant="inv 10")
+def dt31(days, shape):
+    """D-o: never the selector re-run, never a re-query. `last_offered_slots`
+    is wiped by several turn types (B-78/B-80 family); the words survive."""
+    from app.tools.slot_offer import apply_offer_to_session, offer_as_record
+    s = _session(days)
+    first = build_slot_offer(days[:3], pretrimmed=False)
+    if first is None:
+        return UNREACHABLE, "no offer"
+    apply_offer_to_session(s, offer_as_record(first), first.chunks)
+    s.pop("last_offered_slots", None)
+    s.pop("_slot_readout_chunks", None)        # a watchdog re-ask pops this
+    again = sf.try_unspoken_followup_speech(s, "what were those again")
+    if not again:
+        return FAIL, "REPEAT with an empty offer reached no producer"
+    if again != first.text:
+        return FAIL, f"rebuilt differs from spoken:\n    {first.text!r}\n    {again!r}"
+    return PASS, "the spoken words, not a rebuild"
 
 
 @row("INV-11", "two times in one readout span the day", invariant="inv 11")

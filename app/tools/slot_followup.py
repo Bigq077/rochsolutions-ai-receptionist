@@ -137,6 +137,14 @@ _SPOKEN_LOC_KEY = "slot_starts_spoken_loc"
 # reconcile_readback_time.
 LOSSY_SPOKEN_DAYS_KEY = "_lossy_spoken_days"
 
+# The last slot readout's WORDS, durably (D-o, spec DT-30/31). Written by
+# `apply_offer_to_session` beside every other record of an offer; read by
+# `repeat_speech`. Distinct from B-120's `_slot_readout_chunks`, which is
+# popped the instant a later chunk plays -- correct for B-120's purpose and
+# wrong for this one. A dict of {"chunks", "mode", "options"}; only "chunks"
+# is load-bearing.
+LAST_READOUT_KEY = "_slot_last_readout"
+
 
 def _day_fingerprints(available_days: Any) -> Dict[str, str]:
     """One fingerprint PER DAY, so a fetch can invalidate a day without
@@ -922,6 +930,133 @@ def utterance_requests_more_slots(text: str) -> bool:
         "anything after",
     )
     return any(s in t for s in signals)
+
+
+# ── REPEAT (spec §2.1; D-o; DT-30, DT-31) ─────────────────────────────────
+#
+# "Say that again" after a readout. On both demo calls of 11 Sep morning
+# (CA778651b7 08:44, CA34942aee 08:52) this went to the model: it read the
+# right three times in the right order -- from its own context, in 2.0-2.4 s
+# against 0.13 s for a producer, and as the author of three slot facts, which
+# D-n forbids. N3 (10 Sep) was the same act dropped as a fragment for 19 s.
+#
+# A REPEAT is answered with the WORDS Susie last spoke about slots, verbatim.
+# Not the selector re-run: that applies novelty against the spoken record and
+# returns three different times, which is how "say that again" once became a
+# new readout. Not a re-query: the diary can move under the caller and the
+# five refusal branches are waiting. The words are in `LAST_READOUT_KEY`,
+# written by `apply_offer_to_session` -- the one place every producer records
+# what it is about to say.
+#
+# The phrase set is CLOSED and small on purpose. The 10 Sep note above the
+# meaning-word list in connection.py warns against a "repeat-request phrase
+# list", and it is right that one cannot be complete -- but this one does not
+# gate what the model may HEAR (that list only ever widens), it selects what
+# a producer will ANSWER. An utterance this misses still reaches the model,
+# which still answers it; the cost of a miss is the 2 s the model takes, and
+# the cost of a false positive is the wrong sentence, so the set is narrow.
+_REPEAT_RE = re.compile(
+    r"(?:"
+    r"\b(?:say|read|run|go|give)\b.{0,24}?\b(?:again|once more|one more time)\b"
+    r"|\brepeat\b"
+    r"|\bcome again\b"
+    r"|\bpardon\b"
+    r"|\b(?:didn'?t|did not|never|couldn'?t|could not)\s+(?:quite\s+)?"
+    r"(?:catch|hear|get)\b"
+    r"|\bmissed (?:that|them|those|it)\b"
+    r"|\bwhat (?:were|was) (?:they|those|that|the (?:times|options|choices|"
+    r"first|second|third|last)(?: one)?)\b"
+    r"|\bone more time\b"
+    r"|\bonce more\b"
+    r")",
+    re.IGNORECASE,
+)
+# A whole utterance that is only one of these is a repeat request too:
+# "sorry?", "what?", "again?". STT sends no question mark, so the shape is the
+# bare word. Longer utterances starting "sorry, ..." carry their own act and
+# are NOT matched here -- "sorry, Monday doesn't work" is a refusal.
+_REPEAT_BARE = frozenset({
+    "sorry", "what", "again", "pardon", "eh", "huh", "come again",
+    "sorry what", "say again", "say that again", "what was that",
+})
+# Not a repeat, whatever else the utterance says: a request to LOOK again is
+# a lookup; "else / other / different / more / what about" is ASK_OPTIONS,
+# and a day or clock time named alongside "again" is a pick or a request.
+_REPEAT_NOT_RE = re.compile(
+    r"\b(?:check|look|search|try|have a look|see)\b.{0,16}?\bagain\b"
+    r"|\b(?:else|other|others|different|another|later|earlier|sooner)\b"
+    r"|\bmore\b(?! time\b)"
+    r"|\bwhat about\b"
+    r"|\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b"
+    r"|\b(?:morning|afternoon|evening|midday|lunchtime)\b"
+    r"|\b\d{1,2}(?::\d{2})?\s*(?:am|pm|o'?clock)?\b",
+    re.IGNORECASE,
+)
+
+
+def utterance_requests_repeat(text: str) -> bool:
+    """True when the caller is asking Susie to say the last thing again.
+
+    The REPEAT act of spec §2.1. Narrow by design -- see the note above
+    `_REPEAT_RE` for why a miss is cheap and a false positive is not.
+    """
+    t = (text or "").lower().strip().strip(".,!?;:")
+    if not t:
+        return False
+    if t in _REPEAT_BARE:
+        return True
+    if _REPEAT_NOT_RE.search(t):
+        return False
+    return bool(_REPEAT_RE.search(t))
+
+
+def repeat_speech(session: Dict[str, Any], user_text: str) -> Optional[str]:
+    """DT-30 / DT-31: the last readout, verbatim, when the caller asks for it.
+
+    Returns None -- and the turn falls through to the model -- when:
+
+      * the utterance is not a REPEAT;
+      * nothing has been recorded as spoken about slots (`LAST_READOUT_KEY`
+        absent): there is nothing honest to repeat, and D-o's last clause
+        applies (say so and re-query), which the model's prompt already does;
+      * an ORDINARY answer has played since the readout. B-120's
+        `_slot_readout_chunks` is popped the instant a later turn's chunk
+        plays, and B-132's `_content_turn_chunks` is what that later turn
+        leaves behind; if the second is present and the first is not, the
+        last thing the caller heard was an answer about their ankle, and
+        "say that again" is about THAT. A watchdog re-ask ("any of those
+        work?") pops both and leaves neither, and a repeat after it is still
+        about the options -- so the durable copy is what is read.
+
+    Never re-runs the selector, never touches the keypad map (inv. 10: it
+    already equals this list) and records nothing new as heard (inv. 16: these
+    times already are).
+    """
+    if not utterance_requests_repeat(user_text):
+        return None
+    saved = session.get(LAST_READOUT_KEY) or {}
+    chunks = [str(c) for c in (saved.get("chunks") or []) if str(c).strip()]
+    if not chunks:
+        return None
+    if (
+        session.get("_content_turn_chunks")
+        and not session.get("_slot_readout_chunks")
+    ):
+        logger.info(
+            "[slot_followup] REPEAT declined -- an ordinary answer has played "
+            "since the last readout, so 'say that again' is about that "
+            "answer, not the options (DT-30)"
+        )
+        return None
+    # The same words go out again, so B-120's copy is refreshed to match: a
+    # barge-in that tears down THIS re-read can put it back too.
+    session["_slot_readout_chunks"] = list(chunks)
+    logger.info(
+        "[slot_followup] REPEAT answered with the last readout verbatim -- "
+        "%d chunk(s), mode=%s, no selector run (DT-30)",
+        len(chunks), saved.get("mode") or "?",
+    )
+    return " ".join(chunks)
 
 
 # Job 3c.1 / CAce1457d1: caller accepting an already-offered slot must not be
@@ -6164,6 +6299,16 @@ def try_unspoken_followup_speech(
         return None
     if session.get("booking_write_confirmed") or session.get("booking_confirmed"):
         return None
+
+    # ── REPEAT (D-o, DT-30/31) ───────────────────────────────────────────
+    # ABOVE the offer/payload gate: a repeat is answered from the WORDS last
+    # spoken, which survive an offer being cleared, and above every selector
+    # below because none of them may run on this act -- re-deriving the offer
+    # applies novelty and changes the times (N3). It declines on anything that
+    # is not a repeat, so it cannot take another producer's turn.
+    _repeat = repeat_speech(session, user_text)
+    if _repeat:
+        return _repeat
 
     offered = session.get("last_offered_slots") or []
     days = session.get("available_days") or []

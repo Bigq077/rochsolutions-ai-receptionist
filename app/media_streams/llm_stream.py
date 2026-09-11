@@ -4545,6 +4545,13 @@ class LLMStream:
             session["_slot_readout_chunks"] = [
                 c.strip() for c in tts_chunks if c.strip()
             ]
+            # D-o: the durable copy `repeat_speech` reads. This arm does not go
+            # through `apply_offer_to_session`, so it is written here as well.
+            session["_slot_last_readout"] = {
+                "chunks": [c.strip() for c in tts_chunks if c.strip()],
+                "mode": str(session.get("_slot_presentation_mode") or ""),
+                "options": int(_slot_map_count),
+            }
             logger.info(
                 "[ms_gate5] slot inhibit guard armed: %d chunk(s) tracked",
                 len(tts_chunks),
