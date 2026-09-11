@@ -1146,6 +1146,16 @@ _NOT_A_TIME_AFTER = (
     "month", "months", "year", "years", "hour", "hours",
     "minute", "minutes", "each", "apiece",
 )
+# Words BEFORE the number that make it a pointer at an option, whatever
+# follows it. "that one works" is an accept of the option under discussion,
+# and "works" is a loose after-marker, so without this it resolved to 13:00
+# and read back "one in the afternoon" on a day the caller never named --
+# B-114 again, through the loose list. A strong after-marker still wins
+# ("that one o'clock" is a time); this only closes the loose path.
+_NOT_A_TIME_BEFORE = (
+    "that", "this", "which", "number", "option", "either", "neither",
+    "first", "second", "third", "last", "other", "another",
+)
 
 
 def _bare_hour_word_is_a_clock_reference(text: str, word: str) -> bool:
@@ -1163,6 +1173,8 @@ def _bare_hour_word_is_a_clock_reference(text: str, word: str) -> bool:
         if any(tail.startswith(mk) or nxt == mk for mk in _CLOCK_MARKERS_AFTER):
             return True
         if nxt in _NOT_A_TIME_AFTER:
+            continue
+        if before and before[-1] in _NOT_A_TIME_BEFORE:
             continue
         if before and before[-1] in _CLOCK_MARKERS_BEFORE:
             return True

@@ -105,6 +105,18 @@ def test_the_live_utterance_resolves_to_nothing_without_the_day_payload():
     "which one is soonest",
     "i'll take one",                      # an OPTION number, not one o'clock
     "have you got anything in two weeks",
+    # 11 Sep, found while building DT-21. "works" is a LOOSE after-marker
+    # ("does one work"), and nothing before the number was consulted, so an
+    # accept of the option under discussion resolved to 13:00 -- the live
+    # utterance's shape, one word shorter. A pointer word before the number
+    # ends the question whatever follows it.
+    "yeah that one works",
+    "that one's fine",
+    "this one works",
+    "number two works",
+    "the first one works",
+    "which one works best",
+    "either one works for me",
 ])
 def test_phrases_that_are_not_times_resolve_to_nothing(utterance):
     assert resolve_requested_time(utterance, REMAINING, DAYS) is None
@@ -122,6 +134,8 @@ def test_phrases_that_are_not_times_resolve_to_nothing(utterance):
     ("nine in the morning works", f"{TUE}T09:00:00+01:00"),
     ("13:00 please", f"{FRI}T13:00:00+01:00"),
     ("not the one after, the one o'clock", f"{FRI}T13:00:00+01:00"),
+    # A strong marker outranks the pointer word: "that one o'clock" IS a time.
+    ("that one o'clock works", f"{FRI}T13:00:00+01:00"),
     # Asking whether a time EXISTS carries no marker of its own, and it is the
     # commonest way a caller reaches for a slot they have not been offered.
     # The first cut of this fix rejected all four; the suite diff caught it as
