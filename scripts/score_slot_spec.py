@@ -425,6 +425,87 @@ def dt9(days, shape):
     return FAIL, f"{asked} equidistant from {a}/{b}, picked {[a, b][idx]}"
 
 
+@row("DT-10", "a day AND a band named: times in that band only",
+     invariant="inv 4")
+def dt10(days, shape):
+    """CAf80eb02d (11 Sep 2026 10:48): "what about monday morning" was read
+    by the accept reader as a PICK of the one morning time on the offer, and
+    the model then said "I've got eight in the morning -- does that work?"
+    while Monday held five mornings. Driven as the call was: week menu or
+    single-day offer, then "what about <day> <band>". Passes when every time
+    spoken is in the band and the reply names no other day."""
+    from app.tools.slot_offer import apply_offer_to_session, offer_as_record
+    day = days[0]
+    bands = {sf.part_of_day(st["start"]) for st in day["slots"]}
+    if len(bands) < 2:
+        return UNREACHABLE, "the day holds one band only; scored as DT-11"
+    s = _session(days)
+    first = build_slot_offer(days[:3], pretrimmed=False)
+    if first is None:
+        return UNREACHABLE, "no offer"
+    apply_offer_to_session(s, offer_as_record(first), first.chunks)
+    s["_slot_presentation_mode"] = first.mode
+    wd = _label(day["date"]).split()[0].lower()
+    # A band with at least one unheard time.
+    heard = {str(x)[:16] for x in (s.get(sf._SPOKEN_KEY) or [])}
+    band = next((b for b in ("morning", "afternoon", "evening")
+                 if any(sf.part_of_day(st["start"]) == b and st["start"][:16] not in heard
+                        for st in day["slots"])), None)
+    if band is None:
+        return UNREACHABLE, "every band on the day already fully heard"
+    said = f"what about {wd} {band}"
+    if sf.slot_accepted_by_caller(s, said):
+        return FAIL, f"{said!r} was read as a PICK by the accept reader"
+    out = sf.try_unspoken_followup_speech(s, said)
+    if not out:
+        return FAIL, f"{said!r} reached no producer"
+    low = out.lower()
+    if any(str(d["day_label"]).split()[0].lower() in low for d in days[1:]):
+        return FAIL, f"{said!r} named another day: {out[:80]!r}"
+    spoken = _spoken_times_in(out, [day])
+    if not spoken:
+        return FAIL, f"no time of the day in {out[:80]!r}"
+    out_of_band = [t for t in spoken
+                   if sf.part_of_day(f"{day['date']}T{t}:00") != band]
+    if out_of_band:
+        return FAIL, f"asked for the {band}, read {out_of_band}: {out[:80]!r}"
+    return PASS, f"{said!r} -> {spoken}, all {band}"
+
+
+@row("DT-11", "a band named that the day lacks: say so, then open the day",
+     invariant="inv 5")
+def dt11(days, shape):
+    """The band is empty on the day (no such times, or all of them already
+    heard). Passes when the reply says so before the times, names the day,
+    and every time it then reads is OUTSIDE the band."""
+    from app.tools.slot_offer import apply_offer_to_session, offer_as_record
+    day = days[0]
+    bands = {sf.part_of_day(st["start"]) for st in day["slots"]}
+    missing = next((b for b in ("evening", "afternoon", "morning") if b not in bands), None)
+    if missing is None:
+        return UNREACHABLE, "the day holds every band"
+    if len(bands) < 1 or len(day["slot_times"]) < 2:
+        return UNREACHABLE, "needs a day with 2+ times outside the missing band"
+    s = _session(days)
+    first = build_slot_offer(days[:3], pretrimmed=False)
+    if first is None:
+        return UNREACHABLE, "no offer"
+    apply_offer_to_session(s, offer_as_record(first), first.chunks)
+    s["_slot_presentation_mode"] = first.mode
+    wd = _label(day["date"]).split()[0].lower()
+    said = f"what about {wd} {missing}"
+    out = sf.try_unspoken_followup_speech(s, said)
+    if not out:
+        return FAIL, f"{said!r} reached no producer"
+    if not out.lower().startswith(f"i've nothing in the {missing}"):
+        return FAIL, f"did not say the {missing} is empty first: {out[:80]!r}"
+    spoken = _spoken_times_in(out, [day])
+    bad = [t for t in spoken if sf.part_of_day(f"{day['date']}T{t}:00") == missing]
+    if bad or not spoken:
+        return FAIL, f"opened the day with {spoken}: {out[:80]!r}"
+    return PASS, f"{said!r} -> said so, then {spoken}"
+
+
 @row("DT-12", "'what else' brings UNHEARD times and never pads with heard ones",
      invariant="inv 6")
 def dt12(days, shape):

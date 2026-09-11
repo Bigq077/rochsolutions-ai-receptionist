@@ -2662,6 +2662,23 @@ def _band_named(text: str) -> "str | None":
     return hits.pop() if len(hits) == 1 else None
 
 
+def _band_requested(text: str) -> "str | None":
+    """The band `text` asks for AS a band (DT-10/11), or None.
+
+    "at one in the afternoon" names a band only to qualify a clock time; that
+    is a time request (D8), and narrowing to the band there would evict the
+    times N1 keeps. Same exclusions `_day_readout_to_repeat` applies.
+    """
+    band = _band_named(text)
+    if not band:
+        return None
+    if _meridiem_hour_named(text) is not None:
+        return None
+    if _requested_clock_times_safe(text) or _candidate_hhmm_from_text(text):
+        return None
+    return band
+
+
 #: A clock hour stated with a meridiem: "8pm", "8 p.m.", "10 am".
 _MERIDIEM_RE = re.compile(r"\b(\d{1,2})\s*([ap])\.?\s?m\.?\b", re.IGNORECASE)
 
@@ -3270,7 +3287,19 @@ def slot_accepted_by_caller(
         # caller heard a question they had already answered, and the call was
         # abandoned with a judge score of 2.
         in_band = [s for s in heard if part_of_day(s.get("start")) == band]
-        if len(in_band) == 1:
+        # ...and only when the caller is CHOOSING, not ASKING. CAf80eb02d,
+        # demo line, 11 Sep 2026 10:48: Monday had been read at 08:00, 14:40
+        # and 17:10; the caller said "what about monday morning" and this
+        # branch returned 08:00 -- the one morning time on the offer -- so a
+        # question became an acceptance, the SLOT_PICKED head said "Monday
+        # morning it is --", and the model authored "I've got eight in the
+        # morning -- does that work?" while Monday held five mornings. The
+        # same shape `_DAY_REQUEST_RE` exists to keep out of
+        # `day_accepted_by_caller`, and B-147's sibling: naming a day and a
+        # band in a QUESTION is a request for that day's times in that band,
+        # which the named-day producer answers. Explicit label hits above are
+        # untouched: "what about monday at eight" still names one slot.
+        if len(in_band) == 1 and not _DAY_REQUEST_RE.search(text or ""):
             return in_band[0].get("start") or None
     return None
 
@@ -6085,9 +6114,15 @@ def named_day_speech(
         if not date:
             return None
         if not _multi:
+            # ...or narrows it to a band (DT-10/11): "what about Monday
+            # morning" on a Monday-only offer is a request for the mornings,
+            # which the producer now answers; before this it went to the model.
             _day = next((d for d in days if isinstance(d, dict)
                          and d.get("date") == date), None)
-            if not _day or _day_readout_to_repeat(session, _day, user_text) is None:
+            if not _day:
+                return None
+            if (_day_readout_to_repeat(session, _day, user_text) is None
+                    and not _band_requested(str(user_text or ""))):
                 return None
 
         return speak_one_day_from_payload(
@@ -6264,15 +6299,67 @@ def speak_one_day_from_payload(
         return " ".join(_again["chunks"])
 
     _times = list(day.get("slot_times") or [])
+    # DT-10 / DT-11. A band named WITH the day ("what about Monday morning")
+    # narrows the ask to that part of the day. CAf80eb02d, 11 Sep 2026
+    # 10:48: that utterance was read as a pick of 08:00 by the accept reader
+    # (now declined there -- a question is not an acceptance) and would then
+    # have reached this producer, which read the whole day. Monday held five
+    # mornings. The band only ever reached the diary through the model's
+    # tool call; a producer that answers the day must answer the band too.
+    #
+    # In band, with something unheard: select from the band only. All in
+    # band already heard: say so (B-117's sentence -- the claim is about this
+    # caller's history and is decided here, where the record is) and open the
+    # day. No such band on the day: say that, and open the day. The whole-day
+    # count still drives `more_times`, so "a few others that day" stays true.
+    _pool_day, _preface = day, ""
+    _band = _band_requested(str(user_text or ""))
+    if _band:
+        _slots = day.get("slots") if isinstance(day.get("slots"), list) else []
+        _in_band = [i for i, st in enumerate(_slots)
+                    if isinstance(st, dict) and part_of_day(st.get("start")) == _band]
+        _heard16 = {str(x)[:16] for x in (session.get(_SPOKEN_KEY) or [])}
+        _unheard = [i for i in _in_band
+                    if str(_slots[i].get("start") or "")[:16] not in _heard16]
+        if _unheard:
+            _pool_day = dict(day)
+            for _key in ("slot_times", "slot_times_spoken", "slots"):
+                if isinstance(_pool_day.get(_key), list):
+                    _pool_day[_key] = pick_by_index(_pool_day[_key], _in_band)
+            logger.info(
+                "[slot_followup] '%s' narrowed to the %s: %d of %d times (DT-10)",
+                day.get("day_label") or date, _band, len(_in_band), len(_slots),
+            )
+        elif _in_band:
+            # "Open the day" means the REST of it. N1's keep-rule would
+            # otherwise re-admit the heard mornings straight after the
+            # sentence saying they have all been given. A day that IS the
+            # band has no rest; then there is nothing new to say and no
+            # sentence to say it with -- the whole day, as before.
+            _out = [i for i in range(len(_slots)) if i not in set(_in_band)]
+            if _out:
+                _pool_day = dict(day)
+                for _key in ("slot_times", "slot_times_spoken", "slots"):
+                    if isinstance(_pool_day.get(_key), list):
+                        _pool_day[_key] = pick_by_index(_pool_day[_key], _out)
+                _preface = _BAND_SPENT_SENTENCE.format(label=f"{_band}s") + " "
+                logger.info("[slot_followup] every %s on %s already heard -- "
+                            "opening the rest of the day (DT-11)", _band, date)
+        else:
+            _preface = (f"I've nothing in the {_band} on "
+                        f"{day.get('day_label') or 'that day'}, I'm afraid. ")
+            logger.info("[slot_followup] no %s on %s -- opening the day (DT-11)",
+                        _band, date)
+
     # N1. This producer answers a request about ONE named day -- both of its
     # callers, D-B's "what about Monday" and B-145's "yeah Monday works" -- so
     # it is the one reader that may say so. The times the caller was already
     # read for this day are what made them ask; withholding every one of them
     # is the defect. See `_keep_times_heard_on_named_day`.
     _idx = choose_presented_indices(
-        session, day, SINGLE_DAY_MAX_TIMES, named_day=True,
+        session, _pool_day, SINGLE_DAY_MAX_TIMES, named_day=True,
     )
-    _spoken_day = dict(day)
+    _spoken_day = dict(_pool_day)
     for _key in ("slot_times", "slot_times_spoken", "slots"):
         if isinstance(_spoken_day.get(_key), list):
             _spoken_day[_key] = pick_by_index(_spoken_day[_key], _idx)
@@ -6318,7 +6405,10 @@ def speak_one_day_from_payload(
         day.get("day_label") or date,
         len(offer.slots), len(day.get("slot_times") or []), why,
     )
-    return offer.text
+    # The DT-11 preface is SPOKEN, not recorded: it names no slot, and the
+    # recorded words are the offer, so a later day-scoped repeat (D-q) says
+    # the times again without re-apologising.
+    return _preface + offer.text
 
 
 def _acknowledge_day_pick(session: Dict[str, Any], user_text: str) -> str:
@@ -6662,6 +6752,14 @@ def try_unspoken_followup_speech(
         _clarify = accept_clarify_speech(session, user_text)
         if _clarify:
             return _clarify
+        # And a request about a NAMED day (D-q repeat, DT-10/11 band): the
+        # answer is the day's record or its band, neither of which needs an
+        # unspoken time. On a two-slot rota the week menu hears everything,
+        # so without this "what about monday afternoon" went to the model.
+        # Declines on more-slots asks, so the exhaustion sentence keeps its turn.
+        _named_day = named_day_speech(session, user_text)
+        if _named_day:
+            return _named_day
         # The day is genuinely exhausted. Say so HERE rather than falling to
         # the model: "have you got anything else?" with nothing left is the
         # exact prompt that produced "Those are the two available slots on that
@@ -6831,15 +6929,39 @@ def try_unspoken_followup_speech(
         # user_text is handed down so a day the caller NAMED in this utterance
         # wins over the first slot of the offer (B-103). Without it the scope
         # is always day one of a multi-day offer, whatever they asked about.
-        batch, more = all_remaining_on_next_day(
-            remaining_unspoken_on_current_day(session, user_text)
-        )
+        _scoped_more = remaining_unspoken_on_current_day(session, user_text)
+        # DT-10 / DT-11 on the "more" path: "what else on Monday MORNING" is
+        # more of the mornings. Filter the unspoken pool to the band; with
+        # nothing unspoken left in it, say why the times that follow are
+        # outside it (B-117's sentence, or "nothing in the <band>" when the
+        # day never had one) and continue with the rest as before.
+        _pre_more = ""
+        _band_more = _band_requested(str(user_text or ""))
+        if _band_more and _scoped_more:
+            _in = [x for x in _scoped_more
+                   if part_of_day((x or {}).get("start")) == _band_more]
+            if _in:
+                _scoped_more = _in
+            else:
+                _d0 = str((_scoped_more[0] or {}).get("start") or "")[:10]
+                _ever = any(
+                    part_of_day(x.get("start")) == _band_more
+                    for x in flatten_bookable_slots(_payload_days)
+                    if x.get("date") == _d0
+                )
+                _lbl = next((d.get("day_label") for d in _payload_days
+                             if isinstance(d, dict) and d.get("date") == _d0), None)
+                _pre_more = (
+                    _BAND_SPENT_SENTENCE.format(label=f"{_band_more}s") if _ever
+                    else f"I've nothing in the {_band_more} on {_lbl or 'that day'}, I'm afraid."
+                ) + " "
+        batch, more = all_remaining_on_next_day(_scoped_more)
         # P9: numbered and RECORDED, three at a time. The unnumbered sentence
         # below stays as the fallback -- it is what ships if the builder
         # cannot make an offer out of this batch.
         _numbered = numbered_more_times_speech(session, batch, more)
         if _numbered:
-            return _numbered
+            return _pre_more + _numbered
         if not batch:
             # This DAY is exhausted even though other days remain. Say so
             # rather than falling to the model — the same reasoning as the
@@ -6867,6 +6989,6 @@ def try_unspoken_followup_speech(
                 return None
             note_exhaustion_sentence_said(session)
             return format_next_batch_speech([], False)
-        return apply_next_batch_to_session(session, batch, more)
+        return _pre_more + apply_next_batch_to_session(session, batch, more)
 
     return None
