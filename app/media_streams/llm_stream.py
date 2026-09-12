@@ -8264,6 +8264,17 @@ def _append_history(
     separately, with their own tests". This is that revisit. session["turns"]
     and the SMS path remain out of scope, as it said.
     """
+    # Defect L (CAddd98ce0, 12 Sep 2026): "what the caller HEARD" has one more
+    # seam after Gate 5 -- the slot-fact guard in `_tts_loop`. If it has
+    # already replaced or dropped a sentence of this reply, store the
+    # replacement; if it does so after this append, it rewrites the entry
+    # itself (`apply_replacements_to_history`). Never raises; identity when
+    # nothing was replaced.
+    try:
+        from app.tools.slot_fact_guard import rewrite_as_heard as _as_heard
+        assistant_text = _as_heard(session, assistant_text)
+    except Exception:
+        pass
     history: List[dict] = session.setdefault("conversation_history", [])
     history.append({"role": "user",      "content": user_text})
     history.append({"role": "assistant", "content": assistant_text})

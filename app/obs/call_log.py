@@ -325,6 +325,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not args:
         print("usage: python -m app.obs.call_log <call_sid> [grep-substring]", file=sys.stderr)
         return 2
+    # Run from a worktree with the slotspec `.env` copied in; `app.config`
+    # does not load it, so without this the CLI reports "no call_logs row"
+    # for a row that exists (12 Sep, first use).
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(".env")
+    except Exception:
+        pass
     from app.obs.store import get_call_log
 
     row = get_call_log(args[0])

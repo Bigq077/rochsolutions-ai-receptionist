@@ -541,6 +541,102 @@ def turn_boundary(session: Any) -> None:
         pass
 
 
+#: Every replacement this guard made on the call, oldest first:
+#: [{"original": <what the producer wrote>, "replacement": <what was spoken>}].
+#: A dropped tail is recorded with an empty replacement.
+_REPLACEMENTS = "_slot_guard_replacements"
+
+
+def _norm(text: Any) -> str:
+    return " ".join(str(text or "").split())
+
+
+def note_replacement(session: Any, original: Any, replacement: Any) -> None:
+    """The guard replaced (or dropped) `original` on the way out: remember it,
+    so the model's history can be told the truth. NEVER RAISES.
+
+    Defect L, CAddd98ce0, northgate, 12 Sep 2026 20:52, build 8461c4bd -- the
+    call that proved A and B. The one-slot offer was retracted at TTS; the
+    caller never heard it; `conversation_history` still held it, because
+    `_append_history` stores "the post-Gate-5 text" and this guard runs one
+    seam later, in `_tts_loop`. Three turns on the model read back "Tuesday
+    the 15th of September at twenty past four" from its own memory of a
+    sentence nobody heard, and this guard passed THAT sentence, because 16:20
+    is in the diary (invariant 4, not 1). The engine's own record was clean --
+    `selected_slot` null, no `caller ACCEPTED`, the offer row `spoken: false`
+    -- and the model overrode all of it from history.
+
+    Same shape as the 1 Aug Gate 5f defect (CA7d46c2bc): a guard rewrites
+    speech, history records the claim, the model believes its own claim.
+    """
+    try:
+        if not isinstance(session, dict):
+            return
+        orig = _norm(original)
+        if not orig:
+            return
+        reps = session.setdefault(_REPLACEMENTS, [])
+        if isinstance(reps, list):
+            reps.append({"original": orig, "replacement": _norm(replacement)})
+    except Exception:                      # pragma: no cover - defensive
+        pass
+
+
+def rewrite_as_heard(session: Any, text: Any) -> str:
+    """`text` with every replacement this guard made applied -- what the
+    caller HEARD. Identity when nothing was replaced. NEVER RAISES."""
+    try:
+        reps = (session or {}).get(_REPLACEMENTS) if isinstance(session, dict) else None
+        out = str(text or "")
+        if not reps or not out:
+            return out
+        probe = _norm(out)
+        changed = False
+        for r in reps:
+            orig = str((r or {}).get("original") or "")
+            if orig and orig in probe:
+                probe = probe.replace(orig, str((r or {}).get("replacement") or ""))
+                changed = True
+        return _norm(probe) if changed else out
+    except Exception:                      # pragma: no cover - defensive
+        return str(text or "")
+
+
+def apply_replacements_to_history(session: Any) -> int:
+    """Rewrite any assistant entry already in `conversation_history` that
+    still carries a replaced sentence. Returns how many were changed.
+    NEVER RAISES.
+
+    Needed as well as `rewrite_as_heard` in `_append_history` because the
+    append and the guard race: the history is written at the end of the LLM
+    turn, the guard runs when TTS reaches the sentence, and either can come
+    first.
+    """
+    try:
+        if not isinstance(session, dict):
+            return 0
+        history = session.get("conversation_history")
+        if not isinstance(history, list):
+            return 0
+        n = 0
+        for entry in history:
+            if not isinstance(entry, dict) or entry.get("role") != "assistant":
+                continue
+            before = str(entry.get("content") or "")
+            after = rewrite_as_heard(session, before)
+            if after != before:
+                entry["content"] = after
+                n += 1
+        if n:
+            logger.warning(
+                "[slot_guard] rewrote %d history entr%s to what was HEARD",
+                n, "y" if n == 1 else "ies",
+            )
+        return n
+    except Exception:                      # pragma: no cover - defensive
+        return 0
+
+
 def check_outgoing(session: Any, text: Any) -> Verdict:
     """Judge one outgoing chunk. NEVER RAISES; on any doubt, speaks it.
 

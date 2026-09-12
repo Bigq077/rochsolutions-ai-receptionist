@@ -15932,6 +15932,11 @@ class WebSocketCallHandler:
                                 "[ms_conn] slot_guard dropped the tail of a "
                                 "retracted offer: %r", _obs_chunk_text[:80],
                             )
+                            # Defect L: history must not hold what was dropped.
+                            _slot_guard.note_replacement(
+                                self.session, _obs_chunk_text, ""
+                            )
+                            _slot_guard.apply_replacements_to_history(self.session)
                             continue
                         logger.error(
                             "[ms_conn] slot_guard REPLACED a slot fact: %r -> %r",
@@ -15954,6 +15959,16 @@ class WebSocketCallHandler:
                                 "[ms_conn] slot_guard retraction unwind failed",
                                 exc_info=True,
                             )
+                        # Defect L (CAddd98ce0, 12 Sep): the model's history
+                        # must hold what was HEARD, or it reads the retracted
+                        # sentence back from memory three turns later and
+                        # this guard passes it (the time IS in the diary).
+                        # `_append_history` applies the same record; both are
+                        # needed because the append and this loop race.
+                        _slot_guard.note_replacement(
+                            self.session, _obs_chunk_text, _sg.text
+                        )
+                        _slot_guard.apply_replacements_to_history(self.session)
                         _obs_chunk_text = _sg.text
                         chunk_text = _apply_tts_subs(_sg.text)
                         _last_tts_chunk = chunk_text.strip()
