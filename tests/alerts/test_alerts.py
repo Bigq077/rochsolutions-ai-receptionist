@@ -71,8 +71,15 @@ def test_retry_storm_is_daily_rollup():
 # dispatch — routing to channels (senders mocked)
 # ---------------------------------------------------------------------------
 
-async def test_dispatch_disabled_sends_nothing(mock_sms):
-    # flag defaults OFF in tests unless alerts_enabled is used
+async def test_dispatch_disabled_sends_nothing(mock_sms, monkeypatch):
+    # The flag defaults OFF in code, but `config` reads the ambient .env at
+    # import, and a developer .env with OBS_ALERTS_ENABLED=true made this test
+    # assert "sends nothing" against a router that was correctly ON -- a
+    # standing failure since at least 12 Sep 2026 that said nothing about the
+    # router. Pin the state under test, as `alerts_enabled` does for the
+    # opposite one.
+    from app import config
+    monkeypatch.setattr(config, "OBS_ALERTS_ENABLED", False)
     alert = alerts.evaluate_call(make_record(), {"pipeline_error": True})
     result = await alerts.dispatch(alert)
     assert result == {}
