@@ -20,6 +20,21 @@ debt, because D-r was caused by it.
 
 ### A1. Latency — the only published bar that is breached, and badly
 
+> 🔴 **§A1's ATTRIBUTION IS WRONG — corrected same day by
+> `SCOPE_STALL_LADDER_2026-09-12.md`.** The 7.9 s of dead air is real, but it is
+> **not** caused by the watchdog failing to arm. Rung 1 of the stall ladder
+> *did* fire (the caller heard the head at 734 ms); the silence is the gap
+> before **rung 2**, whose deadline is 10,000 ms
+> (`LLM_FILLER_SECOND_STALL_MS`) while the token arrived at 8,313 ms.
+>
+> The no-input watchdog is the wrong instrument for this silence — it re-asks a
+> caller who said nothing, and arming it mid-LLM is the spurious-re-ask defect
+> its own guard exists to prevent. **Do not act on the `connection.py:4899`
+> reading below.** Read the scope document instead.
+>
+> Also withdrawn: the claim that today's call is a fourth instance of DEC-1's
+> lead. DEC-1's population has a **fast** first token; this turn's was slow.
+
 p95 caller-perceived `content_ttfa` **8.28 s** against a published **1.5 s**;
 86 % of turns over the bar; 18.7 % carrying >3 s of silence
 (`LATENCY_DISTRIBUTION_2026-09-10.md`). §8 items 1, 2 and 4 untouched.

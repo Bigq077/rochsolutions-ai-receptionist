@@ -152,6 +152,14 @@ the code and the spec, deliberately not decided.
    `LATENCY_DISTRIBUTION_2026-09-10.md` §8 — items 1 (ladder arming), 2
    (`chunk_gate`) and 4 (`llm_ttft`) untouched.
 
+   > 🔴 **The paragraph below MISATTRIBUTES the cause. Corrected by
+   > `SCOPE_STALL_LADDER_2026-09-12.md`, same evening.** The 7.9 s is real;
+   > the watchdog is not why. Rung 1 of the stall ladder fired (head at
+   > 734 ms) and the silence is the gap before **rung 2**, due at 10,000 ms
+   > when the token arrived at 8,313 ms. The no-input watchdog re-asks a
+   > *silent caller* and must not arm mid-LLM. Read the scope doc; do not
+   > act on the `connection.py:4899` reading here.
+
    > **Item 1 is now anchored — 12 Sep evening, it stopped being a lead.**
    > `CA1ef288f1` turn 2: `content_ttfa_ms=10990`, `llm_ttft_ms=8313`, and the
    > filler head finished at 13:28:30.116 with the next audio at 13:28:38.0 —
