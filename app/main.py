@@ -490,6 +490,29 @@ def _log_deployment_posture() -> None:
             _switch("APPOINTMENT_REMINDERS_ENABLED", "false"),
         )
 
+        # The same silent-default hazard, for VISIBILITY (readiness bar 4,
+        # Gate 2 of the readiness plan). Every OBS_* switch defaults OFF and
+        # fails silently: a clinic service that came up without capture
+        # answers every call perfectly and records none of them, and the only
+        # per-call signal is a `[obs.store] captured` line whose ABSENCE says
+        # nothing. On 12 Sep 2026 the three clinic services' posture could not
+        # be established from anything in the repo or the log. Now each
+        # service says at boot what it will and will not record, and where an
+        # alert would go -- presence only, never the value.
+        def _present(name: str) -> str:
+            return f"{name}={'set' if (os.getenv(name) or '').strip() else 'UNSET'}"
+
+        logger.info(
+            "[deploy] obs: %s | %s | %s | %s | %s | %s | %s",
+            _switch("OBS_CAPTURE_ENABLED", "false"),
+            _switch("OBS_JUDGE_ENABLED", "false"),
+            _switch("OBS_ALERTS_ENABLED", "false"),
+            _switch("OBS_DIGEST_ENABLED", "false"),
+            _present("OBS_DATABASE_URL"),
+            _present("OBS_ALERT_SMS_TO"),
+            _present("OBS_DIGEST_EMAIL_TO"),
+        )
+
         for number, clinic_id in sorted(TWILIO_TO_CLINIC.items()):
             clinic = get_clinic(clinic_id)
             logger.info(
