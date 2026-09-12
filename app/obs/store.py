@@ -24,7 +24,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app import config
-from app.obs.models import Base, Call
+from app.obs.models import Base, Call, CallLog
 
 _log = logging.getLogger(__name__)
 
@@ -353,6 +353,103 @@ def save_judgement(call_sid: str, judgement: Dict[str, Any]) -> bool:
         _log.info("[obs.store] judged call_sid=%s score=%s", call_sid,
                   judgement.get("quality_score"))
         return True
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# Per-call log lines (app/obs/call_log.py) -- the `call_logs` table
+# ---------------------------------------------------------------------------
+
+def log_lines_enabled() -> bool:
+    """Line capture rides capture: on only where call rows are on."""
+    return is_enabled() and bool(getattr(config, "OBS_LOG_LINES_ENABLED", True))
+
+
+def upsert_call_log(
+    call_sid: str,
+    *,
+    lines: str,
+    line_count: int,
+    byte_count: int,
+    truncated: bool,
+    complete: bool,
+    clinic_id: Optional[str] = None,
+    build_sha: Optional[str] = None,
+    started_at: Optional[datetime] = None,
+) -> bool:
+    """Write (or overwrite) one call's log text. Synchronous; idempotent.
+
+    Called from a worker thread by the periodic flush and the final flush, so
+    it must never touch the event loop. Raises on a real DB error -- the
+    caller logs and swallows, because the observability layer never fails a
+    call.
+    """
+    if not call_sid:
+        return False
+    engine = _get_engine()
+    if engine is None or _Session is None:
+        return False
+    session: Session = _Session()
+    try:
+        row = CallLog(
+            call_sid=call_sid,
+            clinic_id=clinic_id,
+            build_sha=build_sha,
+            started_at=started_at,
+            line_count=int(line_count),
+            byte_count=int(byte_count),
+            truncated=bool(truncated),
+            complete=bool(complete),
+            lines=lines or "",
+        )
+        session.merge(row)
+        session.commit()
+        return True
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def get_call_log(call_sid: str) -> Optional[Dict[str, Any]]:
+    """One call's stored log, or None."""
+    engine = _get_engine()
+    if engine is None or _Session is None:
+        return None
+    session: Session = _Session()
+    try:
+        row = session.get(CallLog, call_sid)
+        return row.to_dict() if row is not None else None
+    finally:
+        session.close()
+
+
+def purge_call_logs(older_than_days: int) -> int:
+    """Delete `call_logs` rows whose last update is older than N days.
+
+    The `calls` row is never touched -- retention here is about the bulky
+    text, not the record. Returns the number of rows removed.
+    """
+    engine = _get_engine()
+    if engine is None or _Session is None or older_than_days <= 0:
+        return 0
+    from datetime import timedelta, timezone as _tz
+
+    cutoff = datetime.now(_tz.utc) - timedelta(days=int(older_than_days))
+    session: Session = _Session()
+    try:
+        n = (
+            session.query(CallLog)
+            .filter(CallLog.updated_at < cutoff)
+            .delete(synchronize_session=False)
+        )
+        session.commit()
+        return int(n or 0)
     except Exception:
         session.rollback()
         raise

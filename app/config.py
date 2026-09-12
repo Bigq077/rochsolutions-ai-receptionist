@@ -110,6 +110,25 @@ OBS_CAPTURE_ENABLED = os.getenv("OBS_CAPTURE_ENABLED", "false").lower() == "true
 # DATABASE_URL when OBS_DATABASE_URL is unset (backwards-compatible).
 DATABASE_URL = os.getenv("OBS_DATABASE_URL") or os.getenv("DATABASE_URL", "")
 
+# Per-call log capture (app/obs/call_log.py). Every log line emitted while a
+# call is open is buffered under that call and written to the `call_logs`
+# table, redacted, on a timer and at teardown -- so the Render log is no
+# longer the only place the decision lines ("slot_guard REPLACED", "caller
+# ACCEPTED", "WATCHDOG_FIRE") exist. Owner decision 12 Sep 2026, after three
+# demo calls whose defects were only diagnosable from a pasted log slice.
+#
+# Rides OBS_CAPTURE_ENABLED + the store URL; this switch only turns the
+# line capture off on a service that keeps the call rows. Default ON so a
+# service that records calls records their logs too.
+OBS_LOG_LINES_ENABLED = os.getenv("OBS_LOG_LINES_ENABLED", "true").lower() == "true"
+# Periodic flush, so a crashed or killed process still leaves most of the
+# call behind. Seconds.
+OBS_LOG_FLUSH_SEC = float(os.getenv("OBS_LOG_FLUSH_SEC", "20"))
+# Hard cap per call. The head is kept and the row is flagged `truncated`.
+OBS_LOG_MAX_BYTES = int(os.getenv("OBS_LOG_MAX_BYTES", str(2 * 1024 * 1024)))
+# Rows older than this are purged, once per process, on the first flush.
+OBS_LOG_RETENTION_DAYS = int(os.getenv("OBS_LOG_RETENTION_DAYS", "90"))
+
 # Phase 2 — failure alerting (see Susie_Call_Observability_Spec_for_Jules.md §5.2).
 # When enabled, completed calls matching a failure condition alert the operator
 # (Quentin) via SMS and/or Slack, and pipeline exceptions are captured to Sentry.

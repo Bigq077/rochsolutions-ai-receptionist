@@ -179,3 +179,53 @@ class Call(Base):
             "rubric_version": self.rubric_version,
             "judged_at": self.judged_at.isoformat() if self.judged_at else None,
         }
+
+
+class CallLog(Base):
+    """The call's own log lines -- what the Render log holds for one call.
+
+    Written by app/obs/call_log.py: every record logged while the call is
+    open (from the WebSocket handler's entry to the end of teardown, including
+    the post-capture notification pings), formatted exactly as the Render log
+    prints them, REDACTED (phone numbers, e-mails, the collected name), and
+    flushed on a timer as well as at the end so a killed process still leaves
+    most of the call behind. `complete` is False until the final flush.
+
+    A separate table from `calls` on purpose: the periodic flush must not race
+    the idempotent `calls` upsert at teardown, and a row here can exist for a
+    call that never wrote a `calls` row -- which is itself the answer to "why
+    is there no obs row for this call?".
+
+    Forward-only. Nothing before 12 Sep 2026 has a row.
+    """
+
+    __tablename__ = "call_logs"
+
+    call_sid: Mapped[str] = mapped_column(String(64), primary_key=True)
+    clinic_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    build_sha: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+    line_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    byte_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: The OBS_LOG_MAX_BYTES cap was hit; the head is kept, the tail dropped.
+    truncated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: The final flush ran. False = the process died or is still on the call.
+    complete: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    lines: Mapped[str] = mapped_column(Text, default="", nullable=False)
+
+    def to_dict(self) -> dict:
+        return {
+            "call_sid": self.call_sid,
+            "clinic_id": self.clinic_id,
+            "build_sha": self.build_sha,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "line_count": self.line_count,
+            "byte_count": self.byte_count,
+            "truncated": self.truncated,
+            "complete": self.complete,
+            "lines": self.lines,
+        }

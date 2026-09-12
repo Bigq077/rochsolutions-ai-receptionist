@@ -7030,6 +7030,16 @@ class WebSocketCallHandler:
         logger.info("[ms_conn] new WebSocket connection")
         await self.websocket.accept()
 
+        # The call carries its own log (app/obs/call_log.py). The context is
+        # opened BEFORE the tasks exist so every task inherits the same
+        # buffer; the SID is written into it at Twilio's `start`. No-op when
+        # line capture is off.
+        try:
+            from app.obs import call_log as _call_log
+            self._call_log_ctx = _call_log.open_context()
+        except Exception:  # pragma: no cover - the log layer never breaks a call
+            self._call_log_ctx = None
+
         tasks = [
             asyncio.create_task(self._receive_loop(),       name="ms_receive"),
             asyncio.create_task(self._audio_in_loop(),      name="ms_audio_in"),
@@ -7040,6 +7050,11 @@ class WebSocketCallHandler:
             asyncio.create_task(self._silence_safety_net(), name="ms_safety_net"),
             # _silence_reask_loop replaced by SilenceHandler (event-driven)
         ]
+        _log_flusher = None
+        if getattr(self, "_call_log_ctx", None) is not None:
+            _log_flusher = asyncio.create_task(
+                _call_log.periodic_flush(self._call_log_ctx), name="ms_call_log"
+            )
 
         try:
             await self._stop_event.wait()
@@ -7060,6 +7075,24 @@ class WebSocketCallHandler:
                     t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             await self._cleanup()
+            # Final flush LAST, after _cleanup(), so the row carries the
+            # post-capture notification pings as well. A straggling task's
+            # later lines are dropped rather than written twice.
+            if _log_flusher is not None:
+                _log_flusher.cancel()
+                await asyncio.gather(_log_flusher, return_exceptions=True)
+            if getattr(self, "_call_log_ctx", None) is not None:
+                try:
+                    _names = []
+                    _collected = (self.session or {}).get("collected") or {}
+                    for _k in ("name", "full_name", "first_name", "surname"):
+                        if _collected.get(_k):
+                            _names.append(str(_collected[_k]))
+                    if (self.session or {}).get("full_name"):
+                        _names.append(str(self.session["full_name"]))
+                    await _call_log.flush(self._call_log_ctx, complete=True, names=_names)
+                except Exception:  # pragma: no cover
+                    logger.warning("[ms_conn] call_log final flush failed", exc_info=True)
 
     # ========================================================================
     # Receive loop
@@ -8321,6 +8354,15 @@ class WebSocketCallHandler:
         start_data      = msg.get("start", {})
         self.stream_sid = msg.get("streamSid") or start_data.get("streamSid", "")
         self.call_sid   = start_data.get("callSid", "")
+        try:
+            from app.obs import call_log as _call_log
+            from app.build_info import build_sha as _build_sha
+            _call_log.bind_call(
+                getattr(self, "_call_log_ctx", None), self.call_sid,
+                build_sha=_build_sha(),
+            )
+        except Exception:  # pragma: no cover
+            pass
 
         custom_params = start_data.get("customParameters", {})
         twilio_from   = custom_params.get("twilio_from") or start_data.get("from", "")
@@ -8534,6 +8576,14 @@ class WebSocketCallHandler:
         # Instantiate per-call logger (stored on instance, not in session — not JSON-serialisable)
         from app.call_logger import CallLogger
         self._call_logger = CallLogger(self.call_sid, self.session)
+        try:
+            from app.obs import call_log as _call_log
+            _call_log.bind_call(
+                getattr(self, "_call_log_ctx", None), self.call_sid,
+                clinic_id=self.session.get("clinic_id"),
+            )
+        except Exception:  # pragma: no cover
+            pass
 
         self._started_event.set()
 

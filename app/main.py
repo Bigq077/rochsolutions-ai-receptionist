@@ -34,6 +34,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# The call carries its own log (app/obs/call_log.py): a root handler that
+# buffers each record under the open call and writes it to obs, redacted.
+# Installed unconditionally -- with no open call it is a dictionary miss per
+# record; the capture itself is gated with OBS_CAPTURE_ENABLED.
+try:
+    from app.obs.call_log import install as _install_call_log
+    _install_call_log()
+except Exception:  # pragma: no cover - never let the log layer stop boot
+    logger.warning("[call_log] handler not installed", exc_info=True)
+
 # ============================================================================
 # SENTRY — optional error reporting
 # Activate by setting SENTRY_DSN env var in Render.
@@ -503,8 +513,9 @@ def _log_deployment_posture() -> None:
             return f"{name}={'set' if (os.getenv(name) or '').strip() else 'UNSET'}"
 
         logger.info(
-            "[deploy] obs: %s | %s | %s | %s | %s | %s | %s",
+            "[deploy] obs: %s | %s | %s | %s | %s | %s | %s | %s",
             _switch("OBS_CAPTURE_ENABLED", "false"),
+            _switch("OBS_LOG_LINES_ENABLED", "true"),
             _switch("OBS_JUDGE_ENABLED", "false"),
             _switch("OBS_ALERTS_ENABLED", "false"),
             _switch("OBS_DIGEST_ENABLED", "false"),
