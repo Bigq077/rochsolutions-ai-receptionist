@@ -3298,6 +3298,94 @@ def utterance_is_a_request_not_a_pick(text: str) -> bool:
     return False
 
 
+#: A yes at the front of the utterance, fillers allowed. Same shape as
+#: `hold_speech._AFFIRM`, kept here (not imported) because this module has no
+#: `app` imports at load and the head classifier imports IT lazily.
+_ACCEPT_AFFIRM_RE = re.compile(
+    r"^\s*(?:(?:um+|uh+|er+|erm+|ah+|oh|right|so|well)[\s,]+)*"
+    r"(?:yes|yeah|yep|yup|please|sure|ok|okay|go on|go ahead|"
+    r"that'?s (?:right|correct|fine|it|the one)|it is|that'?d be (?:great|good|"
+    r"lovely)|correct|absolutely|do that|let'?s do (?:that|it))\b",
+    re.IGNORECASE,
+)
+#: An acceptance word anywhere. Same shape as `hold_speech._ACCEPTS`, plus the
+#: "that one" family that points at the single thing on the table.
+_ACCEPT_WORD_RE = re.compile(
+    r"\b(?:works?|suits?|suitable|i'?ll\s+take|i'?ll\s+have|let'?s\s+do|"
+    r"go\s+for|happy\s+with|that'?ll\s+do|perfect|ideal|lovely|brilliant|"
+    r"grand|great|fine|good|that'?s\s+(?:good|fine|great|perfect)|"
+    r"book\s+(?:that|it|me)|take\s+(?:that|it)|that\s+one|either|"
+    r"any\s+of\s+(?:those|them)|pencil\s+me|put\s+me\s+(?:in|down))\b",
+    re.IGNORECASE,
+)
+#: A position by its relation to the list end, which `_positions_named` does
+#: not own ("the last one", "the earlier one"), and a time word `_BAND_WORDS`
+#: does not hold.
+_ACCEPT_POSITION_RE = re.compile(
+    r"\b(?:first|second|third|fourth|fifth|last|latter|former|earlier|later|"
+    r"earliest|latest|sooner|soonest|midday|noon|lunchtime|morning|afternoon|"
+    r"evening)\b",
+    re.IGNORECASE,
+)
+
+
+def utterance_can_accept_a_slot(text: str) -> bool:
+    """Does the utterance carry ANY accepting signal? PURE, and the gate
+    `slot_accepted_by_caller` asks before it asks *which* slot.
+
+    Defect A, `CA5c69c585`, northgate, 12 Sep 2026 17:36:35, build 35f06eb6:
+
+        Susie : "The nearest I've got to four in the afternoon is twenty past
+                 four … Shall I book that in for you?"   (retracted by the
+                 fact guard -- the caller never heard it)
+        caller: 'hello you still there'
+                -> caller ACCEPTED 2026-09-15T16:20:00+01:00
+        read-back: "Tuesday the 15th of September at twenty past four"
+
+    Every step of the resolver decides WHICH slot -- position, day, time --
+    and each one declines on ambiguity. None of them asks whether the caller
+    said yes at all. After a ONE-slot offer (D-r) there is no ambiguity to
+    decline on: the day is the only day, the time is the only time, and the
+    resolver's own single-day / single-time shortcuts (3 Sep, `1a54dd23`)
+    return that slot for any utterance that is not a request. A check-in, a
+    name, a phone number, a fragment of the reason -- all "accepted".
+
+    B-138 and `_ASKS_IF_A_TIME_EXISTS_RE` patched two specific non-acceptance
+    shapes into the resolver. This is the general rule, the other way round:
+    an utterance is a candidate acceptance only when it POSITIVELY contains
+
+      * an affirmative at the front ("yes", "um yeah", "go ahead"), or
+      * an acceptance word ("works", "go for it", "that one"), or
+      * a list position ("number two", "the last one"), or
+      * a weekday, or
+      * a clock time or part of day.
+
+    It decides nothing about which slot and never returns a slot; declining
+    here leaves the caller exactly where they were, which is the resolver's
+    standing contract. Kept in step with the pick HEAD's own test in
+    `hold_speech._answer_moment` step 3 (affirmed / _ACCEPTS / _CLOCKISH /
+    _ORDINAL_PICK / _CLOCK), so the head and the engine agree on what a pick
+    looks like.
+
+    Spec: the precondition on DT-18 (§5.2) -- *an utterance that does not
+    affirm, name a time, a day or a position is not an acceptance.*
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    if _ACCEPT_AFFIRM_RE.match(t) or _ACCEPT_WORD_RE.search(t):
+        return True
+    if utterance_accepts_offered_slot(t):
+        return True
+    if _positions_named(t) or _ACCEPT_POSITION_RE.search(t):
+        return True
+    if _WEEKDAY_RE.search(t):
+        return True
+    if _clock_time_named(t) or _band_named(t):
+        return True
+    return False
+
+
 def slot_accepted_by_caller(
     session: Dict[str, Any], text: str
 ) -> "str | None":
@@ -3316,6 +3404,12 @@ def slot_accepted_by_caller(
 
     DENY BY DEFAULT, and every step here can decline:
 
+      0. it must LOOK like an acceptance at all -- an affirmative, an accept
+         word, a position, a day or a time (`utterance_can_accept_a_slot`).
+         Defect A, 12 Sep: steps 2 and 3 both have a "nothing left to be
+         ambiguous" shortcut for a one-day / one-time offer, so without this
+         gate a check-in ("hello you still there") after a one-slot offer
+         resolved to the slot;
       1. it must not be a "more times" or "different day" request -- those have
          their own paths and reading one as a pick would set a filter that
          deletes slots (B-90);
@@ -3328,6 +3422,8 @@ def slot_accepted_by_caller(
     read it back as an appointment, so ambiguity always declines.
     """
     if not isinstance(session, dict) or not isinstance(text, str) or not text.strip():
+        return None
+    if not utterance_can_accept_a_slot(text):
         return None
     if utterance_requests_more_slots(text) or utterance_requests_different_day(text):
         return None
