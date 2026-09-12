@@ -244,3 +244,24 @@ def test_a_live_store_that_predates_call_logs_gets_the_table(tmp_path, monkeypat
                                      byte_count=1, truncated=False, complete=True)
     finally:
         store.reset_engine()
+
+
+def test_redaction_keeps_timestamps_and_never_merges_lines():
+    """First live row, CAc0678171 (12 Sep 2026): the phone regex read the
+    line's own "2026-09-12 18" as a number and, spanning the newline, welded
+    lines together -- 76 stored, 60 after split, every one starting
+    "[PHONE]:41:29". Redaction is per line, timestamp excluded."""
+    sid = "CAc0678171758893eb83131ffb6d358e78"
+    lines = [
+        "2026-09-12 18:41:29,193 - app.media_streams.connection - INFO - [ms_conn] connected protocol=Call version=1.0.",
+        f"2026-09-12 18:41:29,201 - app.build_info - INFO - [build_info] running build b4a4d3395752 sid={sid}",
+        "2026-09-12 18:41:29,203 - app.media_streams.connection - INFO - [ms_conn] clinic_id resolved: northgate (to=+447366263180)",
+        "2026-09-12 18:41:55,217 - app.notifications.sms - INFO - SMS service initialized with number: +447366263180",
+    ]
+    out = call_log.redact_lines(lines).splitlines()
+    assert len(out) == 4
+    for o in out:
+        assert o.startswith("2026-09-12 18:41:"), o
+        assert "[PHONE]:" not in o
+    assert sid in out[1] and "b4a4d3395752" in out[1]
+    assert "+447366263180" not in "\n".join(out) and "[PHONE]" in out[2]

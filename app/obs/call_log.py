@@ -67,7 +67,14 @@ _log = logging.getLogger(__name__)
 _FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 #: Twilio identifiers. Protected from the phone regex, restored after.
-_SID_RE = re.compile(r"\b(?:CA|MZ|AC|SM|PN)[0-9a-f]{32}\b")
+#: ...and any hex word with at least one letter in it (a build SHA such as
+#: b4a4d3395752, a tool-use id, a UUID segment): the phone regex only wants
+#: digits, but it will happily take the digit run INSIDE a hex word --
+#: "b4a4d3395752" came back as "b4a4d[PHONE]" on the first live row.
+_SID_RE = re.compile(
+    r"\b(?:CA|MZ|AC|SM|PN)[0-9a-f]{32}\b"
+    r"|\b(?=[0-9a-f]*[a-f])[0-9a-f]{7,}\b"
+)
 _SID_TOKEN = "\x00SID{}\x00"
 _SID_TOKEN_RE = re.compile(r"\x00SID(\d+)\x00")
 
@@ -197,20 +204,36 @@ def uninstall() -> None:
 
 # ── Redaction ────────────────────────────────────────────────────────────────
 
-def redact_lines(lines: Iterable[str], names: Iterable[str] = ()) -> str:
-    """Join and redact. SIDs survive; phones, e-mails and the names do not."""
+#: The line's own timestamp: "2026-09-12 18:41:29,193". The phone regex reads
+#: "2026-09-12 18" as a grouped digit run, and because its separator class
+#: includes whitespace it can also run ACROSS a newline into the next line's
+#: timestamp -- which is how the first live row (CAc0678171, 12 Sep 2026) came
+#: back with "[PHONE]:41:29" prefixes and 76 lines merged into 60. So: redact
+#: one line at a time, never the joined text, and keep the timestamp out of
+#: the redactor's sight entirely.
+_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{3})?")
+
+
+def redact_line(line: str, names: Iterable[str] = ()) -> str:
+    """One line: timestamp and SIDs survive; phones, e-mails, names do not."""
     from app.obs.redact import redact_text
 
-    text = "\n".join(lines)
+    ts = _TS_RE.match(line)
+    head, rest = (line[: ts.end()], line[ts.end():]) if ts else ("", line)
     sids: List[str] = []
 
     def _protect(m: re.Match) -> str:
         sids.append(m.group(0))
         return _SID_TOKEN.format(len(sids) - 1)
 
-    protected = _SID_RE.sub(_protect, text)
+    protected = _SID_RE.sub(_protect, rest)
     redacted = redact_text(protected, names)
-    return _SID_TOKEN_RE.sub(lambda m: sids[int(m.group(1))], redacted)
+    return head + _SID_TOKEN_RE.sub(lambda m: sids[int(m.group(1))], redacted)
+
+
+def redact_lines(lines: Iterable[str], names: Iterable[str] = ()) -> str:
+    """Redact each line on its own and join. Line count is preserved."""
+    return "\n".join(redact_line(l, names) for l in lines)
 
 
 # ── Flushing ─────────────────────────────────────────────────────────────────
