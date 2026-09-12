@@ -324,6 +324,35 @@ _NOT_AN_OFFER = (
     "we're here", "we are here",
 )
 
+#: A chunk that is still ABOUT the retracted offer: it names a time, a list
+#: position, or points at it ("that one", "book that in", "those"). Anything
+#: else -- "could I take your first name and surname?" -- is the turn moving
+#: on. See the latch in `check_outgoing` (defect E).
+_REFERS_TO_THE_OFFER_RE = re.compile(
+    r"\b(?:number\s+(?:one|two|three|four|five|\d)|option\s+(?:one|two|three|\d)|"
+    r"the\s+(?:first|second|third|last|earlier|later)\s+one|"
+    r"that\s+(?:one|in|time|slot|work|suit)|book\s+(?:that|it)|"
+    r"(?:either|any|which)\s+of\s+those|those\s+(?:times|work|suit)|"
+    r"which\s+(?:suits|works|would)|"
+    r"(?:mon|tues|wednes|thurs|fri|satur|sun)day)\b",
+    re.IGNORECASE,
+)
+
+
+def _refers_to_the_offer(text: Any) -> bool:
+    """Does this chunk carry any part of a slot offer? Deny-biased: a time
+    mention anywhere, a weekday, a position, or a pointer at "that one"."""
+    try:
+        t = str(text or "")
+        if not t.strip():
+            return False
+        if spoken_time_mentions(t):
+            return True
+        return _REFERS_TO_THE_OFFER_RE.search(t) is not None
+    except Exception:                      # pragma: no cover - defensive
+        return True
+
+
 #: Immediately before a "{unit} to {hour}", these words mean it is not one.
 #: "from half five to nine" is a WINDOW whose tail, "five to nine", is a
 #: perfectly good 08:55 to a regex and nothing at all to a listener.
@@ -653,8 +682,24 @@ def check_outgoing(session: Any, text: Any) -> Verdict:
 
         if session.get(_BLOCKED) and mode == MODE_ENFORCE:
             # The sentence this chunk belongs to was already replaced. Speaking
-            # its tail would put the caller halfway through a retracted offer.
-            return Verdict("", [], [], True, mode)
+            # its tail would put the caller halfway through a retracted offer
+            # -- IF the tail is part of the offer. Defect E, CA5c69c585 and
+            # CAddd98ce0 (12 Sep): this dropped EVERY later chunk of the turn,
+            # including "Before I do that — could I take your first name and
+            # surname?", then the watchdog's re-ask of that question, then the
+            # safety net's -- 15 s and 30 s of silence after a recovery line
+            # whose docstring says it hands the turn to exactly that question.
+            # So the latch drops only what refers to the retracted offer: a
+            # clock time, a list position, or "that one / that in / those".
+            # A question naming none of them is the turn moving on, and is
+            # spoken.
+            if _refers_to_the_offer(text):
+                return Verdict("", [], [], True, mode)
+            logger.info(
+                "[slot_guard] retracted turn: speaking a chunk that names no "
+                "slot: %r", str(text or "")[:80],
+            )
+            return Verdict(text, [], [], False, mode)
 
         note_payload(session)
         allowed = allowed_times(session)

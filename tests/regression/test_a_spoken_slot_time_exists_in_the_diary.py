@@ -123,13 +123,24 @@ def test_in_enforce_mode_the_sentence_is_replaced_and_the_turn_stops(monkeypatch
     # violation, or the guard would loop on its own output.
     assert guard.check_outgoing(_session(), guard.RECOVERY_SENTENCE).clean
 
-    # The rest of the paragraph is dropped: a caller must not hear the tail of
+    # The rest of the OFFER is dropped: a caller must not hear the tail of
     # an offer that has just been retracted.
-    tail = guard.check_outgoing(s, "Could I take your first name and surname?")
+    tail = guard.check_outgoing(s, "or ten past five on Tuesday — which suits?")
     assert tail.text == ""
     assert tail.blocked
+    cta = guard.check_outgoing(s, "Shall I book that in for you?")
+    assert cta.text == ""
 
-    # ...until the next caller turn.
+    # ...but a question that names no slot is the turn moving on, and is
+    # spoken. Until 12 Sep this was dropped too (defect E, CA5c69c585 /
+    # CAddd98ce0): the name question, then the watchdog's re-ask of it,
+    # then the safety net's -- 30 s of silence after a recovery line whose
+    # own docstring hands the turn to exactly this question.
+    on = guard.check_outgoing(s, "Could I take your first name and surname?")
+    assert on.text == "Could I take your first name and surname?"
+    assert not on.blocked
+
+    # ...and the latch lapses at the next caller turn.
     guard.turn_boundary(s)
     again = guard.check_outgoing(s, "Could I take your first name and surname?")
     assert again.text == "Could I take your first name and surname?"
