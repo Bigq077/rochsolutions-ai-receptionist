@@ -203,9 +203,12 @@ separate and each has its own answer.
    whole `tests/regression` run **8,903 passed with the same 5 standing
    failures** (`b84` ×3, the multi-day count, scarcity multiple-days) — zero new
    failures. No behaviour change: nothing reads these fields.
-2. **Run the §3 cost query** against the corpus, then pick a rung-2 value on
+2. ~~**Run the §3 cost query** against the corpus, then pick a rung-2 value on
    evidence. Probably 6,000 ms; possibly 7,000 ms if the 6–10 s band is fatter
-   than expected.
+   than expected.~~ ✅ **DONE — see §7. The answer is 7,000 ms, and the guess of
+   6,000 ms above was wrong**: at 6,000 ms `MIN_GAP` binds on the contentless
+   rung-1 path and the constant stops meaning what it says, which is the
+   `dc6f521e` failure shape rather than a rate problem. 3,203 turns measured.
 3. **Ship the constant with a call.** One value, one commit, a regression test
    pinning the sum against MIN_GAP (`test_b19_filler_rearm.py` already asserts
    that sum — extend it rather than adding a new file).
@@ -229,7 +232,97 @@ answer the question at all.
 
 ---
 
-## 7. What this scope does NOT claim
+## 7. THE MEASUREMENT — step 2, done 12 Sep evening
+
+Read from the obs corpus (`OBS_DATABASE_URL` is set in the slotspec `.env` and
+reachable; one read-only `SELECT`). **3,203 `path=llm` turns with a usable
+`llm_ttft_ms`**, across all four clinics — an order of magnitude more than the
+294 turns the config comment was written on.
+
+`IMPOSSIBLE_MS = 10_000_000` applied, per `latency_percentiles.py`. **I first ran
+it without the filter and got a p90 of 11,873,267,705 ms** — the absolute-clock
+defect of `LATENCY_DISTRIBUTION_2026-09-10.md` §7, exactly as that section warns.
+The filter is not optional; 0 `llm_ttft` values were impossible, but
+`content_ttfa` needed it.
+
+### 7.1 Emission rate by candidate deadline
+
+| D | fires on | rate | silence STILL LEFT after the phrase | wasted firings (content <300 ms later) |
+|---|---:|---:|---|---:|
+| 5,600 ms | 179 | 5.6 % | p50 3.6 s, p90 8.0 s | 0 |
+| **6,000 ms** | 151 | **4.7 %** | p50 3.4 s, p90 7.7 s | 1 of 107 = 0.9 % |
+| 6,500 ms | 130 | 4.1 % | p50 3.1 s | 0 |
+| **7,000 ms** | 101 | **3.2 %** | p50 3.1 s, p90 7.5 s | **0 of 68** |
+| 8,000 ms | 81 | 2.5 % | p50 3.0 s, p90 7.0 s | 0 of 53 |
+| 10,000 ms (now) | 30 | 0.9 % | p50 4.4 s | 0 of 15 |
+
+**Two objections die here.**
+
+*"It will pad turns that were about to answer."* It will not: at every candidate
+deadline there is a **median 3 s or more of silence still to cover** after the
+phrase, and the wasted-firing rate is 0–0.9 %. If the token took over 6 s, the
+content takes substantially longer again.
+
+*"It recreates `dc6f521e`'s 13.9 %."* Not on this corpus. `dc6f521e`'s rejected
+setting (5.6 s) measures **5.6 %** today, and the rate the owner accepted before
+it (4.8 % at 8.0 s) is matched by **6,000 ms at 4.7 %**. The engine is roughly
+twice as fast as it was on 1 Sep, so the comment's percentages overstate the cost
+of every value.
+
+### 7.2 By clinic — and `northgate` is the outlier
+
+| clinic | turns | ≥6.0 s | ≥7.0 s | ≥8.0 s | ≥10.0 s (today) |
+|---|---:|---:|---:|---:|---:|
+| jv_v1 | 2,077 | 3.0 % | 2.1 % | 1.7 % | 0.7 % |
+| **northgate** | 597 | **9.7 %** | **6.2 %** | 4.9 % | 1.2 % |
+| theorem_v3 | 400 | 6.0 % | 4.2 % | 3.5 % | 1.8 % |
+| vital_edge | 129 | 5.4 % | 2.3 % | 2.3 % | 1.6 % |
+| **ALL** | 3,203 | 4.7 % | 3.2 % | 2.5 % | 0.9 % |
+
+The aggregate is dominated by `jv_v1` (65 % of turns), which is the fastest.
+**`northgate` — the demo line, and the line the 294-turn sample was almost
+certainly taken on — runs at double the aggregate rate.** At 6,000 ms it would
+emit on nearly one turn in ten, which is the neighbourhood of the rate that was
+rejected. Judge a candidate on the `northgate` column, not the ALL row.
+
+### 7.3 The structural argument settles it: **7,000 ms**
+
+`wake_at = max(_filler_t0 + STALL_MS, now + MIN_GAP_MS)`, computed:
+
+| rung 1 | STALL 6,000 | STALL 7,000 | STALL 8,000 |
+|---|---|---|---|
+| 600 ms (situational) | 6,000 — ok | 7,000 — ok | 8,000 — ok |
+| 2,750 ms (contentless) | **6,750 — MIN_GAP BINDS** | 7,000 — ok | 8,000 — ok |
+
+**At 6,000 ms the constant stops meaning what it says** on any turn that took the
+contentless rung 1: MIN_GAP silently moves the deadline to 6,750 ms. That is the
+same *class* of defect as `dc6f521e` — a number whose effective value is set by
+something else — and MIN_GAP exists to make that unrepresentable, not to absorb it.
+
+**7,000 ms is the lowest value at which MIN_GAP never binds on either rung-1
+path.** It also carries zero wasted firings (0 of 68), leaves a median 3.1 s
+still to cover, and holds `northgate` at 6.2 % — below the rejected band.
+
+**Recommended: `LLM_FILLER_SECOND_STALL_MS = 7000`.** Conservative alternative
+**8,000 ms**, which reproduces the historically accepted rate almost exactly on
+the line it was measured on (`northgate` 4.9 % against the recorded 4.8 %).
+
+On `CA1ef288f1` turn 2 (token 8,313 ms, content 10,990 ms), a 7,000 ms rung 2
+fires at 7.0 s and covers ~4.0 s of the 7.9 s hole.
+
+### 7.4 What is still NOT measured
+
+**`max_gap_ms` — zero turns carry it.** The field shipped in `7cc67f31`, which
+deployed to the three clinic services and the demo line on 12 Sep evening; every
+stored turn predates it. So **§4's Option B remains unanswerable until calls
+accumulate on `7cc67f31` or later**, and this measurement settles Option A only.
+
+Re-run 7.1–7.2 once the corpus has post-`7cc67f31` turns; the same script filters
+on `llm_ttft_ms` first, then reads `max_gap_ms`, per §4's warning.
+
+---
+
+## 8. What this scope does NOT claim
 
 * It does not claim a fix is ready. It claims the mechanism is now identified,
   the wrong mechanism is ruled out, and the next action is a measurement.
