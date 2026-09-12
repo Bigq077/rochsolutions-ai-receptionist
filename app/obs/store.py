@@ -127,9 +127,21 @@ def _ensure_schema(engine: Engine, force: bool = False) -> None:
     try:
         from sqlalchemy import inspect as _inspect
 
-        if not _inspect(engine).has_table("calls"):
-            Base.metadata.create_all(engine, checkfirst=True)
-            _log.info("[obs.store] created calls table")
+        insp = _inspect(engine)
+        fresh = not insp.has_table("calls")
+        # create_all with checkfirst creates every MISSING table and touches
+        # none that exist -- so this must run on every engine build, not only
+        # when `calls` is absent. It used to be gated on `calls` being missing,
+        # which meant a table added later (call_logs, 12 Sep 2026) was never
+        # created on a live store: the first call on 05acf306 wrote its
+        # `calls` row and every call_logs flush failed on "relation does not
+        # exist". Measured on the demo line, CAb0d38061.
+        before = set(insp.get_table_names())
+        Base.metadata.create_all(engine, checkfirst=True)
+        created = sorted(set(_inspect(engine).get_table_names()) - before)
+        if created:
+            _log.info("[obs.store] created table(s): %s", ", ".join(created))
+        if fresh:
             return  # freshly created from the model: no columns can be missing
         _ensure_new_columns(engine)
     except Exception as exc:  # pragma: no cover - defensive; must not break reads

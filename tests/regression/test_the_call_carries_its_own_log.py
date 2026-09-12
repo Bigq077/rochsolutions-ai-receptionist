@@ -217,3 +217,30 @@ def test_retention_purge_removes_only_old_rows(sqlite_store):
     assert store.purge_call_logs(90) == 1
     assert store.get_call_log("CA" + "f" * 32) is not None
     assert store.get_call_log("CA" + "0" * 32) is None
+
+
+def test_a_live_store_that_predates_call_logs_gets_the_table(tmp_path, monkeypatch):
+    """The real case, which the fresh-SQLite fixture above never sees: `calls`
+    already exists, `call_logs` does not. The first call on 05acf306 wrote
+    its `calls` row and every flush failed with "relation call_logs does not
+    exist" (demo line, CAb0d38061, 12 Sep 2026), because create_all was only
+    run when `calls` was missing."""
+    from sqlalchemy import create_engine, inspect
+    from app.obs.models import Call
+
+    url = f"sqlite:///{tmp_path / 'old.db'}"
+    eng = create_engine(url, future=True)
+    Call.__table__.create(eng)                       # an old store: calls only
+    assert inspect(eng).get_table_names() == ["calls"]
+    eng.dispose()
+
+    monkeypatch.setattr(config, "DATABASE_URL", url)
+    monkeypatch.setattr(config, "OBS_CAPTURE_ENABLED", True)
+    store.reset_engine()
+    try:
+        engine = store._get_engine()               # the engine build is the migration
+        assert "call_logs" in inspect(engine).get_table_names()
+        assert store.upsert_call_log("CA" + "1" * 32, lines="x", line_count=1,
+                                     byte_count=1, truncated=False, complete=True)
+    finally:
+        store.reset_engine()
