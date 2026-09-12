@@ -276,7 +276,13 @@ UNCHANGED_CLINIC_PROMPTS = {
     #
     # Confined to `clinic_template_prompt.py`, so demo, theorem and theorem_v3
     # are byte-identical across it: hashed either side, not assumed.
-    "jv_v1": "517e456b5ba29887",
+    # Re-pinned 2026-09-12, 517e456b5ba29887 -> efda596939b59611 (jv_v1) and
+    # 911689910174d5be -> d18c9731270c7981 (vital_edge). D-t: BOOKING STEPS
+    # 2-3 and the TIME PREFERENCE GATE -- a timing preference from an EARLIER
+    # turn is echoed and confirmed, never carried from memory into date_hint;
+    # same-breath and urgency still skip. Confined to the template: theorem,
+    # theorem_v3 and demo hashed identical either side.
+    "jv_v1": "efda596939b59611",
     "theorem": "8565be9a48a7a9aa",
     # Re-pinned 2026-08-25: 'Children under fifteen not seen' -> 'Children
     # under seven not seen'. Mark's minimum age is 7 (owner-confirmed

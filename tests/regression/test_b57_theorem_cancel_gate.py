@@ -473,7 +473,13 @@ UNMOVED_PROMPTS = {
     # `test_b55_provisional_reschedule_closing.UNCHANGED_CLINIC_PROMPTS`, and
     # re-pinning one and not the other is how a previous re-pin left the suite
     # +1.
-    "jv_v1": "517e456b5ba29887",
+    # Re-pinned 2026-09-12, 517e456b5ba29887 -> efda596939b59611 (jv_v1) and
+    # 911689910174d5be -> d18c9731270c7981 (vital_edge). D-t: BOOKING STEPS
+    # 2-3 and the TIME PREFERENCE GATE -- a timing preference from an EARLIER
+    # turn is echoed and confirmed, never carried from memory into date_hint;
+    # same-breath and urgency still skip. Confined to the template: theorem,
+    # theorem_v3 and demo hashed identical either side.
+    "jv_v1": "efda596939b59611",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -582,7 +588,7 @@ UNMOVED_PROMPTS = {
     # Re-pinned 2026-09-11 with jv_v1 above, 8b1d639b71b2d23e ->
     # 911689910174d5be. Same one change to BOOKING STEPS 5-7; see the note
     # there for the containment proof.
-    "vital_edge": "911689910174d5be",
+    "vital_edge": "d18c9731270c7981",  # re-pinned 2026-09-12, see jv_v1 note
 }
 
 
