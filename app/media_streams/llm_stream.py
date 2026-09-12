@@ -6335,7 +6335,27 @@ class LLMStream:
                     # old reconstruct-from-history template when it is absent, so the
                     # existing behaviour is unchanged whenever the slot was not
                     # captured.
-                    _rb_slot = (session.get("v3_confirmed_slot_phrase") or "").strip()
+                    # The ENGINE's own record of what the caller accepted wins
+                    # over every phrase recovered from speech. Vital Edge
+                    # CAea24df48, 12 Sep: the caller accepted midday, neither
+                    # speech-derived key was set (the model's reply carried no
+                    # slot phrase, and "shall I put that one in for you?" is not
+                    # a `_SPOKEN_COMMITMENT_RE` marker), so this fell to the last
+                    # branch below -- which asks the model to fill the time in
+                    # from memory -- and it said five in the evening. See
+                    # `ACCEPTED_SLOT_RECORD_KEY`.
+                    from app.tools.slot_followup import (
+                        readback_slot_phrase as _readback_phrase,
+                    )
+                    _rb_accepted = _readback_phrase(session)
+                    if _rb_accepted:
+                        logger.info(
+                            "[ms_llm] read-back slot from the ENGINE's accepted "
+                            "record: %r", _rb_accepted,
+                        )
+                    _rb_slot = _rb_accepted or (
+                        session.get("v3_confirmed_slot_phrase") or ""
+                    ).strip()
                     # ...but it is captured on ONE transition — the name request
                     # at the end of the slot flow — so a caller who changes day
                     # after giving their name never refreshes it. It then names a
@@ -6347,7 +6367,9 @@ class LLMStream:
                     # to. If the captured phrase names a different day, it is
                     # stale and the newest agreement wins — the same
                     # newest-wins rule the write-guard is built on.
-                    if _rb_slot and session.get("last_spoken_slot_date"):
+                    # The engine record is not second-guessed by the
+                    # newest-spoken heuristic: it IS the newest agreement.
+                    if _rb_slot and not _rb_accepted and session.get("last_spoken_slot_date"):
                         _rb_slot_date = _phrase_date(_rb_slot)
                         if (
                             _rb_slot_date

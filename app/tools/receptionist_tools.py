@@ -4179,6 +4179,10 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
         # Booking confirmed — clear the last-presented date hint so it
         # doesn't resurface in CALL STATE after the appointment is made.
         session.pop("v3_last_presented_date_hint", None)
+        # ...and the accepted-slot pin: it exists to carry ONE agreement to
+        # its read-back, and a landed booking has consumed it. B-75's shape
+        # (an arm outliving the turn that needed it) is why this is explicit.
+        session.pop("_accepted_slot_record", None)
         session.pop("v3_last_offered_day_iso", None)
 
         # Stage 2: create pending name-confirmation record + 30-min nudge —
@@ -8716,6 +8720,8 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
     # (which it did not). None rather than False because session.py seeds the key
     # as None and nothing here ever overwrote it.
     session["booking_confirmed"] = True
+    # The accepted-slot pin has been consumed by this booking.
+    session.pop("_accepted_slot_record", None)
 
     # Owner heads-up FIRST — Marcus is alerted before the patient confirmation.
     # No-op unless the clinic enables owner_alerts (Theorem etc. unaffected).

@@ -2649,6 +2649,117 @@ _BAND_WORDS = ("morning", "afternoon", "evening")
 
 ACCEPTED_SLOT_KEY = "_accepted_slot_iso"
 
+#: The slot the caller accepted, DURABLE for the call: {"iso", "phrase"}.
+#: `ACCEPTED_SLOT_KEY` above is deliberately per-TURN (P6b: it exists to pin
+#: the slot into a re-query inside the same turn, and B-75 paid for an arm
+#: that outlived its turn). The booking read-back happens two or three turns
+#: later, and until now had no engine-authored source at all -- it read
+#: `v3_confirmed_slot_phrase`, captured out of the MODEL's own name-request
+#: sentence, and fell back to telling the model to fill the time in from
+#: memory.
+#:
+#: Vital Edge CAea24df48, 12 Sep 12:52, a live patient line. The caller
+#: accepted MIDDAY; three turns later the read-back said "Monday the 14th of
+#: September at five in the evening". 17:00 was a real Monday slot -- spoken
+#: two turns earlier -- so Gate 5 passed it (the time WAS in an offer) and
+#: the slot-fact guard passed it (the time IS in the diary: invariant 4, not
+#: invariant 1). Three layers, three holes, and the hole here is that nothing
+#: durable recorded WHICH slot was accepted:
+#:
+#:   * the model's reply was only "Could I take your first name and
+#:     surname?", so `v3_confirmed_slot_phrase` was never captured;
+#:   * "shall I put that one in for you?" is not one of
+#:     `_SPOKEN_COMMITMENT_RE`'s markers, so `last_spoken_slot_phrase` was
+#:     never set either;
+#:   * so the read-back prompt fell to its last branch -- "fill the day/date/
+#:     time from the slot the caller already agreed to" -- which asks the
+#:     model to remember, and it remembered the wrong one.
+#:
+#: Written by the engine, from the payload's own spoken label, so the phrase
+#: is a slot fact the engine authored (D-n) rather than one recovered from
+#: speech. Overwritten by a later acceptance -- a caller who changes their
+#: mind is agreeing to the newest slot -- and cleared when a booking lands.
+ACCEPTED_SLOT_RECORD_KEY = "_accepted_slot_record"
+
+
+def note_accepted_slot(session: Dict[str, Any], iso: Any) -> None:
+    """Record the accepted slot durably, with the phrase Susie would say.
+
+    Never raises: a caller mid-booking must not lose their turn to a recorder.
+    """
+    try:
+        start = str(iso or "")[:19]
+        if not isinstance(session, dict) or not start:
+            return
+        for slot in flatten_bookable_slots(session.get("available_days") or []):
+            if str(slot.get("start") or "")[:19] != start:
+                continue
+            label = str(slot.get("day_label") or "").strip()
+            spoken = str(slot.get("spoken") or slot.get("time") or "").strip()
+            if not (label and spoken):
+                return
+            session[ACCEPTED_SLOT_RECORD_KEY] = {
+                "iso": start,
+                "phrase": f"{label} at {spoken}",
+            }
+            logger.info(
+                "[slot_followup] accepted slot pinned for the CALL: %s (%r)",
+                start, session[ACCEPTED_SLOT_RECORD_KEY]["phrase"],
+            )
+            return
+    except Exception:                      # pragma: no cover - defensive
+        logger.exception("[slot_followup] accepted-slot record failed")
+
+
+def accepted_slot_phrase(session: Any) -> str:
+    """The durable accepted slot as Susie would say it, or "". PURE."""
+    try:
+        rec = (session or {}).get(ACCEPTED_SLOT_RECORD_KEY) or {}
+        return str(rec.get("phrase") or "").strip()
+    except Exception:                      # pragma: no cover - defensive
+        return ""
+
+
+def readback_slot_phrase(session: Any) -> str:
+    """The slot a booking read-back must name, engine-authored, or "". PURE.
+
+    Two sources, both the engine's own:
+
+      1. the durable accepted record above -- a caller who NAMED their choice
+         ("midday works", "number two");
+      2. failing that, a single-slot offer on the table. A bare "yes" to
+         "Yes -- midday on Monday is free. Shall I book that in for you?" does
+         not resolve through `slot_accepted_by_caller` (it carries no label
+         and no ordinal), and the DT-7/8 producer narrows the offer to exactly
+         that slot. This is only ever read at the read-back, i.e. after name
+         AND phone are confirmed, so the caller has walked the whole flow: if
+         one slot is on the table there, it is the one they agreed to and
+         there is nothing else it could be.
+
+    Returns "" when the offer holds two or more slots -- then nothing here
+    knows which was chosen, and the speech-derived keys downstream are a
+    better guess than a coin toss.
+    """
+    phrase = accepted_slot_phrase(session)
+    if phrase:
+        return phrase
+    try:
+        offered = (session or {}).get("last_offered_slots") or []
+        if len(offered) != 1:
+            return ""
+        start = str((offered[0] or {}).get("start") or "")[:19]
+        if not start:
+            return ""
+        for slot in flatten_bookable_slots((session or {}).get("available_days") or []):
+            if str(slot.get("start") or "")[:19] != start:
+                continue
+            label = str(slot.get("day_label") or "").strip()
+            spoken = str(slot.get("spoken") or slot.get("time") or "").strip()
+            return f"{label} at {spoken}" if (label and spoken) else ""
+    except Exception:                      # pragma: no cover - defensive
+        logger.exception("[slot_followup] read-back slot phrase failed")
+    return ""
+
 
 def chosen_slot_steer(session: "Dict[str, Any] | None") -> str:
     """The CALL STATE line telling the model the caller has just picked. PURE.
@@ -3159,6 +3270,7 @@ def utterance_is_a_request_not_a_pick(text: str) -> bool:
     return bool(_REQUEST_FOR_SLOTS_RE.search(t)
                 or _NEGATED_POSITION_RE.search(t)
                 or _REJECTS_THE_OFFER_RE.search(t)
+                or _ASKS_IF_A_TIME_EXISTS_RE.search(t)
                 or _DID_NOT_HEAR_RE.search(t))
     if _REQUEST_FOR_SLOTS_RE.search(t) or _NEGATED_POSITION_RE.search(t):
         return True
@@ -3413,6 +3525,51 @@ def slot_accepted_by_caller(
 #: offered day and is a question, and treating it as a pick would put
 #: "Monday it is -" in front of a lookup that really is happening -- the
 #: promised-work defect, which this family has produced three times.
+# A question about whether a time EXISTS is not a choice of it. Vital Edge
+# CAea24df48, 12 Sep 12:52:21, build dfaa0b02, a LIVE patient line:
+#
+#   Susie : "Monday 14th — Number 1, midday. Number 2, four in the afternoon.
+#            Number 3, six in the evening."
+#   caller: "um do you have any do you have anything around 12 on midday"
+#           -> caller ACCEPTED 2026-09-14T12:00:00+01:00
+#
+# The utterance literally contains the spoken label "midday", and
+# `utterance_is_slot_selection` is containment against those labels, so an
+# existence question read as a pick. It is the 11 Sep defect ("what about
+# monday morning" taken as a pick of 08:00) one door along: there the band
+# fallback was cured by deferring to `_DAY_REQUEST_RE`, and the TIME-label
+# path was left alone.
+#
+# NARROWER than `_DAY_REQUEST_RE` on purpose, and the difference is the whole
+# rule. That pattern also holds "can i", "could i", "would i" -- right for a
+# DAY request ("could you tell me about Tuesday") and wrong here, because
+# "can I have midday" and "could I take the midday one" are how callers
+# ACCEPT. So this subset asks only "does it exist?", never "may I have it?":
+# a question about the DIARY, not a request for the slot.
+_ASKS_IF_A_TIME_EXISTS_RE = re.compile(
+    r"\bdo\s+you\s+have\b|\bhave\s+you\s+(?:got|any)\b"
+    r"|\bdo\s+you\s+do\b|\bare\s+you\s+free\b"
+    r"|\bis\s+there\b|\bare\s+there\b"
+    r"|\banything\s+(?:on|for|at|around|near|about)\b"
+    r"|\bany\s+(?:slots?|times?|availability|openings?|chance)\b"
+    r"|\bwhat\s+(?:have|do)\s+you\s+(?:got|have)\b",
+    re.IGNORECASE,
+)
+#
+# "what about" is deliberately NOT in that set, though `_DAY_REQUEST_RE`
+# holds it. On 11 Sep it was decided that a day plus an EXPLICIT TIME still
+# names its slot -- "what about monday at eight" picks 08:00 -- while a day
+# plus a BAND does not, and `test_a_day_and_band_named_is_a_question_not_a_pick`
+# pins both halves. Including the arm reversed the first half. The Vital Edge
+# utterance does not need it ("do you have" and "anything around" both match),
+# so the older decision stands.
+#
+# That leaves one shape unresolved, and it is the owner's rather than mine:
+# "what about midday", with midday on the offer, is still read as CHOOSING it.
+# That is the 11 Sep rule applied consistently, and D-s's durable pin means
+# the read-back names midday rather than drifting -- but a caller who was only
+# asking has been moved a step they did not ask for. Raised, not decided.
+
 _DAY_REQUEST_RE = re.compile(
     r"\b(?:what|how)\s+about\b"
     r"|\bdo\s+you\s+have\b|\bhave\s+you\s+(?:got|any)\b"

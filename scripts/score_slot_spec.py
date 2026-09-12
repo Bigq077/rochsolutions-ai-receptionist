@@ -512,6 +512,76 @@ def dt8d(days, shape):
     return PASS, f"{said!r} -> {best}"
 
 
+@row("DT-18", "the booking read-back names the slot the caller ACCEPTED",
+     invariant="inv 2")
+def dt18(days, shape):
+    """Vital Edge CAea24df48, 12 Sep 12:52, a live line: the caller accepted
+    midday and the read-back said five in the evening. Both times were real
+    and both had been offered, so Gate 5 and the slot-fact guard passed it.
+    Drives the acceptance and reads what the read-back would be handed."""
+    from app.tools.slot_offer import apply_offer_to_session, offer_as_record
+    day = days[0]
+    times = day["slot_times"]
+    if len(times) < 2:
+        return UNREACHABLE, "needs 2+ times so a wrong one is available"
+    s = _session(days)
+    offer = build_slot_offer([day], pretrimmed=False)
+    if offer is None:
+        return UNREACHABLE, "no offer"
+    apply_offer_to_session(s, offer_as_record(offer), offer.chunks)
+    s["_slot_presentation_mode"] = "single_day"
+    spoken = [t for t in times
+              if f"{day['date']}T{t}:00" in set(s.get(sf._SPOKEN_KEY) or [])]
+    if len(spoken) < 2:
+        return UNREACHABLE, "needs 2+ spoken so the wrong one is reachable"
+    chosen, decoy = spoken[0], spoken[-1]
+    said = f"{_spoken_slot_time(chosen)} works"
+    accepted = sf.slot_accepted_by_caller(s, said)
+    if not accepted:
+        return UNREACHABLE, f"{said!r} did not resolve as an acceptance"
+    if accepted[11:16] != chosen:
+        return FAIL, f"{said!r} resolved to {accepted[11:16]}, not {chosen}"
+    sf.note_accepted_slot(s, accepted)
+    # Two turns pass -- name, phone. The per-turn pin is gone by now.
+    s.pop(sf.ACCEPTED_SLOT_KEY, None)
+    phrase = sf.readback_slot_phrase(s)
+    if not phrase:
+        return FAIL, f"accepted {chosen}: the read-back had no engine source"
+    if _spoken_slot_time(chosen) not in phrase:
+        return FAIL, f"accepted {chosen}, read-back would say {phrase!r}"
+    if chosen != decoy and _spoken_slot_time(decoy) in phrase:
+        return FAIL, f"read-back named the decoy {decoy}: {phrase!r}"
+    return PASS, f"accepted {chosen} -> {phrase!r}"
+
+
+@row("DT-18b", "an existence QUESTION naming an offered time is not a pick",
+     invariant="inv 2")
+def dt18b(days, shape):
+    """The same call's cause: "do you have anything around 12 on midday"
+    contains the spoken label "midday", and the accept reader is containment
+    against those labels."""
+    from app.tools.slot_offer import apply_offer_to_session, offer_as_record
+    day = days[0]
+    s = _session(days)
+    offer = build_slot_offer([day], pretrimmed=False)
+    if offer is None:
+        return UNREACHABLE, "no offer"
+    apply_offer_to_session(s, offer_as_record(offer), offer.chunks)
+    s["_slot_presentation_mode"] = "single_day"
+    spoken = [t for t in day["slot_times"]
+              if f"{day['date']}T{t}:00" in set(s.get(sf._SPOKEN_KEY) or [])]
+    if not spoken:
+        return UNREACHABLE, "nothing spoken"
+    label = _spoken_slot_time(spoken[0])
+    question = f"do you have anything at {label}"
+    statement = f"{label} works"
+    if sf.slot_accepted_by_caller(s, question) is not None:
+        return FAIL, f"{question!r} was read as a pick"
+    if sf.slot_accepted_by_caller(s, statement) is None:
+        return FAIL, f"{statement!r} no longer reads as a pick"
+    return PASS, f"question declined, {statement!r} still accepts"
+
+
 @row("DT-9", "a tie for nearest declines rather than guessing",
      shapes=["uniform50"], invariant="inv 4")
 def dt9(days, shape):

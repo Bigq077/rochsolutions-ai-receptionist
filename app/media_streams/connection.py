@@ -385,6 +385,7 @@ def offered_slot_labels(session: Any) -> set:
 
 from app.tools.slot_followup import (                     # noqa: E402
     ACCEPTED_SLOT_KEY as _ACCEPTED_SLOT_KEY,
+    note_accepted_slot as _note_accepted_slot,
     day_preference_supersedes as _day_preference_supersedes,
     slot_accepted_by_caller as _slot_accepted_by_caller,
 )
@@ -12653,6 +12654,11 @@ class WebSocketCallHandler:
                                     "pinned into any readout this turn (P6b)",
                                     _accepted, utterance[:60],
                                 )
+                                # ...and durably, for the read-back two or
+                                # three turns later. See
+                                # ACCEPTED_SLOT_RECORD_KEY for the Vital Edge
+                                # call that needed it.
+                                _note_accepted_slot(self.session, _accepted)
                             # A band named inside a QUESTION is not a stated
                             # preference. B-91 again, same call: "any other
                             # slots than the 10 in the morning, is that all you
