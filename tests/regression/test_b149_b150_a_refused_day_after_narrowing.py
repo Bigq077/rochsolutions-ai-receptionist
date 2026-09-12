@@ -165,7 +165,9 @@ def test_the_lookup_head_is_suppressed_on_the_live_sentence():
     assert classify_intent(said, READOUT) == [Intent.NAMED_DAY], (
         "fixture drift: this used to produce the named_day head"
     )
-    assert classify_intent(said, READOUT, offer_refused=True) == []
+    # 12 Sep 2026: a refusal earns "Not to worry -" (REFUSAL) instead of the
+    # silence that became the apology. The Tuesday lookup head is still not it.
+    assert classify_intent(said, READOUT, offer_refused=True) == [Intent.REFUSAL]
 
 
 @pytest.mark.parametrize("utterance", [

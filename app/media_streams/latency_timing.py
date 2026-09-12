@@ -311,6 +311,15 @@ class TurnTiming:
     cache_read_tokens:  Optional[int] = None   # served from cache (hit)
     cache_write_tokens: Optional[int] = None   # written to cache (miss)
     prompt_input_tokens: Optional[int] = None  # uncached input on this call
+    # The hold arbiter's verdict for this turn (12 Sep 2026). `hold_reason` is
+    # the intent value that chose the 600ms head ("book_new", "name_given"),
+    # or "none" when the classifier found nothing and the turn was left to the
+    # 2.75s rung. Without this the stored row could not say WHY a turn fell to
+    # the contentless rung -- the 45 stalls of 6-12 Sep had to be attributed
+    # by re-running the classifier over transcripts. "-" = not observed
+    # (hold_speech off, or the producer never ran on this turn).
+    hold_reason: str = "-"
+    hold_head: str = "-"
     _content_marked: bool = False        # content-boundary marker already enqueued
     _emitted: bool = False
 
@@ -396,7 +405,8 @@ class TurnTiming:
             # S-11 evidence, with no provisioning step in front of it. Costs
             # ~30 characters on one INFO line per turn.
             "tools=%(tool_calls)d tok=%(token_count)d "
-            "last_tok_ms=%(last_token_ms)d max_gap_ms=%(max_inter_token_ms)d",
+            "last_tok_ms=%(last_token_ms)d max_gap_ms=%(max_inter_token_ms)d "
+            "hold=%(hold_reason)s",
             record,
         )
         _buffer(self.call_sid, record)
@@ -489,6 +499,9 @@ class TurnTiming:
             "cache_read_tokens":   -1 if self.cache_read_tokens is None else self.cache_read_tokens,
             "cache_write_tokens":  -1 if self.cache_write_tokens is None else self.cache_write_tokens,
             "prompt_input_tokens": -1 if self.prompt_input_tokens is None else self.prompt_input_tokens,
+            # The arbiter's verdict; strings, "-" when not observed.
+            "hold_reason":         self.hold_reason or "-",
+            "hold_head":           self.hold_head or "-",
         }
 
 

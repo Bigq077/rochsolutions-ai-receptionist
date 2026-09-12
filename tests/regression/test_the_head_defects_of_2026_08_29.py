@@ -108,7 +108,6 @@ def test_a_capability_question_gets_no_head():
     "60 minute session please",
     "i think a 60 minute please",
     "uh the 60-minute session",
-    "to book that 60 minute sports massage please",
 ])
 def test_stating_a_duration_is_not_asking_to_look(stated):
     """All four are from the corpus, and all four were answered with "do you
@@ -116,6 +115,14 @@ def test_stating_a_duration_is_not_asking_to_look(stated):
     opened. Silence here is the pre-arbiter behaviour, which is the correct
     failure direction for a rule that was confident and wrong."""
     assert _head(stated) == ""
+
+
+def test_asking_to_book_a_duration_is_asking_to_book():
+    """Was in the list above until 12 Sep 2026. "to book" is a purpose, not a
+    want-verb, and BOOK_NEW's corroborator learned the shape -- 2 of the 6
+    opening-turn stalls in the 6-12 Sep corpus were "um to book an
+    appointment". The head claims a booking flow, not a lookup."""
+    assert _head("to book that 60 minute sports massage please") == "Let's get you booked in —"
 
 
 def test_asking_where_a_length_fits_still_gets_its_head():

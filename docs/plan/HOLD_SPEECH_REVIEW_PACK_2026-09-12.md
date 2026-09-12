@@ -1,7 +1,11 @@
 # Everything Susie says that is not an answer — for a practitioner to hear
 
-**Rendered from the code at build `dfaa0b02`** (live on all four lines from
-12 Sep 2026), not copied from an earlier document. Sources:
+**Rendered from the code on `latency-eval` after the 12 Sep 2026 hold-phrase
+change** (the demo line first; the three patient lines once promoted), not
+copied from an earlier document. Rows marked **NEW** were added on 12 Sep
+because the last 100 calls showed callers hearing "Sorry, still with you —"
+on 45 turns — those moments now have their own line, and the generic wait
+phrases are gone from every rung but the last. Sources:
 `app/hold_speech.py` (`INTENT_HEADS`, `HEADS`), `app/media_streams/llm_stream.py`
 (`FILLER_PHRASES`), `app/media_streams/connection.py` (`_BARGE_IN_ACKS`, the
 hearing-trouble line), `audio_clips/CLIPS.json` (the recorded clip).
@@ -45,6 +49,25 @@ same construction twice. `{subject}` is filled from what the caller said.
 | asks her to repeat | "Sorry about that —" · "Apologies for that —" |
 | asks to be put through | "Not a problem —" · "Yes, not a problem —" |
 | wants to book | "Let's get you booked in —" · "Yes, let's get that sorted —" |
+| **NEW** says "hello?" / "are you there?" mid-call | "Yes, I'm here —" · "I'm here, yes —" |
+| **NEW** rules something out ("that's not soon enough", "I made a mistake") | "Not to worry —" · "No problem —" |
+| **NEW** wants a message passed ("let Marcus know", "I'm running late") | "Not a problem —" · "No problem at all —" |
+
+## 2a. When the caller is ANSWERING her — the head comes from her question
+
+The caller's own words carry nothing here ("yes", "um yes it is", a name), so
+what Susie says is decided by what she just asked. All **NEW** 12 Sep.
+
+| Susie asked | the caller says | Susie opens with |
+|---|---|---|
+| "would you like to book in?" / "shall I get you booked in?" | yes | "Let's get you booked in —" |
+| "is that the best number for the booking?" | yes / the digits / "use this number" | "Thanks for that —" · "That's noted —" |
+| "could I take your first name and surname?" / "did you say Sandrine?" | the name / yes | "Thank you —" · "Thanks, got that —" |
+| a readout, "does that work?", "any of those work?", "is that the right one?" | yes / "ten past twelve works" / "number two" | "That one works —" (never the time — the read-back that follows names the slot) |
+| the same, and the caller names a **day** | "yeah Monday works" | "{Monday} it is —" |
+| "do you have a preference for when?" | "anytime next week" / "mornings" | the diary line for that day, week or time of day (section 3) |
+| "is this for our X or Y clinic?" | one of them | "Right you are —" · "That's the one —" |
+| a clinical screening question | anything | *nothing* — unchanged, she never guesses here |
 
 ## 3. While she looks in the diary — the caller named what to look at
 
@@ -56,28 +79,37 @@ same construction twice. `{subject}` is filled from what the caller said.
 | a session length | "Let me see where a {sixty-minute} session fits —" · "Let me look for a {sixty-minute} for you —" · "Let me see —" |
 | the soonest | "Let me find the soonest I've got —" · "Let me see what the earliest is —" |
 | anything at all | "Let me see what we've got —" · "Let me have a look for you —" |
+| **NEW** a time to be near ("around twelve", "as close to twelve as possible") | "Let me see what I've got around {twelve} —" · "Let me look near {twelve} for you —" |
 
 ## 4. While the system works — by what it is actually doing
 
 | what is happening | Susie says |
 |---|---|
-| reading the diary | "Let me see —" · "Right, let's see —" · "Let me have a look —" · "Okay, one sec —" |
+| reading the diary | "Let me see —" · "Right, let's see —" · "Let me have a look —" *("Okay, one sec —" removed 12 Sep)* |
 | looking the patient up | "Let me find you —" · "Right, pulling you up —" · "Let me look you up —" |
 | writing the booking | "Right, booking you in —" · "Popping that in for you —" · "Getting that in the diary —" |
 | moving an appointment | "Moving that across —" · "Right, shifting that —" · "Getting that changed —" |
 | cancelling | "Taking care of that —" · "Right, sorting that —" · "Getting that sorted —" |
 | passing a request to the clinic | "Sending that over to {Marcus} —" · "Putting that request in —" · "Passing that to {Marcus} —" |
 
-## 5. When the wait is genuinely long
+## 5. When she is slow and none of the above fits
 
-These play only when nothing has been said for a while and the system is
-still working. Never the same one twice in a turn.
+The order matters, and it changed on 12 Sep. **She no longer apologises at
+under three seconds.** Before, "Sorry, still with you —" played 2.75 s after
+the caller stopped talking — an apology for a wait that had not happened yet,
+and the single most-heard non-answer on the line (45 turns in the last 100
+calls). Now:
 
-| | Susie says |
+| when | Susie says |
 |---|---|
-| the recorded clip (her own voice, pre-cut) | "Let me just check that for you…" |
-| a filler while a lookup runs | "Just getting that for you…" · "Right with you…" · "One moment…" · "Let me just check that…" |
-| a stall with nothing to report | "Sorry, still with you —" · "Still with you —" |
+| 0.6 s, and one of sections 1–3 fits | that line |
+| 2.75 s, nothing above fitted | **NEW** a receipt, not an apology: "Got that —" · "Okay, got you —" · "Right, got that —" |
+| 7–10 s, still nothing from her | **NEW** the apology, earned by now: "Sorry, this is taking a moment —" · "Sorry, still working on that for you —" |
+| a diary lookup runs past 4 s | a second line from the same family as the first (e.g. "Let me have a look —"), never "Nearly there…" |
+| the recorded clip (her own voice, pre-cut) | "Let me just check that for you…" — only when she is about to open the diary and no line above fitted |
+
+The code refuses to start if any first-rung line mentions the wait ("still
+with you", "one sec", "one moment", "bear with"); only the 7–10 s row may.
 
 ## 6. When the line is difficult
 

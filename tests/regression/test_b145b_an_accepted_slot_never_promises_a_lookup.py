@@ -60,7 +60,9 @@ def test_the_lookup_head_is_suppressed_on_the_live_sentence():
     assert classify_intent(said, READOUT) == [Intent.TIME_BAND], (
         "fixture drift: this used to produce the TIME_BAND head"
     )
-    assert classify_intent(said, READOUT, slot_selection=True) == []
+    # 12 Sep 2026: the pick head ("That one works -") replaces the silence;
+    # the lookup head is still not it, which is what this test is about.
+    assert classify_intent(said, READOUT, slot_selection=True) == [Intent.SLOT_PICKED]
 
 
 # ── What must NOT be suppressed ─────────────────────────────────────────────

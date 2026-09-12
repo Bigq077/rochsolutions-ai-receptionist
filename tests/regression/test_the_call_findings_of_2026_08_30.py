@@ -73,7 +73,11 @@ def test_choosing_a_slot_still_gets_silence(picked):
     """The 186 the pattern was reaching for. A selection is an ANSWER; there is
     no lookup behind it and a head in front of it would promise one."""
     assert utterance_is_slot_selection(picked, OFFER), picked
-    assert classify_intent(picked, READOUT, slot_selection=True) == []
+    # REOPENED 12 Sep 2026 by the owner: a pick that names no day gets
+    # "That one works -" (subject-free), not silence -- the silence had
+    # become the contentless apology on 7 of the 45 stalls in the 6-12 Sep
+    # corpus. The lookup head is STILL suppressed, which is what this pins.
+    assert classify_intent(picked, READOUT, slot_selection=True) == [Intent.SLOT_PICKED]
 
 
 def test_a_genuine_confirm_question_still_suppresses():

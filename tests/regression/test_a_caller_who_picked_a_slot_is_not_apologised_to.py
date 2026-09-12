@@ -100,8 +100,12 @@ def test_a_pick_naming_no_day_still_gets_silence(picked):
     subject-carrying head would render "afternoon it is -", an opener in lower
     case that nobody writes.
     """
-    assert classify_intent(picked, READOUT, slot_selection=True) == []
-    assert _head(picked) == ""
+    # REOPENED 12 Sep 2026 by the owner: a pick that names no day gets
+    # "That one works -" (subject-free), not silence -- the silence had
+    # become the contentless apology on 7 of the 45 stalls in the 6-12 Sep
+    # corpus. The lookup head is STILL suppressed, which is what this pins.
+    assert classify_intent(picked, READOUT, slot_selection=True) == [Intent.SLOT_PICKED]
+    assert _head(picked) == "That one works —"
 
 
 def test_the_subject_free_head_is_kept_as_the_documented_fallback():

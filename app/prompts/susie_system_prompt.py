@@ -1985,14 +1985,20 @@ def _build_theorem_v3(session: dict) -> str:
         "calling in a previous turn, reference it naturally. "
         "(3) Gently advance the call toward the next logical step.\n"
         "Examples:\n"
-        "If caller mentioned back pain earlier: 'Yes, still here "
+        # "Yes, I'm here —" and not "Yes, still here —": the engine now
+        # speaks that exact opener as the CHECK_IN hold head (app/hold_speech
+        # .py) 600ms before this reply arrives, and the head-echo stripper
+        # matches on the module's own wording. With "still here" the caller
+        # heard both -- "still with you ... still here" (northgate, 10 Sep
+        # 2026, twice).
+        "If caller mentioned back pain earlier: 'Yes, I\\'m here "
         "— you were saying your back\\'s been giving you some "
         "trouble. Shall I get you booked in so Mark can take a "
         "proper look?'\n"
         "If caller was mid-booking and no condition was mentioned: "
-        "'Yes, still here — we were just getting you booked in. "
+        "'Yes, I\\'m here — we were just getting you booked in. "
         "[repeat last question asked]'\n"
-        "If no prior context at all: 'Yes, still here — take your "
+        "If no prior context at all: 'Yes, I\\'m here — take your "
         "time.'\n"
         "RULES: Never say 'is there anything I can help you with "
         "today' when the call is already in progress and context "

@@ -85,6 +85,10 @@ class WorkKind(str, Enum):
     WRITE_CANCEL = "write_cancel"
     PENDING_REQUEST = "pending_request"
     UNKNOWN_SLOW = "unknown_slow"
+    #: The second rung only -- a stall that has already had one head and is
+    #: still going at LLM_FILLER_SECOND_STALL_MS. The only kind allowed to
+    #: apologise, because by then the wait is real.
+    LONG_WAIT = "long_wait"
     NONE = "none"
 
 
@@ -126,6 +130,11 @@ def work_for_tool(tool_name: str, *, provisional: bool = False) -> WorkKind:
 _CONFIRM_CTA: Dict[str, WorkKind] = {
     "book that in for you": WorkKind.WRITE_BOOK,
     "book that in": WorkKind.WRITE_BOOK,
+    # "Midday on Monday the 14th — shall I put that one in for you?" is how
+    # the read-back CTA is actually spoken on the demo line (6-12 Sep 2026
+    # corpus); a yes to it is a booking write in flight.
+    "put that one in": WorkKind.WRITE_BOOK,
+    "put that in": WorkKind.WRITE_BOOK,
     "move it for you": WorkKind.WRITE_MOVE,
     "move that": WorkKind.WRITE_MOVE,
     "put that request through": WorkKind.PENDING_REQUEST,
@@ -184,7 +193,6 @@ HEADS: Dict[WorkKind, List[str]] = {
         f"Let me see {EM_DASH}",
         f"Right, let's see {EM_DASH}",
         f"Let me have a look {EM_DASH}",
-        f"Okay, one sec {EM_DASH}",
     ],
     WorkKind.PATIENT_LOOKUP: [
         f"Let me find you {EM_DASH}",
@@ -226,12 +234,38 @@ HEADS: Dict[WorkKind, List[str]] = {
     #   * One was the last thing said on the call before a transfer: a head
     #     with nothing behind it.
     #
-    # At 3500ms the caller has been waiting long enough that the honest thing is
-    # to say so. These acknowledge the WAIT, which is real, rather than gesturing
-    # at work that may not exist.
+    # These used to be "Sorry, still with you -" / "Still with you -": an
+    # APOLOGY for a wait, spoken at 2.75s. Measured on the 100 calls stored
+    # 6-12 Sep 2026: 45 turns in 30 calls heard one, 6 of them as the first
+    # thing Susie said after the caller's opening sentence, and 41 of the 45
+    # stood alone with the answer arriving as a later turn. The owner's
+    # complaint ("sorry, still here ... too generic") was that phrase.
+    #
+    # What was wrong was the SPEECH ACT, not the timing. At 2.75s nothing has
+    # gone wrong yet, and a receptionist typing at 2.75s does not apologise --
+    # she acknowledges receipt. So this pool is a RECEIPT: it claims no work
+    # (the contentless rule still holds, and _self_check still enforces it),
+    # apologises for nothing, and is honest on any turn where the caller has
+    # just said something. The apology moved to LONG_WAIT, the second rung,
+    # where the wait is real.
+    #
+    # Still contentless on purpose: this is the only kind that can be wrong
+    # about the work, so it says nothing about the work.
     WorkKind.UNKNOWN_SLOW: [
-        f"Sorry, still with you {EM_DASH}",
-        f"Still with you {EM_DASH}",
+        f"Got that {EM_DASH}",
+        f"Okay, got you {EM_DASH}",
+        f"Right, got that {EM_DASH}",
+    ],
+    # Rung 2 only (`llm_stream._delayed_filler`, LLM_FILLER_SECOND_STALL_MS).
+    # By now one head has played and the model has still said nothing, so the
+    # caller has waited 7-10s: the professional thing is to say sorry. Its own
+    # family, so `_second_filler_text`'s N4 test (same family twice = stuck
+    # line) does not refuse it the way it refused a second UNKNOWN_SLOW --
+    # which is why, before this pool existed, an uncovered turn heard one
+    # apology at 2.75s and then nothing at all, ever.
+    WorkKind.LONG_WAIT: [
+        f"Sorry, this is taking a moment {EM_DASH}",
+        f"Sorry, still working on that for you {EM_DASH}",
     ],
 }
 
@@ -441,13 +475,32 @@ class Intent(str, Enum):
     TIME_BAND = "time_band"
     AVAIL_QUERY = "avail_query"
     BOOK_NEW = "book_new"
+    #: "what have you got around twelve" -- a clock time the caller wants to
+    #: be NEAR, which is a diary read with a subject no other intent carried.
+    TIME_AROUND = "time_around"
+    # Register, second family -- the caller reacting to what is on the table.
+    #: "hello?" / "are you there?" mid-call. Confirms presence, claims nothing.
+    CHECK_IN = "check_in"
+    #: "that's not soon enough" / "I made a mistake". Every diary intent is
+    #: rightly suppressed on a refusal, and this is what speaks instead.
+    REFUSAL = "refusal"
+    #: "can you let Marcus know" / "I'm running late".
+    MESSAGE_REQ = "message_req"
+    # Answer moments -- the caller is ANSWERING, so the moment is defined by
+    # what Susie asked rather than by anything in the caller's words. These
+    # fill the gap that used to be the contentless apology: 53 of the 178
+    # headless caller turns in the 6-12 Sep corpus were a "yes"/"no" to a
+    # question Susie had just put, and 15 more were a name.
+    NUMBER_CONFIRMED = "number_confirmed"
+    NAME_GIVEN = "name_given"
+    CLINIC_CHOSEN = "clinic_chosen"
 
 
 #: Intents that assert a diary read. Only these are suppressed while the caller
 #: is answering a confirm question -- sympathy and an apology stay correct there.
 _DIARY_INTENTS = frozenset({
     Intent.NAMED_DAY, Intent.NAMED_WEEK, Intent.TIME_BAND, Intent.SESSION_LENGTH,
-    Intent.EARLIEST, Intent.AVAIL_QUERY, Intent.BOOK_NEW,
+    Intent.EARLIEST, Intent.AVAIL_QUERY, Intent.BOOK_NEW, Intent.TIME_AROUND,
 })
 
 _DAY = r"(?:mon|tues|wednes|thurs|fri|satur|sun)day"
@@ -478,11 +531,102 @@ _HURT = (r"(?:pain|painful|injur\w*|sprain\w*|strain\w*|ache|aching|stiff\w*|"
          r"seized|numb\w*|tingl\w*|pins and needles|shooting)")
 _SERVICE = (r"(?:acupuncture|massage|shockwave|physio\w*|sports|dry.?needl\w*|"
             r"laser|rehab\w*|pilates|osteo\w*|treatment|therapy|service)")
-_WANT = r"(?:like to|want to|need to|can i|could i|looking to|wanting to|make|get|do)"
+# "to book an appointment" is a PURPOSE, not a want-verb, and it is how a
+# caller answers "how can I help?" more often than not: "um yeah that's to book
+# an appointment", "um to book an appointment mate" (theorem, 9 Sep 2026 --
+# the N4 call). Neither carried a want-verb, so BOOK_NEW's corroborator failed
+# and the first thing Susie said was the stall apology. The infinitive and the
+# "for a/an" purpose shapes are added as SHAPES; no noun was added.
+_WANT = (r"(?:like to|want to|need to|can i|could i|looking to|wanting to|"
+         r"make|get|do|to book|for an? (?:appointment|booking|session))")
+
+#: A spoken clock hour, for `subject_for` and TIME_AROUND. Digits or words,
+#: optional minutes / am-pm / o'clock, plus the two nouns people use for 12.
+_CLOCK = (r"(?:(?:1[0-2]|[1-9])(?:[:.][0-5]\d)?(?!\d)\s*(?:am|pm|o'?\s*clock)?|"
+          r"(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+          r"(?:\s+o'?\s*clock)?|midday|noon|lunchtime)")
+_HOUR_WORD = {"1": "one", "2": "two", "3": "three", "4": "four", "5": "five",
+              "6": "six", "7": "seven", "8": "eight", "9": "nine", "10": "ten",
+              "11": "eleven", "12": "twelve"}
 
 
 def _rx(pattern: str):
     return re.compile(pattern, re.IGNORECASE)
+
+
+#: "hello?" / "are you there?" after the call is under way. Whole utterance,
+#: four words at most, so "hello, I'd like to book" is a request and not this.
+_CHECK_IN = _rx(r"^\s*(?:hello|hi|hiya|hey|are you (?:still )?there|you there|"
+                r"you still there|can you hear me|still there|anyone there)"
+                r"[\s?.!]*$")
+
+#: Susie's own greeting, matched against her PREVIOUS turn. Every clinic's
+#: opener introduces her by name, so this is the one clinic-agnostic marker of
+#: "this is the caller's first sentence".
+_GREETING = _rx(r"\bi'?m susie\b|\bai receptionist\b")
+
+#: A yes, on its own or with a courtesy. Deny-by-default against `_NEGATED`
+#: where it is used, so "yes but not tuesday" is not a plain yes.
+_AFFIRM = _rx(r"^\s*(?:(?:um+|uh+|er+|erm+|ah+|oh)[\s,]+)*"
+              r"(?:yes|yeah|yep|yup|please|sure|ok|okay|go on|go ahead|"
+              r"that'?s (?:right|correct|fine|it)|it is|that'?d be (?:great|good|"
+              r"lovely)|correct|absolutely|do that|let'?s do (?:that|it))\b")
+
+#: The caller ruling something out or taking something back. Corrections that
+#: name a day or a clock time are `utterance_refuses_an_offer`; these are the
+#: ones that name nothing concrete, which that predicate deliberately leaves
+#: alone. Here a head is still owed, because every diary intent has just been
+#: suppressed and the alternative is the contentless fallback.
+_CORRECTION = _rx(r"\b(?:not soon enough|too (?:late|early|soon|far|long)|"
+                  r"doesn'?t (?:work|suit)|can'?t (?:do|make) (?:that|it|those)|"
+                  r"no good|that'?s wrong|made a mistake|got (?:that|it) wrong|"
+                  r"cut off|not right|start again|scrap that|actually no|"
+                  r"none of those|neither of those)\b")
+
+# ── What Susie asked -- the answer moments ───────────────────────────────────
+# Matched against her PREVIOUS turn. `_CONFIRM_Q` and `question_asks_the_reason`
+# set the precedent: the reply to a question is defined by the question.
+_BOOK_OFFER_Q = _rx(r"\b(?:would you like to (?:book|get booked|come in|arrange)|"
+                    r"shall i (?:get you|book you|go ahead and (?:get you|book))|"
+                    r"like to book in|want to book|get you booked in|"
+                    r"book (?:you|that) in\b[^?]{0,20}\?)")
+_NUMBER_Q = _rx(r"\b(?:best number|number (?:the (?:booking|appointment) (?:is|was) "
+                r"(?:booked )?under|for the booking|to reach you|you'?re calling "
+                r"(?:on|from)|okay to use|to use for)|is (?:this|that) "
+                r"(?:the )?(?:right|best|correct) number|the number you'?re "
+                r"calling|associated with your|use this number)")
+_NAME_Q = _rx(r"\b(?:first name|surname|full name|your name|name for the "
+              r"booking|who am i speaking)\b")
+#: Susie reading a name back: "Did you say Sandrine — is that right?", "and
+#: your surname, is that Roch?". A yes here is a name confirmed, not a slot.
+_NAME_CONFIRM_Q = _rx(r"\b(?:did you say|surname, is that|is that spelt|"
+                      r"have i got that right)\b")
+_PICK_Q = _rx(r"\b(?:does that work|do (?:any|either) of those work|any of those "
+              r"work|which (?:one|of those)|works best for you|suits? you|"
+              r"number one, two|would you like\?|which would you (?:like|prefer)|"
+              r"is that the right one|would a different day work|"
+              r"shall i (?:put|pop) that (?:one )?in|either of those work|"
+              # A readout: "Number 1, eight in the morning. Number 2, ...". Only
+              # as the PREVIOUS turn, and only for a pick shape (yes / clock /
+              # ordinal) with no request word in it -- unlike the old
+              # `number <digit>` in _CONFIRM_Q, this suppresses nothing.
+              r"number (?:1|one),)")
+_PREF_Q = _rx(r"\b(?:preference for when|particular day or time|when would "
+              r"(?:suit|work)|when (?:would you like|works)|day or time that "
+              r"works|what day|which day|when'?s good)")
+#: "Is this for our X or Y clinic?" -- the two options are lifted from Susie's
+#: own sentence, so no clinic name lives in engine code.
+_OR_CHOICE = _rx(r"\b(?:for (?:our|the) )?([A-Za-z]+) or (?:the )?([A-Za-z]+)"
+                 r"(?: (?:clinic|site|branch))?\?")
+#: A pick that is a REQUEST in disguise -- "what about around twelve" -- must
+#: not be read as choosing something.
+_REQUEST_SHAPE = _rx(r"\b(?:what|anything|any|around|about|close|near|after|"
+                     r"before|earlier|later|instead|other|else|different|"
+                     r"soonest|earliest|next)\b")
+#: An ordinal or index the caller uses to point at a slot from a readout.
+_ORDINAL_PICK = _rx(r"\b(?:number (?:one|two|three|four|\d)|the (?:first|second|"
+                    r"third|last|latter|earlier|later) one|first one|last one|"
+                    r"option (?:one|two|three|\d))\b")
 
 
 # A bare answer is an answer, not a request: there is nothing for a head to
@@ -572,7 +716,9 @@ def question_asks_the_reason(spoken: str) -> bool:
 #: journeys", a DVT screening answer, and FAQ_TREATS swallowed every "do you
 #: have anything on Friday".
 _INTENT_RULES = [
-    (Intent.REPEAT_ASK, _rx(r"\b(?:i said|say that again|repeat that|"
+    (Intent.REPEAT_ASK, _rx(r"\b(?:i said|say (?:that|them|those|it) again|"
+                            r"repeat (?:that|them|those)|(?:read|go through) "
+                            r"(?:them|those|that) (?:out )?again|one more time|"
                             r"didn'?t (?:hear|catch)|that'?s not what i|"
                             r"you got that wrong)\b"), None, None),
     (Intent.SYMPTOM, _rx(_HURT), _rx(_BODY), _rx(r"\?\s*$")),
@@ -584,6 +730,16 @@ _INTENT_RULES = [
     (Intent.TRANSFER_REQ,
      _rx(r"\b(?:speak to|talk to|put me through|call me back|ring me)\b"),
      _rx(r"\b(?:someone|human|person|back|later)\b"), None),
+    # "can you let Marcus know" / "hi I'm running late" (jv_v1, 8 Sep 2026,
+    # both stalled into the apology). The head claims no relay -- "Not a
+    # problem -" -- because whether a message is actually taken is decided by
+    # the model and the tools, not here.
+    (Intent.MESSAGE_REQ,
+     _rx(r"\b(?:let \w+ know|tell \w+ (?:that|i)|pass (?:it|that|this|a message) "
+         r"(?:on|along)|leave (?:him|her|them|a) message|message for|"
+         r"running (?:a bit |a little |slightly )?late|(?:i'?ll|gonna|going to) "
+         r"be late|be there (?:in|shortly))\b"),
+     None, _rx(r"\b(?:cancel|reschedul|rebook)\w*\b")),
 
     (Intent.FAQ_PRICE, _rx(r"\b(?:how much|cost\w*|price\w*|fee|charge|expensive)\b"),
      None, None),
@@ -598,7 +754,9 @@ _INTENT_RULES = [
                            r"\bwhat time do you (?:open|close)\b|\bare you open\b|"
                            r"\bhow late (?:are|do) you\b|\byour hours\b"), None, None),
     (Intent.FAQ_FIRSTTIME, _rx(r"\b(?:first (?:time|appointment|visit)|never been|"
-                               r"referral|what should i (?:bring|wear))\b"), None, None),
+                               r"referral|what should i (?:bring|wear)|"
+                               r"before (?:i|my) (?:come|first|visit|appointment))\b"),
+     None, None),
     (Intent.FAQ_TREATS, _rx(r"\bdo(?:es)? (?:you|they)\b|\bcan you (?:help|treat)\b"),
      _rx(r"\b(?:do|treat|offer|cover|provide|specialis\w*)\b.{0,30}" + _SERVICE +
          r"|" + _SERVICE),
@@ -613,9 +771,26 @@ _INTENT_RULES = [
     (Intent.NAMED_WEEK, _rx(r"\b(?:next week|this week|following week|week after|"
                             r"next month|tomorrow)\b"), None, None),
     (Intent.TIME_BAND, _rx(_BAND), None, None),
+    # "what have you got around 12" / "as close as possible to 12 please" --
+    # four stalls on the demo line, 8-11 Sep 2026. A clock time the caller
+    # wants to be NEAR is a diary read with a subject, and no intent above
+    # carried it: AVAIL_QUERY needs a diary noun, TIME_BAND needs a band word.
+    # After NAMED_DAY/NAMED_WEEK/TIME_BAND so "wednesday around twelve" keeps
+    # the day head, which names more of what they said.
+    (Intent.TIME_AROUND,
+     _rx(r"\b(?:around|about|close(?:st)? (?:as possible )?to|near(?:er|est)? to|"
+         r"nearer|after|before|from|by)\s+" + _CLOCK),
+     None, _NEGATED),
     (Intent.AVAIL_QUERY, _rx(r"\b(?:anything|any|something|what|what'?s|got)\b"),
      _rx(r"\b(?:free|available|availability|slot|slots|opening|appointment|times?)\b"),
      _NEGATED),
+    # "um what have you got" -- the corroborator above wants a diary noun the
+    # caller did not say, because the whole question IS the diary noun. The
+    # verb phrase is the shape; it cannot be an answer to anything.
+    (Intent.AVAIL_QUERY,
+     _rx(r"\bwhat (?:else )?(?:have|do|would) you (?:got|have)\b|"
+         r"\bwhat'?s (?:free|available|open)\b"),
+     None, _NEGATED),
     (Intent.BOOK_NEW, _rx(r"\b(?:book|booking|appointment)\b"), _rx(_WANT),
      _rx(r"\b(?:cancel|reschedul|rebook|move|change)\w*\b")),
 
@@ -738,15 +913,37 @@ def classify_intent(
     # The question is asked of Susie's own previous turn, not guessed from the
     # answer, so this cannot fire on a body part mentioned anywhere else in the
     # call. Same root as the screening-trigger bigram defect.
+    #
+    # The greeting is the other question that asks the reason. "How can I help
+    # you today?" fails every `_REASON_Q_PATTERNS` shape, and a caller's first
+    # sentence is where they say what is wrong more often than anywhere else:
+    # "a little bit of a problem with my left ankle, it's nothing serious"
+    # (northgate, 10 Sep 2026) -- body part, no pain word, greeting before it
+    # -- got the apology as the first thing Susie said. Four of the six
+    # opening-turn stalls in the 6-12 Sep corpus were this shape.
+    _prev = prev_assistant or ""
     _reason_answer = bool(
-        question_asks_the_reason(prev_assistant or "")
+        (question_asks_the_reason(_prev) or _GREETING.search(_prev))
         and re.search(_BODY, utterance, re.IGNORECASE)
         and not re.search(r"\?\s*$", utterance)
     )
 
     _answer_probe = _LEADING_DISFLUENCY.sub("", utterance)
+    # "hello?" mid-call is the caller checking we are still on the line, and
+    # the two things it used to get were both wrong: the contentless apology,
+    # and then the model's own prompt-driven "still here -" on top of it, so
+    # the caller heard "still with you ... still here". Not on the first turn
+    # -- "hello" after the greeting is just a hello.
+    if (
+        _CHECK_IN.match(_answer_probe)
+        and len(_answer_probe.split()) <= 4
+        and _prev
+        and not _GREETING.search(_prev)
+    ):
+        return [Intent.CHECK_IN]
     if _BARE_ANSWER.match(_answer_probe) and len(_answer_probe.split()) <= 4 \
-            and not _reason_answer:
+            and not _reason_answer \
+            and not _answers_a_preference_question(_prev, _answer_probe):
         # This used to read: "a bare answer names no day, so it cannot reach
         # SLOT_PICKED either". **That premise is false**, and it cost the fix
         # below its whole point on the night it shipped.
@@ -770,7 +967,9 @@ def classify_intent(
         # no day, still return here, and keep the silence that
         # `test_choosing_a_slot_still_gets_silence` decided on 30 Aug.
         if not (slot_selection and re.search(_DAY, _answer_probe, re.IGNORECASE)):
-            return []
+            # A bare answer IS an answer -- so the moment it belongs to is the
+            # question Susie asked, and that is where its head comes from.
+            return _answer_moment(_prev, _answer_probe, slot_selection=slot_selection)
     # Either route means the caller is answering rather than asking: an
     # explicit confirm question from Susie, or -- the case the readout proxy
     # was reaching for and getting wrong -- this utterance being one of the
@@ -894,8 +1093,104 @@ def classify_intent(
         #     lookup -- is not this head, which promises nothing. But that is a
         #     decision to reopen deliberately, not to overturn as a side effect
         #     of fixing a different phrase, so this stays inside it.
+        #
+        #   REOPENED 12 Sep 2026, by the owner, deliberately. Band-only and
+        #   clock-time picks get "That one works -" (subject-free, see
+        #   `render_intent_head`), because the silence the 30 Aug tests
+        #   decided on had become the contentless apology: 7 of the 45 stalls
+        #   in the 6-12 Sep corpus were "yeah ten past twelve works" shapes.
+        #   The day pick keeps "{Monday} it is -"; nothing else names a time,
+        #   because the read-back that follows names the ENGINE's accepted
+        #   slot (D-r/D-s) and a head must not pre-empt it.
         hits.append(Intent.SLOT_PICKED)
+    if not hits and (offer_refused or _CORRECTION.search(utterance)):
+        # Every diary intent was suppressed because the caller is ruling
+        # something out. Right -- and what speaks instead used to be nothing,
+        # then the apology. "Not to worry -" claims no work and does not
+        # argue with them.
+        hits.append(Intent.REFUSAL)
+    if not hits:
+        hits.extend(_answer_moment(_prev, _answer_probe, slot_selection=slot_selection))
     return hits
+
+
+def _answers_a_preference_question(prev_assistant: str, probe: str) -> bool:
+    """"yeah anytime next week" is a preference, not a bare answer. PURE.
+
+    Four words, opens with "yeah": the bare-answer return swallowed it and
+    NAMED_WEEK never ran (northgate, 9 Sep 2026 -- the apology followed). The
+    exemption is only for a reply to Susie's own preference question that
+    names a day, a week or a band, so nothing reaches the diary intents that
+    the caller did not ask for.
+    """
+    if not prev_assistant or not _PREF_Q.search(prev_assistant):
+        return False
+    return bool(re.search(
+        _DAY + r"|" + _BAND + r"|\b(?:next week|this week|week after|tomorrow)\b",
+        probe, re.IGNORECASE,
+    ))
+
+
+def _answer_moment(prev_assistant: str, probe: str, *, slot_selection: bool = False):
+    """The head owed to an ANSWER, read from the question Susie asked. PURE.
+
+    `classify_intent` reads the caller's words for a REQUEST. When they are
+    answering rather than asking, their words carry nothing -- "yes", "um yes
+    it is", "that'll be Quentin" -- and the moment is entirely defined by what
+    Susie said last. 53 of the 178 headless caller turns in the 6-12 Sep 2026
+    corpus were a yes/no to her question, 15 more were a name, 31 a pick with
+    no day in it; each fell to the contentless apology when the model was slow.
+
+    Ordered, first match wins, deny by default. Every head here claims no
+    work: it acknowledges the answer, and the reply is joined onto it.
+    """
+    prev = prev_assistant or ""
+    if not prev or _SCREEN_Q.search(prev):
+        return []
+    if _NEGATED.search(probe) and not _AFFIRM.match(probe):
+        # A "no" is a refusal of whatever was asked; that has its own arm.
+        return [Intent.REFUSAL] if _CONFIRM_Q.search(prev) or _BOOK_OFFER_Q.search(prev) \
+            or _PICK_Q.search(prev) else []
+    # A yes is SHORT. "um yeah that'll be quentin rock" opens with a yes-word
+    # and is a name; four words is the same limit the bare-answer test uses.
+    affirmed = bool(_AFFIRM.match(probe)) and len(probe.split()) <= 4
+    # 1. "Would you like to book in?" -> yes. Same head as asking to book.
+    if _BOOK_OFFER_Q.search(prev) and affirmed:
+        return [Intent.BOOK_NEW]
+    # 2. "Is that the best number for the booking?" -> yes / the digits /
+    #    "use this number" (the prompt's own scripted reply).
+    if _NUMBER_Q.search(prev) and (
+        affirmed or re.search(r"\d{3,}|\b(?:oh|zero|nought)\b|use this number", probe, re.IGNORECASE)
+    ):
+        return [Intent.NUMBER_CONFIRMED]
+    # 2b. "Did you say Sandrine — is that right?" -> yes. A name, confirmed.
+    if _NAME_CONFIRM_Q.search(prev) and affirmed:
+        return [Intent.NAME_GIVEN]
+    # 3. A slot from a readout, chosen by yes, clock time or ordinal -- never
+    #    a request in disguise ("what about around twelve").
+    if (slot_selection or _PICK_Q.search(prev)) and not _REQUEST_SHAPE.search(probe):
+        names_a_day = bool(re.search(_DAY, probe, re.IGNORECASE))
+        if names_a_day and not slot_selection:
+            # A DAY without the engine's verdict is a request about a day we
+            # may not have offered -- `test_the_exemption_needs_the_engines_
+            # verdict_too`. Only the engine may turn a named day into a pick.
+            return []
+        if affirmed or _ACCEPTS.search(probe) or _CLOCKISH.search(probe) \
+                or _ORDINAL_PICK.search(probe) or re.search(r"\b" + _CLOCK + r"\b", probe, re.IGNORECASE):
+            return [Intent.SLOT_PICKED]
+    # 4. "Which clinic, X or Y?" -> one of them. The options come from her
+    #    sentence, so no clinic name is written here.
+    choice = _OR_CHOICE.search(prev)
+    if choice and any(re.search(r"\b" + re.escape(opt) + r"\b", probe, re.IGNORECASE)
+                      for opt in choice.groups()):
+        return [Intent.CLINIC_CHOSEN]
+    # 5. Her name question, answered with anything that is not a question.
+    if _NAME_Q.search(prev) and "?" in prev and not probe.rstrip().endswith("?") \
+            and not affirmed and len(probe.split()) <= 8:
+        # "yes" to "could I take your name?" has not given one yet; a long
+        # reply is a story, not a name.
+        return [Intent.NAME_GIVEN]
+    return []
 
 
 #: A sign-off. Anchoring this to the START of the utterance was the first
@@ -1106,6 +1401,36 @@ def subject_for(text: str) -> str:
     if match:
         spoken = {"30": "thirty", "60": "sixty", "90": "ninety"}
         return f"{spoken.get(match.group(1), match.group(1))}-minute"
+    # A clock hour, last, for TIME_AROUND: "around 12" -> "twelve", "12:30" ->
+    # "twelve thirty". Only after every other subject, so "wednesday at 12"
+    # still names Wednesday. Words are returned as spoken, never digits, so
+    # the voice does not read "12" as a number on its own.
+    match = re.search(
+        r"\b(?:around|about|close(?:st)? (?:as possible )?to|near(?:er|est)? to|"
+        r"nearer|after|before|from|by|at)\s+(" + _CLOCK + r")",
+        utterance, re.IGNORECASE,
+    )
+    if match:
+        raw = match.group(1).lower().strip()
+        if raw in ("midday", "noon"):
+            return "midday"
+        if raw == "lunchtime":
+            return "lunchtime"
+        m = re.match(r"(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)?", raw)
+        if m:
+            hour = _HOUR_WORD.get(m.group(1), "")
+            if not hour:
+                return ""
+            mins = m.group(2)
+            if mins and mins != "00":
+                mins_word = {"15": "fifteen", "30": "thirty", "45": "forty-five"}.get(mins, "")
+                if not mins_word:
+                    return ""
+                return f"{hour} {mins_word}"
+            return hour
+        word = re.match(r"(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)", raw)
+        if word:
+            return word.group(1)
     return ""
 
 
@@ -1163,6 +1488,24 @@ INTENT_HEADS = {
                               f"Apologies for that {EM_DASH}"],
     Intent.TRANSFER_REQ:     [f"Not a problem {EM_DASH}",
                               f"Yes, not a problem {EM_DASH}"],
+    # The second register family (12 Sep 2026). Each replaces a turn that fell
+    # to the contentless apology; each claims no work. Wording is the owner's
+    # to change -- HOLD_SPEECH_REVIEW_PACK_2026-09-12.md carries the rows.
+    Intent.CHECK_IN:         [f"Yes, I'm here {EM_DASH}",
+                              f"I'm here, yes {EM_DASH}"],
+    Intent.REFUSAL:          [f"Not to worry {EM_DASH}",
+                              f"No problem {EM_DASH}"],
+    Intent.MESSAGE_REQ:      [f"Not a problem {EM_DASH}",
+                              f"No problem at all {EM_DASH}"],
+    # Answer moments. Never the caller's own words back -- a name or a phone
+    # number is STT output, and echoing a misheard one is worse than saying
+    # nothing about it.
+    Intent.NUMBER_CONFIRMED: [f"Thanks for that {EM_DASH}",
+                              f"That's noted {EM_DASH}"],
+    Intent.NAME_GIVEN:       [f"Thank you {EM_DASH}",
+                              f"Thanks, got that {EM_DASH}"],
+    Intent.CLINIC_CHOSEN:    [f"Right you are {EM_DASH}",
+                              f"That's the one {EM_DASH}"],
 
     # DIARY. "Let me find you the soonest -" and "where a sixty-minute fits -"
     # both read as clipped: a person says the noun.
@@ -1182,6 +1525,9 @@ INTENT_HEADS = {
                               f"Let me see what the earliest is {EM_DASH}"],
     Intent.AVAIL_QUERY:      [f"Let me see what we've got {EM_DASH}",
                               f"Let me have a look for you {EM_DASH}"],
+    Intent.TIME_AROUND:      [f"Let me see what I've got around {{subject}} {EM_DASH}",
+                              f"Let me look near {{subject}} for you {EM_DASH}",
+                              f"Let me see what we've got {EM_DASH}"],
     Intent.BOOK_NEW:         [f"Let's get you booked in {EM_DASH}",
                               f"Yes, let's get that sorted {EM_DASH}"],
 }
@@ -1220,6 +1566,12 @@ def render_intent_head(
     pool = INTENT_HEADS.get(intent) or []
     if not pool:
         return ""
+    if intent is Intent.SLOT_PICKED and subject and not re.search(_DAY, subject, re.IGNORECASE):
+        # Only a DAY is ever echoed on a pick. A band reads as "afternoon it
+        # is -" (lower case, not speech), and a clock time would pre-empt the
+        # read-back that names the engine's accepted slot (D-r/D-s). Owner
+        # decision 12 Sep 2026: "That one works -" for every other pick.
+        subject = ""
     with_subject = [h for h in pool if "{subject}" in h]
     without = [h for h in pool if "{subject}" not in h]
     usable = (with_subject if (subject and with_subject) else without) or pool
@@ -1430,7 +1782,8 @@ def strip_marker_before_question(text: str) -> str:
 ACK_OPENER_RE = re.compile(
     r"^\s*(?:"
     r"(?:right|okay|ok|lovely|great|perfect|brilliant|sure|certainly|absolutely)"
-    r"|(?:of course)|(?:got it)|(?:no problem(?: at all)?)|(?:not to worry)"
+    r"|(?:of course)|(?:got (?:it|that|you))|(?:no problem(?: at all)?)|(?:not to worry)"
+    r"|(?:(?:yes, )?i'm here)|(?:thanks?(?: for that)?)|(?:thank you)"
     r"|(?:no worries)|(?:that's (?:fine|no problem|absolutely fine))"
     r"|(?:i'm sorry to hear (?:that|about that))|(?:sorry to hear (?:that|about that))"
     r"|(?:(?:my )?apologies(?: for (?:that|the confusion))?)"
@@ -1473,6 +1826,14 @@ def strip_head_echo(chunk: str, head: str) -> str:
 # of mistake into a startup failure in CI rather than a sentence a patient hears.
 
 _OPEN_CLAUSE = (EM_DASH, ",", "-")
+
+#: Talk about the wait itself. Banned from every pool but LONG_WAIT.
+_GENERIC_WAIT = re.compile(
+    r"\b(?:still (?:with you|here)|one sec\w*|one second|one moment|a moment|"
+    r"bear with|just a sec\w*|hold on|hang on|right with you|"
+    r"just getting that)\b",
+    re.IGNORECASE,
+)
 
 # Verbs that name the work. UNKNOWN_SLOW must contain none of them.
 _NAMES_THE_WORK = re.compile(
@@ -1522,6 +1883,21 @@ def _self_check() -> None:
             f"UNKNOWN_SLOW cannot know what the work is, so it must not name "
             f"any: {head!r}"
         )
+
+    # 5. No first-rung pool may talk about the WAIT. "Sorry, still with you -"
+    #    at 2.75s was the owner's complaint of 12 Sep 2026 (45 turns in 30 of
+    #    the last 100 calls); an apology for a wait belongs to LONG_WAIT and
+    #    nowhere else, and "one sec" / "one moment" / "bear with" are the
+    #    generic-filler register this whole module exists to replace.
+    for pools in (HEADS, INTENT_HEADS):
+        for key, pool in pools.items():
+            if key is WorkKind.LONG_WAIT:
+                continue
+            for head in pool:
+                assert not _GENERIC_WAIT.search(head), (
+                    f"{getattr(key, 'value', key)} talks about the wait, which "
+                    f"only LONG_WAIT may do: {head!r}"
+                )
 
 
     # ── The intent heads ─────────────────────────────────────────────────

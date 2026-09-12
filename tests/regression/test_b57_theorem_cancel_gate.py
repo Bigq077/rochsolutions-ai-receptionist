@@ -544,7 +544,13 @@ UNMOVED_PROMPTS = {
     # it a few hours later on live evidence from the Theorem line. The prompt
     # now renders byte-identical to its pre-D1 form for all five clinics --
     # verified by diffing the rendered text, not by trusting the revert.
-    "theorem_v3": "c8b94e274006ebdd",
+    # 8d1863e1b9c72d34 from 12 Sep 2026: the mid-call check-in examples in
+    # susie_system_prompt.py say "Yes, I'm here" instead of "Yes, still
+    # here", to match the CHECK_IN hold head so the echo stripper catches
+    # the duplicate. Same edit for every clinic; only theorem_v3 is pinned
+    # here. Verified by diffing the rendered text: that line is the only
+    # change.
+    "theorem_v3": "8d1863e1b9c72d34",
     # Moved 2026-08-25, deliberately: 76ac625e89e83e4a -> e52579ab12c53eab.
     # vital_edge gained the ESTABLISH THE AGE rule in _render_policies. Its
     # minimum of 18 was unenforceable in practice because the gate only arms

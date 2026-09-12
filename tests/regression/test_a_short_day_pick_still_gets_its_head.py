@@ -70,8 +70,12 @@ def test_a_pick_that_names_a_day_gets_the_head(utterance):
     "the last one",
 ])
 def test_a_pick_that_names_no_day_still_gets_silence(picked):
+    # REOPENED 12 Sep 2026 by the owner: a pick that names no day gets
+    # "That one works -" (subject-free), not silence -- the silence had
+    # become the contentless apology on 7 of the 45 stalls in the 6-12 Sep
+    # corpus. The lookup head is STILL suppressed, which is what this pins.
     """The 30 Aug decision. Reopening it is a choice to make on purpose."""
-    assert classify_intent(picked, READOUT, slot_selection=True) == []
+    assert classify_intent(picked, READOUT, slot_selection=True) == [Intent.SLOT_PICKED]
 
 
 def test_the_exemption_needs_the_engines_verdict_too():

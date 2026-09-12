@@ -5145,8 +5145,24 @@ class LLMStream:
                     should_play_filler,
                 )
                 if should_play_filler(session):
+                    # Arbiter clinics draw from the DIARY_READ pool -- the
+                    # diary is exactly what is being re-read for
+                    # alternatives -- rather than "Nearly there…", the
+                    # generic progress register (12 Sep 2026).
+                    try:
+                        from app.hold_speech import (
+                            HEADS as _na_heads,
+                            WorkKind as _na_kind,
+                            hold_speech_enabled as _na_on,
+                        )
+                        _na_pool = (
+                            _na_heads[_na_kind.DIARY_READ] if _na_on(session)
+                            else THINKING_FILLERS_SECONDARY
+                        )
+                    except Exception:  # pragma: no cover - a filler never breaks a call
+                        _na_pool = THINKING_FILLERS_SECONDARY
                     _na_filler = pick_filler(
-                        THINKING_FILLERS_SECONDARY,
+                        _na_pool,
                         session.setdefault("used_fillers", []),
                     )
                     logger.info(
@@ -5503,6 +5519,17 @@ class LLMStream:
         except Exception:  # pragma: no cover - a head must never break a call
             logger.warning("[ms_llm] situational head unavailable", exc_info=True)
             _hs_situational, _hs_intent = "", None
+        # Onto the [LAT] line and the stored row, so the corpus can say WHY a
+        # turn had no 600ms head without anyone re-running the classifier.
+        # Iteration 1 only: later iterations are tool round-trips.
+        if self._timing is not None and not filler_sent:
+            try:
+                self._timing.hold_reason = (
+                    getattr(_hs_intent, "value", "none") if _hs_intent else "none"
+                )
+                self._timing.hold_head = _hs_situational or "-"
+            except Exception:  # pragma: no cover - never on the hot path
+                pass
 
         _hold_delay_s = (
             HOLD_HEAD_DELAY_MS / 1000.0 if _hs_situational else timeout_sec
@@ -5688,12 +5715,20 @@ class LLMStream:
                     # write, a verbatim repeat — were pinned by tests and NOT
                     # enforced on the live path. One owner, or the tests are
                     # describing a function nobody runs.
+                    #
+                    # LONG_WAIT, not UNKNOWN_SLOW (12 Sep 2026). The second
+                    # rung is the ONLY place an apology is earned -- 7-10s
+                    # in with one head already played -- and giving it its
+                    # own family is what lets _second_filler_text's N4 test
+                    # accept it: with UNKNOWN_SLOW as the candidate, any turn
+                    # whose first head was also UNKNOWN_SLOW was refused
+                    # here and stayed silent for the rest of the stall.
                     _second_text = _second_filler_text(
                         session,
                         _ack_filler_text,
                         got_first_chunk,
                         candidate=_render_head(
-                            _WorkKind.UNKNOWN_SLOW,
+                            _WorkKind.LONG_WAIT,
                             index=len(session.get("used_fillers") or []),
                         ),
                     )
@@ -7274,6 +7309,18 @@ class LLMStream:
                             _FILLER_TOOLS.get(tool_name) if _hs_legacy
                             else ([_hs_decision.head] if _hs_decision.speak else None)
                         )
+                        # The 4s secondary, on the arbiter path, comes from
+                        # the same WorkKind pool as the primary -- so a slow
+                        # Acuity call hears "Let me have a look —" after
+                        # "Right, let's see —", never "Nearly there…". That
+                        # list was the one filler hold_speech did not gate.
+                        _secondary_pool = None
+                        if not _hs_legacy and _hs_decision.kind is not None:
+                            from app.hold_speech import HEADS as _hs_heads
+                            _secondary_pool = [
+                                h for h in (_hs_heads.get(_hs_decision.kind) or [])
+                                if "{" not in h and h != _hs_decision.head
+                            ] or None
                         if _filler_list and tts_text_queue is not None:
                             async def _tts_fn(text: str, _q=tts_text_queue) -> None:
                                 await _q.put(text)
@@ -7289,6 +7336,7 @@ class LLMStream:
                                 skip_primary=bool(
                                     session.get("_filler_clip_spoke_this_turn")
                                 ),
+                                secondary_list=_secondary_pool,
                             )
                         else:
                             result = await executor(args, session)

@@ -173,7 +173,8 @@ def test_the_thirty_august_silence_decision_is_untouched():
     for picked in ("number two", "yeah, that one", "ten in the morning",
                    "yeah ten in the morning"):
         assert day_accepted_by_caller(session, picked) is None
-        assert classify_intent(picked, READOUT, slot_selection=True) == []
+        # Reopened 12 Sep 2026 (owner): the pick head, never the lookup head.
+        assert classify_intent(picked, READOUT, slot_selection=True) == [Intent.SLOT_PICKED]
 
 
 def test_the_predicate_is_actually_WIRED_INTO_the_head():

@@ -61,12 +61,18 @@ def _session():
 
 # ── the pair that started this ──────────────────────────────────────────────
 
-def test_the_pool_members_really_are_near_duplicates():
-    """If this pool ever gains a genuinely different wording, the refusal below
-    stops costing us anything - which is the point of pinning it."""
+def test_the_second_rung_has_its_own_family():
+    """12 Sep 2026. The pool this test used to pin as near-duplicates is gone:
+    UNKNOWN_SLOW is now a receipt ("Got that -") and the apology lives in
+    LONG_WAIT, the second rung. Two things must hold: a second UNKNOWN_SLOW
+    is still refused (below), and LONG_WAIT is a different family so the
+    re-arm can actually speak -- before it, an uncovered turn heard one
+    apology and then nothing at all."""
     assert len(UNKNOWN_SLOW_POOL) >= 2
-    a, b = UNKNOWN_SLOW_POOL[0].lower(), UNKNOWN_SLOW_POOL[1].lower()
-    assert a.endswith(b.rstrip(" —-")) or b in a, (a, b)
+    for first in UNKNOWN_SLOW_POOL:
+        for second in HEADS[WorkKind.LONG_WAIT]:
+            assert not (head_families(first) & head_families(second)), (first, second)
+            assert _second_filler_text(_session(), first, False, candidate=second) == second
 
 
 def test_a_second_wait_acknowledgement_is_refused():

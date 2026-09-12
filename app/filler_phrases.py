@@ -284,6 +284,7 @@ async def with_filler(
     session: dict,
     tts_fn: Callable[[str], Coroutine],
     skip_primary: bool = False,
+    secondary_list: Optional[List[str]] = None,
 ) -> Any:
     """
     Run api_coro concurrently with a filler phrase on the TTS queue.
@@ -304,11 +305,19 @@ async def with_filler(
                      secondary is deliberately kept: the clips cover roughly the
                      first five seconds, and suppressing both would reopen the
                      dead air on a slow Acuity round-trip that O-4 closed.
+        secondary_list: The pool for the 4-second phrase. Defaults to
+                     THINKING_FILLERS_SECONDARY ("Nearly there…"), which is the
+                     legacy register; a clinic on the hold arbiter passes the
+                     same WorkKind pool its primary came from, so the caller
+                     hears "Let me have a look —" and never a generic
+                     progress noise. 12 Sep 2026: this was the one filler on
+                     the arbiter path that hold_speech did not gate.
 
     Returns:
         Whatever api_coro returns.
     """
     used = session.setdefault("used_fillers", [])
+    _secondary_pool = secondary_list or THINKING_FILLERS_SECONDARY
     # ── Reconcile, 2026-08-08 (Theorem -> Vital Edge port) ──────────────────
     # Two independent fixes for the same defect meet here: this branch
     # (Theorem 8ce4b74, the recorded clip already spoke) and the cooldown
@@ -333,7 +342,7 @@ async def with_filler(
         api_task = asyncio.create_task(api_coro)
         done, _pending = await asyncio.wait([api_task], timeout=4.0)
         if not done:
-            secondary = pick_filler(THINKING_FILLERS_SECONDARY, used)
+            secondary = pick_filler(_secondary_pool, used)
             logger.info("[filler] API slow (>4s) — secondary filler: %r", secondary)
             note_filler_played(
                 session, is_write=is_write_filler(secondary), text=secondary,
@@ -381,7 +390,7 @@ async def with_filler(
         # the cooldown: four seconds of nothing is the failure this exists to
         # prevent, and 4s > FILLER_COOLDOWN_S anyway. It still records itself,
         # so whatever speaks next sees it.
-        secondary = pick_filler(THINKING_FILLERS_SECONDARY, used)
+        secondary = pick_filler(_secondary_pool, used)
         logger.info("[filler] API slow (>4s) — secondary filler: %r", secondary)
         note_filler_played(
             session, is_write=is_write_filler(secondary), text=secondary,

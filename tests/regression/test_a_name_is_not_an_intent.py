@@ -62,6 +62,11 @@ NAME_ASK = (
 )
 
 
+#: The only head a name-capture fragment may earn: it acknowledges receipt
+#: and switches no topic.
+NAME_GIVEN = Intent.NAME_GIVEN.value
+
+
 def _intents(text, prev=NAME_ASK, **kw):
     return [i.value for i in classify_intent(text, prev, **kw)]
 
@@ -74,21 +79,27 @@ def test_the_straggler_no_longer_announces_a_cancellation():
     """THE call. 'canceling it' was kept as a surname candidate and then read
     as a request."""
     assert "cancel_req" in _intents("canceling it")
-    assert _intents("canceling it", name_pending=True) == []
+    # 12 Sep 2026: a fragment answering the name question is an ANSWER, and
+    # the answer-moment arm gives it "Thank you -" (NAME_GIVEN). That head
+    # announces nothing -- the point of this test is that no topic switch is
+    # spoken, and it still is not.
+    assert _intents("canceling it", name_pending=True) == [NAME_GIVEN]
 
 
 def test_the_longer_garble_was_never_the_trigger():
     """Pins the diagnosis, not just the fix. This utterance is what the caller
     is transcribed as saying, and it classifies as nothing either way -- it has
     no corroborator. Aiming a fix at it would have changed nothing."""
-    assert _intents("yeah we cancelled and started roch") == []
+    # Since 12 Sep 2026 it earns the receipt head for a name answer, which
+    # announces nothing; the point stands -- no cancel intent anywhere in it.
+    assert _intents("yeah we cancelled and started roch") == [NAME_GIVEN]
 
 
 @pytest.mark.parametrize("frag", [
     "canceling it", "cancel it", "cancelled it", "cancel that", "cancel my",
 ])
 def test_the_whole_cancel_family_is_gated_during_name_capture(frag):
-    assert _intents(frag, name_pending=True) == [], frag
+    assert _intents(frag, name_pending=True) == [NAME_GIVEN], frag
 
 
 @pytest.mark.parametrize("frag,intent", [
@@ -101,7 +112,7 @@ def test_the_other_topic_switches_are_gated_too(frag, intent):
     what Susie just asked for. A surname that happens to sound like "move it"
     must not reschedule anything."""
     assert intent in _intents(frag), frag
-    assert _intents(frag, name_pending=True) == [], frag
+    assert _intents(frag, name_pending=True) == [NAME_GIVEN], frag
 
 
 # ---------------------------------------------------------------------------

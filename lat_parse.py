@@ -41,7 +41,10 @@ INT_FIELDS = (
     "tok", "last_tok_ms", "max_gap_ms",
 )
 STR_FIELDS = ("path", "outcome", "flags", "model", "stt_model", "eot_confident",
-              "capture_phase")
+              "capture_phase",
+              # The hold arbiter's 600ms verdict: an intent value, "none", or
+              # "-" (not observed). One token, so the \S+ kv parser absorbs it.
+              "hold")
 
 LAT_RE = re.compile(r"\[LAT\]\s+(.*)")
 LATEP_RE = re.compile(r"\[LAT-EP\]\s+(.*)")   # WS-C advisory cutoff lines

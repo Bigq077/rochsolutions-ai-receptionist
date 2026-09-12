@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.hold_speech import classify_intent, render_intent_head, subject_for
+from app.hold_speech import Intent, classify_intent, render_intent_head, subject_for
 from app.tools.slot_followup import (
     ACCEPTED_SLOT_KEY,
     choose_presented_days,
@@ -119,7 +119,7 @@ async def test_a_resolved_pick_silences_the_lookup_head():
 
     # With the pick known — which is what connection.py now puts on the session
     # before the head is chosen — she must not promise to go and look.
-    assert classify_intent(said, READOUT, slot_selection=True) == [], (
+    assert classify_intent(said, READOUT, slot_selection=True) == [Intent.SLOT_PICKED], (
         "Susie offered to check the afternoon for a caller who had just "
         "chosen an afternoon slot"
     )
