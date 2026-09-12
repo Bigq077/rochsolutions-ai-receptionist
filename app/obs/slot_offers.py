@@ -264,6 +264,30 @@ def mark_offer_spoken(session: Any, chunks: Any = None) -> None:
         logger.warning("[obs.slot_offers] mark spoken failed", exc_info=True)
 
 
+def mark_offer_retracted(session: Any) -> None:
+    """The fact guard replaced the offer just applied: the caller did NOT
+    hear it. Flip the most recent row back to `spoken: False` and say why.
+    NEVER RAISES.
+
+    Defect B, CA5c69c585, 12 Sep 2026: the one-slot producer records
+    `spoken=True` at birth (see `mark_offer_spoken`), the guard retracted the
+    sentence at TTS, and obs stored `spoken: true` beside a transcript that
+    held only the recovery line. Inv. 16 is "heard", not "built".
+    """
+    try:
+        offers = (session or {}).get(_KEY)
+        if not isinstance(offers, list) or not offers:
+            return
+        for row in reversed(offers):
+            if not isinstance(row, dict):
+                continue
+            row["spoken"] = False
+            row["retracted"] = "slot_fact_guard"
+            return
+    except Exception:  # pragma: no cover - defensive; live call path
+        logger.warning("[obs.slot_offers] mark retracted failed", exc_info=True)
+
+
 def offers_block(session: Any) -> "list | None":
     """What `call_logger` writes to the column, or None when there is nothing.
 

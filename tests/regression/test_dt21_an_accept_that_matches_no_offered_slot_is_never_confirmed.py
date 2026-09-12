@@ -90,11 +90,18 @@ def test_nothing_is_confirmed_and_twenty_to_twelve_is_never_spoken():
 def test_the_offer_narrows_to_that_one_time_so_yes_books_it():
     """The record a resolved time leaves (V5): `last_offered_slots` is now the
     one slot and the keypad map is superseded (B-80), so 'yes' resolves to it
-    and a stale keypress cannot pick 10:30."""
+    and a stale keypress cannot pick 10:30.
+
+    NOT `selected_slot`. Until 12 Sep this test pinned the narrowed offer as
+    the caller's SELECTION -- "did you mean ten past twelve?" is a question,
+    and the slot is chosen when the caller says yes, not when Susie asks.
+    Defect B (CA5c69c585): that build-time write put a never-heard slot into
+    `collected.selected_slot`. The yes is answered from `last_offered_slots`,
+    which is what this test is for."""
     s, _ = _the_00_04_table()
     _say(s, "10 to 12 works")
     assert [o["start"][:16] for o in s["last_offered_slots"]] == [f"{MON}T12:10"]
-    assert s.get("selected_slot", {}).get("start", "")[:16] == f"{MON}T12:10"
+    assert "selected_slot" not in s, "a question narrowed the offer; it did not choose"
     assert s.get("v3_slot_map_superseded")
 
 

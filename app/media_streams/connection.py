@@ -15937,6 +15937,23 @@ class WebSocketCallHandler:
                             "[ms_conn] slot_guard REPLACED a slot fact: %r -> %r",
                             _obs_chunk_text[:120], _sg.text,
                         )
+                        # Defect B (CA5c69c585, 12 Sep): if the sentence was
+                        # the OFFER, the producer already wrote it into the
+                        # session as heard and on the table. The caller is
+                        # about to hear the recovery line instead, so the
+                        # session must say so -- or the next utterance
+                        # resolves against a slot nobody heard. No-op when
+                        # the replaced sentence was the model's own.
+                        try:
+                            from app.tools.slot_followup import (
+                                retract_offer as _retract_offer,
+                            )
+                            _retract_offer(self.session, _obs_chunk_text)
+                        except Exception:
+                            logger.warning(
+                                "[ms_conn] slot_guard retraction unwind failed",
+                                exc_info=True,
+                            )
                         _obs_chunk_text = _sg.text
                         chunk_text = _apply_tts_subs(_sg.text)
                         _last_tts_chunk = chunk_text.strip()

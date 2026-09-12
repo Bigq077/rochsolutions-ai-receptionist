@@ -5827,23 +5827,108 @@ def apply_resolved_time_to_session(
     offered = {"start": slot["start"], "end": slot.get("end") or ""}
     session["last_offered_slots"] = [offered]
     session["slot_labels"] = [slot.get("spoken") or slot.get("time")]
-    # Mirror fast-path slot selection so the LLM / booking path sees it.
-    session["selected_slot"] = offered
-    try:
-        from app.media_streams.config import F_SELECTED_SLOT
-        session[F_SELECTED_SLOT] = offered
-    except Exception:
-        pass
+    # NOT `selected_slot`. Until 12 Sep this also wrote `selected_slot` /
+    # F_SELECTED_SLOT ("mirror fast-path slot selection so the LLM / booking
+    # path sees it"). A one-slot answer is an OFFER -- it ends "shall I book
+    # that in?" -- and the caller has not said yes. Defect B, CA5c69c585
+    # 12 Sep 17:36: the sentence was built, the fact guard retracted it, and
+    # `collected.selected_slot` still said 16:20 for the rest of the call.
+    # The readers of `selected_slot` are the SMS templates, the call summary,
+    # obs `collected` and the admin view -- every one of them a claim that a
+    # slot was CHOSEN. The fast-path pick (`fast_path.py`) and the booking
+    # tools set it on a real choice; the acceptance path pins the accepted
+    # slot durably via `_note_accepted_slot` (D-s). Nothing on the v3 path
+    # read this write to decide what to say.
     # B-80: the offer is now this single time; the numbered map is stale.
     _supersede_slot_map(session)
     speech = format_time_available_speech(slot, asked=asked)
     # Heard (inv. 16) and repeatable (D-o): a one-slot answer is a readout
     # too. Without these, "say that again" after "the nearest I've got to
     # twelve is ten past" re-spoke the numbered list from before it.
+    # `retract_offer` unwinds all of this if the guard replaces the sentence.
     record_spoken_slots(session, [slot])
     session[LAST_READOUT_KEY] = {"chunks": [speech], "mode": "one_slot", "options": 1}
     session["_slot_readout_chunks"] = [speech]
     return speech
+
+
+def retract_offer(session: Dict[str, Any], text: str) -> bool:
+    """The fact guard replaced `text` and it was the current offer: unwind
+    what the producer wrote, so the session says what the caller HEARD.
+    Returns True when an offer was retracted. NEVER RAISES.
+
+    Defect B, CA5c69c585, northgate, 12 Sep 2026 17:36:16, build 35f06eb6.
+    `apply_resolved_time_to_session` wrote `last_offered_slots`,
+    `slot_labels`, the spoken record (inv. 16) and `LAST_READOUT_KEY` at BUILD
+    time, then `slot_fact_guard.check_outgoing` replaced the sentence with
+    "Sorry -- let me just double-check that one for you." and nothing unwound
+    any of it. Obs recorded the offer as `spoken: true`; the slot was on the
+    table for the next utterance to resolve against (defect A); "say that
+    again" would have re-spoken the retracted sentence (D-o).
+
+    Only when `text` belongs to the current readout -- the guard also replaces
+    a MODEL sentence carrying a stray time (the 11 Sep 00:04 shape), and that
+    must not wipe a numbered list the caller genuinely heard two turns ago.
+    Membership is by substring in either direction, because the TTS splitter
+    hands the guard sentences and the readout stores chunks.
+
+    Direction of error: a slot un-recorded that WAS heard costs one re-ask
+    (the caller's "the first one" declines and the turn asks again); a slot
+    left recorded that was NOT heard is the read-back of a time the caller
+    never chose. So the whole readout is unwound, not just the replaced
+    sentence.
+    """
+    try:
+        if not isinstance(session, dict):
+            return False
+        probe = " ".join(str(text or "").split()).strip().lower()
+        if not probe:
+            return False
+        chunks = []
+        readout = session.get(LAST_READOUT_KEY)
+        if isinstance(readout, dict):
+            chunks += [str(c) for c in (readout.get("chunks") or [])]
+        chunks += [str(c) for c in (session.get("_slot_readout_chunks") or [])]
+        norm = [" ".join(c.split()).strip().lower() for c in chunks]
+        if not any(c and (probe in c or c in probe) for c in norm):
+            return False
+
+        offered = session.get("last_offered_slots") or []
+        starts = {
+            str((o or {}).get("start") or "")[:19]
+            for o in offered if isinstance(o, dict)
+        } - {""}
+        session.pop("last_offered_slots", None)
+        session.pop("slot_labels", None)
+        session.pop(LAST_READOUT_KEY, None)
+        session.pop("_slot_readout_chunks", None)
+        # Un-hear the slots this readout recorded (inv. 16).
+        spoken = [s for s in (session.get(_SPOKEN_KEY) or []) if s not in starts]
+        session[_SPOKEN_KEY] = spoken
+        # A numbered map for a list nobody heard would let a keypad press pick
+        # an unheard slot. `_derive_slot_window` clears the flag from the map.
+        session.pop("v3_dtmf_slot_map", None)
+        session.pop("v3_awaiting_slot_selection", None)
+        # Belt and braces for any producer that still mirrors the offer into
+        # the selection.
+        for key in ("selected_slot",):
+            sel = session.get(key)
+            if isinstance(sel, dict) and str(sel.get("start") or "")[:19] in starts:
+                session.pop(key, None)
+        try:
+            from app.obs.slot_offers import mark_offer_retracted
+            mark_offer_retracted(session)
+        except Exception:
+            pass
+        logger.warning(
+            "[slot_followup] offer RETRACTED by the fact guard -- %d slot(s) "
+            "un-recorded, nothing on the table: %s",
+            len(starts), sorted(starts),
+        )
+        return True
+    except Exception:
+        logger.warning("[slot_followup] retract_offer failed", exc_info=True)
+        return False
 
 
 def build_followup_tool_result(
