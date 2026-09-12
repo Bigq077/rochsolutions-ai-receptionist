@@ -153,21 +153,56 @@ item.** The doc says *"the corpus does not store inter-token times, so it cannot
 be measured, and shipping an unmeasurable predicate onto the hot path is the trap
 this codebase keeps falling into."*
 
-Verified today: `TurnTiming` stamps **`t1` = first token only**
-([latency_timing.py:234](../../app/media_streams/latency_timing.py:234)). There is
-no inter-token stamp. So the blocker is still exactly what the doc says it is —
-**and it is an instrumentation gap, not a design problem.**
+Verified today: `TurnTiming` stamped **`t1` = first token only**. There was no
+inter-token stamp. So the blocker was exactly what the doc says it is — **an
+instrumentation gap, not a design problem** — and it is now closed: `token_count`,
+`last_token_ms` and `max_inter_token_ms` ship on the `[LAT]` line and the stored
+row (§5 step 1, done).
+
+### The two options address DISJOINT populations — do not mix the readings
+
+Building the instrumentation made this sharper, and it matters for whoever reads
+the data:
+
+**"Time since the last token" is undefined before the first token.** So:
+
+| population | shape on the `[LAT]` line | which option reaches it |
+|---|---|---|
+| **S-11's 63 %** — token arrives early, then the chunk/TTS gap | `llm_ttft_ms` small, `max_gap_ms` tells you whether the stream then went quiet | **Option B.** The predicate applies |
+| **The rung hole** — no token at all for seconds | `llm_ttft_ms` large (8,313 ms today), `max_gap_ms` small or -1 | **Option A only.** No last-token predicate can reach it — there is no last token |
+
+`CA1ef288f1` turn 2 is the second row: reconstructed synthetically it emits
+`llm_ttft_ms=8250 max_gap_ms=250` — the token was slow to *start* and the stream
+then flowed steadily. **A reader who saw `max_gap_ms=250` and concluded "the
+stream was healthy, so no predicate would have helped" would be right about the
+predicate and wrong about the caller**, who heard 7.9 s of nothing. The remedy
+there is the rung-2 deadline, not the predicate.
+
+So: filter on `llm_ttft_ms` FIRST, then read `max_gap_ms`. The two questions are
+separate and each has its own answer.
 
 ---
 
 ## 5. Recommended order
 
-1. **Instrument the token stream.** Add a last-token stamp and a simple
-   inter-token summary (count, max gap) to `TurnTiming`, persisted through
-   `as_record()` like S-9's `tool_calls`. Off the hot path in cost — one
-   `time.monotonic()` per token — and it is the only thing that converts S-11
-   from "do not touch without a new idea" into a decidable question.
-   **Verifiable offline; no call needed; no caller-facing change.**
+1. ~~**Instrument the token stream.**~~ ✅ **DONE 12 Sep.** `token_count`,
+   `t_last_token` and `max_inter_token_gap` on `TurnTiming`, with
+   `note_token()` (last-write-wins) and `note_stream_break()` so a tool round
+   trip is not scored as the model going quiet. One `time.monotonic()` per
+   token; no list allocation on the hot path.
+
+   **Put on the printed `[LAT]` line as well as the stored row** —
+   `tools= tok= last_tok_ms= max_gap_ms=` — which also closes the S-9 residual
+   (`tool_calls` was stored but never printed). That is deliberate: a read-only
+   `OBS_DATABASE_URL` is the standing blocker on five measurements, and
+   printing these means **the Render log alone is enough to collect S-11
+   evidence, with no provisioning step in front of it.** `lat_parse.py` coerces
+   all seven to ints; its kv parser absorbed the new fields without change.
+
+   Verified: 8 new tests in `tests/regression/test_s11_inter_token_gaps.py`;
+   whole `tests/regression` run **8,903 passed with the same 5 standing
+   failures** (`b84` ×3, the multi-day count, scarcity multiple-days) — zero new
+   failures. No behaviour change: nothing reads these fields.
 2. **Run the §3 cost query** against the corpus, then pick a rung-2 value on
    evidence. Probably 6,000 ms; possibly 7,000 ms if the 6–10 s band is fatter
    than expected.

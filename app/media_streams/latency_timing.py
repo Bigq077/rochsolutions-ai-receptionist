@@ -261,6 +261,42 @@ class TurnTiming:
     # it replaces. Reported as -1 for exactly that reason, the same sentinel
     # and the same rule as the cache-token fields above.
     tool_calls: int = 0
+    # ── S-11 instrumentation: is the token stream FLOWING or STALLED? ────────
+    #
+    # THE ONE MEASUREMENT S-11 IS PARKED ON. The stall ladder cancels on the
+    # first TOKEN, but dead air ends at the first AUDIO, and 190 of 302 corpus
+    # breaches (63%) live in the gap between them --
+    # `SLOT_PRESENTATION_FINISH_2026-09-10.md` §4.1. Watching the first CHUNK
+    # instead was costed at three deadlines and is a bad trade at all of them,
+    # and that section closes:
+    #
+    #   "The predicate that WOULD separate them is time since the LAST token --
+    #    a steadily streaming turn will release soon; a stalled one will not.
+    #    The corpus does not store inter-token times, so it cannot be measured,
+    #    and shipping an unmeasurable predicate onto the hot path is the trap
+    #    this codebase keeps falling into. Left open deliberately."
+    #
+    # These three fields are that measurement and NOTHING ELSE. No predicate
+    # ships on them, no deadline moves because of them, and the ladder does not
+    # read them. They exist so the parked decision becomes answerable from the
+    # corpus instead of from a guess. See `SCOPE_STALL_LADDER_2026-09-12.md` §4.
+    #
+    # What they answer, per breaching turn: was the stream QUIET at the moment a
+    # deadline would have fired (predicate fires -> benefit), or still flowing
+    # (predicate stays silent -> no cost)? `max_inter_token_gap` separates those
+    # two populations directly, and `t_last_token` gives the last-token ->
+    # first-audio window, which is S-11's other half (stream done, TTS slow).
+    #
+    # Cost: one `time.monotonic()` per text token. Deliberately NOT a list of
+    # per-token times -- that is unbounded in turn length and would put the
+    # allocation on the hot path for a question two scalars answer.
+    #
+    # 0 tokens is a REAL reading (a turn that produced none). Rows written
+    # before this existed carry no key at all; every reader must treat absent as
+    # NOT OBSERVED rather than as zero, exactly as `tool_calls` above documents.
+    token_count: int = 0
+    t_last_token: Optional[float] = None       # last text token seen this turn
+    max_inter_token_gap: Optional[float] = None  # SECONDS, largest quiet stretch
     endpoint_wait_ms: int = -1           # WS-C: t_end_of_turn - t_last_partial (pre-t0 dead-time)
     # Anthropic prompt-cache accounting for the SAME API call that llm_ttft_ms
     # measures — the turn's FIRST iteration, first-write-wins. A turn can make
@@ -282,6 +318,39 @@ class TurnTiming:
         """First-write-wins stamp. Safe to call repeatedly; only the first sticks."""
         if getattr(self, field_name) is None:
             setattr(self, field_name, now if now is not None else time.monotonic())
+
+    def note_token(self, now: Optional[float] = None) -> None:
+        """One text token arrived. LAST-write-wins, unlike ``stamp``. S-11.
+
+        Called on EVERY token, so it stays two comparisons and an assignment.
+
+        Not first-write-wins and not idempotent — that is the point. ``t1``
+        answers "when did the stream START", which ``stamp`` already owns; this
+        answers "is the stream STILL GOING", which needs the latest reading and
+        the largest gap so far.
+        """
+        t = now if now is not None else time.monotonic()
+        _prev = self.t_last_token
+        if _prev is not None:
+            _gap = t - _prev
+            if self.max_inter_token_gap is None or _gap > self.max_inter_token_gap:
+                self.max_inter_token_gap = _gap
+        self.t_last_token = t
+        self.token_count += 1
+
+    def note_stream_break(self) -> None:
+        """A non-stream pause begins (tool round trip, next tool-loop iteration).
+
+        Clears the last-token anchor WITHOUT recording a gap, so the wait for a
+        tool result is never counted as the model going quiet. Without this, any
+        turn with a tool call would carry a `max_inter_token_gap` the size of
+        Acuity's round trip, and the flowing-vs-stalled split this field exists
+        to make — the whole of S-11's open question — would be noise.
+
+        `token_count` is deliberately NOT reset: it counts the turn's tokens, and
+        a turn is what a row describes.
+        """
+        self.t_last_token = None
 
     def emit(self) -> None:
         """Log the one structured ``[LAT]`` line for this turn. Idempotent.
@@ -314,7 +383,20 @@ class TurnTiming:
             "flags=%(flags)s model=%(model)s stt_model=%(stt_model)s "
             "eot_confident=%(eot_confident)s capture_phase=%(capture_phase)s "
             "endpoint_wait_ms=%(endpoint_wait_ms)d "
-            "cache_read=%(cache_read_tokens)d cache_write=%(cache_write_tokens)d in_tok=%(prompt_input_tokens)d",
+            "cache_read=%(cache_read_tokens)d cache_write=%(cache_write_tokens)d in_tok=%(prompt_input_tokens)d "
+            # S-9 + S-11, on the LINE and not only in the stored row.
+            #
+            # `tool_calls` was stored but never printed, so the tool-vs-plain
+            # split was answerable only from the obs corpus — and a read-only
+            # OBS_DATABASE_URL is the standing blocker on five separate
+            # measurements (DOC_AUDIT_2026-09-12_EVENING §B). The same would have
+            # been true of the S-11 fields the day they shipped.
+            #
+            # Printing them means the Render log is enough to start collecting
+            # S-11 evidence, with no provisioning step in front of it. Costs
+            # ~30 characters on one INFO line per turn.
+            "tools=%(tool_calls)d tok=%(token_count)d "
+            "last_tok_ms=%(last_token_ms)d max_gap_ms=%(max_inter_token_ms)d",
             record,
         )
         _buffer(self.call_sid, record)
@@ -363,6 +445,18 @@ class TurnTiming:
             ms = int((a - b) * 1000)
             return ms if 0 <= ms <= _MAX_PLAUSIBLE_MS else -1
 
+        def _dur(seconds: Optional[float]) -> int:
+            """A duration already in hand, to ms, under `d`'s plausibility rule.
+
+            `d` takes two stamps and subtracts; a gap measured as it happened
+            (S-11's `max_inter_token_gap`) is already a duration, so it needs the
+            same ceiling and the same -1 without the subtraction.
+            """
+            if seconds is None:
+                return -1
+            ms = int(seconds * 1000)
+            return ms if 0 <= ms <= _MAX_PLAUSIBLE_MS else -1
+
         return {
             "turn_seq":          self.turn_seq,
             "path":              self.path,
@@ -381,6 +475,16 @@ class TurnTiming:
             "capture_phase":     self.capture_phase,
             "endpoint_wait_ms":  self.endpoint_wait_ms,               # WS-C
             "tool_calls":        self.tool_calls,                     # S-9
+            # S-11. `token_count` 0 is a real reading (the turn produced none).
+            # The two timings use the same -1 = "not a measurement" rule as
+            # everything above: `last_token_ms` is -1 on a turn with no tokens,
+            # and `max_inter_token_ms` is -1 when there was never a SECOND token
+            # to measure a gap against — which is not the same fact as a gap of
+            # zero, and a reader that conflates them would score every one-token
+            # turn as a perfectly steady stream.
+            "token_count":        self.token_count,
+            "last_token_ms":      d(self.t_last_token, self.t_dispatch),
+            "max_inter_token_ms": _dur(self.max_inter_token_gap),
             # -1 = not observed; 0 = observed cold. See the field comments.
             "cache_read_tokens":   -1 if self.cache_read_tokens is None else self.cache_read_tokens,
             "cache_write_tokens":  -1 if self.cache_write_tokens is None else self.cache_write_tokens,

@@ -30,6 +30,15 @@ import math
 INT_FIELDS = (
     "turn_seq", "ttfa_ms", "content_ttfa_ms", "ep_dispatch_ms", "llm_ttft_ms",
     "chunk_gate_ms", "tts_first_byte_ms", "audio_wire_ms", "endpoint_wait_ms",
+    # Prompt-cache counters (B2) and the tool count (S-9): both were on the
+    # stored row before they were on the line, so this parser never coerced them.
+    "cache_read", "cache_write", "in_tok", "tools",
+    # S-11: the flowing-vs-stalled measurement. `max_gap_ms` is the field the
+    # parked S-11 decision turns on -- a large gap means the stream went quiet
+    # and a "time since last token" predicate would have fired; a small one
+    # means it was still streaming and the predicate would correctly stay
+    # silent. -1 means NOT OBSERVED (no second token), never a gap of zero.
+    "tok", "last_tok_ms", "max_gap_ms",
 )
 STR_FIELDS = ("path", "outcome", "flags", "model", "stt_model", "eot_confident",
               "capture_phase")

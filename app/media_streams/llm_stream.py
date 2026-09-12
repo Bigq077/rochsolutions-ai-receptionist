@@ -4713,6 +4713,13 @@ class LLMStream:
         for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
             logger.info("[ms_llm] iteration=%d model=%s", iteration, model)
 
+            # S-11. A new iteration means the previous one's stream ended and a
+            # tool round trip happened in between. Break the inter-token chain
+            # so that wait is not scored as the model falling silent — see
+            # TurnTiming.note_stream_break. Harmless on iteration 1.
+            if self._timing is not None:
+                self._timing.note_stream_break()
+
             # Popped, not read: the suppression lasts exactly one iteration.
             # Left set it would disarm tools for the rest of the turn, and a
             # later iteration that legitimately needs book_appointment — the
@@ -5916,6 +5923,13 @@ class LLMStream:
                                 continue
 
                             full_text += token
+
+                            # S-11 — is the stream flowing or stalled? Every
+                            # token, so keep it to the one call. Above the
+                            # first-token branch so token 1 anchors the gap
+                            # measurement rather than being skipped by it.
+                            if self._timing is not None:
+                                self._timing.note_token()
 
                             if not got_first_chunk:
                                 got_first_chunk = True
