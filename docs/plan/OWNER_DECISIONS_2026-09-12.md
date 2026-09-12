@@ -71,3 +71,17 @@ The ask to the practitioner is one question per phrase: *would your front
 desk say this?* Rewordings come back through the owner; the import-time
 checks in `hold_speech.py` (ends in a dash, no lookup verb in a topic head,
 family uniqueness) still apply to any replacement.
+
+---
+
+## Correction, same day — the invented-symptoms item was not open
+
+The 12 Sep audit listed `OPEN_DEFECT_INVENTED_SYMPTOMS_2026-09-09.md` as
+"not started". It was fixed 21 minutes after that document was written
+(`8e838f0f`), with a regression test and re-pinned hashes, promoted that
+night, and call-verified at 23:08 (`CA5e14516b`). The document carried no
+status line, so a reader who did not grep the tree for the rule inherited
+"not fixed here" as current. This is `DEFECT_AUDIT_2026-09-07.md` §6's
+mechanism exactly — a diagnosis doc outliving its fix — and the reason that
+audit replaced the lists. The doc now carries a status header; nothing was
+changed in the prompt.

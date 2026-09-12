@@ -1,5 +1,20 @@
 # Susie elaborates symptoms the caller never described
 
+> **FIXED `8e838f0f`, 9 Sep 2026 19:30 — 21 minutes after this document was
+> written, and never recorded here.** The "WHOSE SYMPTOM IS IT" rule in
+> `_render_condition_fluency` names the construction ("that kind of stiffness
+> you're getting" presupposes they said stiffness) and narrows "THEIR specifics"
+> to what they actually stated. Ships with
+> `tests/regression/test_a_hallmark_belongs_to_the_condition.py` and re-pinned
+> prompt hashes; promoted to `production` the same night; **call-verified on
+> `CA5e14516b` (9 Sep 23:08)**: "ankles can be tricky to get fully right —
+> worth having Priya take a proper look." The rule renders wherever the
+> condition library does (northgate, jv_v1) — the only prompts that carry the
+> hallmark-feature instruction that produced the exhibit; vital_edge and
+> theorem_v3 never had it. Carried as open by the 12 Sep audit because of this
+> header's absence — corrected 12 Sep. Everything below is the diagnosis as
+> written on 9 Sep.
+
 **Found** 2026-09-09 18:06, northgate `CAeedecabfd099658cb5d486d5fbd63d7a`,
 build `1bc1dfe2`, judge **2**, tag `hallucination`.
 **Not a regression.** Pre-existing, and the oldest instance in the corpus is
