@@ -1144,6 +1144,47 @@ _DAY_SHIFT_WORDS: frozenset = frozenset({
 })
 
 
+def _named_time_offer(session, result, presented):
+    """ONE slot when the caller named a time and the lookup had to run, else None.
+
+    DT-7/8 on the tool path (owner, 12 Sep 2026). The executor writes
+    `REQUESTED_TIMES_KEY` from the caller's words on every lookup (D8); until
+    now the readout used it only to PIN the asked time into a three-slot
+    list -- "10:30, 11:20, 12:10" for a caller who said twelve, the asked time
+    third -- while the payload-answered producer for the same question speaks
+    one slot. Same act, two answers (invariant 20). This gives the tool path
+    the producer's answer, searching the FULL day (not the trimmed presented
+    list) of each presented day in order, and returns None whenever no time
+    was named so the readout is untouched. Never raises.
+    """
+    try:
+        from app.tools.slot_followup import REQUESTED_TIMES_KEY as _RTK
+        from app.tools.slot_offer import build_named_time_offer
+        _req = (session or {}).get(_RTK) or []
+        if not _req or not isinstance(result, dict):
+            return None
+        _full = {
+            str(d.get("date")): d
+            for d in (result.get("available_days") or [])
+            if isinstance(d, dict) and d.get("date")
+        }
+        _days = [
+            _full.get(str(d.get("date")), d)
+            for d in (presented or []) if isinstance(d, dict)
+        ]
+        _offer = build_named_time_offer(session, _days, _req)
+        if _offer is not None:
+            logger.info(
+                "[ms_gate5] the caller named a time (%s) -- ONE slot, not a "
+                "readout with it pinned in (DT-7/8): %r",
+                _req, _offer.text[:90],
+            )
+        return _offer
+    except Exception:
+        logger.exception("[ms_gate5] named-time offer failed; using the readout")
+        return None
+
+
 def _followup_must_yield_to_a_real_lookup(
     session: Optional[Dict[str, Any]], messages
 ) -> bool:
@@ -7365,7 +7406,12 @@ class LLMStream:
                                     "first slot (B-125)"
                                 )
                                 _lead_in = ""
-                        _offer = build_slot_offer(
+                        # DT-7/8 on the tool path (owner, 12 Sep): a caller who
+                        # NAMED a time gets ONE slot, the nearest, said
+                        # honestly -- not three with the asked time pinned
+                        # third. `_named_time_offer` returns None when no time
+                        # was named, and the readout below runs unchanged.
+                        _offer = _named_time_offer(session, result, [_fd]) or build_slot_offer(
                             [_fd],
                             lead_in=_lead_in,
                             more_times=bool(session.get("_slot_more_times")),
@@ -7443,7 +7489,10 @@ class LLMStream:
                         # layer's own honesty field and falls back to
                         # found-versus-spoken for the readers that emit none.
                         from app.tools.slot_offer import days_were_held_back
-                        _offer = build_slot_offer(
+                        # DT-7/8 on the tool path -- see the single_day arm.
+                        _offer = _named_time_offer(
+                            session, result, list(result["presented_days"]),
+                        ) or build_slot_offer(
                             list(result["presented_days"]),
                             lead_in=_multi_lead,
                             more_times=bool(session.get("_slot_more_times")),

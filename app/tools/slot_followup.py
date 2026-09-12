@@ -827,6 +827,62 @@ def remaining_unspoken_on_current_day(
     return [slot for slot in remaining if _day_key(slot) == day]
 
 
+def bookable_on_current_day(
+    session: Dict[str, Any], user_text: str = ""
+) -> List[Dict[str, Any]]:
+    """EVERY bookable slot on the day under discussion, heard or not.
+
+    DT-7 (spec §5.1): a named time the diary holds is answered with that time
+    -- whether or not the caller has already heard it. Theorem CAf87ed571,
+    12 Sep 12:11: Monday had been read as nine, midday and four; the caller
+    asked "anything around 12 on that day"; 12:00 was bookable, already
+    spoken, and therefore absent from `remaining_unspoken_on_current_day`, so
+    the producers declined and the model answered. Its "twelve o'clock" went
+    through no producer, nothing recorded it, and the keypad map still said
+    {1: one, 2: three} while Susie was offering twelve -- a keypress would
+    have booked one o'clock (inv. 10, the B-80 shape).
+
+    Heard-ness is a NOVELTY concern (precedence level 4). A named time is
+    RELEVANCE (level 3), and relevance wins. The day is resolved exactly as
+    the unspoken version resolves it -- caller-named, then picked by
+    position, then the offer on the table -- so the two can never disagree
+    about which day is meant; the only difference is that heard slots are
+    kept.
+    """
+    slots, _ = bookable_on_current_day_anchored(session, user_text)
+    return slots
+
+
+def bookable_on_current_day_anchored(
+    session: Dict[str, Any], user_text: str = ""
+) -> Tuple[List[Dict[str, Any]], bool]:
+    """`bookable_on_current_day`, plus whether the CALLER chose that day.
+
+    Anchored means the day came from the caller -- named in full, picked by
+    position, a bare weekday, or the one day of a single-day / one-slot
+    readout they are answering. NOT anchored means it fell to the first day
+    of a multi-day menu, which is a construction, not a choice: "anything
+    around 12" straight after Mon/Tue/Wed must not be answered "the nearest
+    I've got to twelve is half past ten on Monday" while Thursday holds
+    12:10. The far-nearest rule (DT-8) applies only to an anchored day.
+    """
+    days = session.get("available_days") or []
+    if caller_named_conflicting_days(days, user_text):
+        return [], False
+    day = (day_named_by_caller(days, user_text)
+           or day_selected_by_position(days, session, user_text)
+           or _payload_day_by_weekday(days, user_text))
+    anchored = bool(day)
+    if not day:
+        offered = session.get("last_offered_slots") or []
+        day = str((offered[0] or {}).get("start") or "")[:10] if offered else ""
+        mode = str((session.get(LAST_READOUT_KEY) or {}).get("mode") or "")
+        anchored = bool(day) and mode in ("single_day", "one_slot")
+    if not day:
+        return [], False
+    return [s for s in flatten_bookable_slots(days) if _day_key(s) == day], anchored
+
+
 def next_slot_batch(
     remaining: List[Dict[str, Any]], n: int = 2
 ) -> Tuple[List[Dict[str, Any]], bool]:
@@ -1125,6 +1181,34 @@ def _plausible_slip(asked: str, offered: str) -> bool:
     return abs(a - o) < 60 and (a + o) % 120 == 0
 
 
+def asked_clock_times(text: Any) -> List[str]:
+    """The HH:MM candidates a caller NAMED, for the "says so" sentence and
+    the clarifier. ONE owner, shared by the dispatcher's named-time attempt
+    and `accept_clarify_speech`, so the two cannot disagree about what was
+    asked.
+
+    `requested_clock_times` only: the hardened parser, zero inventions over
+    2,509 stored turns. `_candidate_hhmm_from_text` reads "that ONE works"
+    as 13:00 -- the B-114 pronoun -- and the resolver guards that inside
+    itself; this must not bypass the guard. A bare hour word ("eleven
+    works") is admitted only under the resolver's own test for whether it
+    is being USED as a time, and ONLY when the parser found nothing:
+    "quarter to eleven works" parses to 10:45; the "eleven" inside it is a
+    component, not a second request, and admitting it as 11:00 made 11:20
+    the one plausible match.
+    """
+    t = (text or "").lower()
+    asked = _requested_clock_times_safe(t)
+    if not asked:
+        for word, hour in _BARE_HOUR_WORDS.items():
+            if re.search(rf"\b{word}\b", t) and _bare_hour_word_is_a_clock_reference(t, word):
+                for h in (hour, hour + 12):
+                    c = f"{h % 24:02d}:00"
+                    if c not in asked:
+                        asked.append(c)
+    return asked
+
+
 def accept_clarify_speech(
     session: Dict[str, Any], user_text: str
 ) -> Optional[str]:
@@ -1136,23 +1220,7 @@ def accept_clarify_speech(
     if not offered:
         return None
     t = (user_text or "").lower()
-    # `requested_clock_times` only: the hardened parser, zero inventions over
-    # 2,509 stored turns. `_candidate_hhmm_from_text` reads "that ONE works"
-    # as 13:00 -- the B-114 pronoun -- and the resolver guards that inside
-    # itself; this must not bypass the guard. A bare hour word ("eleven
-    # works") is admitted only under the resolver's own test for whether it
-    # is being USED as a time.
-    asked = _requested_clock_times_safe(t)
-    # ...and ONLY when that found nothing. "quarter to eleven works" parses
-    # to 10:45; the "eleven" inside it is a component, not a second request,
-    # and admitting it as 11:00 made 11:20 the one plausible match.
-    if not asked:
-        for word, hour in _BARE_HOUR_WORDS.items():
-            if re.search(rf"\b{word}\b", t) and _bare_hour_word_is_a_clock_reference(t, word):
-                for h in (hour, hour + 12):
-                    c = f"{h % 24:02d}:00"
-                    if c not in asked:
-                        asked.append(c)
+    asked = asked_clock_times(t)
     if not asked:
         return None
     if utterance_requests_more_slots(t) or utterance_requests_different_day(t):
@@ -1521,8 +1589,19 @@ def resolve_requested_time(
     text: str,
     remaining: List[Dict[str, Any]],
     available_days: Any = None,
+    *,
+    far: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Match a caller time phrase to exactly one remaining slot, else None.
+
+    `far=True` (DT-8, owner 12 Sep 2026): when nothing lands within the usual
+    tolerance, take the NEAREST bookable time on the day whatever the
+    distance -- "around 12" against a day whose nearest is 12:50 gets "the
+    nearest I've got to twelve is ten to one", not the model. Only for a
+    ROUND time (invariant 4: no drift on non-round times), only within the
+    day's own span so a 12-hour twin cannot reach across it ("at 2" is 02:00
+    and 14:00; 02:00 must not find 08:00), and ties still decline (DT-9).
+    Callers pass it only when `remaining` is ONE day's times.
 
     `remaining` spans the WHOLE sweep by design, so a caller who names a time
     on a day other than the one on the table still reaches it. `available_days`
@@ -1625,11 +1704,36 @@ def resolve_requested_time(
         candidates += [c for c in requested_clock_times(t) if c not in candidates]
     except Exception:
         logger.exception("[slot_followup] requested_clock_times failed in resolve")
-    _idx = nearest_time_index([s.get("time") for s in remaining], candidates)
+    _times = [s.get("time") for s in remaining]
+    _idx = nearest_time_index(_times, candidates)
     if _idx is not None:
         return _reject_if_caller_named_another_day(
             remaining[_idx], available_days, text,
         )
+    if far and candidates:
+        try:
+            _mins = [m for m in (_hhmm_to_minutes(t) for t in _times) if m is not None]
+            if _mins:
+                _lo, _hi = min(_mins) - 120, max(_mins) + 120
+                _in_span = [
+                    c for c in candidates
+                    if (_hhmm_to_minutes(c) is not None
+                        and _lo <= _hhmm_to_minutes(c) <= _hi
+                        and (_hhmm_to_minutes(c) % 60) in _SPOKEN_MINUTE_MARKS)
+                ]
+                if _in_span:
+                    _idx = nearest_time_index(_times, _in_span, tolerance_min=24 * 60)
+                    if _idx is not None:
+                        logger.info(
+                            "[slot_followup] no time within %d min of %s -- "
+                            "taking the nearest on the day, %s (DT-8, far)",
+                            NEAREST_TIME_TOLERANCE_MIN, _in_span, _times[_idx],
+                        )
+                        return _reject_if_caller_named_another_day(
+                            remaining[_idx], available_days, text,
+                        )
+        except Exception:
+            logger.exception("[slot_followup] far nearest failed")
     return None
 
 
@@ -5479,7 +5583,14 @@ def apply_resolved_time_to_session(
         pass
     # B-80: the offer is now this single time; the numbered map is stale.
     _supersede_slot_map(session)
-    return format_time_available_speech(slot, asked=asked)
+    speech = format_time_available_speech(slot, asked=asked)
+    # Heard (inv. 16) and repeatable (D-o): a one-slot answer is a readout
+    # too. Without these, "say that again" after "the nearest I've got to
+    # twelve is ten past" re-spoke the numbered list from before it.
+    record_spoken_slots(session, [slot])
+    session[LAST_READOUT_KEY] = {"chunks": [speech], "mode": "one_slot", "options": 1}
+    session["_slot_readout_chunks"] = [speech]
+    return speech
 
 
 def build_followup_tool_result(
@@ -6740,6 +6851,50 @@ def try_unspoken_followup_speech(
     if _nothing_sooner:
         return _nothing_sooner
 
+    # ABOVE the exhaustion gate below on purpose: a named time the caller
+    # has already HEARD is, by definition, not in `remaining`, and on a day
+    # they have heard in full `remaining` is empty -- exactly the Theorem
+    # 12:11 shape, which must still be answered.
+    # DT-7/8 (spec §5.1; precedence level 3): scoped to the DAY UNDER
+    # DISCUSSION first, whole sweep second. CA34942aee, demo line, 11 Sep
+    # 08:51:21 -- after "tell me about Monday" the caller asked "what have
+    # you got around 12". `remaining` spans every day of the sweep, 12:10 sits
+    # on all four of them, and the resolver's "exactly one" discipline --
+    # right for a 12-hour twin -- declined a time the diary held on the very
+    # day being discussed. The turn went to the model, whose sentence Gate 5
+    # stripped, and the caller heard "Does that work?" about nothing. On
+    # CA778651b7 the same question happened to trigger a tool call and D8
+    # pinned the time inside the executor; which of the two a caller gets
+    # depended on the model, which is invariant 20 exactly.
+    #
+    # `remaining_unspoken_on_current_day` is the same scope the more-times
+    # branch below uses: the day the caller named in this utterance, else the
+    # one picked by position, else the offer they were just given (B-103,
+    # B-105). A time on another day still resolves through the whole-sweep
+    # call underneath, exactly as before.
+    #
+    # `_asked` is for the SENTENCE only ("nearest I've got to ..."); the
+    # resolver reads word forms ("ten past twelve") the digit parser does not,
+    # so the scoped attempt is not gated on it.
+    _asked = asked_clock_times(user_text)
+    # BOOKABLE on the day, heard or not (DT-7; owner 12 Sep) -- see
+    # `bookable_on_current_day_anchored` for the Theorem call that needed
+    # it. It resolves a bare weekday ("ten past twelve on tuesday") itself.
+    # `far` -- the nearest on the day whatever the distance, for a round
+    # time (DT-8; owner 12 Sep) -- only when the CALLER chose the day; on a
+    # day that merely leads a multi-day menu, a closer time on another day
+    # must win through the whole-sweep pass below.
+    _scoped, _anchored = bookable_on_current_day_anchored(session, user_text)
+    hit = (resolve_requested_time(user_text, _scoped, days, far=_anchored)
+           if _scoped else None)
+    if hit is not None:
+        logger.info(
+            "[slot_followup] a time the caller named resolved on the day "
+            "under discussion (%s), not across the sweep (DT-7/8)",
+            _day_key(hit),
+        )
+        return apply_resolved_time_to_session(session, hit, asked=_asked)
+
     # Cumulative, not just the current offer — see B-78b above.
     remaining = remaining_unspoken(session)
     if not remaining:
@@ -6792,46 +6947,6 @@ def try_unspoken_followup_speech(
     # `days` too: the guard needs the payload's labels to tell whether the
     # caller named a day (B-114). Both call sites pass it -- see test_b114.
     #
-    # DT-7/8 (spec §5.1; precedence level 3): scoped to the DAY UNDER
-    # DISCUSSION first, whole sweep second. CA34942aee, demo line, 11 Sep
-    # 08:51:21 -- after "tell me about Monday" the caller asked "what have
-    # you got around 12". `remaining` spans every day of the sweep, 12:10 sits
-    # on all four of them, and the resolver's "exactly one" discipline --
-    # right for a 12-hour twin -- declined a time the diary held on the very
-    # day being discussed. The turn went to the model, whose sentence Gate 5
-    # stripped, and the caller heard "Does that work?" about nothing. On
-    # CA778651b7 the same question happened to trigger a tool call and D8
-    # pinned the time inside the executor; which of the two a caller gets
-    # depended on the model, which is invariant 20 exactly.
-    #
-    # `remaining_unspoken_on_current_day` is the same scope the more-times
-    # branch below uses: the day the caller named in this utterance, else the
-    # one picked by position, else the offer they were just given (B-103,
-    # B-105). A time on another day still resolves through the whole-sweep
-    # call underneath, exactly as before.
-    #
-    # `_asked` is for the SENTENCE only ("nearest I've got to ..."); the
-    # resolver reads word forms ("ten past twelve") the digit parser does not,
-    # so the scoped attempt is not gated on it.
-    _asked = _requested_clock_times_safe(user_text)
-    _scoped = remaining_unspoken_on_current_day(session, user_text)
-    # A bare weekday ("ten past twelve on tuesday") is a partial naming to
-    # `day_named_by_caller`, so the scope above falls to the offer's first
-    # day and the weekday refusal then (rightly) drops the hit -- and the
-    # named-day producer reads Tuesday's three with the asked time absent.
-    # `_payload_day_by_weekday` (B-148) resolves the weekday against the
-    # payload, deny-by-default, and the scope follows it.
-    _wk = _payload_day_by_weekday(days, user_text)
-    if _wk:
-        _scoped = [s for s in remaining if _day_key(s) == _wk]
-    hit = resolve_requested_time(user_text, _scoped, days) if _scoped else None
-    if hit is not None:
-        logger.info(
-            "[slot_followup] a time the caller named resolved on the day "
-            "under discussion (%s), not across the sweep (DT-7/8)",
-            _day_key(hit),
-        )
-        return apply_resolved_time_to_session(session, hit, asked=_asked)
     hit = resolve_requested_time(user_text, remaining, days)
     if hit is not None:
         return apply_resolved_time_to_session(session, hit, asked=_asked)

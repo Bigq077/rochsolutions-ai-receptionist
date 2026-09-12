@@ -101,22 +101,27 @@ def test_the_offer_narrows_to_that_one_time_so_yes_books_it():
 # ── plausibility ───────────────────────────────────────────────────────────
 
 def test_a_round_hour_against_one_close_offered_time_is_a_question():
-    """'eleven works' with 11:20 on the table: the resolver's round-hour
-    tolerance, not the slip tolerance."""
+    """'eleven works' with 11:20 on the table. Since 12 Sep (DT-7/8, owner)
+    the named-time resolver sits above this row and searches the day's
+    BOOKABLE times, heard or not, so 11:00 -> 11:20 is answered there: one
+    real time, said as the nearest, as a yes/no. Same act, same shape of
+    answer as this row's "did you mean" -- and the offer narrows to it."""
     s, _ = _the_00_04_table()
     out = _say(s, "eleven works")
-    assert out.startswith("Just to check — did you mean twenty past eleven")
+    assert out.startswith("The nearest I've got to eleven in the morning is twenty past eleven")
+    assert out.endswith("?")
+    assert [o["start"][:16] for o in s["last_offered_slots"]] == [f"{MON}T11:20"]
 
 
-def test_a_time_between_two_offered_times_rereads_the_offer():
-    """'quarter to eleven works' sits between 10:30 and 11:20, fifteen minutes
-    from each and a mirror of neither -- a guess is a coin toss, so the offer
-    goes again. The "eleven" inside it is a component of 10:45, not a second
-    request for 11:00, so 11:20 is not the one plausible match."""
+def test_a_quarter_mark_between_two_offered_times_gets_the_nearer():
+    """'quarter to eleven works' is 10:45: fifteen minutes from 10:30 and
+    thirty-five from 11:20. Not a tie, so not a coin toss -- since 12 Sep the
+    far-nearest rule (DT-8) answers it with the nearer one, said as the
+    nearest. The "eleven" inside it is a component of 10:45, not a second
+    request for 11:00 (see `asked_clock_times`), so 11:20 is not preferred."""
     s, offer = _the_00_04_table()
     out = _say(s, "quarter to eleven works")
-    assert out.startswith("Sorry — I didn't catch which one. ")
-    assert out.endswith(offer.text)
+    assert out.startswith("The nearest I've got to quarter to eleven in the morning is half past ten")
 
 
 def test_two_plausible_offered_times_reread_the_offer():

@@ -504,6 +504,60 @@ def _shares_calendar_month(first_day: Any, day: Any) -> bool:
     return len(a) >= 7 and len(b) >= 7 and a[:7] == b[:7]
 
 
+def build_named_time_offer(
+    session: Dict[str, Any], available_days: Any, requested: Any,
+) -> Optional[SlotOffer]:
+    """ONE slot for a caller who named a time, from a fresh payload. Or None.
+
+    DT-7/8 on the TOOL path (owner, 12 Sep 2026). When the caller names a
+    time and the lookup has to run, the executor used to build the ordinary
+    three-slot readout and D8 pinned the asked time INTO it -- "10:30, 11:20,
+    12:10" for a caller who said twelve, the asked time third. The producer
+    that answers the same question from a payload already on the session
+    (`apply_resolved_time_to_session`) speaks one slot. Same question, two
+    answers: invariant 20. This makes the tool path give the producer's
+    answer: the nearest bookable time on the first presented day that holds
+    one, said honestly, no numbering, no keypad.
+
+    Not a selection change to the menu answers: with no requested time this
+    returns None and `build_slot_offer` runs exactly as before.
+    """
+    from app.tools.slot_followup import (
+        apply_resolved_time_to_session, resolve_requested_time,
+    )
+    try:
+        asked = [str(t) for t in (requested or []) if str(t).strip()]
+        if not asked or not isinstance(available_days, list):
+            return None
+        # A sentence the resolver can read: its own parser output, joined.
+        text = " or ".join(asked)
+        for day in available_days:
+            if not isinstance(day, dict) or not day.get("date"):
+                continue
+            slots = [s for s in flatten_bookable_slots([day]) if s.get("time")]
+            if not slots:
+                continue
+            hit = resolve_requested_time(text, slots, [day], far=True)
+            if hit is None:
+                continue
+            speech = apply_resolved_time_to_session(session, hit, asked=asked)
+            return SlotOffer(
+                chunks=[speech],
+                slots=[{
+                    "start": hit.get("start"),
+                    "end": hit.get("end") or "",
+                    "spoken": hit.get("spoken"),
+                    "date": hit.get("date"),
+                }],
+                dtmf_map={},
+                more_times=False,
+                mode="one_slot",
+            )
+    except Exception:
+        logger.exception("[slot_offer] named-time offer failed; using the readout")
+    return None
+
+
 def build_slot_offer(
     available_days: Any,
     *,

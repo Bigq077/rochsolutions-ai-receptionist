@@ -409,6 +409,109 @@ def dt8b(days, shape):
     return PASS, f"{said!r} -> {out[:70]!r}"
 
 
+@row("DT-7b", "a named time the caller has ALREADY HEARD is still answered "
+              "with that time", invariant="inv 4, inv 10")
+def dt7b(days, shape):
+    """Theorem CAf87ed571, 12 Sep 12:11: 'anything around 12' after midday
+    had been read. Heard-ness is novelty (level 4); a named time is relevance
+    (level 3). Driven through the dispatcher after a full day readout."""
+    from app.tools.slot_offer import apply_offer_to_session, offer_as_record
+    day = days[0]
+    times = day["slot_times"]
+    if len(times) < 2:
+        return UNREACHABLE, "needs 2+ times"
+    s = _session(days)
+    first = build_slot_offer([day], pretrimmed=False)
+    if first is None:
+        return UNREACHABLE, "no offer"
+    apply_offer_to_session(s, offer_as_record(first), first.chunks)
+    s["_slot_presentation_mode"] = "single_day"
+    heard = [t for t in times if f"{day['date']}T{t}:00" in set(s.get(sf._SPOKEN_KEY) or [])]
+    if not heard:
+        return UNREACHABLE, "nothing recorded as heard"
+    target = heard[0]
+    h, m = int(target[:2]), int(target[3:])
+    if m != 0 or not (8 <= h <= 19):
+        return UNREACHABLE, f"heard time {target} is not a bare hour a caller would say"
+    said = f"anything around {h if h <= 12 else h - 12}"
+    out = sf.try_unspoken_followup_speech(s, said)
+    if not out:
+        return FAIL, f"{said!r} for heard {target} reached no producer"
+    if _spoken_slot_time(target) not in out:
+        return FAIL, f"asked {target}, said {out!r}"
+    if s.get("v3_dtmf_slot_map") and not s.get("v3_slot_map_superseded"):
+        return FAIL, "the keypad map still addresses the previous readout (inv 10)"
+    return PASS, f"{said!r} -> {out[:60]!r}"
+
+
+@row("DT-8c", "a LOOKUP for a named time returns ONE slot, not a readout "
+              "with it pinned in", invariant="inv 20")
+def dt8c(days, shape):
+    """The tool path (demo CA778651b7, 11 Sep 08:44: '10:30, 11:20, 12:10'
+    for a caller who said twelve). Drives `_named_time_offer` with the shape
+    `check_availability` hands `_flush_slot_buf`."""
+    from app.media_streams.llm_stream import _named_time_offer
+    times = days[0]["slot_times"]
+    if len(times) < 2:
+        return UNREACHABLE, "needs 2+ times"
+    grid = set(times)
+    asked = next((f"{h:02d}:00" for h in range(8, 20)
+                  if any(abs((int(t[:2]) * 60 + int(t[3:])) - h * 60) <= 60 for t in times)), None)
+    if asked is None:
+        return UNREACHABLE, "no round hour within an hour of a slot"
+    s = _session(days)
+    s[sf.REQUESTED_TIMES_KEY] = [asked]
+    result = {"available_days": days, "presented_days": days[:3]}
+    offer = _named_time_offer(s, result, days[:3])
+    if offer is None:
+        return FAIL, f"asked {asked}: the tool path built no one-slot offer"
+    if offer.mode != "one_slot" or len(offer.slots) != 1 or offer.dtmf_map:
+        return FAIL, f"asked {asked}: mode={offer.mode} slots={len(offer.slots)} map={offer.dtmf_map}"
+    best = min(times, key=lambda t: abs((int(t[:2]) * 60 + int(t[3:])) - int(asked[:2]) * 60))
+    if not offer.slots[0]["start"].endswith(f"T{best}:00") and best in grid:
+        return FAIL, f"asked {asked}, offered {offer.slots[0]['start']}, nearest is {best}"
+    if asked not in grid and "nearest" not in offer.text.lower():
+        return FAIL, f"offered {best} for {asked} without saying so: {offer.text!r}"
+    return PASS, f"asked {asked} -> {offer.text[:60]!r}"
+
+
+@row("DT-8d", "a round time FAR from every slot gets the nearest, said so, "
+              "on a day the caller chose", invariant="inv 4")
+def dt8d(days, shape):
+    """'around 12' against a day whose nearest is 12:50 used to fall to the
+    model past the 20-minute tolerance. Owner, 12 Sep: one slot, honestly."""
+    from app.tools.slot_offer import apply_offer_to_session, offer_as_record
+    day = days[0]
+    times = day["slot_times"]
+    if len(times) < 2:
+        return UNREACHABLE, "needs 2+ times"
+    mins = [int(t[:2]) * 60 + int(t[3:]) for t in times]
+    asked = next((f"{h:02d}:00" for h in range(8, 20)
+                  if min(abs(m - h * 60) for m in mins) > sf.NEAREST_TIME_TOLERANCE_MIN
+                  and min(mins) - 120 <= h * 60 <= max(mins) + 120
+                  and len([m for m in mins if abs(m - h * 60) == min(abs(x - h * 60) for x in mins)]) == 1),
+                 None)
+    if asked is None:
+        return UNREACHABLE, "no round hour beyond tolerance with a unique nearest inside the day's span"
+    s = _session(days)
+    first = build_slot_offer([day], pretrimmed=False)
+    if first is None:
+        return UNREACHABLE, "no offer"
+    apply_offer_to_session(s, offer_as_record(first), first.chunks)
+    s["_slot_presentation_mode"] = "single_day"
+    h = int(asked[:2])
+    said = f"anything around {h if h <= 12 else h - 12}"
+    out = sf.try_unspoken_followup_speech(s, said)
+    if not out:
+        return FAIL, f"{said!r} (nearest > {sf.NEAREST_TIME_TOLERANCE_MIN} min) reached no producer"
+    best = times[min(range(len(mins)), key=lambda i: abs(mins[i] - h * 60))]
+    if _spoken_slot_time(best) not in out:
+        return FAIL, f"asked {asked}, nearest {best}, said {out!r}"
+    if "nearest" not in out.lower():
+        return FAIL, f"did not say it is the nearest: {out!r}"
+    return PASS, f"{said!r} -> {best}"
+
+
 @row("DT-9", "a tie for nearest declines rather than guessing",
      shapes=["uniform50"], invariant="inv 4")
 def dt9(days, shape):
