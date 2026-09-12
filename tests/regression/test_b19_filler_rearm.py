@@ -126,7 +126,17 @@ def test_the_stall_threshold_is_absolute_not_relative():
     assert "_filler_t0 + LLM_FILLER_SECOND_STALL_MS" in body, (
         "the re-arm must wait to an absolute deadline measured from dispatch"
     )
-    assert LLM_FILLER_SECOND_STALL_MS == 10000
+    # 7000 since 12 Sep 2026 (owner decision; SCOPE_STALL_LADDER §7).
+    assert LLM_FILLER_SECOND_STALL_MS == 7000
+    # MIN_GAP must never bind on EITHER rung-1 path, or the constant stops
+    # meaning what it says (the dc6f521e shape). Contentless rung 1 lands at
+    # LLM_FIRST_CHUNK_TIMEOUT_MS; the earliest rung 2 can then wake is that
+    # plus MIN_GAP, and the deadline must be at or past it.
+    assert LLM_FIRST_CHUNK_TIMEOUT_MS + LLM_FILLER_SECOND_MIN_GAP_MS <= LLM_FILLER_SECOND_STALL_MS, (
+        "MIN_GAP binds on the contentless path: the real deadline would be "
+        f"{LLM_FIRST_CHUNK_TIMEOUT_MS + LLM_FILLER_SECOND_MIN_GAP_MS}ms, not "
+        f"{LLM_FILLER_SECOND_STALL_MS}ms"
+    )
 
 
 def test_a_second_phrase_can_never_be_back_to_back():
@@ -168,9 +178,12 @@ def test_silence_under_the_stall_threshold_is_a_deliberate_trade():
         % (LLM_FIRST_CHUNK_TIMEOUT_MS, FIRST_RUNG_SYNTH_MS,
            LLM_FIRST_CHUNK_TIMEOUT_MS + FIRST_RUNG_SYNTH_MS, DEAD_AIR_BAR_MS)
     )
-    assert LLM_FILLER_SECOND_STALL_MS >= 8000, (
-        "below ~8s the second phrase stacks often enough to be the defect "
-        "rather than the fix"
+    # Was >= 8000 on the 294-turn corpus of 1 Sep; re-measured on 3,203 turns
+    # 12 Sep, 7000 fires on 3.2% with zero wasted firings. The structural floor
+    # is the MIN_GAP sum asserted above, not this number.
+    assert LLM_FILLER_SECOND_STALL_MS >= 7000, (
+        "below 7s MIN_GAP binds on the contentless rung-1 path and the second "
+        "phrase stacks often enough to be the defect rather than the fix"
     )
     assert LLM_FILLER_SECOND_STALL_MS <= 15000, (
         "above ~15s the B-19 dead air returns — a 24.7s turn exists in the "

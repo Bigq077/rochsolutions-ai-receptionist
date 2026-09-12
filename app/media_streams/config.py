@@ -627,7 +627,20 @@ LLM_FILLER_COOLDOWN_SEC = 8.0
 #   whatever the other numbers become. In practice it never binds (a 600ms head
 #   is 9.4s clear of the 10s deadline); it exists so that the next timing change
 #   cannot recreate this defect the way dc6f521e did.
-LLM_FILLER_SECOND_STALL_MS = 10000
+#
+# 10000 -> 7000, owner decision 2026-09-12, measured on 3,203 path=llm turns
+# (SCOPE_STALL_LADDER_2026-09-12.md §7). The 294-turn figures above overstate
+# every cost: the engine is ~2x faster than on 1 Sep, so 10s fires on 0.9% of
+# turns and the 3-10s band is a hole -- one head, then silence (7.9s of it on
+# CA1ef288f1). At 7000: 3.2% of turns fleet-wide, 6.2% on the demo line, zero
+# firings within 300ms of content, median 3.1s of silence still covered.
+#
+# Why 7000 and not 6000: wake_at = max(t0 + STALL, now + MIN_GAP). With the
+# 2,750ms contentless rung 1, MIN_GAP binds at 6000 (real deadline 6,750ms)
+# -- a constant whose effective value is set by something else, which is the
+# dc6f521e shape. 7000 is the lowest value at which MIN_GAP never binds on
+# either rung-1 path. test_b19_filler_rearm pins that.
+LLM_FILLER_SECOND_STALL_MS = 7000
 LLM_FILLER_SECOND_MIN_GAP_MS = 4000
 
 # Bad-line detection: minimum silence gap before playing bad-line phrase
