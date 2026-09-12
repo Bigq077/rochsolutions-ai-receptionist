@@ -556,8 +556,12 @@ def _rx(pattern: str):
 
 #: "hello?" / "are you there?" after the call is under way. Whole utterance,
 #: four words at most, so "hello, I'd like to book" is a request and not this.
-_CHECK_IN = _rx(r"^\s*(?:hello|hi|hiya|hey|are you (?:still )?there|you there|"
-                r"you still there|can you hear me|still there|anyone there)"
+#: "hello you still there" (demo call CA5c69c585, 12 Sep 2026, first live
+#: run) is a greeting word IN FRONT of the check -- so the greeting is an
+#: optional prefix, not one of the alternatives.
+_CHECK_IN = _rx(r"^\s*(?:(?:hello|hi|hiya|hey|sorry)[\s,]+)?"
+                r"(?:hello|hi|hiya|hey|are you (?:still )?there|you (?:still )?there|"
+                r"can you hear me|still there|anyone there|you still with me)"
                 r"[\s?.!]*$")
 
 #: Susie's own greeting, matched against her PREVIOUS turn. Every clinic's
@@ -1783,7 +1787,12 @@ ACK_OPENER_RE = re.compile(
     r"^\s*(?:"
     r"(?:right|okay|ok|lovely|great|perfect|brilliant|sure|certainly|absolutely)"
     r"|(?:of course)|(?:got (?:it|that|you))|(?:no problem(?: at all)?)|(?:not to worry)"
-    r"|(?:(?:yes, )?i'm here)|(?:thanks?(?: for that)?)|(?:thank you)"
+    # "still here" as well as "I'm here": the prompt example was changed to
+    # the head's wording, and the model wrote "still here" anyway on both
+    # live check-ins of 12 Sep 2026 (CAe541a6a9, CA5c69c585) -- so the caller
+    # heard "I'm here, yes — still here — could I take your name?". The
+    # opener is stripped by this allow-list, not by matching the head.
+    r"|(?:(?:yes, )?(?:i'm |still )here)|(?:thanks?(?: for that)?)|(?:thank you)"
     r"|(?:no worries)|(?:that's (?:fine|no problem|absolutely fine))"
     r"|(?:i'm sorry to hear (?:that|about that))|(?:sorry to hear (?:that|about that))"
     r"|(?:(?:my )?apologies(?: for (?:that|the confusion))?)"

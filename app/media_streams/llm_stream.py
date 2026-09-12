@@ -5527,7 +5527,9 @@ class LLMStream:
                 self._timing.hold_reason = (
                     getattr(_hs_intent, "value", "none") if _hs_intent else "none"
                 )
-                self._timing.hold_head = _hs_situational or "-"
+                # hold_head is set when a phrase is actually queued (below);
+                # "-" here means the turn's content arrived before any did.
+                self._timing.hold_head = "-"
             except Exception:  # pragma: no cover - never on the hot path
                 pass
 
@@ -5680,6 +5682,16 @@ class LLMStream:
                         session.setdefault("used_fillers", []).append(
                             _ack_filler_text
                         )
+                        # What was actually QUEUED, not the 600ms candidate:
+                        # on a confirmed write the write head wins and the
+                        # candidate is never spoken (CA021557c4, turn 10:
+                        # stored "Yes, let's get that sorted —", heard
+                        # "Popping that in for you —").
+                        if self._timing is not None:
+                            try:
+                                self._timing.hold_head = _ack_filler_text
+                            except Exception:  # pragma: no cover
+                                pass
                     self._last_filler_at = time.monotonic()
 
                     # ── B-19: re-arm ONCE, on a GENUINE stall ────────────

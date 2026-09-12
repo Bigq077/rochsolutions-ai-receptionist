@@ -190,6 +190,27 @@ def test_hello_on_the_first_turn_is_just_a_hello():
     assert classify_intent("hello", GREETING) == []
 
 
+def test_a_greeting_in_front_of_the_check_is_still_a_check():
+    """CA5c69c585, 12 Sep 2026, first live run: "hello you still there" was
+    read as a name answer and got "Thanks, got that —"."""
+    hits = classify_intent("hello you still there",
+                           "so that's Tuesday — could I take your first name and surname?")
+    assert hits == [Intent.CHECK_IN], hits
+    assert classify_intent("sorry", "could I take your first name and surname?") != [Intent.CHECK_IN]
+
+
+def test_the_models_still_here_is_stripped_after_the_check_in_head():
+    """CAe541a6a9 and CA5c69c585, 12 Sep 2026: head "I'm here, yes —", then the
+    model's own "still here — could I take your name?" on top of it."""
+    from app.hold_speech import strip_head_echo
+    head = f"I'm here, yes {EM_DASH}"
+    assert strip_head_echo("still here — could I take your first name?", head) == \
+        "could I take your first name?"
+    assert strip_head_echo("yes, still here — could I take your first name?", head) == \
+        "could I take your first name?"
+    assert strip_head_echo("Yes, I'm here — take your time.", head) == "take your time."
+
+
 def test_a_bare_yes_to_the_name_question_has_not_given_a_name():
     assert classify_intent("yes", "could I take your first name and surname?") == []
 
