@@ -14,7 +14,7 @@ in §Corrections below.
 |---|---|---|
 | 1 | [`../../CLAUDE.md`](../../CLAUDE.md) | Repo context, architecture, hazards, conventions |
 | 2 | [`BRANCH_DECISION.md`](BRANCH_DECISION.md) | Which branch is the production base (ADR) |
-| 2a | [`RELEASE_PROMOTION_DECISION.md`](RELEASE_PROMOTION_DECISION.md) | **ADR-002 (1 Sep 2026).** All four services now track one branch, so a push reached every patient line at once. `latency-eval` = staging (demo line), `production` = the three patient lines, promoted by fast-forward after a demo call. Amends ADR-001's one-branch-per-clinic model. **Inert until the Render services are repointed.** |
+| 2a | [`RELEASE_PROMOTION_DECISION.md`](RELEASE_PROMOTION_DECISION.md) | **ADR-002 (1 Sep 2026).** All four services now track one branch, so a push reached every patient line at once. `latency-eval` = staging (demo line), `production` = the three patient lines, promoted by fast-forward after a demo call. Amends ADR-001's one-branch-per-clinic model. **LIVE since 2026-09-02** — the services were repointed and `production` has served all three patient lines since. (Said "inert until the Render services are repointed" until 12 Sep; corrected by `DOC_AUDIT_2026-09-12_EVENING.md` §C8.) |
 | 3 | [`PRODUCTION_READINESS_PLAN.md`](PRODUCTION_READINESS_PLAN.md) | Phased plan with gates |
 | 4 | [`FAILURE_MODE_REGISTER.md`](FAILURE_MODE_REGISTER.md) | Ranked risk register (FM-nn) |
 | 5 | [`REGISTER_B_U.md`](REGISTER_B_U.md) | **Live defect queue** — `B-nn` / `U-nn` |
@@ -29,7 +29,11 @@ Phase 0 templates: `TEST_BASELINE.md`, `DELETED_TEST_TRIAGE.md`,
 
 ---
 
-## This week (Jules / Quentin away)
+## August 11–16 sprint (Jules / Quentin away) — historical
+
+> Titled "This week" until 12 Sep 2026, a month after it stopped being true.
+> For what is actually current, read `SESSION_HANDOVER_2026-09-12.md` then
+> `DOC_AUDIT_2026-09-12_EVENING.md`.
 
 | Document | What it is |
 |---|---|
@@ -42,14 +46,27 @@ Phase 0 templates: `TEST_BASELINE.md`, `DELETED_TEST_TRIAGE.md`,
 
 ---
 
-## Clinic work in flight
+## Clinic work — NOT in flight, and not audited
+
+> ⚠️ **These four are August documents and none has been re-checked against the
+> tree.** `THEOREM_ACCEPTANCE_REGISTER.md` alone still carries ~12 rows reading
+> `**Status:** open`, all from August calls. The one marked **HIGH** — T-17,
+> "a dead guard injected a synthetic turn" — **is fixed** (`connection.py:13297`
+> "B2 fix", with an explicit `T-17 (2026-08-05)` comment at :13904), and the row
+> still says open.
+>
+> `SLOT_PRESENTATION_SPEC.md` §10 retired all eight `OPEN_DEFECTS_*` registers
+> and every call sheet, **but not these** — so they read as authoritative and
+> are not. **Do not cite a row from either register without grepping for its fix
+> first.** They need a triage pass or explicit retirement; that decision is
+> open. (`DOC_AUDIT_2026-09-12_EVENING.md` §C7.)
 
 | Document | Clinic |
 |---|---|
 | [`THEOREM_PORT_PLAN.md`](THEOREM_PORT_PLAN.md) | Theorem → current engine |
-| [`THEOREM_ACCEPTANCE_REGISTER.md`](THEOREM_ACCEPTANCE_REGISTER.md) | Theorem live defects / acceptances |
+| [`THEOREM_ACCEPTANCE_REGISTER.md`](THEOREM_ACCEPTANCE_REGISTER.md) | Theorem live defects / acceptances — **unaudited, ~12 stale "open" rows** |
 | [`VITALEDGE_PORT_PLAN.md`](VITALEDGE_PORT_PLAN.md) | Vital Edge convergence |
-| [`VITALEDGE_ACCEPTANCE_SUITE.md`](VITALEDGE_ACCEPTANCE_SUITE.md) | VE accept cases |
+| [`VITALEDGE_ACCEPTANCE_SUITE.md`](VITALEDGE_ACCEPTANCE_SUITE.md) | VE accept cases — **unaudited** |
 
 ---
 
@@ -83,5 +100,12 @@ superseded queues. See [`archive/README.md`](archive/README.md).
 | 29 | 11 Sep | **A "two slots, not six" test was pinning a superseded owner decision.** `test_collection_sequence_prompt`'s B1 tests asserted the unnumbered two-time rule as correct, ten days after the owner replaced it (1 and 9 Sep). That is correction 27's mechanism again, on a different defect: a correct test of an earlier decision becomes a defect pin. When a decision is superseded, **record the supersession in the test** — deleting it loses the reason and leaving it blocks the fix. `fa4dca45` |
 | 30 | 11 Sep | **Four of the first eight "failures" from the new spec scorer were the scorer's own bugs, and every one looked like a finding**: a non-round probe time that invariant 18 declines *by design*; a bare string where `nearest_time_index` declines *by contract*; three invented session keys where `choose_presented_days` actually reads the spoken record; and a row asserting past the documented boundary of N1's fix. Correct the ruler before measuring with it — correction 25, one layer up. `f860938a` |
 | 31 | 11 Sep | **A harness that scores producers cannot see a routing defect, and must not report PASS.** The named-day producer, called directly, answers "what else on Monday" perfectly on every diary shape — N6 is still open, because the utterance never reaches it (B-137 takes it). `scripts/score_slot_spec.py` therefore reports DT-14 as UNREACHABLE, not PASS: a PASS there retires the only thing catching N6, which is a phone call. `handle_transcript` being undrivable offline is the real cost of invariant 20. `f860938a` |
+
+| 32 | 12 Sep | **The invented-symptoms defect was fixed 21 minutes after the doc that reported it, and the doc never said so.** `8e838f0f`, tested, promoted and call-verified at 23:08 — but with no status line, a reader who did not grep the tree inherited "not fixed" as current. `0a19c4f2` |
+| 33 | 12 Sep | **Four of the five items a same-day handover called "small and anchored" were already fixed** — site B's failure line (S-6), single-day `presented_days`, the tool-vs-plain split (S-9, instrumentation *and* the `latency_percentiles` reader), and `UNKNOWN_SLOW` on an answered turn (`_reason_answer`). The list had been copied forward from `STAGE_C_EVIDENCE_2026-09-10.md` without re-grepping, and carried a **stale line number** with it (`llm_stream.py:3717`; the function is at `:3955`). Correction 32's mechanism, one day later and four rows at once: **a forward-copied list inherits staleness silently.** Re-grep every row you carry. `DOC_AUDIT_2026-09-12_EVENING.md` |
+| 34 | 12 Sep | **A "BLOCKED — the file does not exist on any of seven branches" doc outlived its blocker by nine days.** `SMS_COST_GUARD_BLOCKED_2026-09-03.md` was written with real search evidence; `sms_guard.py` then shipped **the same day** (`0a2c10b3`) and is wired at `sms.py:226`. The doc's evidence was sound and its conclusion became false within hours — so **a well-evidenced status line is not a durable one**. Worse, the guard it declared missing contains `is_test_number()`, the control that stops a test texting a real handset. |
+| 35 | 12 Sep | **D7 was carried on three lists as an env-var chore; its blast radius is Sheets alone.** `GOOGLE_SERVICE_ACCOUNT_JSON` is read only by `handoff.py:80` and `integrations/sheets.py` — Google Calendar builds from OAuth `stored_tokens`, so availability and booking never touch it (proved live: gcal lookups succeeded on the same calls that logged the warning). Sheets is superseded by OBS, so D7 is **WON'T FIX**, not pending. Measure the blast radius before scheduling an "easy" fix. |
+| 36 | 12 Sep | **The scorer's 38 UNREACHABLE rows are inapplicable diary shapes, not unverified behaviour.** Grouped, every one reads "needs 2+ times", "needs 4+ times so a readout can drop one", "the day holds one band only" — **none** says it needs `handle_transcript`. Correction 31's dispatcher gap was closed when DT-14 was rewired through `try_unspoken_followup_speech`. A count of unreachable rows is not a backlog until you read the reasons. |
+| 37 | 12 Sep | **`git worktree list` reports 173 worktrees; CLAUDE.md says "~15".** None are prunable — every directory still exists, so all 173 are live registrations. The order-of-magnitude drift is itself the wrong-tree hazard CLAUDE.md warns about: the more trees, the likelier a session measures one nobody meant. |
 
 If you find another contradiction, the code wins — add a row above.

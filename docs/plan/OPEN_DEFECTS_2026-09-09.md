@@ -343,11 +343,29 @@ rung says the same thing twice, but it does not add a third rung, and
 an owner decision.** "Bear with me" is not available: Gate 5 strips it as a
 banned phrase.
 
-### D7 — demo-service Sheets is broken ⚪ env var, not code
+### D7 — demo-service Sheets is broken ⚫ CLOSED 2026-09-12, WON'T FIX
 
 Unchanged from the handover. `GOOGLE_SERVICE_ACCOUNT_JSON` is malformed on
 `low-latency-joint-venture`. Re-paste it in Render; no code change, and nothing
 here can do it.
+
+> **Closed 2026-09-12 as WON'T FIX, with the scope measured.** Still reproducing
+> — demo call `CA1ef288f1` at 13:29:59 logged
+> `GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON: JSONDecodeError('Invalid
+> \escape: line 5 column 46')`. It was being carried as open on three separate
+> lists.
+>
+> **Blast radius, verified by grep:** that variable is read in exactly two
+> places — `app/tools/handoff.py:80` and `app/integrations/sheets.py`. Both are
+> Sheets. **Google Calendar does not touch it**: `calendar_google.py` builds its
+> client from OAuth `stored_tokens` (`creds_from_stored` →
+> `get_calendar_service`, :230). Confirmed live the same day — the demo and
+> Vital Edge availability lookups both succeeded on gcal while this warning was
+> firing.
+>
+> Sheets is superseded by OBS by owner ruling, so the only consequence is one
+> WARNING per call. **Do not re-open this and do not propose fixing Sheets.**
+> (`DOC_AUDIT_2026-09-12_EVENING.md` §C6.)
 
 ### The engine's location constants are still written phonetically
 
@@ -391,8 +409,9 @@ All three need a phone, and one needs the Render dashboard:
    outstanding question, and N2 verified: "cancel it altogether" transcribed
    correctly with no `BLOCKED` line, judge 4 against 3.
 2. ~~**Phase 2** — one Theorem call.~~ **CLOSED by observation** — see §3b.
-3. **D7** — re-paste the service-account JSON in Render. Still open; the
-   demo-service log showed it again on both 9 Sep calls.
+3. ~~**D7** — re-paste the service-account JSON in Render.~~ **CLOSED 12 Sep as
+   WON'T FIX** — Sheets-only, and Sheets is superseded by OBS. See §3's D7 entry
+   for the measured blast radius.
 
 > ⚠️ **SUPERSEDED 2026-09-09 evening. This section said "nothing has been
 > promoted" and named `f9793204` as the revert target. Both are now wrong, and

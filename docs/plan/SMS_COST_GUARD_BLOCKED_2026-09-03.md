@@ -1,6 +1,27 @@
 # SMS cost guard — BLOCKED, and four premises corrected
 
-**Status: not started. `app/notifications/sms_guard.py` does not exist.**
+> 🟢 **SUPERSEDED 2026-09-03, same day. THE BLOCKER IS GONE — the guard shipped
+> and is live.** Do not read the status line below as current.
+>
+> `app/notifications/sms_guard.py` landed in `0a2c10b3` (3 Sep) with
+> `25c18f44` (4 Sep) following, and is wired at the single send funnel:
+> [sms.py:226-232](../../app/notifications/sms.py:226) imports `to_gsm7`,
+> `check_budget`, `is_test_number` and `record_fake`, with a local inbox route
+> at `app/routes/dev_sms.py`. **Tasks 1–5 are done, not pending.**
+>
+> This matters beyond bookkeeping: `is_test_number()` is the control that stops
+> a test reaching a real handset, which has bitten twice. It exists and it runs.
+>
+> ⚠️ An **older 196-line draft** with no `check_budget` sits untracked in the
+> main worktree (`vitaledge-onboarding`). That copy is stale and safe to delete;
+> the tracked one on `latency-eval` is not.
+>
+> §2's four premise corrections below are still **accurate and still worth
+> reading** — they are about `sms.py`, not about the missing file.
+> Recorded by the 12 Sep evening audit (`DOC_AUDIT_2026-09-12_EVENING.md` §C5).
+
+**Status (as written, 3 Sep, now false): not started.
+`app/notifications/sms_guard.py` does not exist.**
 The brief's own constraint — *"If `app/notifications/sms_guard.py` is missing,
 stop and tell me rather than recreating it"* — is the binding instruction here,
 so nothing in Tasks 1–5 was applied.

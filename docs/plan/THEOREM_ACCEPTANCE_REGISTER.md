@@ -1,5 +1,23 @@
 # Theorem acceptance run — defect register
 
+> ⚠️ **UNAUDITED SINCE AUGUST. Every `Status: open` row below is a LEAD, not a
+> finding — grep the tree for its fix before acting on one.** Reviewed 12 Sep
+> 2026: ~12 rows still read `**Status:** open`, all from August calls, none
+> re-checked. The one marked **HIGH** was spot-checked and is **fixed**:
+>
+> * **T-17** — *"a dead guard injected a synthetic turn on top of a live one"*.
+>   The v3 loop now resets `_turn_speech_emitted`
+>   ([connection.py:13297](../../app/media_streams/connection.py:13297),
+>   commented "B2 fix"), the non-FlowEngine path sets it (:13090), and :13904
+>   carries an explicit `T-17 (2026-08-05)` fix comment. The row still says open.
+>
+> This register's branch — `theorem-onboarding` — was **superseded by
+> `production` on 2026-08-31** and is not deployed. `SLOT_PRESENTATION_SPEC.md`
+> §10 retired all eight `OPEN_DEFECTS_*` registers and every call sheet but not
+> this file, so it reads as authoritative and is not. Whether to triage it row
+> by row or retire it outright is an **open decision**.
+> (`DOC_AUDIT_2026-09-12_EVENING.md` §C7.)
+
 **Branch:** `theorem-onboarding` · **Clinic:** `theorem_v3` · **Opened:** 2026-08-04
 Companion to `THEOREM_ACCEPTANCE_SUITE.md`. Findings only — fixes are batched
 after the sweep so attribution survives, per the run sheet.

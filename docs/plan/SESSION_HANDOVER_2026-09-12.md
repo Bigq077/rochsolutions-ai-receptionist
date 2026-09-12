@@ -151,24 +151,51 @@ the code and the spec, deliberately not decided.
    on the same call was 131–135 ms. Ranked plan in
    `LATENCY_DISTRIBUTION_2026-09-10.md` §8 — items 1 (ladder arming), 2
    (`chunk_gate`) and 4 (`llm_ttft`) untouched.
+
+   > **Item 1 is now anchored — 12 Sep evening, it stopped being a lead.**
+   > `CA1ef288f1` turn 2: `content_ttfa_ms=10990`, `llm_ttft_ms=8313`, and the
+   > filler head finished at 13:28:30.116 with the next audio at 13:28:38.0 —
+   > **7.9 s of dead air and no `WATCHDOG_START` logged after that head.** Same
+   > on turn 1. Arming is withheld while `_llm_busy` is true and handed to
+   > `on_tts_finished()` (`connection.py:4899`, `WATCHDOG_DEFERRED_CLEAR
+   > reason=tts_still_playing`), so **a turn whose only audio so far is a
+   > non-question filler head arms nothing at all** and post-filler silence has
+   > no upper bound. DEC-1 asked for exactly this `file:line` before scheduling
+   > it; it now has one. Bounded fix, live path, needs a call to verify.
 2. **Readiness gates 1, 2 and 5 have no recorded pass.** Gate 2's capture leg
    is now proven on Theorem and Vital Edge (both log `[obs.store] captured`
    and `judged`); the **alerts** leg is unproven on any service and the
    **digest worker is off everywhere**. Gate 1 needs its own test: a
    deliberately broken Acuity credential producing an honest caller outcome
    plus an operator alert, demonstrated on a live call.
-3. **Small and anchored:** Stage C's `_record_stood_down_slots`
-   (`llm_stream.py:3717`) fails silently and needs its own line;
-   `presented_days` is never recorded in `single_day` mode; nothing per turn
-   records whether a tool ran, so the tool-vs-plain latency split cannot be
-   measured; the multi-day lead-in (~1.8 s); `UNKNOWN_SLOW` apologises on a
-   turn that answered.
+3. **Small and anchored** — ⚠️ **four of these five were already fixed when this
+   was written. Corrected 12 Sep evening; see
+   `DOC_AUDIT_2026-09-12_EVENING.md` §C.**
+
+   | claimed | actual |
+   |---|---|
+   | Stage C's `_record_stood_down_slots` (`llm_stream.py:3717`) fails silently | **FIXED** — S-6 split the arms at `llm_stream.py:3990` (WARNING on *nothing parsed*, INFO on *already held*). The line number was stale too: the function is at **:3955** |
+   | `presented_days` is never recorded in `single_day` mode | **FIXED** — `llm_stream.py:7712-7718` falls back to `[first_day]` |
+   | nothing per turn records whether a tool ran, so the tool-vs-plain split cannot be measured | **FIXED** — S-9's `tool_calls` (`latency_timing.py:263`), stamped at `llm_stream.py:6082`, persisted in `as_record()`, and `latency_percentiles.py` already prints a "REAL SPLIT" section. Only a post-10-Sep corpus is missing. *Residual:* `tool_calls` is absent from the printed `[LAT]` format string (`latency_timing.py:309-317`), so it is invisible in the Render log |
+   | `UNKNOWN_SLOW` apologises on a turn that answered | **FIXED** — `_reason_answer`, `hold_speech.py:741`. Confirmed on `CA1ef288f1`: the ankle turn got "Let's get you booked in —" |
+   | the multi-day lead-in (~1.8 s) | **genuinely open** |
+
+   What is left of this item: the lead-in, and the one-line `[LAT]` format string.
 4. **Parser leads, none reproduced on a call:** "half three" reads as
    nothing; `requested_clock_times("at ten to twelve")` also emits 10:00;
    "from nine to five" → 04:51; a bare "8 in the morning" is unread.
-5. **Invariants 16 and 20** — 13 % of recorded offers were never spoken; four
-   availability readers, five refusal branches (the migration, Stage D, never
-   started).
+5. **Invariants 16 and 20** — 13 % of recorded offers were never spoken
+   (instrumented by S-7, never re-measured since 10 Sep); four availability
+   readers, five refusal branches (the migration, Stage D, never started —
+   `fetch_free_slots` exists nowhere in the repo).
+
+   > **Invariant 20 should rank higher than 5th.** It was filed as migration
+   > debt, but D-r's own correction-log entry in `SLOT_PRESENTATION_SPEC.md`
+   > says the 12 Sep Theorem defect happened *because* "invariant 20, the tool
+   > path was never aligned to DT-7/8" — one act, two paths, two answers, and a
+   > keypad map that would have booked one o'clock. It is simultaneously a
+   > correctness risk today and the cohort-scale onboarding blocker, which no
+   > other item on this list is.
 6. **Housekeeping:** `docs/plan/README.md` is stale (ADR-002 still says
    "inert", the "this week" table is from August, corrections stop at 31).
    The main worktree sits on `vitaledge-onboarding` (legacy) with ~45
@@ -176,6 +203,21 @@ the code and the spec, deliberately not decided.
    `sms_guard.py` draft that should be deleted.
    `fix/p8-availability-cause` carries one test not on `latency-eval`
    (`test_a_closed_day_is_not_called_too_soon.py`).
+
+   > **Measured 12 Sep evening.** 43 untracked paths; **42 are already on
+   > `latency-eval`** and safe to clean. The 43rd,
+   > `docs/SMS_COST_GUARD_PROMPT.md`, is on **no ref anywhere** — one
+   > `git clean` loses it. Commit or discard it deliberately.
+   >
+   > The `sms_guard.py` draft is indeed stale (196 lines, no `check_budget`) —
+   > but the **tracked** `sms_guard.py` on `latency-eval` is live and wired at
+   > `sms.py:226`. Delete the draft only, and read the audit's §C5 before
+   > touching anything called `sms_guard`.
+   >
+   > **`git worktree list` reports 173 worktrees**, not ~15, and
+   > `git worktree prune --dry-run` finds none prunable — every directory still
+   > exists. CLAUDE.md's figure is an order of magnitude out, and this is the
+   > wrong-tree measurement hazard it warns about.
 
 ---
 

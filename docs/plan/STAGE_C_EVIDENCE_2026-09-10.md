@@ -1,8 +1,30 @@
 # Stage C evidence — 2026-09-10 (T3)
 
+> 🟢 **BOTH CODE ASKS IN THIS DOCUMENT WERE BUILT. Updated 12 Sep 2026.**
+>
+> * §1 / §5.2 — *"site B needs a failure line of its own"*: **done.** S-6 splits
+>   *nothing parsed* (WARNING) from *already held* (INFO) at
+>   [llm_stream.py:3990-4007](../../app/media_streams/llm_stream.py:3990). The
+>   gate below can now mean what it says. **Note the line numbers in §1 and §2
+>   have drifted**: `_record_stood_down_slots` is at **:3955**, not `:3717`.
+> * §4 — *"a one-argument fix at the single-day call site"*: **done.**
+>   [llm_stream.py:7712-7718](../../app/media_streams/llm_stream.py:7712) falls
+>   back to `[first_day]`, so the B-95 presented-vs-bookable split is measurable
+>   on single-day readouts too.
+>
+> **Still open from this document, and unchanged:**
+> * §5.1 — the Render log grep for `could not resolve spoken option(s)` across
+>   the clinic services. Never run.
+> * §5's closing note — the population reaching **site A** still leaves no row,
+>   so the ~900-line repair layer **cannot be retired** on a clean grep.
+>
+> A 12 Sep handover copied §1 and §4 forward as open work without re-grepping;
+> see `DOC_AUDIT_2026-09-12_EVENING.md` §C1–C2 and README correction 33.
+
 **Gate:** no `could not resolve spoken option(s)` on any clinic.
-**Status: NOT MET, and the gate as written cannot be met by looking at that
-line alone.** The reasoning is below; the Render log check is a morning job.
+**Status (as written 10 Sep): NOT MET, and the gate as written cannot be met by
+looking at that line alone.** The reasoning is below; the Render log check is a
+morning job.
 
 **Scope note.** This establishes which paths can still reach the reverse-parse,
 from the code and from the corpus. It changes no engine code. The ~900-line

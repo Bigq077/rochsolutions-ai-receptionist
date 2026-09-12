@@ -1,5 +1,17 @@
 # Vital Edge — 12-Call Acceptance Suite
 
+> ⚠️ **UNAUDITED SINCE AUGUST — check any claim here against the tree before
+> acting on it.** Reviewed 12 Sep 2026 alongside
+> `THEOREM_ACCEPTANCE_REGISTER.md`, which was found to carry ~12 stale "open"
+> rows. This file was not read row by row; treat it with the same suspicion.
+>
+> Its premise has also moved on: Vital Edge no longer sits on
+> `vitaledge-onboarding` (retired 2026-08-31, superseded by `production`), and
+> its availability now comes from the **diary reader**, not the path this suite
+> was written against. `SLOT_PRESENTATION_SPEC.md` §10 did not retire this file,
+> so it reads as authoritative and is not. Triage-or-retire is an **open
+> decision**. (`DOC_AUDIT_2026-09-12_EVENING.md` §C7.)
+
 **What this certifies:** that moving Jonathan's clinic from the 24-July engine to
 the current one (**294 commits in one step**) is safe to leave in production.
 

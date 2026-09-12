@@ -410,6 +410,19 @@ from this harness**, and it is the same statement as invariant 20: the reason th
 same act reaches different code is that nothing owns the routing decision. That
 is the migration, and this is the argument for it — not elegance, measurability.
 
+> **Amendment, 12 Sep 2026 — the 38 UNREACHABLE rows are NOT this problem.**
+> Re-run at `4470555e`: **147 checks, 109 pass, 0 FAIL, 38 unreachable.**
+> Grouped by reason, **every one of the 38 is an inapplicable diary shape** —
+> "needs 2+ times", "needs 4+ times so a readout can drop one", "the day holds
+> one band only". **None says it needs the dispatcher.** DT-14's own
+> unreachability was closed when the row was rewired through
+> `try_unspoken_followup_speech`, so the N6 example above is historical.
+>
+> The paragraph above still stands as the argument for the migration — but the
+> unreachable **count** is not its evidence, and must not be read as 38
+> unverified behaviours. (`DOC_AUDIT_2026-09-12_EVENING.md` §C9; README
+> correction 36.)
+
 ---
 
 ## 9. Open items
@@ -425,9 +438,10 @@ is the migration, and this is the argument for it — not elegance, measurabilit
 | DT-30/31 | 11 Sep 08:44, 08:52 — "say that again" served by the model | **closed** `a4a383e8` (D-o): `repeat_speech` above every selector; scorer rows DT-30/31 |
 | B-114 (loose) | found 11 Sep building DT-21 — "yeah that one works" resolved to 13:00 through the loose after-marker "works" | **closed** `9a55cdac`: a pointer word before the number ends the question |
 | N4 (component) | found 11 Sep by scorer row DT-21 on `uniform50` — "five past eight in the morning works" also read as 08:00 and answered with **Thursday's** eight | **closed** `6944ffd9`: relative-time phrases removed before the bare-hour and label passes |
-| parser | "half three" (UK 15:30) is read by neither parser — now yields no candidate (model) rather than 15:00; `requested_clock_times("at ten to twelve")` also emits 10:00 (the resolver then declines: two picks); `requested_clock_times("from nine to five")` → 04:51 | open, leads — none reproduced on a call |
-| inv. 20 | four availability readers, five refusal branches, two named-day producers | open; the migration |
-| inv. 16 | 13% of recorded offers were never spoken | open; instrumented |
+| parser | Re-run by direct execution 12 Sep at `4470555e`, all four confirmed still live: `"half three"` → `[]` (UK 15:30 — yields no candidate, so the model answers) and `"half two"` → `[]`; `"at ten to twelve"` → `['11:50','23:50','10:00','22:00']`, the extra 10:00 making the resolver decline as a tie; `"from nine to five"` → `['04:51','16:51']` | open, leads — none reproduced on a call |
+| parser (new, 12 Sep) | **`requested_clock_times("eight in the morning")` → `[]` — and that is the engine's OWN spoken idiom.** Every readout says "eight in the morning", so a caller who asks for a time in the exact words Susie just used gets no candidate on the **request** path and falls through to the model. The **accept** path is unaffected: `slot_accepted_by_caller` (`slot_followup.py:3301`) resolves against the spoken labels, which is why N4's fix holds. So it bites on *"have you got eight in the morning on Tuesday?"* and never on *"eight in the morning works"* | open; the worst of the parser leads, because the wording is one we teach the caller. Found by execution, not by a call |
+| inv. 20 | four availability readers, five refusal branches, two named-day producers; `fetch_free_slots` exists nowhere in the repo (Stage D never started) | open; the migration. **D-r is its first proven caller-facing cost** — see the 2026-09-12 correction-log entry: "the tool path was never aligned to DT-7/8" |
+| inv. 16 | 13% of recorded offers were never spoken | open; instrumented by S-7 (`mark_offer_spoken`), **never re-measured since 10 Sep** — needs the obs corpus |
 
 ### 9.2 Rows needing your yes/no — CLOSED 2026-09-11
 
