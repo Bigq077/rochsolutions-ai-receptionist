@@ -1570,12 +1570,21 @@ _TIMING_SIGNAL_RE = re.compile(
     r"any\s*time|flexible|doesn'?t\s+matter|don'?t\s+mind|whenever|not\s+fussed|not\s+bothered)\b",
     re.IGNORECASE,
 )
+#: A bound the parser will not read as a time -- "after 4", "before ten",
+#: "from half five". The caller HAS named an hour; only the parser declines it.
+_BOUND_WITH_HOUR_RE = re.compile(
+    r"\b(?:after|before|from|until|till|past|by)\s+"
+    r"(?:about\s+|around\s+)?"
+    r"(?:\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|half|quarter)\b",
+    re.IGNORECASE,
+)
 _URGENCY_RE = re.compile(
     r"\b(?:as\s+soon\s+as|asap|soonest|earliest|urgent|first\s+available|straight\s+away|whenever(?:'s)?\s+next)\b",
     re.IGNORECASE,
 )
 #: Susie's own timing / echo question, matched against her previous turn. A
 #: yes to it is a timing answer.
+_ECHO_QUESTION_RE = re.compile(r"you mentioned|shall i look at those", re.IGNORECASE)
 _TIMING_QUESTION_RE = re.compile(
     r"preference for when|when would suit|when you'?d like|you mentioned|"
     r"shall i look at those|is there another time|particular day or time|"
@@ -1616,9 +1625,25 @@ def _timing_unearned_this_turn(session, messages, args) -> "str | None":
         if not isinstance(session, dict) or session.get("last_offered_slots"):
             return None
         user = _last_user_text(messages or [])
-        if _TIMING_SIGNAL_RE.search(user or ""):
-            return None
         hint = str((args or {}).get("date_hint") or (args or {}).get("preference") or "")
+        if _TIMING_SIGNAL_RE.search(user or ""):
+            # Defect D on the same-turn path, CAdb28a1a6 (13 Sep 12:58): the
+            # caller said "after 4 on a tuesday"; `requested_clock_times`
+            # reads a BOUND as no clock time (by design -- "after 4" is not
+            # "at 4"), while the model's "Tuesday after 4pm" reads as 16:00.
+            # The one-slot builder took the hint, said "the nearest I've got
+            # to four is twenty past four", and the guard -- fed only the
+            # caller's words -- retracted an honest sentence. When the
+            # caller's OWN words carry a bound with an hour, the hint is
+            # their paraphrase and the guard may know it. Nothing else
+            # changes: the offered slot is always from the diary.
+            if _BOUND_WITH_HOUR_RE.search(user or "") and hint:
+                try:
+                    from app.tools.slot_fact_guard import note_caller_speech
+                    note_caller_speech(session, hint)
+                except Exception:
+                    pass
+            return None
         if _URGENCY_RE.search(hint):
             # Urgency wherever the caller said it -- but the CALLER must have.
             for m in (messages or []):
@@ -1635,7 +1660,10 @@ def _timing_unearned_this_turn(session, messages, args) -> "str | None":
             try:
                 from app.tools.slot_fact_guard import note_caller_speech
                 note_caller_speech(session, prev)
-                note_caller_speech(session, hint)
+                # Only the ECHO carries the caller's words; a yes to the plain
+                # "preference for when?" confirms nothing and folds nothing.
+                if _ECHO_QUESTION_RE.search(prev or ""):
+                    note_caller_speech(session, hint)
             except Exception:
                 pass
             return None

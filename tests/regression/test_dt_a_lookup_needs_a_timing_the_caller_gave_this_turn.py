@@ -123,3 +123,35 @@ def test_a_re_query_with_an_offer_on_the_table_is_not_this_gates_business():
 
 def test_never_raises():
     assert _timing_unearned_this_turn(None, None, None) is None  # type: ignore[arg-type]
+
+
+# ── CAdb28a1a6, 13 Sep 12:58 (5d28332e): a same-turn BOUND, retracted anyway ──
+#
+#   caller: "um yes after 4 on a tuesday"          -> requested_clock_times: []
+#   tool  : date_hint="Tuesday after 4pm"           -> 16:00
+#   gate5 : "The nearest I've got to four ... is twenty past four"
+#   guard : '4 in the afternoon' reads as 16:00 ... REPLACED
+#
+# The parser reads a bound as no clock time by design; the guard therefore
+# never learns the hour the caller said, while the builder learns it from the
+# model's paraphrase. When the caller's own words carry a bound WITH an hour,
+# the hint is folded into the guard's asked-set on the allow path.
+
+def test_a_same_turn_bound_folds_the_hint_into_the_guard():
+    msgs = _msgs(("assistant", "Do you have a preference for when you'd like to come in?"),
+                 ("user", "um yes after 4 on a tuesday"))
+    s = _session(msgs)
+    assert _timing_unearned_this_turn(s, msgs, {"date_hint": "Tuesday after 4pm"}) is None
+    asked = {str(t)[:5] for t in (s.get(guard._ASKED) or [])}
+    assert "16:00" in asked, "the guard would retract 'the nearest I've got to four'"
+
+
+def test_a_same_turn_point_or_day_does_not_fold_the_hint():
+    """Only a bound the parser declines earns the fold; a day alone must not
+    let a model-invented hour into the guard."""
+    for utterance in ["tuesday please", "thursday morning", "yes please"]:
+        msgs = _msgs(("assistant", "Do you have a preference for when you'd like to come in?"),
+                     ("user", utterance))
+        s = _session(msgs)
+        _timing_unearned_this_turn(s, msgs, {"date_hint": "Tuesday after 4pm"})
+        assert not (s.get(guard._ASKED) or []), utterance
