@@ -5825,6 +5825,25 @@ class LLMStream:
                         heads_used=len(session.get("used_fillers") or []),
                     )
                     _ack_filler_text = _decision.head
+                    # A receipt ("Got that —") is the one head that can be
+                    # false: CAc3ae0f12 (13 Sep 2026) heard "Got that — I
+                    # didn't quite catch your name there". While the caller is
+                    # answering the NAME question and no name is on record,
+                    # whether it was "got" is exactly what the model is about
+                    # to decide, so the contentless receipt stays silent. The
+                    # second rung (LONG_WAIT, an honest apology) still covers a
+                    # genuinely long wait.
+                    if (
+                        _decision.speak
+                        and _decision.kind is _WorkKind.UNKNOWN_SLOW
+                        and not _hs_situational
+                        and _name_step_is_open(session)
+                    ):
+                        logger.info(
+                            "[ms_llm] no hold phrase: the name is being answered "
+                            "and a receipt could be false"
+                        )
+                        return
                     # The situational head replaces the arbiter's contentless
                     # one, and ONLY that one: a head chosen from the work in
                     # flight is more specific than one chosen from the request,
@@ -9077,6 +9096,27 @@ def _last_assistant_text(session: dict) -> str:
         if _m.get("role") == "assistant":
             return _m.get("content") or ""
     return ""
+
+
+_NAME_QUESTION_RE = re.compile(
+    r"\b(?:first name|surname|last name|full name|your name|first and last name)\b",
+    re.IGNORECASE,
+)
+
+
+def _name_step_is_open(session: dict) -> bool:
+    """Susie's last turn asked for the caller's name and none is on record:
+    the utterance now being answered is a name attempt, and a receipt head
+    would claim it was heard before the model has decided that."""
+    try:
+        from app.media_streams.turn_handler import _name_known
+
+        if _name_known(session):
+            return False
+    except Exception:  # pragma: no cover - never break a call
+        return False
+    _prev = _last_assistant_text(session).strip()
+    return bool(_NAME_QUESTION_RE.search(_prev)) and _prev.endswith("?")
 
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
