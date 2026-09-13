@@ -128,13 +128,20 @@ def work_for_tool(tool_name: str, *, provisional: bool = False) -> WorkKind:
 #: The locked confirm CTAs, and the write each one commits to. Matched against
 #: the PREVIOUS assistant turn — see confirm_write_kind.
 _CONFIRM_CTA: Dict[str, WorkKind] = {
-    "book that in for you": WorkKind.WRITE_BOOK,
-    "book that in": WorkKind.WRITE_BOOK,
-    # "Midday on Monday the 14th — shall I put that one in for you?" is how
-    # the read-back CTA is actually spoken on the demo line (6-12 Sep 2026
-    # corpus); a yes to it is a booking write in flight.
-    "put that one in": WorkKind.WRITE_BOOK,
-    "put that in": WorkKind.WRITE_BOOK,
+    # The WRITE CTA is the Step F5 summary -- "So that's [Name] — [day] at
+    # [time] — shall I go ahead and book that in?" -- and the prompt's hard
+    # precondition says it is only ever spoken with the name and phone in
+    # hand. "Shall I book that in for you?" WITHOUT "go ahead" is a different
+    # sentence: it is `slot_followup`'s one-slot OFFER, spoken before the
+    # name is collected, and a yes to it starts name capture, not a write.
+    # This table used to match on "book that in" alone, so on the demo line
+    # (CAe541a6a9, 12 Sep 2026) "yeah go for it" to that offer got "Getting
+    # that in the diary —" and then "could I take your first name?" -- a
+    # write claimed, no write made. The head for that yes is the pick head,
+    # from `_answer_moment`.
+    "go ahead and book that in": WorkKind.WRITE_BOOK,
+    "go ahead and book": WorkKind.WRITE_BOOK,
+    "go ahead and put that": WorkKind.WRITE_BOOK,
     "move it for you": WorkKind.WRITE_MOVE,
     "move that": WorkKind.WRITE_MOVE,
     "put that request through": WorkKind.PENDING_REQUEST,
@@ -592,8 +599,7 @@ _CORRECTION = _rx(r"\b(?:not soon enough|too (?:late|early|soon|far|long)|"
 # set the precedent: the reply to a question is defined by the question.
 _BOOK_OFFER_Q = _rx(r"\b(?:would you like to (?:book|get booked|come in|arrange)|"
                     r"shall i (?:get you|book you|go ahead and (?:get you|book))|"
-                    r"like to book in|want to book|get you booked in|"
-                    r"book (?:you|that) in\b[^?]{0,20}\?)")
+                    r"like to book in|want to book|get you booked in)")
 _NUMBER_Q = _rx(r"\b(?:best number|number (?:the (?:booking|appointment) (?:is|was) "
                 r"(?:booked )?under|for the booking|to reach you|you'?re calling "
                 r"(?:on|from)|okay to use|to use for)|is (?:this|that) "
@@ -610,6 +616,11 @@ _PICK_Q = _rx(r"\b(?:does that work|do (?:any|either) of those work|any of those
               r"number one, two|would you like\?|which would you (?:like|prefer)|"
               r"is that the right one|would a different day work|"
               r"shall i (?:put|pop) that (?:one )?in|either of those work|"
+              # slot_followup's one-slot OFFER ("...is free. Shall I book that
+              # in for you?") and the prompt's "would you like me to book that
+              # in" -- a yes picks the slot; the write comes later, after the
+              # name, on "shall I go ahead and book that in?".
+              r"shall i book that in for you|like me to book that in|"
               # A readout: "Number 1, eight in the morning. Number 2, ...". Only
               # as the PREVIOUS turn, and only for a pick shape (yes / clock /
               # ordinal) with no request word in it -- unlike the old
@@ -771,7 +782,11 @@ _INTENT_RULES = [
 
     (Intent.EARLIEST, _rx(r"\b(?:soonest|earliest|as soon as possible|asap|"
                           r"next available|first available)\b"), None, None),
-    (Intent.NAMED_DAY, _rx(_DAY), None, None),
+    # "last tuesday" is the past -- a story, not a diary request. CA5c69c585
+    # (12 Sep 2026): "um so the thing is um last tuesday" got "Let me see
+    # what Tuesday looks like —" and then no lookup, which is the promised-
+    # work defect in its oldest shape.
+    (Intent.NAMED_DAY, _rx(_DAY), None, _rx(r"\b(?:last|since)\s+" + _DAY + r"\b")),
     (Intent.NAMED_WEEK, _rx(r"\b(?:next week|this week|following week|week after|"
                             r"next month|tomorrow)\b"), None, None),
     (Intent.TIME_BAND, _rx(_BAND), None, None),
