@@ -2693,6 +2693,75 @@ ACCEPTED_SLOT_KEY = "_accepted_slot_iso"
 #: mind is agreeing to the newest slot -- and cleared when a booking lands.
 ACCEPTED_SLOT_RECORD_KEY = "_accepted_slot_record"
 
+# ── An accepted slot is read back, not offered again (DT-7/8 regression) ────
+#
+# CA4b4afa80, demo line, 13 Sep 2026 21:53:54: "yeah 20 to 10 on a wednesday
+# works". connection.py resolved the accept and pinned 09:40 (P6b). The same
+# utterance then reached `try_unspoken_followup_speech`, whose DT-7/8
+# time-request route (d585450a, 11 Sep; widened by D-r, e161c435) saw a clock
+# time and answered as if the caller had ASKED whether it was free: "Yes —
+# twenty to ten on Wednesday 16th is free. Shall I book that in for you?" An
+# accept became an offer; the caller had to accept twice; the second yes then
+# earned a "That one works —" head in front of the model's read-back. Both
+# commits are on every clinic line.
+#
+# DT-7/8 is right for a QUESTION ("what have you got around 12?", "ten past
+# twelve on Tuesday?", a round time not on the grid) and stays. What it must
+# not do is take the turn from an accept the engine has already resolved:
+# `slot_accepted_by_caller` is deny-by-default and declines questions,
+# requests, negations and unheard times, so the per-turn pin is a reliable
+# "this is a pick of a heard slot".
+#
+# The read-back is then spoken HERE, from the accepted record (D-s: the
+# engine's own phrase), in ~150ms: "So that's Wednesday 16th September at
+# twenty to ten in the morning — could I take your first name and surname?"
+# No model on this turn, so no head is wanted -- this is what the pick turn
+# said before 11 Sep, minus the model's latency. A MIXED utterance ("...works,
+# but can I ask something first") is handed to the model instead, which is
+# the pre-11-Sep path exactly.
+_MIXED_PICK_RE = re.compile(
+    r"\b(?:but|can i|could i|is it|is that|do you|does|what|how|why|also|"
+    r"question|actually|wait|hold on|hang on|before)\b",
+    re.IGNORECASE,
+)
+# A QUESTION about a time. `slot_accepted_by_caller` pins "is twenty to ten
+# on Wednesday still free?" (found writing this test) -- harmless for P6b,
+# whose pin only keeps the slot in a readout, but a read-back of it would
+# turn a question into a booking step. A question falls through to the
+# producers below, where DT-7/8 answers it exactly as it does today.
+_QUESTION_SHAPE_RE = re.compile(
+    r"^\s*(?:(?:um+|uh+|er+|erm|so|and|ok(?:ay)?|right)[\s,]+)*"
+    r"(?:is|are|do|does|did|have|has|can|could|would|will|any|what|when|which|how|why)\b"
+    r"|\b(?:still )?(?:free|available|open)\b\s*\??\s*$"
+    r"|\?\s*$",
+    re.IGNORECASE,
+)
+
+ACCEPTED_READBACK_NAME_ASK = "could I take your first name and surname?"
+
+
+def accepted_slot_readback_speech(
+    session: Dict[str, Any], user_text: str
+) -> Optional[str]:
+    """The read-back of the slot pinned THIS turn, or None to let the model
+    speak. PURE apart from reading the session. None when: no pin, the pin
+    and the durable record disagree, the record has no phrase, or the
+    utterance carries more than the pick."""
+    pin = str(session.get(ACCEPTED_SLOT_KEY) or "")[:19]
+    if not pin:
+        return None
+    rec = session.get(ACCEPTED_SLOT_RECORD_KEY) or {}
+    if not isinstance(rec, dict) or str(rec.get("iso") or "")[:19] != pin:
+        return None
+    phrase = str(rec.get("phrase") or "").strip()
+    if not phrase:
+        return None
+    if _MIXED_PICK_RE.search(user_text or ""):
+        logger.info("[slot_followup] accepted slot pinned but the utterance "
+                    "carries more than the pick — the model takes the turn")
+        return None
+    return f"So that's {phrase} — {ACCEPTED_READBACK_NAME_ASK}"
+
 
 def note_accepted_slot(session: Dict[str, Any], iso: Any) -> None:
     """Record the accepted slot durably, with the phrase Susie would say.
@@ -7297,6 +7366,18 @@ def try_unspoken_followup_speech(
     _repeat = repeat_speech(session, user_text)
     if _repeat:
         return _repeat
+
+    # ── An accept the engine has already pinned this turn (P6b) ─────────
+    # ABOVE every producer, DT-7/8 included: an accept of a heard slot is
+    # not a question about a time, and must not be answered as one. See
+    # `accepted_slot_readback_speech`. Either the read-back is spoken here,
+    # or the model takes the turn -- never a producer.
+    if session.get(ACCEPTED_SLOT_KEY) and not _QUESTION_SHAPE_RE.search(user_text or ""):
+        _rb = accepted_slot_readback_speech(session, user_text)
+        if _rb:
+            logger.info("[slot_followup] accepted slot read back from the "
+                        "engine's record: %r", _rb[:80])
+        return _rb
 
     offered = session.get("last_offered_slots") or []
     days = session.get("available_days") or []
