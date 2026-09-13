@@ -510,6 +510,11 @@ _DIARY_INTENTS = frozenset({
     Intent.EARLIEST, Intent.AVAIL_QUERY, Intent.BOOK_NEW, Intent.TIME_AROUND,
 })
 
+#: The diary intents whose head says a lookup is happening NOW. BOOK_NEW is the
+#: one diary intent that does not, which is why it stands in for these while
+#: the reason is still outstanding -- see `reason_pending` in classify_intent.
+_LOOKUP_INTENTS = _DIARY_INTENTS - {Intent.BOOK_NEW}
+
 _DAY = r"(?:mon|tues|wednes|thurs|fri|satur|sun)day"
 _BAND = r"(?:morning|afternoon|evening|lunchtime)"
 _BODY = (r"(?:knee|ankle|shoulder|hip|back|neck|wrist|elbow|foot|feet|calf|"
@@ -624,6 +629,11 @@ _NUMBER_Q = _rx(r"\b(?:best number|number (?:the (?:booking|appointment) (?:is|w
                 r"calling|associated with your|use this number)")
 _NAME_Q = _rx(r"\b(?:first name|surname|full name|your name|name for the "
               r"booking|who am i speaking)\b")
+#: The surname asked for on its own ("Thanks Elektra — and your surname?"),
+#: versus a question that asks for the whole name. See `_answer_moment` step 5.
+_SURNAME_ONLY_Q = _rx(r"\b(?:surname|last name)\b[^?]*\?")
+_WHOLE_NAME_Q = _rx(r"\b(?:first name|full name|your name|name for the booking|"
+                    r"who am i speaking)\b")
 #: Susie reading a name back: "Did you say Sandrine — is that right?", "and
 #: your surname, is that Roch?". A yes here is a name confirmed, not a slot.
 _NAME_CONFIRM_Q = _rx(r"\b(?:did you say|surname, is that|is that spelt|"
@@ -897,6 +907,7 @@ def classify_intent(
     service_named=False,
     offer_refused=False,
     name_pending=False,
+    reason_pending=False,
 ):
     """Every intent this utterance corroborates, most specific first. PURE.
 
@@ -1064,6 +1075,29 @@ def classify_intent(
             continue
         hits.append(intent)
     if (
+        reason_pending
+        and not _reason_answer
+        and Intent.SYMPTOM not in hits
+        and any(h in _LOOKUP_INTENTS for h in hits)
+    ):
+        # The lookup is a turn away. Hold-head audit 13 Sep 2026: "what's the
+        # soonest you've got" drew "Let me find the soonest I've got —" and
+        # then "what's the appointment for?", because BOOKING STEPS 1b makes
+        # the model ask the reason before it opens the diary. The promised-work
+        # shape, milder only because the lookup does come, one turn later.
+        #
+        # `reason_pending` is the engine's verdict -- this clinic asks the
+        # reason and none is on record yet -- not a reading of the words, so a
+        # clinic that never asks, or a caller who opened with the complaint,
+        # keeps the lookup head. A complaint in THIS utterance is a reason
+        # given, which is why SYMPTOM and `_reason_answer` both release it.
+        #
+        # BOOK_NEW takes the place of the first lookup intent: "Let's get you
+        # booked in —" is true on this turn and names no diary.
+        _first = next(i for i, h in enumerate(hits) if h in _LOOKUP_INTENTS)
+        hits = [h for h in hits if h not in _LOOKUP_INTENTS and h is not Intent.BOOK_NEW]
+        hits.insert(min(_first, len(hits)), Intent.BOOK_NEW)
+    if (
         service_named
         and not answering
         and Intent.BOOK_NEW not in hits
@@ -1221,6 +1255,17 @@ def _answer_moment(prev_assistant: str, probe: str, *, slot_selection: bool = Fa
                       for opt in choice.groups()):
         return [Intent.CLINIC_CHOSEN]
     # 5. Her name question, answered with anything that is not a question.
+    #
+    #    Except the SURNAME on its own. Hold-head audit 13 Sep 2026: every
+    #    booking chained four acknowledgements -- "Thanks, got that —" (first
+    #    name), "Thank you —" (surname), "Thanks for that —" (number), "That's
+    #    noted —" (summary). Each is right; the run is the tell. The surname is
+    #    the one to drop because it buys nothing there: a one-word answer, a
+    #    reply arriving in 1.5-2.0s, and the 2.75s receipt rung never fired on
+    #    one across the audit. If the model does stall, that rung still covers
+    #    it. "first name and surname" asks for the whole name and keeps its head.
+    if _SURNAME_ONLY_Q.search(prev) and not _WHOLE_NAME_Q.search(prev):
+        return []
     if _NAME_Q.search(prev) and "?" in prev and not probe.rstrip().endswith("?") \
             and not affirmed and len(probe.split()) <= 8:
         # "yes" to "could I take your name?" has not given one yet; a long

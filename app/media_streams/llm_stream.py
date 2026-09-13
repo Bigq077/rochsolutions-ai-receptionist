@@ -5635,6 +5635,30 @@ class LLMStream:
                     _hs_name_pending = _hs_capture_phase(session) == "name"
                 except Exception:  # pragma: no cover - defensive
                     _hs_name_pending = False
+                # Is the reason still owed? BOOKING STEPS 1b makes the model
+                # ask it before any diary read, so until it is on record a
+                # lookup head promises work a turn early. Read from the same
+                # slots A2 reads, AFTER this turn's opening / volunteered /
+                # answer doors have written them (Step 5 and connection.py),
+                # and gated on the same clinic key. A reschedule or cancel has
+                # no reason and is not waiting for one. Fails to False, which
+                # is the head the caller got before this existed.
+                try:
+                    from app.media_streams.turn_handler import (
+                        _clinic_asks_its_own_reason_question as _hs_asks_reason,
+                    )
+                    _hs_collected = session.get("collected")
+                    _hs_reason_pending = bool(
+                        _hs_asks_reason(session)
+                        and not (session.get("reason") or "").strip()
+                        and not (
+                            isinstance(_hs_collected, dict)
+                            and (_hs_collected.get("reason") or "").strip()
+                        )
+                        and session.get("v3_caller_intent") not in ("cancel", "reschedule")
+                    )
+                except Exception:  # pragma: no cover - defensive
+                    _hs_reason_pending = False
                 _hs_hits = _classify_intent(
                     _hs_utterance,
                     _last_assistant_text(session),
@@ -5648,6 +5672,7 @@ class LLMStream:
                     # this suppress heads for the rest of a call: a live
                     # prompt about anything else ends name capture.
                     name_pending=_hs_name_pending,
+                    reason_pending=_hs_reason_pending,
                 )
                 if _hs_hits:
                     _hs_intent = _hs_hits[0]
