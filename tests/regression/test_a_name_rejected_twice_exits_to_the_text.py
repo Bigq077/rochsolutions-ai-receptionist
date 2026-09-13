@@ -41,6 +41,7 @@ def _turn(s, susie_before: str, caller: str, model_draft: str) -> str:
     if susie_before:
         s["conversation_history"].append({"role": "assistant", "content": susie_before})
     s["_turn_user_text"] = caller
+    s["_turn_serial"] = int(s.get("_turn_serial") or 0) + 1
     out = sanitise_response(model_draft, s)
     s["conversation_history"].append({"role": "user", "content": caller})
     return out
@@ -137,9 +138,30 @@ def test_the_same_utterance_is_counted_once_across_chunks():
     s["conversation_history"].append(
         {"role": "assistant", "content": "Did you say Ciao — is that right?"})
     s["_turn_user_text"] = "no that's wrong"
+    s["_turn_serial"] = 3
     sanitise_response("Sorry about that —", s)
     sanitise_response("could you say it once more?", s)
     assert s.get("_gate5nc_rejections") == 1
+
+
+def test_the_same_words_on_the_next_turn_count_again_and_are_not_dropped():
+    # "no" twice in a row is two turns, not one: the serial tells them apart.
+    s = _session()
+    s["conversation_history"].append({"role": "user", "content": "zimara roshnevowski"})
+    s["conversation_history"].append(
+        {"role": "assistant", "content": "Did you say Ciao — is that right?"})
+    s["_turn_user_text"] = "no"
+    s["_turn_serial"] = 3
+    sanitise_response("Sorry — could you say it once more?", s)
+    s["conversation_history"].append(
+        {"role": "assistant", "content": "Did you say Zimara — is that right?"})
+    s["_turn_serial"] = 4
+    out = sanitise_response("Sorry — one more time?", s)
+    assert s["_gate5nc_rejections"] == 2
+    assert out.startswith(EXIT)
+    # the next turn, same words again, is spoken -- not dropped as "rest of the exit turn"
+    s["_turn_serial"] = 5
+    assert sanitise_response("Is oh seven five oh two the best number?", s) != ""
 
 
 def test_a_rejection_after_the_booking_is_confirmed_is_ignored():
@@ -172,3 +194,92 @@ def test_the_prompt_and_the_gate_tell_the_same_story():
     assert "the team will confirm your name when they get in touch" not in sys_p
     assert "text you after the call so you can reply with the spelling" in sys_p
     assert "rejected" in sys_p and "twice" in sys_p
+
+
+# ── CAcb580641: the exit asks the step genuinely outstanding, and only it ──
+#
+# 13 Sep 2026, build 815ae8b1, the first call on 5n-c. Three times were on
+# offer and none picked (STT garbled the pick; the engine kept the slot
+# cache). The exit fired on the second rejection and asked for the PHONE --
+# name -> phone was all _nk_outstanding_plain knew -- and then the rest of
+# the model's reply, "Which of those times works best for you -- one in the
+# afternoon, ten to two, or half past three?", leaked out behind it because
+# sanitise_response runs per chunk. Two questions in one breath.
+
+def _slots_on_offer(s):
+    s["last_offered_slots"] = [
+        {"start": "2026-09-14T13:00:00+01:00"},
+        {"start": "2026-09-14T13:50:00+01:00"},
+        {"start": "2026-09-14T15:30:00+01:00"},
+    ]
+    s["v3_dtmf_slot_map"] = {
+        "1": "one in the afternoon", "2": "ten to two in the afternoon",
+        "3": "half past three in the afternoon",
+    }
+    s["v3_dtmf_slot_context"] = "time"
+    s.pop("selected_slot", None)
+    s.pop("_accepted_slot_record", None)
+    return s
+
+
+def test_cacb58_the_exit_asks_for_the_time_when_none_is_picked_and_nothing_else():
+    s = _slots_on_offer(_session())
+    _turn(s, "That one works — could I take your first name and surname?",
+          "um yeah that'll be zimara roshnevowski",
+          "Thanks, got that — did you say Zimara — is that right?")
+    _turn(s, "Thanks, got that — did you say Zimara — is that right?",
+          "no i didn't i said zimara roshnevowski",
+          "Sorry about that — Thanks Zimara — just a moment while I check what's available.")
+    assert s["_gate5nc_rejections"] == 1
+
+    # Rejection #2 arrives; the model's reply streams in three chunks.
+    s["conversation_history"].append({"role": "assistant", "content":
+        "You're right, sorry about that. So that's Zimara Roshnevowski, Monday "
+        "the 14th of September — which time works best for you?"})
+    s["_turn_user_text"] = "no that's wrong no that's wrong it's it's zimara roshnowski"
+    s["_turn_serial"] = int(s.get("_turn_serial") or 0) + 1
+    c1 = sanitise_response("Not to worry — I've got you down as Zimara.", s)
+    c2 = sanitise_response("Which of those times works best for you —", s)
+    c3 = sanitise_response("one in the afternoon, ten to two, or half past three?", s)
+
+    assert c1.startswith(EXIT), c1
+    assert c1.endswith(
+        "Which of those times works best for you — one in the afternoon, "
+        "ten to two in the afternoon, or half past three in the afternoon?"
+    ), c1
+    assert "best number" not in c1.lower(), "the time is outstanding, not the phone"
+    assert c1.count("?") == 1, "one question"
+    assert c2 == "" and c3 == "", "the rest of the model's reply is dropped"
+
+    # The next turn is a new utterance: nothing is dropped.
+    s["conversation_history"].append({"role": "user", "content": s["_turn_user_text"]})
+    s["conversation_history"].append({"role": "assistant", "content": c1})
+    s["_turn_user_text"] = "ten to two"
+    s["_turn_serial"] += 1
+    out = sanitise_response("Ten to two it is — is oh seven five oh two the best number for you?", s)
+    assert out.startswith("Ten to two it is")
+
+
+def test_the_exit_asks_for_the_phone_once_a_time_is_picked():
+    s = _slots_on_offer(_session())
+    s["selected_slot"] = "2026-09-14T13:50:00+01:00"
+    s["_gate5nc_rejections"] = 1
+    s["conversation_history"].append({"role": "user", "content": "it's zimara roshnevowski"})
+    s["conversation_history"].append(
+        {"role": "assistant", "content": "Did you say Zimara — is that right?"})
+    s["_turn_user_text"] = "no that's wrong"
+    s["_turn_serial"] = 5
+    out = sanitise_response("Sorry — could you say it once more?", s)
+    assert out.startswith(EXIT)
+    assert "best number" in out.lower()
+    assert "which of those" not in out.lower()
+
+
+def test_the_bare_slot_question_when_the_map_is_not_a_time_map():
+    from app.media_streams.turn_handler import _slot_question_for
+
+    assert _slot_question_for({"v3_dtmf_slot_map": {"1": "Monday", "2": "Tuesday"},
+                               "v3_dtmf_slot_context": "day"}) == "Which of those works best for you?"
+    assert _slot_question_for({"v3_dtmf_slot_map": {"1": "ten to two"},
+                               "v3_dtmf_slot_context": "time"}) == (
+        "Which of those times works best for you — ten to two?")

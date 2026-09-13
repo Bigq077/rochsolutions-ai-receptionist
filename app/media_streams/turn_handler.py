@@ -180,11 +180,50 @@ _NAME_CUE_RE = re.compile(
 )
 
 
+def _slot_still_to_pick(session: Dict[str, Any]) -> bool:
+    """Times were offered and the caller has not picked one. The engine's own
+    verdict: `last_offered_slots` is cleared when a pick lands, and a pick
+    writes the accepted-slot record / `selected_slot`."""
+    if not session.get("last_offered_slots"):
+        return False
+    if (session.get("selected_slot") or "").strip():
+        return False
+    try:
+        from app.tools.slot_followup import ACCEPTED_SLOT_RECORD_KEY
+        if session.get(ACCEPTED_SLOT_RECORD_KEY):
+            return False
+    except Exception:  # pragma: no cover - import guard only
+        pass
+    return True
+
+
+def _slot_question_for(session: Dict[str, Any]) -> str:
+    """'Which of those times works best for you — one in the afternoon, ten
+    to two, or half past three?' from the live slot map; the bare question
+    when the map is not a time map."""
+    _map = session.get("v3_dtmf_slot_map") or {}
+    _labels = [str(v) for _k, v in sorted(_map.items(), key=lambda kv: str(kv[0])) if v]
+    if session.get("v3_dtmf_slot_context") == "time" and _labels:
+        _joined = _labels[0] if len(_labels) == 1 else (
+            ", ".join(_labels[:-1]) + f", or {_labels[-1]}"
+        )
+        return f"Which of those times works best for you — {_joined}?"
+    return "Which of those works best for you?"
+
+
 def _nk_outstanding_plain(session: Dict[str, Any]) -> str:
     """The outstanding booking step without the "Before I do that —" framing,
     which belongs to a CTA substitution: after the Gate 5n exit nothing was
     about to be done. Both phone forms still carry a _PHONE_STEP_MARKERS
-    token ("best number" / "use this number" / "type the number")."""
+    token ("best number" / "use this number" / "type the number").
+
+    The TIME comes before the phone: on CAcb580641 (13 Sep 2026) the exit
+    fired with three times on offer and none picked, and asked for the phone
+    -- while the model's own "which of those times" question leaked out
+    behind it. Two questions in one breath; the caller hung up.
+    """
+    if _slot_still_to_pick(session):
+        return _slot_question_for(session)
     _q = re.sub(r"^Before I do that\s*[—–-]\s*", "", _next_booking_question_for(session))
     return _q[:1].upper() + _q[1:]
 
@@ -205,11 +244,18 @@ def _gate5n_exit(session: Dict[str, Any], name: str) -> str:
     session.setdefault("collected", {})["name"] = name
     session["_gate5n_best_effort_name"] = name
     session["needs_name_correction_sms"] = True
-    _exit = (
-        "No problem — I'll pop what I've got on the booking, and I'll "
-        "text you after the call so you can reply with the spelling."
-    )
-    return f"{_exit} {_nk_outstanding_plain(session)}".strip()
+    # The caller utterance this exit answers. sanitise_response runs per
+    # chunk: the chunk the exit replaced is followed by the rest of the
+    # model's reply, which on CAcb580641 was a second question ("Which of
+    # those times works best...?"). Every later chunk of this turn is dropped.
+    session["_gate5n_exit_turn"] = session.get("_turn_serial")
+    return f"{_GATE5N_EXIT_LINE} {_nk_outstanding_plain(session)}".strip()
+
+
+_GATE5N_EXIT_LINE = (
+    "No problem — I'll pop what I've got on the booking, and I'll "
+    "text you after the call so you can reply with the spelling."
+)
 
 
 # ── Gate 5n-c: a name read-back rejected twice exits to the text ─────────────
@@ -257,6 +303,16 @@ _REJECTION_ABOUT_NAME_RE = re.compile(
     r"|\bnot my name\b",
     re.IGNORECASE,
 )
+# When Susie's previous turn spoke NO name but a first rejection has been
+# counted (the call is in a name dispute), only an explicit negation counts:
+# "I just told you it's X" after "Take your time — go ahead" is a complaint
+# about the re-ask carrying a fresh attempt, and that attempt deserves its
+# read-back (CA499 replay: exiting there skips the caller's clean second go).
+_REJECTION_EXPLICIT_RE = re.compile(
+    r"\bit'?s not\b|\bthat'?s (?:wrong|not right|not it|not my name)\b|\bwrong name\b"
+    r"|\b(?:i )?didn'?t say\b|\bstill wrong\b|\bnot my name\b",
+    re.IGNORECASE,
+)
 # After the exit the model may still try to confirm ("Did you say Jaumeira
 # Rybowski — is that right?") or re-ask. The sentence goes; if the turn then
 # asks nothing, the outstanding step does.
@@ -287,6 +343,8 @@ def _is_name_rejection(session: Dict[str, Any], caller: str) -> bool:
         return bool(_REJECTION_PLAIN_RE.match(_c) or _REJECTION_ABOUT_NAME_RE.search(_c))
     if _NAME_SPOKEN_RE.search(_prev) or _name_known(session):
         return bool(_REJECTION_ABOUT_NAME_RE.search(_c))
+    if int(session.get("_gate5nc_rejections") or 0) >= 1:
+        return bool(_REJECTION_EXPLICIT_RE.search(_c))
     return False
 
 
@@ -2729,14 +2787,25 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     # booking is still being made, and fires whether or not a name is on
     # record -- on CA499ca674 one was, from the second attempt.
     _nc_user = (session.get("_turn_user_text") or "").strip()
+    _nc_turn = session.get("_turn_serial")
     _nc_exit_spoken = False
+    if (
+        _nc_turn is not None
+        and session.get("_gate5n_exit_turn") == _nc_turn
+        and _GATE5N_EXIT_LINE not in result
+    ):
+        # The exit has been spoken on this turn; this is the rest of the
+        # model's reply. Whatever it says, the caller has one question to
+        # answer -- the one the exit ended with.
+        logger.info("[ms_gate5nc] chunk after the exit dropped: %r", result[:60])
+        return ""
     if (
         _nc_user
         and not session.get("booking_confirmed")
-        and session.get("_gate5nc_seen") != _nc_user
+        and session.get("_gate5nc_seen") != (_nc_turn if _nc_turn is not None else _nc_user)
         and _is_name_rejection(session, _nc_user)
     ):
-        session["_gate5nc_seen"] = _nc_user
+        session["_gate5nc_seen"] = _nc_turn if _nc_turn is not None else _nc_user
         session["_gate5nc_rejections"] = int(session.get("_gate5nc_rejections") or 0) + 1
         logger.info(
             "[ms_gate5nc] name read-back rejected (#%d): %r",

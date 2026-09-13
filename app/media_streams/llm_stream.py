@@ -5499,6 +5499,11 @@ class LLMStream:
         # does not hold it until _append_history runs AFTER the turn.
         try:
             session["_turn_user_text"] = _last_user_text(messages or [])
+            # A serial for THIS turn, so a per-chunk gate can tell "the rest
+            # of this reply" from "the next turn" even when the caller says
+            # the same words twice (Gate 5n-c keys its once-per-turn count and
+            # its after-exit drop on it, not on the text).
+            session["_turn_serial"] = int(session.get("_turn_serial") or 0) + 1
         except Exception:  # pragma: no cover - defensive
             pass
         try:
