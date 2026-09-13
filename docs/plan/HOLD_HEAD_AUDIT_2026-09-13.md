@@ -73,3 +73,27 @@ STT heard "Elektra" as "a lecture" three times. Name turns:
   specs disagree (spell vs never spell). Decide which is live; retire the other.
 * **L-1 Latency outliers** — turn 2 content 16.1 s (LLM TTFT 13.2 s), turn 1
   5.9 s. Model-side; the 7 s rung fired. One-off or not — check before the demo.
+
+## Proof call 2 — CAe30232407e8e65fbd7687b5c644b12ff (build 0d5c8556, 16:45 UTC)
+
+* **#1 PROVED** again. **N-2 PROVED** — turn 6 "no a lecture" over the read-back: no head.
+* **N-1 NOT EXERCISED** — the third ask was Gate 5g's first-ask wording (see N-7).
+* **Gate 5n NOT EXERCISED** — the model took the silent-accept path, not the keypad.
+
+| turn | Susie asked | caller | head | content |
+|---|---|---|---|---|
+| 6 | did you say Lecture? | "no a lecture" | *(none)* | I've got you on 0750… best number? |
+| 7 | best number? | "yeah that is" | Thanks for that — | **Before I do that — could I take your first name and surname?** |
+| 8 | (3rd ask) | "yeah so that would be a lecture" | Thanks, got that — | did you say Lecture? |
+
+* **N-6 (shipped `38b6bb6c`)** — Gate 5g asked for a name it recovered 100 ms
+  later from the raw reply it had deleted. Now reads the name (ANCHORED
+  patterns) out of spoken-so-far + this chunk BEFORE judging the CTA. O-18
+  stays as layer two for BARE-form acks.
+* **N-7 (open)** — N-1 reads re-ask WORDING; Gate 5g's substitute is first-ask
+  wording even on the third ask. `llm_stream` should count prior name asks and
+  pass `name_reasked=True`.
+* **L-1 (pattern, 2 data points)** — availability turn 16.1 s → 9.0 s (LLM TTFT
+  13.2 / 8.3 s), 7 s rung fired both times. Own investigation.
+
+Shipped since dd3a9ff7: `808a60fb` Gate 5n, `0d5c8556` N-1/N-2, `38b6bb6c` N-6.
