@@ -156,6 +156,18 @@ _NAME_KEYPAD_OR_SPELL_RE = re.compile(
     r")\b[^.!?]*[.!?]?",
     re.IGNORECASE,
 )
+# The subset that is unmistakably about a NAME: a keypad/typing ask naming
+# the field, or "spell" within reach of a name word. Fires even when a name
+# is on record (see Gate 5n's condition).
+_NAME_KEYPAD_OR_NAME_SPELL_RE = re.compile(
+    r"\b(?:typ(?:e|ing)|enter(?:ing)?|key(?:ing)?\s+in|tap(?:ping)?|punch(?:ing)?|"
+    r"input(?:ting)?|us(?:e|ing)\s+(?:the|your)\s+keypad\s+for)"
+    r"[^.!?]{0,40}?\b(?:first\s+name|last\s+name|surname|full\s+name|"
+    r"your\s+name|the\s+name)\b"
+    r"|\bspell(?:ing|ed)?\b[^.!?]{0,30}?\b(?:your (?:full |first |last )?name|(?:first|last|full) name|surname)\b"
+    r"|\b(?:your (?:full |first |last )?name|(?:first|last|full) name|surname)\b[^.!?]{0,30}?\bspell(?:ing|ed)?\b",
+    re.IGNORECASE,
+)
 
 # What the caller says around a name when asked for it. Stripped before the
 # best-effort token is taken, so "um yes that'll be a lecture" yields
@@ -297,10 +309,15 @@ _REJECTION_PLAIN_RE = re.compile(
     r"|(?:i )?didn'?t say|(?:it'?s |that'?s )?still wrong|i said)\b",
     re.IGNORECASE,
 )
+# CA70a83e8c (13 Sep 2026): three rejections of a stored name in the
+# caller's own words -- "the name's not X", "no wrong again X", "oh wrong
+# wrong wrong" -- matched nothing here, and the call was lost. "wrong" in any
+# form counts once a name has been spoken: a false positive only exits to a
+# text the caller did not need, a false negative loses the call.
 _REJECTION_ABOUT_NAME_RE = re.compile(
-    r"\bit'?s not\b|\bthat'?s (?:wrong|not right|not it|not my name)\b|\bwrong name\b"
-    r"|\b(?:i )?didn'?t say\b|\bstill wrong\b|\bi just told you\b|\bmy name(?:'s| is)\b"
-    r"|\bnot my name\b",
+    r"\bit'?s not\b|\bthat'?s (?:wrong|not right|not it|not my name)\b|\bwrong\b"
+    r"|\b(?:i )?didn'?t say\b|\bi just told you\b|\b(?:my|the) name(?:'s| is)\b"
+    r"|\bnot my name\b|\bnot right\b|\bincorrect\b",
     re.IGNORECASE,
 )
 # When Susie's previous turn spoke NO name but a first rejection has been
@@ -309,8 +326,8 @@ _REJECTION_ABOUT_NAME_RE = re.compile(
 # about the re-ask carrying a fresh attempt, and that attempt deserves its
 # read-back (CA499 replay: exiting there skips the caller's clean second go).
 _REJECTION_EXPLICIT_RE = re.compile(
-    r"\bit'?s not\b|\bthat'?s (?:wrong|not right|not it|not my name)\b|\bwrong name\b"
-    r"|\b(?:i )?didn'?t say\b|\bstill wrong\b|\bnot my name\b",
+    r"\bit'?s not\b|\bthat'?s (?:wrong|not right|not it|not my name)\b|\bwrong\b"
+    r"|\b(?:i )?didn'?t say\b|\bnot my name\b|\b(?:my|the) name(?:'s| is) not\b",
     re.IGNORECASE,
 )
 # After the exit the model may still try to confirm ("Did you say Jaumeira
@@ -331,17 +348,48 @@ def _last_assistant_text(session: Dict[str, Any]) -> str:
     return ""
 
 
+def _stored_name_token(session: Dict[str, Any]) -> str:
+    """The first token of the name on record, lower-cased, or ''."""
+    _collected = session.get("collected") or {}
+    _n = (
+        (session.get("patient_name") or "")
+        or (_collected.get("full_name") or "")
+        or (_collected.get("name") or "")
+    ).strip()
+    _tok = _n.split()[0] if _n else ""
+    return _tok.lower() if len(_tok) >= 3 else ""
+
+
 def _is_name_rejection(session: Dict[str, Any], caller: str) -> bool:
-    """PURE. Whether this caller turn rejects a name Susie just said."""
+    """PURE. Whether this caller turn rejects a name Susie just said.
+
+    Tiers, most to least certain about what the "no" is about:
+      A. Susie asked a yes/no name question -- a plain no counts;
+      B. Susie's previous turn spoke the name (an acknowledgement shape, or
+         the stored name's first token is in it) -- any name-shaped push-back
+         counts, "wrong" included;
+      C. a first rejection is already counted (the call is in a name
+         dispute) -- an explicit negation or "wrong" counts;
+      D. a name is on record but Susie's last turn did not say it and there
+         is no dispute yet -- only "not <the name>" / "the name's not"
+         counts, so a "wrong" about a slot never reaches the name exit.
+    """
     _c = (caller or "").strip()
     if not _c:
         return False
     _prev = _last_assistant_text(session)
+    _tok = _stored_name_token(session)
+    _names_it = bool(_tok) and bool(re.search(r"\bnot\s+" + re.escape(_tok) + r"\b", _c, re.IGNORECASE))
+    if _names_it or re.search(r"\b(?:my|the) name(?:'s| is) not\b", _c, re.IGNORECASE):
+        return True
     if _NAME_CONFIRM_QUESTION_RE.search(_prev) and not re.search(
         r"\bnumber\b", _prev, re.IGNORECASE
     ):
         return bool(_REJECTION_PLAIN_RE.match(_c) or _REJECTION_ABOUT_NAME_RE.search(_c))
-    if _NAME_SPOKEN_RE.search(_prev) or _name_known(session):
+    _spoke_it = bool(_NAME_SPOKEN_RE.search(_prev)) or (
+        bool(_tok) and bool(re.search(r"\b" + re.escape(_tok) + r"\b", _prev, re.IGNORECASE))
+    )
+    if _spoke_it:
         return bool(_REJECTION_ABOUT_NAME_RE.search(_c))
     if int(session.get("_gate5nc_rejections") or 0) >= 1:
         return bool(_REJECTION_EXPLICIT_RE.search(_c))
@@ -2852,8 +2900,17 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     _nk_exited = bool(session.get("_gate5n_exited"))
     # Not on the turn 5n-c has just spoken the exit: that line says
     # "spelling", and this branch would strip it.
-    if (not _nc_exit_spoken and (not _name_known(session) or _nk_exited)
-            and _NAME_KEYPAD_OR_SPELL_RE.search(result)):
+    #
+    # The "only while a name is outstanding" guard applies to the bare
+    # "spell" alternative alone (once a name is on record that word belongs
+    # to whatever the caller is asking about). A keypad ask FOR A NAME, or
+    # "spell your surname", is impossible whether or not a name is stored:
+    # CA70a83e8c (13 Sep 2026) persisted a name at the first attempt, the
+    # caller rejected it three times, and "could you type your surname on
+    # the keypad?" went out twice because this guard stood the gate down.
+    _nk_name_ask = bool(_NAME_KEYPAD_OR_NAME_SPELL_RE.search(result))
+    if (not _nc_exit_spoken and _NAME_KEYPAD_OR_SPELL_RE.search(result)
+            and (_nk_name_ask or not _name_known(session) or _nk_exited)):
         _nk_cleaned = _NAME_KEYPAD_OR_SPELL_RE.sub("", result)
         _nk_cleaned = re.sub(r"\s{2,}", " ", _nk_cleaned).strip()
         _nk_name = "" if _nk_exited else _best_effort_name_from_history(session)

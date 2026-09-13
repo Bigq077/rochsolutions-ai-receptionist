@@ -283,3 +283,69 @@ def test_the_bare_slot_question_when_the_map_is_not_a_time_map():
     assert _slot_question_for({"v3_dtmf_slot_map": {"1": "ten to two"},
                                "v3_dtmf_slot_context": "time"}) == (
         "Which of those times works best for you — ten to two?")
+
+
+# ── CA70a83e8c: once a name is on record, rejections still count and the ──
+# ── keypad ask is still impossible ─────────────────────────────────────────
+#
+# 13 Sep 2026, build 81830418. The model persisted a name at the first
+# attempt and read it back. The caller then rejected it three times in
+# words the gate did not recognise -- "the name's not X", "no wrong again X",
+# "oh wrong wrong wrong" -- so 5n-c counted nothing; and Gate 5n, which
+# stood down whenever a name was on record, let "could you type your surname
+# on the keypad?" through twice. The call ended without a booking.
+
+def test_ca70a8_rejections_of_a_stored_name_count_in_the_callers_own_words():
+    s = _session(patient_name="Zimara Morawski", collected={"name": "Zimara Morawski"})
+    s["selected_slot"] = "2026-09-16T08:50:00+01:00"
+    _turn(s, "Thanks Zimara — so that's Zimara Morawski. I've got you on oh seven "
+             "five oh two, two one one, two oh seven — is that the best number for the booking?",
+          "no actually not that",
+          "No problem — go ahead and type the number on your keypad.")
+    assert not s.get("_gate5nc_rejections"), "ambiguous after a phone question: not counted"
+
+    out = _turn(s, "No problem — go ahead and type the number on your keypad.",
+                "the name the name's not zimara morawski the name's zimara gronkowski",
+                "Got it — Zimara Gronkowski. So that's Zimara Gronkowski, is oh seven "
+                "five oh two the best number for you?")
+    assert s["_gate5nc_rejections"] == 1
+    assert not s.get("_gate5n_exited")
+
+    out = _turn(s, out, "no wrong again zimara gronkowski",
+                "Zimara Gronkowski. I've got you on oh seven five oh two — is that the best number?")
+    assert s["_gate5nc_rejections"] == 2
+    assert out.startswith(EXIT), out
+    assert "best number" in out.lower()
+    assert "Gronkowski" not in out and "Zimara" not in out
+
+
+def test_ca70a8_wrong_wrong_wrong_after_the_name_was_spoken_counts():
+    s = _session(patient_name="Zimara Gronkowski", collected={"name": "Zimara Gronkowski"})
+    s["_gate5nc_rejections"] = 1
+    s["conversation_history"].append({"role": "user", "content": "no wrong again zimara gronkowski"})
+    out = _turn(s, "Zimara Gronkowski. I've got you on oh seven five oh two — is that the best number?",
+                "oh wrong wrong wrong",
+                "Thanks for that — I'm sorry about that — could you type your surname on the keypad?")
+    assert s["_gate5nc_rejections"] == 2
+    assert out.startswith(EXIT), out
+    assert "keypad" not in out.lower() or "number" in out.lower()
+
+
+def test_a_keypad_ask_for_a_name_is_removed_even_when_a_name_is_on_record():
+    s = _session(patient_name="Zimara Gronkowski", collected={"name": "Zimara Gronkowski"})
+    s["conversation_history"].append({"role": "user", "content": "it's zimara gronkowski"})
+    s["_turn_user_text"] = "oh wrong wrong wrong"
+    s["_turn_serial"] = 9
+    out = sanitise_response("I'm sorry about that — could you type your surname on the keypad?", s)
+    assert "keypad" not in out.lower() or "number" in out.lower(), out
+    assert "surname" not in out.lower()
+    assert s.get("_gate5n_exited") is True
+
+
+def test_spell_in_another_context_is_left_alone_when_a_name_is_on_record():
+    s = _session(patient_name="Sarah Jones", collected={"name": "Sarah Jones"})
+    s["_turn_user_text"] = "how do you spell the road name"
+    s["_turn_serial"] = 4
+    line = "It's spelled B-U-R-T-O-N Road — shall I text you the address?"
+    assert sanitise_response(line, s) == line
+    assert not s.get("_gate5n_exited")
