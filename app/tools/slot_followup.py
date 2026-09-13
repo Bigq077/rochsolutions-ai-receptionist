@@ -3427,6 +3427,18 @@ def _names_a_different_time(text: str, session: Dict[str, Any], start: str) -> b
         return True
 
 
+#: The previous turn was a question ABOUT the slot on the table...
+_SLOT_QUESTION_RE = re.compile(
+    r"shall i (?:book|put|pop|get)|does that (?:work|suit)|would that (?:work|suit)|"
+    r"any of those|either of those|which (?:suits|works|would)|is that (?:okay|ok|alright|any good)|"
+    r"do (?:any|either) of those|work for you|suit you"
+)
+#: ...and not about the name or the number with the slot said in passing.
+_NOT_A_SLOT_QUESTION_RE = re.compile(
+    r"first name|surname|your name|best number|the number|number for|reach you|use this number"
+)
+
+
 def _offer_is_what_susie_just_said(session: Dict[str, Any]) -> bool:
     """Is the one slot on the table what Susie said LAST? PURE.
 
@@ -3444,6 +3456,14 @@ def _offer_is_what_susie_just_said(session: Dict[str, Any]) -> bool:
                 break
         norm_last = _readback_norm(last)
         if not norm_last:
+            return False
+        # ...and that turn must be ASKING about the slot, not about the name
+        # or the number with the slot mentioned in passing. CAef461542
+        # (13 Sep 14:29): "so that's Monday at one — could I take your first
+        # name and surname?" carried the label, so "yeah um it'll be elektra"
+        # re-pinned 13:00. Same slot, so harmless there; not the rule.
+        low = last.lower()
+        if _NOT_A_SLOT_QUESTION_RE.search(low) or not _SLOT_QUESTION_RE.search(low):
             return False
         labels = [str(x) for x in (session.get("slot_labels") or []) if x]
         readout = session.get(LAST_READOUT_KEY)

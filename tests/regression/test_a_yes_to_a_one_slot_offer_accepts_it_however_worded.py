@@ -144,3 +144,14 @@ def test_a_single_heard_time_still_resolves_without_history():
     from app.tools import slot_followup as sf
     s[sf._SPOKEN_KEY] = [x for x in s[sf._SPOKEN_KEY] if not x.startswith(f"{WED}T17:10")]
     assert (slot_accepted_by_caller(s, "yes") or "")[:19] == f"{WED}T08:00:00"
+
+
+def test_a_yes_to_the_name_question_does_not_re_pin():
+    """CAef461542 (13 Sep 14:29): Susie's read-back-plus-name-question carried
+    the slot label; "yeah um it'll be elektra" re-pinned the slot. The turn
+    must be ASKING about the slot."""
+    s = _after_the_follow_up(
+        last_susie_turn="so that's Wednesday the 16th of September at eight in the "
+                        "morning — could I take your first name and surname?")
+    assert slot_accepted_by_caller(s, "yeah um it'll be elektra um giacometti") is None
+    assert slot_accepted_by_caller(s, "yeah") is None
