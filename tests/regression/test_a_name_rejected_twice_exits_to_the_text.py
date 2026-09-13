@@ -231,6 +231,8 @@ def test_cacb58_the_exit_asks_for_the_time_when_none_is_picked_and_nothing_else(
           "no i didn't i said zimara roshnevowski",
           "Sorry about that — Thanks Zimara — just a moment while I check what's available.")
     assert s["_gate5nc_rejections"] == 1
+    s["patient_name"] = "Zimara Roshnevowski"       # persisted on the call at 19:25:41
+    s.setdefault("collected", {})["name"] = "Zimara Roshnevowski"
 
     # Rejection #2 arrives; the model's reply streams in three chunks.
     s["conversation_history"].append({"role": "assistant", "content":
@@ -319,16 +321,48 @@ def test_ca70a8_rejections_of_a_stored_name_count_in_the_callers_own_words():
     assert "Gronkowski" not in out and "Zimara" not in out
 
 
-def test_ca70a8_wrong_wrong_wrong_after_the_name_was_spoken_counts():
+def test_ca70a8_wrong_wrong_wrong_to_the_phone_question_is_ambiguous_and_not_counted():
+    # The name was spoken in the same breath as the phone question; "wrong"
+    # with no name in it answers the question in front of it. The trade
+    # (CAd63554bb): a phone "no it's not" during a dispute must not exit.
+    # In the real call the exit had already fired on "no wrong again zimara
+    # gronkowski", which names the name.
     s = _session(patient_name="Zimara Gronkowski", collected={"name": "Zimara Gronkowski"})
     s["_gate5nc_rejections"] = 1
     s["conversation_history"].append({"role": "user", "content": "no wrong again zimara gronkowski"})
     out = _turn(s, "Zimara Gronkowski. I've got you on oh seven five oh two — is that the best number?",
                 "oh wrong wrong wrong",
                 "Thanks for that — I'm sorry about that — could you type your surname on the keypad?")
-    assert s["_gate5nc_rejections"] == 2
-    assert out.startswith(EXIT), out
-    assert "keypad" not in out.lower() or "number" in out.lower()
+    assert s["_gate5nc_rejections"] == 1
+    # ...and Gate 5n still removes the keypad-for-a-name ask on its own.
+    assert "surname" not in out.lower(), out
+    assert s.get("_gate5n_exited") is True
+
+
+# ── CAd63554bb: the placeholder is a name, and a phone no in a dispute ────
+
+def test_cad635_the_best_effort_is_the_last_name_attempt_not_the_first_word_of_a_complaint():
+    s = _session(patient_name="Kiera", collected={"name": "Kiera"})
+    s["selected_slot"] = "2026-09-15T13:50:00+01:00"
+    _turn(s, "Thanks Kiera — I've got you on oh seven five oh two, two one one, two oh seven — "
+             "is that the best number for the booking?",
+          "no that's wrong that's wrong not kiera it's kiera",
+          "No problem — got it — and the number, oh seven five oh two — is that right?")
+    assert s["_gate5nc_rejections"] == 1
+    out = _turn(s, "No problem — got it — and the number, oh seven five oh two — is that right?",
+                "no what was the name you got danny", "Not to worry — I've got you as Kiera.")
+    assert out.startswith(EXIT)
+    assert s["patient_name"] == "Kiera", "not 'What'"
+    assert s["collected"]["name"] == "Kiera"
+
+
+def test_cad635_a_phone_no_during_a_dispute_does_not_count():
+    s = _session(patient_name="Kiera", collected={"name": "Kiera"})
+    s["_gate5nc_rejections"] = 1
+    _turn(s, "Got it. Is 0 7 5 0 2 2 1 1 2 0 7 the best number for you? If so, just say use this number.",
+          "uh no it's not", "No problem — go ahead and type the number on your keypad.")
+    assert s["_gate5nc_rejections"] == 1
+    assert not s.get("_gate5n_exited")
 
 
 def test_a_keypad_ask_for_a_name_is_removed_even_when_a_name_is_on_record():

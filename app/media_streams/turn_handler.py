@@ -187,7 +187,8 @@ _NAME_ANSWER_JUNK_RE = re.compile(
 # is left ("it's a lecture" -> "a lecture" -> "lecture").
 _NAME_CUE_RE = re.compile(
     r"\b(?:it's|its|it\s+is|i\s+said|(?:my\s+)?(?:first\s+)?name(?:'s|\s+is)|"
-    r"that's|that\s+is|called|i'm|i\s+am|this\s+is)\b",
+    r"that's|that\s+is|that'?ll\s+be|that\s+would\s+be|that'?d\s+be|"
+    r"called|i'm|i\s+am|this\s+is)\b",
     re.IGNORECASE,
 )
 
@@ -414,19 +415,24 @@ def _is_name_rejection(session: Dict[str, Any], caller: str) -> bool:
         or bool(_NAME_SPOKEN_RE.search(_prev))
         or _tok_in(_prev)
     )
+    _sentences = [x for x in re.split(r"(?<=[.!?])\s+", _prev.strip()) if x.strip()]
+    _tail = _sentences[-1] if _sentences else _prev
+    _tail_is_other = bool(_TAIL_NOT_ABOUT_NAME_RE.search(_tail))
+    _says_the_name = _tok_in(_c) or bool(re.search(r"\bname\b", _c, re.IGNORECASE))
     if _read_back:
-        _sentences = [x for x in re.split(r"(?<=[.!?])\s+", _prev.strip()) if x.strip()]
-        _tail = _sentences[-1] if _sentences else _prev
         _neg = bool(_REJECTION_PLAIN_RE.match(_c) or _REJECTION_ABOUT_NAME_RE.search(_c))
-        if not _TAIL_NOT_ABOUT_NAME_RE.search(_tail):
+        if not _tail_is_other:
             return _neg
-        if _neg and (_tok_in(_c) or re.search(r"\bname\b", _c, re.IGNORECASE)):
+        if _neg and _says_the_name:
             return True
-        # else: the no answers the number / booking question -- unless a
-        # dispute is already open (3).
+        # else: the no answers the number / booking question.
 
-    # 3. In a dispute already.
+    # 3. In a dispute already -- but a no to the number or booking question
+    # is still about the number or the booking (CAd63554bb: "uh no it's
+    # not" to "is that the best number?" counted as a third rejection).
     if int(session.get("_gate5nc_rejections") or 0) >= 1:
+        if _tail_is_other and not _says_the_name:
+            return False
         return bool(_REJECTION_EXPLICIT_RE.search(_c))
     return False
 
@@ -441,6 +447,12 @@ def _best_effort_name_from_history(session: Dict[str, Any]) -> str:
     about a knee); the words people say around a name are stripped and the
     first alphabetic token of two or more letters is returned. The empty
     string when nothing qualifies — the caller decides the fallback.
+
+    Without a name cue ("it's X", "I said X", "that'll be X"), what is left
+    after the filler is stripped must itself look like a name -- one to three
+    tokens ("ciao mera", "a lecture", "zimara gronkowski"). CAd63554bb (13 Sep
+    2026) took "What" from "no what was the name you got danny" and put it
+    on the booking.
     """
     _cands = [session.get("_turn_user_text") or ""] + [
         (_m.get("content") or "")
@@ -455,6 +467,8 @@ def _best_effort_name_from_history(session: Dict[str, Any]) -> str:
         if _cues:
             _u = _u[_cues[-1].end():]
         _u = _NAME_ANSWER_JUNK_RE.sub("", _u)
+        if not _cues and len(_u.split()) > 3:
+            continue
         _tok = re.search(r"[A-Za-z][A-Za-z'\-]+", _u)
         if _tok:
             return _tok.group(0).strip("'-").capitalize()
