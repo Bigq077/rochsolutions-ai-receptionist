@@ -8725,6 +8725,21 @@ _APOLOGY_OPENER_RE = re.compile(
 #: the prefix strip below to be allowed to fire -- see `_head_echo_remainder`.
 _ECHO_BOUNDARY = ".!?,;:—–-…"
 
+#: The two same-act echoes from the 12-13 Sep hold-head audit, conditional on
+#: the head exactly as `_APOLOGY_HEAD_RE` is. See `join_after_head`.
+_CHECKIN_HEAD_RE = re.compile(r"^\s*(?:i'?m here|still here|yes,? (?:i'?m |still )?here)", re.IGNORECASE)
+_CHECKIN_OPENER_RE = re.compile(
+    r"^\s*(?:(?:yes|yeah|yep)[,\s]+)?(?:i'?m (?:still )?here|still here|i'?m still with you|still with you)"
+    r"\s*[—–,.!-]*\s*",
+    re.IGNORECASE,
+)
+_THANKS_HEAD_RE = re.compile(r"^\s*(?:thanks?|thank you|cheers)\b", re.IGNORECASE)
+_THANKS_OPENER_RE = re.compile(
+    r"^\s*(?i:thank you|thanks?|cheers)(?i:\s+for\s+that)?[,\s]*"
+    r"(?P<name>[A-Z][\w'-]*)?\s*[—–,.!-]*\s*"
+)
+EM_DASH = "—"
+
 
 def _head_echo_remainder(chunk: str, head: str):
     """What is left of ``chunk`` once it stops repeating ``head``. PURE.
@@ -8880,6 +8895,48 @@ def join_after_head(
     # really get in the way", with the sympathy silently removed. So this only
     # fires when the caller has ALREADY heard an apology, from this head.
     #
+    # The same rule for the two same-act echoes the 12-13 Sep hold-head
+    # audit recorded (10 demo calls, 56 heads):
+    #
+    #   head: "I'm here, yes —"    model: "yes, still here — could I take..."
+    #   head: "I'm here, yes —"    model: "yes, I'm here — could I take..."   (3x)
+    #   head: "Thank you —"        model: "thanks Quentin — I've got you on"   (7x,
+    #   head: "Thanks, got that —" model: "thanks Sandra — I've got you on"    every
+    #                                                                       name turn)
+    #
+    # `hold_speech.strip_head_echo` and `ACK_OPENER_RE` were written for
+    # exactly this and are called from nowhere -- e669ef45 (H) added "still
+    # here" to a regex nothing ran. This is the seam every first chunk passes
+    # through, so the strip lives here, conditional on the head as above:
+    # a check-in opener goes only after a check-in head; a thanks opener only
+    # after a thanks head, and the caller's NAME is kept -- "thanks Quentin —
+    # I've got you on" becomes "Quentin — I've got you on".
+    if _CHECKIN_HEAD_RE.match(head):
+        _deduped = _CHECKIN_OPENER_RE.sub("", chunk, count=1).lstrip()
+        if _deduped != chunk.lstrip():
+            if _deduped:
+                chunk = _deduped[0].upper() + _deduped[1:]
+            else:
+                return "" if suppress_pure_duplicate else chunk
+    _kept_name = ""
+    if _THANKS_HEAD_RE.match(head):
+        _m = _THANKS_OPENER_RE.match(chunk)
+        if _m:
+            _name = _m.group("name") or ""
+            _deduped = chunk[_m.end():].lstrip()
+            if _deduped:
+                if _name:
+                    # The name is kept and the seam logic below must not
+                    # lower-case it: "Thank you — Quentin, I've got you on".
+                    _kept_name = _name
+                    _w = _deduped.split(" ", 1)[0]
+                    _tail = _deduped if re.match(r"^I(?:'|$)", _w) else _deduped[0].lower() + _deduped[1:]
+                    chunk = f"{_name}, {_tail}"
+                else:
+                    chunk = _deduped[0].upper() + _deduped[1:]
+            elif not _name:
+                return "" if suppress_pure_duplicate else chunk
+
     # A chunk that is nothing BUT the apology falls through to the
     # `if not body` branch below, which already owns that decision.
     if _APOLOGY_HEAD_RE.match(head):
@@ -8939,7 +8996,7 @@ def join_after_head(
 
     if head.rstrip()[-1:] in (",", "—", "-"):
         first = body.split(" ", 1)[0].strip(".,!?").lower()
-        if first not in _KEEPS_CAPITAL:
+        if first not in _KEEPS_CAPITAL and not (_kept_name and body.startswith(_kept_name)):
             body = body[0].lower() + body[1:]
 
     return body
