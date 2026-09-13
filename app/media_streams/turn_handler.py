@@ -301,11 +301,24 @@ _NAME_CONFIRM_QUESTION_RE = re.compile(
 )
 _NAME_SPOKEN_RE = re.compile(
     r"^\s*(?:thanks|thank you|got it|lovely|right)\s*,?\s*[A-Z][a-z'\-]+\s*[—–-]"
-    r"|\b(?:I (?:do )?have you (?:down )?as|I've got you (?:down )?as|booked you in as)\b",
+    r"|\b(?:got it|thanks)\s*[—–-]\s*[A-Z][a-z'\-]+"
+    r"|\b(?:I (?:do )?have you (?:down )?as|I've got you (?:down )?as|booked you in as)\b"
+    r"|\bso that'?s\s+(?!Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|the\b)[A-Z][a-z'\-]+",
+    re.IGNORECASE,
+)
+# What Susie's LAST sentence asked. A "no" answers the question in front of
+# it: after "is that the best number?" or "shall I go ahead and book that
+# in?" a bare no is about the number or the booking, not the name -- 5 of
+# the 25 turns the first pattern set counted across the corpus were "no
+# it's not" to the phone question (13 Sep 2026 scan).
+_TAIL_NOT_ABOUT_NAME_RE = re.compile(
+    r"\b(?:number|book(?:ing|ed)?|go ahead|which (?:time|day|one)|works? (?:best )?for you"
+    r"|suits?|shall I|confirm)\b",
     re.IGNORECASE,
 )
 _REJECTION_PLAIN_RE = re.compile(
-    r"^\s*(?:no|nope|nah|wrong|not right|that'?s (?:wrong|not right|not it|not my name)"
+    r"^\s*(?:(?:oh|um+|uh+|er+|erm|ah|well|sorry|hmm)[\s,]+)*"
+    r"(?:no|nope|nah|wrong|not right|that'?s (?:wrong|not right|not it|not my name)"
     r"|(?:i )?didn'?t say|(?:it'?s |that'?s )?still wrong|i said)\b",
     re.IGNORECASE,
 )
@@ -363,34 +376,56 @@ def _stored_name_token(session: Dict[str, Any]) -> str:
 def _is_name_rejection(session: Dict[str, Any], caller: str) -> bool:
     """PURE. Whether this caller turn rejects a name Susie just said.
 
-    Tiers, most to least certain about what the "no" is about:
-      A. Susie asked a yes/no name question -- a plain no counts;
-      B. Susie's previous turn spoke the name (an acknowledgement shape, or
-         the stored name's first token is in it) -- any name-shaped push-back
-         counts, "wrong" included;
-      C. a first rejection is already counted (the call is in a name
-         dispute) -- an explicit negation or "wrong" counts;
-      D. a name is on record but Susie's last turn did not say it and there
-         is no dispute yet -- only "not <the name>" / "the name's not"
-         counts, so a "wrong" about a slot never reaches the name exit.
+    Two questions decide it, in this order (checked against 911 caller turns
+    that followed a name turn in the obs corpus, 13 Sep 2026):
+
+      1. Did the caller name the name? "not <the stored name>", "the name's
+         not", "wrong name", "not my name" -- counts whatever Susie asked.
+      2. Did Susie READ A NAME BACK ("Did you say X?", "Thanks X —", "I have
+         you as X", "So that's X ...", or the stored name in her turn)? An
+         ASK ("could I take your name?") is not a read-back: a "no" there is
+         about something else ("no, actually, anything on Monday?").
+         - read-back, and her last sentence was about the NAME (or asked
+           nothing else): a plain no, "wrong", "I said", or any name-shaped
+           push-back counts;
+         - read-back, but her last sentence asked about the NUMBER or the
+           BOOKING: the no answers that question -- it counts only when the
+           caller also says the name ("no wrong again zimara gronkowski")
+           or the word "name".
+      3. Otherwise, only once a first rejection is on record (the call is in
+         a name dispute): an explicit negation or "wrong" counts.
     """
     _c = (caller or "").strip()
     if not _c:
         return False
     _prev = _last_assistant_text(session)
     _tok = _stored_name_token(session)
-    _names_it = bool(_tok) and bool(re.search(r"\bnot\s+" + re.escape(_tok) + r"\b", _c, re.IGNORECASE))
-    if _names_it or re.search(r"\b(?:my|the) name(?:'s| is) not\b", _c, re.IGNORECASE):
-        return True
-    if _NAME_CONFIRM_QUESTION_RE.search(_prev) and not re.search(
-        r"\bnumber\b", _prev, re.IGNORECASE
+    _tok_in = lambda s: bool(_tok) and bool(re.search(r"\b" + re.escape(_tok) + r"\b", s, re.IGNORECASE))
+
+    # 1. The caller named the name.
+    if (_tok and re.search(r"\bnot\s+" + re.escape(_tok) + r"\b", _c, re.IGNORECASE)) or re.search(
+        r"\b(?:my|the) name(?:'s| is) not\b|\bwrong name\b|\bnot my name\b", _c, re.IGNORECASE
     ):
-        return bool(_REJECTION_PLAIN_RE.match(_c) or _REJECTION_ABOUT_NAME_RE.search(_c))
-    _spoke_it = bool(_NAME_SPOKEN_RE.search(_prev)) or (
-        bool(_tok) and bool(re.search(r"\b" + re.escape(_tok) + r"\b", _prev, re.IGNORECASE))
+        return True
+
+    # 2. Susie read a name back.
+    _read_back = (
+        (bool(_NAME_CONFIRM_QUESTION_RE.search(_prev)) and not re.search(r"\bnumber\b", _prev, re.IGNORECASE))
+        or bool(_NAME_SPOKEN_RE.search(_prev))
+        or _tok_in(_prev)
     )
-    if _spoke_it:
-        return bool(_REJECTION_ABOUT_NAME_RE.search(_c))
+    if _read_back:
+        _sentences = [x for x in re.split(r"(?<=[.!?])\s+", _prev.strip()) if x.strip()]
+        _tail = _sentences[-1] if _sentences else _prev
+        _neg = bool(_REJECTION_PLAIN_RE.match(_c) or _REJECTION_ABOUT_NAME_RE.search(_c))
+        if not _TAIL_NOT_ABOUT_NAME_RE.search(_tail):
+            return _neg
+        if _neg and (_tok_in(_c) or re.search(r"\bname\b", _c, re.IGNORECASE)):
+            return True
+        # else: the no answers the number / booking question -- unless a
+        # dispute is already open (3).
+
+    # 3. In a dispute already.
     if int(session.get("_gate5nc_rejections") or 0) >= 1:
         return bool(_REJECTION_EXPLICIT_RE.search(_c))
     return False

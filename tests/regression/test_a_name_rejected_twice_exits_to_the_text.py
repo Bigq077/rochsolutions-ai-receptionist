@@ -349,3 +349,49 @@ def test_spell_in_another_context_is_left_alone_when_a_name_is_on_record():
     line = "It's spelled B-U-R-T-O-N Road — shall I text you the address?"
     assert sanitise_response(line, s) == line
     assert not s.get("_gate5n_exited")
+
+
+# ── From the corpus (911 caller turns after a name turn, 13 Sep 2026) ─────
+
+@pytest.mark.parametrize("susie,caller", [
+    # "Thanks Quentin —" then the phone question: the no is about the number.
+    ("Thanks Quentin — I've got you on 07502 211 207, is that the best number for the booking?",
+     "no it's not"),
+    ("Thanks Quentin — I've got you on 07502 211 207, is that the best number for the booking?",
+     "um no it's a different number"),
+    ("Is the number you're calling on the best one for your booking? If so, just say use this number.",
+     "no it's not i'll say it verbally"),
+    # A booking CTA that read the name back: the no is about the booking.
+    ("So that's Quentin, Monday the 24th of August at half past seven — shall I go ahead and book that in?",
+     "No"),
+    # An ASK is not a read-back.
+    ("Monday the 14th at twenty to twelve — could I take your first name and surname?",
+     "actually no hang on um do you have anything else on monday"),
+    ("Before I do that — could I take your first name and surname?",
+     "uh yeah quentin rock did you not already have it"),
+    ("Could I take your first name and surname?", "could you say that again please"),
+])
+def test_corpus_turns_that_are_not_name_rejections(susie, caller):
+    s = _session(patient_name="Quentin Rook", collected={"name": "Quentin Rook"})
+    _turn(s, susie, caller, "Right —")
+    assert not s.get("_gate5nc_rejections"), (susie, caller)
+
+
+@pytest.mark.parametrize("susie,caller", [
+    ("Did you say Home — is that right?", "no tom green"),
+    ("Did you say Courts — is that right?", "no"),
+    ("Did you say Quensing — is that right?", "i said quensing rock"),
+    ("Did you say Cold — is that right?", "no sorry my surname is thompson t-h-o-m-p-s-o-n"),
+    ("Sorry, I didn't catch that. Did you say Quite — is that right?", "my name's quentin rook"),
+    ("Thanks Jackhammer — and your surname?", "no it's jackamo"),
+    ("Did you say Gel — is that right?", "no it's gel marrow"),
+    # The name read back and then the phone asked: the no names the name.
+    ("Thanks Quentin — I've got you on 07502 211 207, is that the best number for the booking?",
+     "no it's not quentin it's quinton"),
+    ("So that's Quentin Rook, Monday the 10th of August at quarter past five — shall I go ahead and book that in?",
+     "um it's not quentin rook it's quentin roch r-o-c-h"),
+])
+def test_corpus_turns_that_are_name_rejections(susie, caller):
+    s = _session(patient_name="Quentin Rook", collected={"name": "Quentin Rook"})
+    _turn(s, susie, caller, "Right —")
+    assert s.get("_gate5nc_rejections") == 1, (susie, caller)
