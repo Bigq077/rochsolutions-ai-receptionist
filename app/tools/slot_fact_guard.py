@@ -580,7 +580,8 @@ def _norm(text: Any) -> str:
     return " ".join(str(text or "").split())
 
 
-def note_replacement(session: Any, original: Any, replacement: Any) -> None:
+def note_replacement(session: Any, original: Any, replacement: Any,
+                     clauses: Any = None) -> None:
     """The guard replaced (or dropped) `original` on the way out: remember it,
     so the model's history can be told the truth. NEVER RAISES.
 
@@ -605,30 +606,86 @@ def note_replacement(session: Any, original: Any, replacement: Any) -> None:
         if not orig:
             return
         reps = session.setdefault(_REPLACEMENTS, [])
-        if isinstance(reps, list):
-            reps.append({"original": orig, "replacement": _norm(replacement)})
+        if not isinstance(reps, list):
+            return
+        # Recorded as SENTENCES, not as the whole chunk. CAdd1bdd17 (13 Sep
+        # 12:31, bef29667): the TTS chunk the guard saw ended "Shall I book
+        # that in for you?" while the history text had Gate 5g's substitution
+        # "Before I do that -- could I take your first name?" in its place,
+        # so a whole-chunk substring never matched and history kept the
+        # offer. The violating clause is the same in both; matching on it is
+        # what survives every downstream rewrite of the rest of the turn.
+        sents = [_norm(x) for x in _SENTENCE_SPLIT_RE.split(orig) if _norm(x)]
+        for c in (clauses or []):
+            cn = _norm(c)
+            if cn and cn not in sents:
+                sents.append(cn)
+        reps.append({
+            "original": orig,
+            "sentences": sents or [orig],
+            "replacement": _norm(replacement),
+        })
     except Exception:                      # pragma: no cover - defensive
         pass
 
 
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _sentence_is_retracted(sentence: str, reps: Any) -> "str | None":
+    """The replacement for `sentence` if a recorded retraction covers it,
+    else None. A sentence is covered when a recorded sentence/clause sits
+    inside it, or it sits inside a recorded original (a TTS split shorter
+    than the stored chunk)."""
+    sn = _norm(sentence).rstrip(".!?").lower()
+    if not sn:
+        return None
+    for r in reps:
+        if not isinstance(r, dict):
+            continue
+        for rs in (r.get("sentences") or [r.get("original") or ""]):
+            rsn = _norm(rs).rstrip(".!?").lower()
+            if rsn and (rsn in sn or sn in rsn):
+                return str(r.get("replacement") or "")
+    return None
+
+
 def rewrite_as_heard(session: Any, text: Any) -> str:
     """`text` with every replacement this guard made applied -- what the
-    caller HEARD. Identity when nothing was replaced. NEVER RAISES."""
+    caller HEARD. Sentence by sentence: a retracted sentence is replaced by
+    the recovery line (once) or dropped; the rest of the turn is kept.
+    Identity when nothing was replaced. NEVER RAISES."""
     try:
         reps = (session or {}).get(_REPLACEMENTS) if isinstance(session, dict) else None
         out = str(text or "")
         if not reps or not out:
             return out
-        probe = _norm(out)
+        pieces = [p for p in _SENTENCE_SPLIT_RE.split(_norm(out)) if p]
+        kept: List[str] = []
         changed = False
-        for r in reps:
-            orig = str((r or {}).get("original") or "")
-            if orig and orig in probe:
-                probe = probe.replace(orig, str((r or {}).get("replacement") or ""))
-                changed = True
-        return _norm(probe) if changed else out
+        inserted = set()
+        for piece in pieces:
+            rep = _sentence_is_retracted(piece, reps)
+            if rep is None:
+                kept.append(piece)
+                continue
+            changed = True
+            if rep and rep not in inserted:
+                kept.append(rep)
+                inserted.add(rep)
+        return " ".join(kept) if changed else out
     except Exception:                      # pragma: no cover - defensive
         return str(text or "")
+
+
+def was_retracted(session: Any, text: Any) -> bool:
+    """Does `text` carry a sentence this guard retracted on the call?
+    For the speech-derived slot keys (`v3_confirmed_slot_phrase`) that are
+    captured from the turn's display text and read back turns later."""
+    try:
+        return rewrite_as_heard(session, text) != str(text or "")
+    except Exception:                      # pragma: no cover - defensive
+        return False
 
 
 def apply_replacements_to_history(session: Any) -> int:
@@ -753,7 +810,24 @@ def check_outgoing(session: Any, text: Any) -> Verdict:
 
         if violations and mode == MODE_ENFORCE:
             session[_BLOCKED] = True
-            return Verdict(RECOVERY_SENTENCE, violations, warnings, True, mode)
+            # Defect E, second half (CAdd1bdd17, 13 Sep 12:31): the offer and
+            # the name question arrived in ONE chunk -- Gate 5g had swapped
+            # the CTA for "Before I do that -- could I take your first name
+            # and surname?" -- and replacing the chunk wholesale dropped the
+            # question with the offer. The turn then asked nothing and the
+            # watchdog had to ask it 11 s later. Keep the sentences of the
+            # chunk that name no slot, after the recovery line.
+            bad = [_norm(v.get("clause") or "").lower() for v in violations]
+            kept = []
+            for sent in _SENTENCE_SPLIT_RE.split(_norm(text)):
+                sl = _norm(sent).lower()
+                if not sl or _refers_to_the_offer(sent):
+                    continue
+                if any(b and (b in sl or sl.rstrip(".!?") in b) for b in bad):
+                    continue
+                kept.append(sent)
+            out = RECOVERY_SENTENCE + (" " + " ".join(kept) if kept else "")
+            return Verdict(out, violations, warnings, True, mode)
         return Verdict(text, violations, warnings, False, mode)
     except Exception:                      # pragma: no cover - defensive
         logger.warning("[slot_guard] check failed; speaking unchanged", exc_info=True)

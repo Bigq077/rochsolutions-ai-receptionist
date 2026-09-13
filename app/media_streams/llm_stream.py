@@ -6414,9 +6414,26 @@ class LLMStream:
                             "[ms_llm] read-back slot from the ENGINE's accepted "
                             "record: %r", _rb_accepted,
                         )
-                    _rb_slot = _rb_accepted or (
-                        session.get("v3_confirmed_slot_phrase") or ""
-                    ).strip()
+                    _rb_conf = (session.get("v3_confirmed_slot_phrase") or "").strip()
+                    # Defect L (CAdd1bdd17, 13 Sep): a phrase the fact guard
+                    # retracted at TTS was captured anyway and injected here
+                    # "verbatim" -- the read-back named a time nobody heard.
+                    try:
+                        from app.tools.slot_fact_guard import was_retracted as _was_retracted
+                    except Exception:  # pragma: no cover - defensive
+                        def _was_retracted(_s, _t):  # type: ignore[misc]
+                            return False
+                    try:
+                        if _rb_conf and _was_retracted(session, _rb_conf):
+                            logger.warning(
+                                "[ms_llm] v3_confirmed_slot_phrase %r was RETRACTED by "
+                                "the fact guard -- not used for the read-back", _rb_conf,
+                            )
+                            session.pop("v3_confirmed_slot_phrase", None)
+                            _rb_conf = ""
+                    except Exception:
+                        pass
+                    _rb_slot = _rb_accepted or _rb_conf
                     # ...but it is captured on ONE transition — the name request
                     # at the end of the slot flow — so a caller who changes day
                     # after giving their name never refreshes it. It then names a
@@ -6453,7 +6470,12 @@ class LLMStream:
                             f"\"So that's {_rb_name_txt}, {_rb_slot}"
                             f"{_rb_loc_clause} — shall I go ahead and book that in?\""
                         )
-                    elif session.get("last_spoken_slot_phrase"):
+                    elif session.get("last_spoken_slot_phrase") and not _was_retracted(
+                        session, session.get("last_spoken_slot_phrase")
+                    ):
+                        # (Defect L: `_note_spoken_slot_date` runs at the end of
+                        # `_append_history`, which the TTS loop's retraction can
+                        # race -- so the phrase is checked here too.)
                         # The slot most recently AGREED, taken from the last
                         # commitment sentence actually spoken to the caller.
                         #

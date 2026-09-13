@@ -106,3 +106,47 @@ def test_never_raises_on_a_bad_session():
     assert rewrite_as_heard(None, "x") == "x"  # type: ignore[arg-type]
     note_replacement(None, "a", "b")  # type: ignore[arg-type]
     assert apply_replacements_to_history({"conversation_history": "nope"}) == 0
+
+
+# ── CAdd1bdd17, 13 Sep 12:31, bef29667: the chunk and the history text differ ──
+#
+# The guard saw the TTS chunk, which ended with the producer's CTA; the
+# history / display text had Gate 5g's substitution in its place. A whole-chunk
+# substring never matched, history kept the offer, and the read-back said
+# 16:20 again. The violating CLAUSE is the same in both.
+
+GUARD_CHUNK = (
+    "The nearest I've got to four in the afternoon is twenty past four in the "
+    "afternoon on Tuesday 15th September. Shall I book that in for you?"
+)
+GUARD_CLAUSE = (
+    "The nearest I've got to four in the afternoon is twenty past four in the "
+    "afternoon on Tuesday 15th September"
+)
+DISPLAY_TEXT = (
+    "The nearest I've got to four in the afternoon is twenty past four in the "
+    "afternoon on Tuesday 15th September. Before I do that — could I take your "
+    "first name and surname?"
+)
+
+
+def test_the_history_text_is_rewritten_even_when_gate_5g_changed_its_tail():
+    session = {}
+    _append_history(session, "uh yes please", DISPLAY_TEXT)
+    note_replacement(session, GUARD_CHUNK, RECOVERY, clauses=[GUARD_CLAUSE])
+    assert apply_replacements_to_history(session) == 1
+    (stored,) = _assistant_entries(session)
+    assert "twenty past four" not in stored, stored
+    assert stored.startswith(RECOVERY)
+    assert "could I take your first name and surname" in stored
+
+
+def test_the_confirmed_slot_phrase_is_known_to_be_retracted():
+    """`v3_confirmed_slot_phrase` is captured from the display text with the
+    name request cut off; the read-back injects it verbatim."""
+    from app.tools.slot_fact_guard import was_retracted
+    session = {}
+    note_replacement(session, GUARD_CHUNK, RECOVERY, clauses=[GUARD_CLAUSE])
+    captured = "The nearest I've got to four in the afternoon is twenty past four in the afternoon on Tuesday 15th September"
+    assert was_retracted(session, captured)
+    assert not was_retracted(session, "Tuesday the 15th at ten past five in the evening")

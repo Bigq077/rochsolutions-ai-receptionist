@@ -95,3 +95,43 @@ def test_the_latch_still_lapses_at_the_next_caller_turn(monkeypatch):
     guard.turn_boundary(s)
     v = guard.check_outgoing(s, "Shall I book that in for you?")
     assert v.text == "Shall I book that in for you?"
+
+
+# ── CAdd1bdd17, 13 Sep 12:31 (bef29667): the question was IN the replaced chunk ──
+
+def test_the_question_inside_the_replaced_chunk_survives(monkeypatch):
+    """Gate 5g swapped the CTA for the name question inside the same chunk;
+    replacing the chunk wholesale dropped the question with the offer."""
+    monkeypatch.setenv("SLOT_FACT_GUARD", "enforce")
+    s = {
+        "clinic_id": "northgate",
+        "available_days": [{
+            "date": TUE, "day_label": "Tuesday 15th September",
+            "slot_times": GRID,
+            "slots": [{"start": f"{TUE}T{t}:00+01:00"} for t in GRID],
+        }],
+    }
+    chunk = ("The nearest I've got to four in the afternoon is twenty past four "
+             "in the afternoon on Tuesday 15th September. Before I do that — "
+             "could I take your first name and surname?")
+    v = guard.check_outgoing(s, chunk)
+    assert v.blocked
+    assert v.text.startswith(guard.RECOVERY_SENTENCE)
+    assert "twenty past four" not in v.text
+    assert "could I take your first name and surname?" in v.text
+
+
+def test_a_cta_inside_the_replaced_chunk_is_still_dropped(monkeypatch):
+    monkeypatch.setenv("SLOT_FACT_GUARD", "enforce")
+    s = {
+        "clinic_id": "northgate",
+        "available_days": [{
+            "date": TUE, "day_label": "Tuesday 15th September",
+            "slot_times": GRID,
+            "slots": [{"start": f"{TUE}T{t}:00+01:00"} for t in GRID],
+        }],
+    }
+    chunk = ("The nearest I've got to four in the afternoon is twenty past four "
+             "in the afternoon on Tuesday 15th September. Shall I book that in for you?")
+    v = guard.check_outgoing(s, chunk)
+    assert v.text == guard.RECOVERY_SENTENCE

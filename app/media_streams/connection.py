@@ -13711,6 +13711,29 @@ class WebSocketCallHandler:
                                                 _slot_pre = _slot_pre[len(_pfx):]
                                                 break
                                         _slot_pre = _slot_pre.strip(" ,.'—–-")
+                                        # Defect L, CAdd1bdd17 (13 Sep): this
+                                        # is captured from the DISPLAY text,
+                                        # 2 ms after the fact guard had
+                                        # retracted the sentence at TTS, and
+                                        # the read-back three turns later
+                                        # injected it "verbatim". What the
+                                        # caller never heard is not a
+                                        # confirmed slot. Checked again at
+                                        # the read, since this and the TTS
+                                        # loop race.
+                                        try:
+                                            from app.tools.slot_fact_guard import (
+                                                was_retracted as _was_retracted,
+                                            )
+                                            if _was_retracted(self.session, _slot_pre):
+                                                logger.warning(
+                                                    "[ms_conn] v3_confirmed_slot_phrase"
+                                                    " NOT captured -- the fact guard"
+                                                    " retracted it: %r", _slot_pre,
+                                                )
+                                                _slot_pre = ""
+                                        except Exception:
+                                            pass
                                         if _slot_pre:
                                             self.session[
                                                 "v3_confirmed_slot_phrase"
@@ -15965,8 +15988,13 @@ class WebSocketCallHandler:
                         # this guard passes it (the time IS in the diary).
                         # `_append_history` applies the same record; both are
                         # needed because the append and this loop race.
+                        # The recovery line alone is the replacement for
+                        # history: the kept tail of the chunk (E) is still
+                        # in the display text and would be duplicated.
                         _slot_guard.note_replacement(
-                            self.session, _obs_chunk_text, _sg.text
+                            self.session, _obs_chunk_text,
+                            _slot_guard.RECOVERY_SENTENCE,
+                            clauses=[v.get("clause") for v in (_sg.violations or [])],
                         )
                         _slot_guard.apply_replacements_to_history(self.session)
                         _obs_chunk_text = _sg.text
