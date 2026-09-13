@@ -429,3 +429,69 @@ def test_corpus_turns_that_are_name_rejections(susie, caller):
     s = _session(patient_name="Quentin Rook", collected={"name": "Quentin Rook"})
     _turn(s, susie, caller, "Right —")
     assert s.get("_gate5nc_rejections") == 1, (susie, caller)
+
+
+# ── CAc3ae0f12: re-asked, not rejected -- Gate 5n-d ────────────────────────
+#
+# 13 Sep 2026, build d00db124. STT garbled three name attempts; the model
+# never read a name back, so 5n-c had nothing to count, and it re-asked three
+# times. By the third attempt STT had produced "i'm <name>" -- the exit
+# belonged there.
+
+def test_cac3ae_the_second_re_ask_with_a_best_effort_becomes_the_exit():
+    s = _session()
+    s["selected_slot"] = "2026-09-14T09:40:00+01:00"
+    out = _turn(s, "That one works — so that's Monday the 14th at twenty to ten — "
+                   "could I take your first name and surname?",
+                "um yeah i'll be good and visible to her yeah",
+                "Sorry, I didn't quite catch that — could you say your first name and surname again?")
+    assert out.startswith("Sorry, I didn't quite catch that")
+    assert s["_gate5nd_reasks"] == 1
+
+    # Re-ask #2, but nothing name-shaped has been heard yet: the re-ask stands.
+    out = _turn(s, out, "yeah actually there was good news about priya",
+                "I didn't quite catch your name there — could you say your first name and surname?")
+    assert s["_gate5nd_reasks"] == 2
+    assert not s.get("_gate5n_exited")
+    assert out.startswith("I didn't quite catch your name there")
+
+    # Re-ask #3 -- now "i'm kiera" is on the record: the exit, not a third ask.
+    c1 = None
+    s["conversation_history"].append({"role": "assistant", "content": out})
+    s["_turn_user_text"] = "yeah that's good i'm kiera with her"
+    s["_turn_serial"] += 1
+    c1 = sanitise_response("I didn't quite get your name from that —", s)
+    c2 = sanitise_response("could you say your first and last name clearly for me?", s)
+    assert c1.startswith(EXIT), c1
+    assert "best number" in c1.lower()
+    assert c2 == ""
+    assert s["patient_name"] == "Kiera"
+    assert s["_gate5n_exited"] is True
+
+
+def test_the_first_ask_is_not_a_re_ask():
+    s = _session()
+    _turn(s, "So that's Monday at ten — shall I book that in?", "yes go for it",
+          "That one works — could I take your first name and surname?")
+    assert not s.get("_gate5nd_reasks")
+
+
+def test_a_re_ask_after_a_name_is_on_record_is_not_counted():
+    s = _session(patient_name="Sarah Jones", collected={"name": "Sarah Jones"})
+    _turn(s, "Thanks Sarah — is 0750 the best number?", "sorry what",
+          "Could you say your name again?")
+    assert not s.get("_gate5nd_reasks")
+
+
+def test_the_receipt_head_stays_silent_while_the_name_is_being_answered():
+    from app.media_streams.llm_stream import _name_step_is_open
+
+    s = _session(conversation_history=[
+        {"role": "assistant", "content": "That one works — could I take your first name and surname?"}])
+    assert _name_step_is_open(s) is True
+    s2 = _session(patient_name="Kiera", collected={"name": "Kiera"}, conversation_history=[
+        {"role": "assistant", "content": "Could I take your first name and surname?"}])
+    assert _name_step_is_open(s2) is False, "a name is on record"
+    s3 = _session(conversation_history=[
+        {"role": "assistant", "content": "Do you have a preference for when you'd like to come in?"}])
+    assert _name_step_is_open(s3) is False

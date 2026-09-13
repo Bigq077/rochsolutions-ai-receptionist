@@ -347,6 +347,25 @@ _REJECTION_EXPLICIT_RE = re.compile(
 # After the exit the model may still try to confirm ("Did you say Jaumeira
 # Rybowski — is that right?") or re-ask. The sentence goes; if the turn then
 # asks nothing, the outstanding step does.
+# ── Gate 5n-d: a name re-asked twice exits to the text ──────────────────────
+#
+# CAc3ae0f12 (northgate demo line, 13 Sep 2026, build d00db124). STT garbled
+# three name attempts ("i'll be good and visible to her", "good news about
+# priya", "that's good i'm <name> with her"); the model never read a name
+# back -- it could not extract one -- so 5n-c had nothing to count, and it
+# re-asked three times. By the third attempt STT had produced "i'm <name>",
+# a usable best effort, and the owner's rule (one re-ask, then best effort +
+# text) says that is where the exit belongs. One ask too many.
+#
+# A re-ask is the model asking for the name AGAIN: a name word plus either
+# "didn't catch / get / hear" or "again / once more / clearly / slowly". The
+# first ask ("could I take your first name and surname?") is not a re-ask.
+_NAME_REASK_RE = re.compile(
+    r"(?=[^.!?]*\b(?:first name|surname|last name|full name|your name|first and last name)\b)"
+    r"[^.!?]*\b(?:didn'?t (?:quite )?(?:catch|get|hear)|again|once more|one more time|clearly|slowly)\b",
+    re.IGNORECASE,
+)
+
 _NAME_ASK_AFTER_EXIT_RE = re.compile(
     r"[^.!?]*\bdid you say\b[^.!?]*[.!?]?"
     r"|[^.!?]*\b(?:say|give me|repeat|tell me)\b[^.!?]*\byour (?:full |first |sur)?name\b[^.!?]*[.!?]?"
@@ -2929,6 +2948,37 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
             result = f"{result} {_nk_outstanding_plain(session)}".strip()
         logger.info("[ms_gate5nc] name ask after the exit removed: %r -> %r",
                     _nc_before[:60], result[:60])
+
+    # ── Gate 5n-d: a name re-asked twice exits to the text ──────────────────
+    # See _NAME_REASK_RE. Only while no name is on record and the exit has
+    # not been spoken; counted once per turn (sanitise runs per chunk). On
+    # the second re-ask the best effort from the caller's attempts goes on
+    # the booking and the exit is spoken instead; with no best effort yet
+    # there is nothing to put on the booking, so the re-ask stands.
+    if (
+        not _nc_exit_spoken
+        and not session.get("_gate5n_exited")
+        and not _name_known(session)
+        and _NAME_REASK_RE.search(result)
+    ):
+        _nd_key = _nc_turn if _nc_turn is not None else _nc_user
+        if session.get("_gate5nd_seen") != _nd_key:
+            session["_gate5nd_seen"] = _nd_key
+            session["_gate5nd_reasks"] = int(session.get("_gate5nd_reasks") or 0) + 1
+            logger.info("[ms_gate5nd] name re-asked (#%d): %r",
+                        session["_gate5nd_reasks"], result[:60])
+            if session["_gate5nd_reasks"] >= 2:
+                _nd_name = _best_effort_name_from_history(session)
+                if _nd_name:
+                    result = _gate5n_exit(session, _nd_name)
+                    _nc_exit_spoken = True
+                    logger.info(
+                        "[ms_gate5nd] second re-ask — exit spoken; best effort %r "
+                        "persisted, SMS confirmation flagged, asked instead: %r",
+                        _nd_name, result[-60:],
+                    )
+                else:
+                    logger.info("[ms_gate5nd] no best effort yet — the re-ask stands")
 
     # ── Gate 5n: a name is never typed on a keypad, and never spelled ────────
     # See _NAME_KEYPAD_OR_SPELL_RE. Only while a name is still outstanding: once
