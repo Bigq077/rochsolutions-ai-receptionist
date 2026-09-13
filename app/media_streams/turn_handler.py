@@ -189,6 +189,107 @@ def _nk_outstanding_plain(session: Dict[str, Any]) -> str:
     return _q[:1].upper() + _q[1:]
 
 
+def _gate5n_exit(session: Dict[str, Any], name: str) -> str:
+    """The one exit from name capture, spoken by Gate 5n (the model reached
+    for a keypad or a spelling) and Gate 5n-c (the caller rejected a read-back
+    twice). Persists the best effort as the name, flags the text, and returns
+    the exit line followed by the step genuinely outstanding.
+
+    Owner, 13 Sep 2026: say WHAT will happen and WHAT they do -- "we'll
+    double-check the spelling by text" said neither. Only the exit and the
+    outstanding step are spoken: whatever else the model wrote on this turn
+    was framing for an ask that is not happening.
+    """
+    session["_gate5n_exited"] = True
+    session["patient_name"] = name
+    session.setdefault("collected", {})["name"] = name
+    session["_gate5n_best_effort_name"] = name
+    session["needs_name_correction_sms"] = True
+    _exit = (
+        "No problem — I'll pop what I've got on the booking, and I'll "
+        "text you after the call so you can reply with the spelling."
+    )
+    return f"{_exit} {_nk_outstanding_plain(session)}".strip()
+
+
+# ── Gate 5n-c: a name read-back rejected twice exits to the text ─────────────
+#
+# CA499ca674 (northgate demo line, 13 Sep 2026, build 9074e9ea). The caller
+# rejected the name Susie read back SIX times over 95 seconds. Gate 5n never
+# fired: it keys on the model saying "spell" or "keypad", and the prompt
+# forbids exactly those words, so a model that obeys the prompt can never
+# reach the exit -- it just confirms again. The prompt's own "after two full
+# attempts ... continue with a placeholder" is advisory and was ignored. The
+# model then called transfer_to_human for a NAME problem, the demo line has no
+# transfer target, and the call ended without a booking.
+#
+# The audio channel was never going to do better: from the third attempt STT
+# returned the same two tokens every time. Owner rule (13 Sep 2026): one
+# re-ask, then best effort + text. So the SECOND rejection of a read-back is
+# the trigger, whatever the model wrote.
+#
+# A rejection is a caller turn that pushes back on a name Susie has just
+# said. Two shapes, because a bare "no" is only about the name when the
+# question was:
+#   A. Susie asked a yes/no name question ("Did you say X — is that right?")
+#      and the caller said no / that's wrong / I didn't say that.
+#   B. Susie merely spoke the name ("Thanks X —", "I have you as X") and the
+#      caller's turn is ABOUT the name: "it's not X", "wrong name", "I just
+#      told you", "my name is ...". A bare "no" here is answering whatever
+#      Susie went on to ask (usually the phone) and does not count.
+_NAME_CONFIRM_QUESTION_RE = re.compile(
+    r"\bdid you say\b|\bis that right\b|\bhave I got that right\b|\bis that correct\b",
+    re.IGNORECASE,
+)
+_NAME_SPOKEN_RE = re.compile(
+    r"^\s*(?:thanks|thank you|got it|lovely|right)\s*,?\s*[A-Z][a-z'\-]+\s*[—–-]"
+    r"|\b(?:I (?:do )?have you (?:down )?as|I've got you (?:down )?as|booked you in as)\b",
+    re.IGNORECASE,
+)
+_REJECTION_PLAIN_RE = re.compile(
+    r"^\s*(?:no|nope|nah|wrong|not right|that'?s (?:wrong|not right|not it|not my name)"
+    r"|(?:i )?didn'?t say|(?:it'?s |that'?s )?still wrong|i said)\b",
+    re.IGNORECASE,
+)
+_REJECTION_ABOUT_NAME_RE = re.compile(
+    r"\bit'?s not\b|\bthat'?s (?:wrong|not right|not it|not my name)\b|\bwrong name\b"
+    r"|\b(?:i )?didn'?t say\b|\bstill wrong\b|\bi just told you\b|\bmy name(?:'s| is)\b"
+    r"|\bnot my name\b",
+    re.IGNORECASE,
+)
+# After the exit the model may still try to confirm ("Did you say Jaumeira
+# Rybowski — is that right?") or re-ask. The sentence goes; if the turn then
+# asks nothing, the outstanding step does.
+_NAME_ASK_AFTER_EXIT_RE = re.compile(
+    r"[^.!?]*\bdid you say\b[^.!?]*[.!?]?"
+    r"|[^.!?]*\b(?:say|give me|repeat|tell me)\b[^.!?]*\byour (?:full |first |sur)?name\b[^.!?]*[.!?]?"
+    r"|[^.!?]*\bwhat(?:'s| is) your (?:full |first |sur)?name\b[^.!?]*[.!?]?",
+    re.IGNORECASE,
+)
+
+
+def _last_assistant_text(session: Dict[str, Any]) -> str:
+    for _m in reversed(session.get("conversation_history") or []):
+        if isinstance(_m, dict) and _m.get("role") == "assistant":
+            return str(_m.get("content") or "")
+    return ""
+
+
+def _is_name_rejection(session: Dict[str, Any], caller: str) -> bool:
+    """PURE. Whether this caller turn rejects a name Susie just said."""
+    _c = (caller or "").strip()
+    if not _c:
+        return False
+    _prev = _last_assistant_text(session)
+    if _NAME_CONFIRM_QUESTION_RE.search(_prev) and not re.search(
+        r"\bnumber\b", _prev, re.IGNORECASE
+    ):
+        return bool(_REJECTION_PLAIN_RE.match(_c) or _REJECTION_ABOUT_NAME_RE.search(_c))
+    if _NAME_SPOKEN_RE.search(_prev) or _name_known(session):
+        return bool(_REJECTION_ABOUT_NAME_RE.search(_c))
+    return False
+
+
 def _best_effort_name_from_history(session: Dict[str, Any]) -> str:
     """The caller's most recent name attempt, as one capitalised token. PURE.
 
@@ -2622,6 +2723,47 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
             logger.info("[ms_gate5] removed banned phrase (reason_question)")
         result = _reason_cleaned
 
+    # ── Gate 5n-c: a name read-back rejected twice exits to the text ────────
+    # See the module comment above _NAME_CONFIRM_QUESTION_RE. Counted once per
+    # caller utterance (sanitise_response runs per chunk), only while a
+    # booking is still being made, and fires whether or not a name is on
+    # record -- on CA499ca674 one was, from the second attempt.
+    _nc_user = (session.get("_turn_user_text") or "").strip()
+    _nc_exit_spoken = False
+    if (
+        _nc_user
+        and not session.get("booking_confirmed")
+        and session.get("_gate5nc_seen") != _nc_user
+        and _is_name_rejection(session, _nc_user)
+    ):
+        session["_gate5nc_seen"] = _nc_user
+        session["_gate5nc_rejections"] = int(session.get("_gate5nc_rejections") or 0) + 1
+        logger.info(
+            "[ms_gate5nc] name read-back rejected (#%d): %r",
+            session["_gate5nc_rejections"], _nc_user[:60],
+        )
+        if session["_gate5nc_rejections"] >= 2 and not session.get("_gate5n_exited"):
+            _nc_name = _best_effort_name_from_history(session) or (
+                (session.get("patient_name") or "").split() or [""]
+            )[0]
+            if _nc_name:
+                result = _gate5n_exit(session, _nc_name)
+                _nc_exit_spoken = True
+                logger.info(
+                    "[ms_gate5nc] second rejection — exit spoken; best effort %r "
+                    "persisted, SMS confirmation flagged, asked instead: %r",
+                    _nc_name, result[-60:],
+                )
+    if session.get("_gate5n_exited") and _NAME_ASK_AFTER_EXIT_RE.search(result):
+        # The exit has been spoken; a further confirm or re-ask goes, and if
+        # the turn then asks nothing the outstanding step does.
+        _nc_before = result
+        result = re.sub(r"\s{2,}", " ", _NAME_ASK_AFTER_EXIT_RE.sub("", result)).strip()
+        if "?" not in result:
+            result = f"{result} {_nk_outstanding_plain(session)}".strip()
+        logger.info("[ms_gate5nc] name ask after the exit removed: %r -> %r",
+                    _nc_before[:60], result[:60])
+
     # ── Gate 5n: a name is never typed on a keypad, and never spelled ────────
     # See _NAME_KEYPAD_OR_SPELL_RE. Only while a name is still outstanding: once
     # one is on record the word "spell" belongs to whatever the caller is
@@ -2639,7 +2781,10 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     # Once per call: if the model reaches for a keypad again the sentence is
     # simply removed, because everything above has already happened.
     _nk_exited = bool(session.get("_gate5n_exited"))
-    if (not _name_known(session) or _nk_exited) and _NAME_KEYPAD_OR_SPELL_RE.search(result):
+    # Not on the turn 5n-c has just spoken the exit: that line says
+    # "spelling", and this branch would strip it.
+    if (not _nc_exit_spoken and (not _name_known(session) or _nk_exited)
+            and _NAME_KEYPAD_OR_SPELL_RE.search(result)):
         _nk_cleaned = _NAME_KEYPAD_OR_SPELL_RE.sub("", result)
         _nk_cleaned = re.sub(r"\s{2,}", " ", _nk_cleaned).strip()
         _nk_name = "" if _nk_exited else _best_effort_name_from_history(session)
@@ -2658,27 +2803,11 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
             )
             logger.info("[ms_gate5n] keypad/spelling ask for a NAME removed (no best effort)")
         else:
-            session["_gate5n_exited"] = True
-            session["patient_name"] = _nk_name
-            session.setdefault("collected", {})["name"] = _nk_name
-            session["_gate5n_best_effort_name"] = _nk_name
-            session["needs_name_correction_sms"] = True
-            # Owner, 13 Sep 2026: say WHAT will happen and WHAT they do.
-            # "we'll double-check the spelling by text" said neither.
-            _nk_exit = (
-                "No problem — I'll pop what I've got on the booking, and I'll "
-                "text you after the call so you can reply with the spelling."
-            )
-            _nk_next = _nk_outstanding_plain(session)
-            # Only the exit and the outstanding step: whatever else the model
-            # wrote on this turn was framing for the ask that just went
-            # ("I'm not quite catching that —"), and the caller has nothing to
-            # answer in it.
-            result = f"{_nk_exit} {_nk_next}".strip()
+            result = _gate5n_exit(session, _nk_name)
             logger.info(
                 "[ms_gate5n] keypad/spelling ask for a NAME removed; best effort "
                 "%r persisted, SMS confirmation flagged, asked instead: %r",
-                _nk_name, _nk_next[:60],
+                _nk_name, result[-60:],
             )
 
     # ── Gate 5n-b: the placeholder is never said aloud ──────────────────────

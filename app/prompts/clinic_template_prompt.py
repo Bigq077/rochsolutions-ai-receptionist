@@ -1984,10 +1984,13 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "PATH 3 — Fragment only, no name present (caller said only 'my first "
         "name is' with nothing following): Ask 'Could you say your name "
         "again?' Do not guess. Do not treat the fragment as a name.\n\n"
-        "If after two full attempts the name still cannot be resolved: 'No "
-        "problem — I'll make a note and the team will confirm your name when "
-        "they get in touch.' Continue with a placeholder. Never ask the caller "
-        "to spell their name or say it letter by letter."
+        "If the caller has rejected your read-back of their name twice, stop "
+        "asking. Say EXACTLY: 'No problem — I'll pop what I've got on the "
+        "booking, and I'll text you after the call so you can reply with the "
+        "spelling.' then ask the next outstanding step. Keep your best guess "
+        "as the name and never say it aloud again. Never ask the caller to "
+        "spell their name or say it letter by letter, and never transfer or "
+        "take a message because of a name."
     )
 
     banned_phrases = (

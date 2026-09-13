@@ -479,7 +479,12 @@ UNMOVED_PROMPTS = {
     # turn is echoed and confirmed, never carried from memory into date_hint;
     # same-breath and urgency still skip. Confined to the template: theorem,
     # theorem_v3 and demo hashed identical either side.
-    "jv_v1": "efda596939b59611",
+    # Re-pinned 2026-09-13, efda596939b59611 -> e7f58b283b2e35cd (jv_v1) and
+    # d18c9731270c7981 -> fe81ed47671f4203 (vital_edge). Gate 5n-c: the name
+    # rules' "after two full attempts" fallback now says the exit the engine
+    # speaks (text after the call) and forbids a transfer for a name. One
+    # sentence in the template; theorem and demo hashed identical either side.
+    "jv_v1": "e7f58b283b2e35cd",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -588,7 +593,7 @@ UNMOVED_PROMPTS = {
     # Re-pinned 2026-09-11 with jv_v1 above, 8b1d639b71b2d23e ->
     # 911689910174d5be. Same one change to BOOKING STEPS 5-7; see the note
     # there for the containment proof.
-    "vital_edge": "d18c9731270c7981",  # re-pinned 2026-09-12, see jv_v1 note
+    "vital_edge": "fe81ed47671f4203",  # re-pinned 2026-09-13, see jv_v1 note
 }
 
 

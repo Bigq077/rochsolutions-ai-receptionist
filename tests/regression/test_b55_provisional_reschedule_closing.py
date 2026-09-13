@@ -282,7 +282,12 @@ UNCHANGED_CLINIC_PROMPTS = {
     # turn is echoed and confirmed, never carried from memory into date_hint;
     # same-breath and urgency still skip. Confined to the template: theorem,
     # theorem_v3 and demo hashed identical either side.
-    "jv_v1": "efda596939b59611",
+    # Re-pinned 2026-09-13, efda596939b59611 -> e7f58b283b2e35cd (jv_v1) and
+    # d18c9731270c7981 -> fe81ed47671f4203 (vital_edge). Gate 5n-c: the name
+    # rules' "after two full attempts" fallback now says the exit the engine
+    # speaks (text after the call) and forbids a transfer for a name. One
+    # sentence in the template; theorem and demo hashed identical either side.
+    "jv_v1": "e7f58b283b2e35cd",
     "theorem": "8565be9a48a7a9aa",
     # Re-pinned 2026-08-25: 'Children under fifteen not seen' -> 'Children
     # under seven not seen'. Mark's minimum age is 7 (owner-confirmed
