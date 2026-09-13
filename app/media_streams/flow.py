@@ -19773,11 +19773,31 @@ class FlowEngine:
                     if _needs_name_sms:
                         _ncorr_phone = _book_args.get("phone") or ""
                         if _ncorr_phone:
+                            # The clinic's own name, never another clinic's.
+                            # Hardcoded "Theorem Health" here until 2026-09-13:
+                            # every Northgate / JV / Vital Edge caller who
+                            # reached this text was told the wrong clinic. Same
+                            # source as the booking confirmation SMS
+                            # (receptionist_tools: sms_name, then display_name).
+                            try:
+                                from app.clinic_config import get_clinic as _ncorr_gc
+                                _ncorr_clinic = _ncorr_gc(self.session.get("clinic_id")) or {}
+                                _ncorr_cname = (
+                                    _ncorr_clinic.get("sms_name")
+                                    or _ncorr_clinic.get("display_name")
+                                    or "the clinic"
+                                )
+                            except Exception:  # pragma: no cover - defensive
+                                _ncorr_cname = "the clinic"
+                            # Full name, not first name: Gate 5n persists a
+                            # single best-effort token and the pending-name
+                            # record is completed by a two-word reply, so ask
+                            # for what the reply handler can use.
                             _ncorr_body = (
-                                "Hi, this is Susie from Theorem Health. "
-                                "I didn't quite catch your first name on the call. "
-                                "Please reply with your first name so I can complete "
-                                "your booking details."
+                                f"Hi, this is Susie from {_ncorr_cname}. "
+                                "I didn't quite catch your name on the call. "
+                                "Please reply with your first name and surname so I "
+                                "can complete your booking details."
                             )
                             try:
                                 from app.notifications.sms import send_sms as _ncorr_sms

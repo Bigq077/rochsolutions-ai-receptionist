@@ -120,6 +120,89 @@ _REASON_RESIDUE_FRAGMENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ── Gate 5n: a name is never typed on a keypad, and never spelled ────────────
+#
+# CA9bd192c9 (northgate demo line, 13 Sep 2026, build dd3a9ff7). STT heard
+# "Elektra" as "a lecture" three times; on the third the model said "I'm not
+# quite catching that — could you try typing your surname on your keypad?"
+# and the caller hung up. A keypad has three letters per key: the request is
+# impossible, not merely poor. The prompt already forbids it in spirit — the
+# name rules say "never ask the caller to spell their name or say it letter by
+# letter" and never mention a keypad for a name at all — so this is bleed from
+# the PHONE step's "go ahead and type the number on your keypad", the only
+# recovery move the model has been taught, applied to the wrong field.
+#
+# Owner decision 13 Sep 2026: the recovery the prompt already specifies is the
+# right one — after two failed attempts take the best effort, tell the caller
+# the spelling will be confirmed by text, and MOVE ON. That exit was never
+# reached because nothing enforces it; the model asked a fourth time instead.
+# The model reaching for a keypad or a spelling IS the signal that it is
+# stumped, so that is the moment the exit fires.
+#
+# A sentence matches when it asks the caller to type / enter / key in a NAME
+# (never a number — the phone-step keypad line has no name noun and must keep
+# working), or to spell anything at all. Spelling over 8 kHz audio fails on
+# B/D/P/T/V and makes the caller do clerical work; the phone number is the
+# patient key and the name is confirmed by SMS after the call, which is what
+# `needs_name_correction_sms` and the pending-name record already do.
+_NAME_KEYPAD_OR_SPELL_RE = re.compile(
+    r"[^.!?]*\b(?:"
+    r"(?:typ(?:e|ing)|enter(?:ing)?|key(?:ing)?\s+in|tap(?:ping)?|punch(?:ing)?|"
+    r"input(?:ting)?|us(?:e|ing)\s+(?:the|your)\s+keypad\s+for)"
+    r"[^.!?]{0,40}?\b(?:first\s+name|last\s+name|surname|full\s+name|"
+    r"your\s+name|the\s+name)\b"
+    r"|\bspell(?:ing|ed)?\b"
+    r"|\bletter[\s-]+by[\s-]+letter\b"
+    r")\b[^.!?]*[.!?]?",
+    re.IGNORECASE,
+)
+
+# What the caller says around a name when asked for it. Stripped before the
+# best-effort token is taken, so "um yes that'll be a lecture" yields
+# "Lecture" and not "Um".
+_NAME_ANSWER_JUNK_RE = re.compile(
+    r"^(?:\s*(?:um+|uh+|er+|erm|ah|oh|yes|yeah|yep|no|nope|nah|just|so|it's|its|"
+    r"it\s+is|that's|that'll\s+be|that\s+would\s+be|my|the|a|an|and|name|first|"
+    r"last|surname|is|be|okay|ok|well|sorry|again|please|i\s+said|i'm|im)\b[\s,.'-]*)+",
+    re.IGNORECASE,
+)
+
+
+def _nk_outstanding_plain(session: Dict[str, Any]) -> str:
+    """The outstanding booking step without the "Before I do that —" framing,
+    which belongs to a CTA substitution: after the Gate 5n exit nothing was
+    about to be done. Both phone forms still carry a _PHONE_STEP_MARKERS
+    token ("best number" / "use this number" / "type the number")."""
+    _q = re.sub(r"^Before I do that\s*[—–-]\s*", "", _next_booking_question_for(session))
+    return _q[:1].upper() + _q[1:]
+
+
+def _best_effort_name_from_history(session: Dict[str, Any]) -> str:
+    """The caller's most recent name attempt, as one capitalised token. PURE.
+
+    The utterance this turn answers first (`_turn_user_text`, stashed by
+    llm_stream because conversation_history is appended AFTER the turn), then
+    the stored history backwards. A candidate is a user turn short enough to
+    be a name answer (the transcript of "a lecture", not the opening sentence
+    about a knee); the words people say around a name are stripped and the
+    first alphabetic token of two or more letters is returned. The empty
+    string when nothing qualifies — the caller decides the fallback.
+    """
+    _cands = [session.get("_turn_user_text") or ""] + [
+        (_m.get("content") or "")
+        for _m in reversed(session.get("conversation_history") or [])
+        if isinstance(_m, dict) and _m.get("role") == "user"
+    ]
+    for _u in _cands:
+        _u = _u.strip()
+        if not _u or len(_u.split()) > 8 or _u.rstrip().endswith("?"):
+            continue
+        _u = _NAME_ANSWER_JUNK_RE.sub("", _u)
+        _tok = re.search(r"[A-Za-z][A-Za-z'\-]+", _u)
+        if _tok:
+            return _tok.group(0).strip("'-").capitalize()
+    return ""
+
 
 _BANNED_SENTENCE_RE = [
     # ── Markdown artefacts (A1, 2026-07-29) ─────────────────────────────────
@@ -2523,6 +2606,63 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
         else:
             logger.info("[ms_gate5] removed banned phrase (reason_question)")
         result = _reason_cleaned
+
+    # ── Gate 5n: a name is never typed on a keypad, and never spelled ────────
+    # See _NAME_KEYPAD_OR_SPELL_RE. Only while a name is still outstanding: once
+    # one is on record the word "spell" belongs to whatever the caller is
+    # talking about. The exit does four things, all of which already exist and
+    # none of which the model reached on CA9bd192c9:
+    #   1. the impossible sentence goes;
+    #   2. the caller's best effort is persisted as a single token, so
+    #      _name_known is true and Gate 5g-b stops re-asking, AND so
+    #      book_appointment's single-token rule creates the pending-name record
+    #      that the inbound SMS reply completes against Acuity;
+    #   3. `needs_name_correction_sms` is set, so the request text goes out with
+    #      the booking confirmation;
+    #   4. the caller hears the exit the prompt already specifies, then the
+    #      step genuinely outstanding -- normally the phone.
+    # Once per call: if the model reaches for a keypad again the sentence is
+    # simply removed, because everything above has already happened.
+    _nk_exited = bool(session.get("_gate5n_exited"))
+    if (not _name_known(session) or _nk_exited) and _NAME_KEYPAD_OR_SPELL_RE.search(result):
+        _nk_cleaned = _NAME_KEYPAD_OR_SPELL_RE.sub("", result)
+        _nk_cleaned = re.sub(r"\s{2,}", " ", _nk_cleaned).strip()
+        _nk_name = "" if _nk_exited else _best_effort_name_from_history(session)
+        if _nk_exited:
+            # The exit has been spoken. The ask goes; if the turn no longer
+            # asks anything, the step genuinely outstanding does.
+            result = _nk_cleaned if "?" in _nk_cleaned else (
+                f"{_nk_cleaned} {_nk_outstanding_plain(session)}".strip()
+            )
+            logger.info("[ms_gate5n] keypad/spelling ask removed again: %r", result[:80])
+        elif not _nk_name:
+            # Nothing to persist -- the caller has not yet said anything
+            # name-shaped -- so this is the one plain re-ask.
+            result = _nk_cleaned if "?" in _nk_cleaned else (
+                f"{_nk_cleaned} Could you say your name once more for me?".strip()
+            )
+            logger.info("[ms_gate5n] keypad/spelling ask for a NAME removed (no best effort)")
+        else:
+            session["_gate5n_exited"] = True
+            session["patient_name"] = _nk_name
+            session.setdefault("collected", {})["name"] = _nk_name
+            session["_gate5n_best_effort_name"] = _nk_name
+            session["needs_name_correction_sms"] = True
+            _nk_exit = (
+                "No problem — I'll pop that on the booking and we'll double-check "
+                "the spelling by text."
+            )
+            _nk_next = _nk_outstanding_plain(session)
+            # Only the exit and the outstanding step: whatever else the model
+            # wrote on this turn was framing for the ask that just went
+            # ("I'm not quite catching that —"), and the caller has nothing to
+            # answer in it.
+            result = f"{_nk_exit} {_nk_next}".strip()
+            logger.info(
+                "[ms_gate5n] keypad/spelling ask for a NAME removed; best effort "
+                "%r persisted, SMS confirmation flagged, asked instead: %r",
+                _nk_name, _nk_next[:60],
+            )
 
     # ── Gate 5g: self-narration strip ────────────────────────────────────────
     # Runs here, adjacent to 5b, because it is the same kind of operation —

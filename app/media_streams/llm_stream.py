@@ -5490,6 +5490,13 @@ class LLMStream:
         # than the slow tail.
         _hs_situational = ""
         _hs_intent = None
+        # The utterance this turn answers, for the per-chunk sanitiser: Gate 5n
+        # takes the caller's best-effort name from it, and conversation_history
+        # does not hold it until _append_history runs AFTER the turn.
+        try:
+            session["_turn_user_text"] = _last_user_text(messages or [])
+        except Exception:  # pragma: no cover - defensive
+            pass
         try:
             from app.hold_speech import (
                 classify_intent as _classify_intent,
