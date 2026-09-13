@@ -204,10 +204,12 @@ def test_it_guards_the_one_date_branch_and_not_something_else():
     lines = src.split("\n")
     sites = [i for i, l in enumerate(lines)
              if "_names_a_different_weekday" in l and not l.lstrip().startswith("#")]
-    assert len(sites) == 2, (
-        "expected exactly the two one-day sites, found %d" % len(sites))
+    # 13 Sep 2026: a third site, the one-slot acceptance (step 1b), under
+    # `if len(offered) == 1:` -- one slot is one day. CAafb7f031.
+    assert len(sites) == 3, (
+        "expected exactly the three one-day sites, found %d" % len(sites))
 
-    _ONE_DAY = ("len(_dates) == 1", "single_day_offer")
+    _ONE_DAY = ("len(_dates) == 1", "single_day_offer", "len(offered) == 1")
 
     for i in sites:
         indent = len(lines[i]) - len(lines[i].lstrip())

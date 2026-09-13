@@ -1268,6 +1268,7 @@ def accept_clarify_speech(
 
 # Job 3c.1 / CAce1457d1: caller accepting an already-offered slot must not be
 # steered to "present the existing slots" again (forced a second accept).
+_LEADING_FILLER_RE = re.compile(r"^(?:(?:um+|uh+|er+|erm+|ah+|oh|well|right|so)[\s,]+)+")
 _SLOT_ACCEPT_PHRASES: frozenset = frozenset({
     "suits me", "any of them", "any of those", "that works",
     "fine with me", "any is fine", "any is good", "whatever",
@@ -1294,13 +1295,24 @@ def utterance_accepts_offered_slot(text: str) -> bool:
         return False
     if utterance_requests_more_slots(t) or utterance_requests_different_day(t):
         return False
+    # Leading fillers are not words. CAafb7f031 (13 Sep 2026, northgate,
+    # 86b77625): "uh yeah go for it" to "Shall I book that in for you?" read
+    # as NOT an acceptance -- "uh yeah" is not the exact phrase "yeah", and
+    # "go for it" was only in the exact-match set -- so the re-query guard
+    # stood down, the model's spurious check_availability fell to the dedup
+    # branch, and the caller who had just accepted eight in the morning was
+    # read Wednesday's OTHER times with eight left out. The 10 Sep call with
+    # the same words was spared only because the model did not re-query.
+    t = _LEADING_FILLER_RE.sub("", t).strip()
+    if not t:
+        return False
     if t in _SLOT_ACCEPT_PHRASES:
         return True
     # Short affirmatives with filler ("yeah that works", "yes please")
     if len(t.split()) <= 5 and any(
         t == p or t.startswith(p + " ") or t.endswith(" " + p) or f" {p} " in f" {t} "
         for p in (
-            "that works", "works for me", "sounds good", "go ahead",
+            "that works", "works for me", "sounds good", "go ahead", "go for it",
             "book that", "book it", "perfect", "yes please", "yeah please",
         )
     ):
@@ -3386,6 +3398,65 @@ def utterance_can_accept_a_slot(text: str) -> bool:
     return False
 
 
+#: A negator or a redirect, for the one-slot acceptance. Its own pattern, not
+#: `_DAY_REFUSE_RE`: that one's `n'?t\b` also matches "brillia-nt" and
+#: "appointme-nt", which would decline "brilliant, do that".
+_ONE_SLOT_NEGATOR_RE = re.compile(
+    r"\b(?:no|nope|nah|not|none|never|cannot|rather|instead|different|another|"
+    r"else|other|later|earlier|sooner|actually|"
+    r"(?:do|does|did|can|could|would|should|is|are|was|were|has|have|had|wo|ai)n'?t)\b",
+    re.IGNORECASE,
+)
+
+
+def _names_a_different_time(text: str, session: Dict[str, Any], start: str) -> bool:
+    """Does `text` name a clock time that is not this slot's? Uses step 3's
+    own label matcher, so "eight's fine" against 08:00 is not a contradiction
+    and "can you do ten past five" is."""
+    try:
+        if not _clock_time_named(text):
+            return False
+        phrase = _time_norm(text)
+        labels = [str(x) for x in (session.get("slot_labels") or []) if x]
+        for label in labels:
+            bare = _strip_part_of_day(label)
+            if _time_named_in(phrase, label) or (bare and bare != label and _time_named_in(phrase, bare)):
+                return False
+        return True
+    except Exception:
+        return True
+
+
+def _offer_is_what_susie_just_said(session: Dict[str, Any]) -> bool:
+    """Is the one slot on the table what Susie said LAST? PURE.
+
+    Reads her previous turn from `conversation_history` (what the caller
+    heard -- rewritten by the fact guard when it retracted anything) and
+    looks for the offer's own spoken label, or the readout chunk that
+    presented it. A parking answer or a check-in in between means the caller
+    is answering something else, and a yes there is not a slot acceptance.
+    """
+    try:
+        last = ""
+        for m in reversed(session.get("conversation_history") or []):
+            if isinstance(m, dict) and m.get("role") == "assistant":
+                last = str(m.get("content") or "")
+                break
+        norm_last = _readback_norm(last)
+        if not norm_last:
+            return False
+        labels = [str(x) for x in (session.get("slot_labels") or []) if x]
+        readout = session.get(LAST_READOUT_KEY)
+        chunks = [str(c) for c in (readout.get("chunks") or [])] if isinstance(readout, dict) else []
+        for probe in labels + chunks:
+            n = _readback_norm(probe)
+            if n and n in norm_last:
+                return True
+        return False
+    except Exception:
+        return False
+
+
 def slot_accepted_by_caller(
     session: Dict[str, Any], text: str
 ) -> "str | None":
@@ -3450,6 +3521,46 @@ def slot_accepted_by_caller(
         spoken = spoken_starts_for_offer(session)
     except Exception:
         return None
+
+    # -- 1b. ONE slot on the table, and Susie has just asked about it -------
+    # Then there is no "which" to resolve: the caller was asked "shall I
+    # book that in?" and any accepting utterance (step 0 has already said
+    # this one accepts) is a yes to THAT slot. Steps 2-3 below decide WHICH
+    # of the day's heard times was meant, and on a one-slot offer after a
+    # multi-day readout they decline a plain yes, because two or three of
+    # that day's times were heard in the earlier list.
+    #
+    # CAafb7f031, northgate, 13 Sep 2026 13:16, build 86b77625: Wednesday
+    # had been read at eight and ten past five; "yeah the wednesday at 8
+    # works" was ACCEPTED; the follow-up said "eight in the morning on
+    # Wednesday is free. Shall I book that in for you?"; the caller said
+    # "uh yeah go for it"; this resolver returned None (two Wednesday times
+    # heard, no label in the words); the re-query guard therefore stood
+    # down, the model's spurious check_availability fell to the dedup
+    # branch, and the caller was read Wednesday's OTHER times with eight
+    # left out. A phrase added to `utterance_accepts_offered_slot` would
+    # catch those words and leave the next wording ("brilliant, do that")
+    # in the same hole -- the owner's objection, and the right one.
+    #
+    # Guarded on the MAP and on the MOMENT, so a yes to some later question
+    # cannot pin: the offer must be the last thing Susie said (its spoken
+    # label is in her previous turn), the words must carry no negator, no
+    # other weekday and no contradicting time. Deny-by-default is kept: any
+    # of those fails and the ladder below decides as before.
+    if len(offered) == 1:
+        _only = str((offered[0] or {}).get("start") or "")
+        _refuses = (
+            _ONE_SLOT_NEGATOR_RE.search(text or "") is not None
+            or _names_a_different_weekday(text, _only[:10])
+            or _time_contradicts(text, _only)
+            or _names_a_different_time(text, session, _only)
+        )
+        if (
+            _only and _only[:19] in spoken
+            and _offer_is_what_susie_just_said(session)
+            and not _refuses
+        ):
+            return _only
 
     pos = _position_named(text, len(offered))
     if pos is not None and single_day_offer:
