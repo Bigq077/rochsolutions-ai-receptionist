@@ -532,10 +532,27 @@ _BODY = (r"(?:knee|ankle|shoulder|hip|back|neck|wrist|elbow|foot|feet|calf|"
 # a sensory/neurological sign; each still needs a body part to corroborate
 # and is still blocked by a trailing '?', so "is numbness normal after
 # surgery?" does not arm a sympathy head.
+# The VAGUE class: a body part with a complaint-noun and no word for pain at
+# all -- "a knee thing and a shoulder thing", "an issue with my hip", "my
+# back's playing up". Hold-head audit 13 Sep 2026: on 3 of 5 calls opening
+# that way SYMPTOM matched nothing, FAQ_PARKING won on the "parking" in the
+# same breath, and the caller heard "As for parking — sorry to hear you're
+# dealing with both of those". Owner decision 13 Sep: the symptom outranks
+# the FAQ. The rule order already says so; this is the vocabulary that lets
+# it. Anchored to the body word on both sides so "I'll ring back, thing is"
+# cannot arm it.
+_VAGUE_COMPLAINT = (
+    # "ring back, thing is" / "call back" -- that "back" is a verb particle.
+    r"(?<!ring )(?<!call )(?<!get )(?<!come )(?<!phone )(?<!be )(?<!you )"
+    + _BODY + r"s?\s+(?:thing|issue|problem|trouble|complaint)"
+    r"|(?:thing|issue|problem|trouble|something)\s+(?:wrong |going on )?with\s+(?:my|the)\s+" + _BODY
+    + r"|" + _BODY + r"(?:'s| is| has been|'s been)?\s+(?:playing up|not (?:right|great|good)|dodgy|gone|bad)"
+)
 _HURT = (r"(?:pain|painful|injur\w*|sprain\w*|strain\w*|ache|aching|stiff\w*|"
          r"sore|tension|pulled|tight\w*|hurt\w*|niggl\w*|twist\w*|roll\w*|"
          r"went over|gave way|giving way|done (?:my|in)|popped|locked|swollen|"
-         r"seized|numb\w*|tingl\w*|pins and needles|shooting)")
+         r"seized|numb\w*|tingl\w*|pins and needles|shooting"
+         r"|" + _VAGUE_COMPLAINT + r")")
 _SERVICE = (r"(?:acupuncture|massage|shockwave|physio\w*|sports|dry.?needl\w*|"
             r"laser|rehab\w*|pilates|osteo\w*|treatment|therapy|service)")
 # "to book an appointment" is a PURPOSE, not a want-verb, and it is how a

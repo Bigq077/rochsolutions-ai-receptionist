@@ -90,3 +90,38 @@ def test_a_past_day_gets_no_lookup_head(utterance):
 def test_a_future_day_still_gets_its_head(utterance):
     intents = classify_intent(utterance, "Do you have a preference for when you'd like to come in?")
     assert Intent.NAMED_DAY in intents, utterance
+
+
+# ── #3: the symptom outranks the FAQ (owner, 13 Sep) ──────────────────────
+#
+# CA5c69c585 / CAdb28a1a6 / CA2b11b233 (12-13 Sep): "i've got a knee thing and
+# a shoulder thing ... i also need to know about parking" got "As for parking —"
+# and then the model's "sorry to hear you're dealing with both of those".
+# SYMPTOM already precedes FAQ_PARKING in the rule order; it lost because
+# "knee thing" has no word for pain. The vague class -- a body part with a
+# complaint-noun -- is now symptom vocabulary.
+
+SYMPTOM_AND_PARKING = ("uh right so i've got a knee thing and a shoulder thing i'm in "
+                       "shoreditch but i'm free tuesdays and thursdays but only after 4 "
+                       "i also need to know about parking")
+
+
+@pytest.mark.parametrize("utterance", [
+    SYMPTOM_AND_PARKING,
+    "i've got an issue with my hip and wanted to ask about parking",
+    "my back's playing up, is it easy to park",
+    "something wrong with my knee and i need to know about parking",
+])
+def test_a_vague_complaint_beats_the_faq_in_the_same_breath(utterance):
+    intents = classify_intent(utterance, GREETING)
+    assert intents and intents[0] is Intent.SYMPTOM, intents
+
+
+@pytest.mark.parametrize("utterance", [
+    "is there parking near the clinic",
+    "where do i park",
+    "i'll ring back thing is i want to book",
+])
+def test_no_body_complaint_means_no_symptom_head(utterance):
+    intents = classify_intent(utterance, "Anything else I can help with?")
+    assert Intent.SYMPTOM not in intents, intents
