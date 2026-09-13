@@ -5670,6 +5670,13 @@ class LLMStream:
                     )
                 except Exception:  # pragma: no cover - defensive
                     _hs_reason_pending = False
+                try:
+                    from app.hold_speech import name_already_asked as _hs_asked
+                    _hs_name_reasked = bool(
+                        _hs_asked(session.get("conversation_history"))
+                    )
+                except Exception:  # pragma: no cover - defensive
+                    _hs_name_reasked = False
                 _hs_hits = _classify_intent(
                     _hs_utterance,
                     _last_assistant_text(session),
@@ -5684,6 +5691,12 @@ class LLMStream:
                     # prompt about anything else ends name capture.
                     name_pending=_hs_name_pending,
                     reason_pending=_hs_reason_pending,
+                    # N-7. Has a name question ALREADY been put to this caller?
+                    # Gate 5g's substitute is first-ask wording on the third
+                    # ask, so the head classifier cannot read "again" off it;
+                    # the count is the engine's to give. Fails to False, which
+                    # is the head the caller got before.
+                    name_reasked=_hs_name_reasked,
                 )
                 if _hs_hits:
                     _hs_intent = _hs_hits[0]

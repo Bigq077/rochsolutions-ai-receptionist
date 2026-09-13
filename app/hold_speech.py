@@ -757,6 +757,23 @@ def question_asks_the_reason(spoken: str) -> bool:
     return any(rx.search(spoken) for rx in _REASON_Q)
 
 
+def name_already_asked(history, *, window: int = 12) -> bool:
+    """Was a name question put to this caller BEFORE the one on the table? PURE.
+
+    Feeds `classify_intent(name_reasked=)`. Counts assistant turns in the
+    stored history that ask for a name, excluding the most recent assistant
+    turn (that one IS the question being answered now). The window keeps a
+    name asked at the top of a long call -- a cancellation looked up by name,
+    say -- from silencing the head on a fresh booking twenty turns later.
+    """
+    _asst = [
+        (m.get("content") or "")
+        for m in (history or [])[-window:]
+        if isinstance(m, dict) and m.get("role") == "assistant"
+    ]
+    return any("?" in t and _NAME_Q.search(t) for t in _asst[:-1])
+
+
 #: (intent, trigger, corroborator or None, blocker or None).
 #:
 #: A trigger alone never fires. Deny-by-default throughout: an utterance that
@@ -917,6 +934,7 @@ def classify_intent(
     offer_refused=False,
     name_pending=False,
     reason_pending=False,
+    name_reasked=False,
 ):
     """Every intent this utterance corroborates, most specific first. PURE.
 
@@ -1025,7 +1043,8 @@ def classify_intent(
         if not (slot_selection and re.search(_DAY, _answer_probe, re.IGNORECASE)):
             # A bare answer IS an answer -- so the moment it belongs to is the
             # question Susie asked, and that is where its head comes from.
-            return _answer_moment(_prev, _answer_probe, slot_selection=slot_selection)
+            return _answer_moment(_prev, _answer_probe, slot_selection=slot_selection,
+                                  name_reasked=name_reasked)
     # Either route means the caller is answering rather than asking: an
     # explicit confirm question from Susie, or -- the case the readout proxy
     # was reaching for and getting wrong -- this utterance being one of the
@@ -1201,7 +1220,8 @@ def classify_intent(
         # below decides instead, and a denied name gets no head at all.
         hits.append(Intent.REFUSAL)
     if not hits:
-        hits.extend(_answer_moment(_prev, _answer_probe, slot_selection=slot_selection))
+        hits.extend(_answer_moment(_prev, _answer_probe, slot_selection=slot_selection,
+                                   name_reasked=name_reasked))
     return hits
 
 
@@ -1222,7 +1242,8 @@ def _answers_a_preference_question(prev_assistant: str, probe: str) -> bool:
     ))
 
 
-def _answer_moment(prev_assistant: str, probe: str, *, slot_selection: bool = False):
+def _answer_moment(prev_assistant: str, probe: str, *, slot_selection: bool = False,
+                   name_reasked: bool = False):
     """The head owed to an ANSWER, read from the question Susie asked. PURE.
 
     `classify_intent` reads the caller's words for a REQUEST. When they are
@@ -1304,7 +1325,14 @@ def _answer_moment(prev_assistant: str, probe: str, *, slot_selection: bool = Fa
     #    And not after a RE-ASK. See _NAME_REASK_Q: "Thanks, got that --" in
     #    front of "I'm not quite catching that" is the head asserting what the
     #    content is about to deny. The 2.75s rung still covers a stall.
-    if _NAME_Q.search(prev) and _NAME_REASK_Q.search(prev):
+    #    The wording is one signal; the COUNT is the other. Gate 5g's substitute
+    #    ("Before I do that -- could I take your first name and surname?") is
+    #    first-ask wording however many times it has been asked: on CAe3023240
+    #    (northgate, 13 Sep 2026) it was the third ask and the receipt head
+    #    fired in front of a fourth read-back. `name_reasked` is the engine's
+    #    count -- a name question already put to this caller -- computed in
+    #    llm_stream from the stored history.
+    if _NAME_Q.search(prev) and (name_reasked or _NAME_REASK_Q.search(prev)):
         return []
     if _NAME_Q.search(prev) and "?" in prev and not probe.rstrip().endswith("?") \
             and not affirmed and len(probe.split()) <= 8:
