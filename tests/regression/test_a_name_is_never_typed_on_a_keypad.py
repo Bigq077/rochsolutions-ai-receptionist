@@ -238,3 +238,62 @@ def test_llm_stream_stashes_the_turn_utterance():
         "Gate 5n reads the caller's attempt from here -- conversation_history "
         "is not appended until after the turn"
     )
+
+
+# ── N-8 / N-9: the exit, proved on CAb5a26a10 (13 Sep 2026, build 6c63c98f) ──
+#
+# Gate 5n fired for the first time on that call. The caller never heard
+# "keypad" or "spell" -- and the exit then went wrong twice:
+#
+#   N-8  "still wrong it's X Y" -> best effort 'Still'. A correction carries
+#        the name AFTER a cue; the prefix strip read the first word.
+#   N-9  book_appointment BLOCKED -- surname_required. The surname backstop
+#        in llm_stream forced "and your surname?" right after Susie had said
+#        "we'll double-check the spelling by text" -- a fifth name ask,
+#        answered "gping". The exit IS the surname step for that call.
+
+@pytest.mark.parametrize("said,expected", [
+    ("still wrong it's xiomara roch", "Xiomara"),
+    ("no no i said xiomara", "Xiomara"),
+    ("that's not right it's siobhan", "Siobhan"),
+    ("actually it is siobhan", "Siobhan"),
+    ("no it's elektra", "Elektra"),
+    ("my name's elektra", "Elektra"),
+    ("no elektra", "Elektra"),
+    ("right it's priya", "Priya"),
+    ("no still not right", ""),
+    ("wrong", ""),
+])
+def test_n8_a_correction_reads_the_name_after_the_cue(said, expected):
+    assert _best_effort_name_from_history({"_turn_user_text": said}) == expected
+
+
+def test_n8_the_call_shape():
+    s = _session(_turn_user_text="still wrong it's xiomara roch")
+    sanitise_response(KEYPAD_ASK, s)
+    assert s["patient_name"] == "Xiomara", "was 'Still' on CAb5a26a10"
+
+
+def test_n9_the_exit_satisfies_the_surname_backstop():
+    import inspect
+
+    from app.media_streams import llm_stream
+
+    src = inspect.getsource(llm_stream)
+    # The backstop's condition list, with the exit as the last clause.
+    i = src.index('"[ms_llm] book_appointment BLOCKED — surname not captured "')
+    cond = src[max(0, i - 3000):i]
+    assert 'and not _surname_step_asked(messages or [])' in cond
+    assert 'and not session.get("_gate5n_exited")' in cond, (
+        "after 'we'll double-check the spelling by text' the caller must not "
+        "be asked for a surname -- CAb5a26a10 turn 21"
+    )
+
+
+def test_n9_the_exit_flag_is_set_by_the_exit_and_only_the_exit():
+    s = _session()
+    assert not s.get("_gate5n_exited")
+    sanitise_response("Could you say your name once more?", s)
+    assert not s.get("_gate5n_exited"), "a plain re-ask is not the exit"
+    sanitise_response(KEYPAD_ASK, s)
+    assert s["_gate5n_exited"] is True

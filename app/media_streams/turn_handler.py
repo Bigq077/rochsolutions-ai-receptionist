@@ -163,7 +163,19 @@ _NAME_KEYPAD_OR_SPELL_RE = re.compile(
 _NAME_ANSWER_JUNK_RE = re.compile(
     r"^(?:\s*(?:um+|uh+|er+|erm|ah|oh|yes|yeah|yep|no|nope|nah|just|so|it's|its|"
     r"it\s+is|that's|that'll\s+be|that\s+would\s+be|my|the|a|an|and|name|first|"
-    r"last|surname|is|be|okay|ok|well|sorry|again|please|i\s+said|i'm|im)\b[\s,.'-]*)+",
+    r"last|surname|is|be|okay|ok|well|sorry|again|please|i\s+said|i'm|im|"
+    r"still|wrong|not|right|that|no|actually|called)\b[\s,.'-]*)+",
+    re.IGNORECASE,
+)
+
+# N-8 (CAb5a26a10, 13 Sep 2026): "still wrong it's X Y" yielded "Still". A
+# correction carries the name AFTER a cue, and by the third attempt callers
+# are correcting, not answering. When one of these cues is present the name is
+# read from after the LAST of them; the prefix strip above then handles what
+# is left ("it's a lecture" -> "a lecture" -> "lecture").
+_NAME_CUE_RE = re.compile(
+    r"\b(?:it's|its|it\s+is|i\s+said|(?:my\s+)?(?:first\s+)?name(?:'s|\s+is)|"
+    r"that's|that\s+is|called|i'm|i\s+am|this\s+is)\b",
     re.IGNORECASE,
 )
 
@@ -197,6 +209,9 @@ def _best_effort_name_from_history(session: Dict[str, Any]) -> str:
         _u = _u.strip()
         if not _u or len(_u.split()) > 8 or _u.rstrip().endswith("?"):
             continue
+        _cues = list(_NAME_CUE_RE.finditer(_u))
+        if _cues:
+            _u = _u[_cues[-1].end():]
         _u = _NAME_ANSWER_JUNK_RE.sub("", _u)
         _tok = re.search(r"[A-Za-z][A-Za-z'\-]+", _u)
         if _tok:

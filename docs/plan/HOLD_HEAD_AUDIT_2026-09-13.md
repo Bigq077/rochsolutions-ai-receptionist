@@ -97,3 +97,37 @@ STT heard "Elektra" as "a lecture" three times. Name turns:
   13.2 / 8.3 s), 7 s rung fired both times. Own investigation.
 
 Shipped since dd3a9ff7: `808a60fb` Gate 5n, `0d5c8556` N-1/N-2, `38b6bb6c` N-6.
+
+## Proof call 3 — CA8b038f9a08c83c0a7519a9ac7e0c842e (build 6c63c98f, 17:29 UTC)
+
+* **#1 ✅ · N-2 ✅ · N-1 ✅ (first time) · #2 surname head-less ✅ (first time).**
+  Zero heads across the four name turns; the model re-asked in its own words.
+* L-1 did not reproduce (availability 2.0 s). Three points: 16.1 / 9.0 / ~4 s.
+* Turn 5 "yeah uh lecturer" → no receipt head: pre-existing bare-yes rule
+  (≤4 words opening with a yes-word), identical on a6bb70b1. Not a row.
+
+**PROMOTED 17:34 UTC:** `production` = `latency-eval` = `6c63c98f` (11 commits).
+Revert target `c7ff4204`. Owed: build-SHA on the three clinic services + one
+patient-line call.
+
+## Proof call 4 — CAb5a26a1090136f952707c7d0cf8e9b6d (build 6c63c98f, 17:38 UTC)
+
+* **#3 ✅ (first time)** — "what's the soonest you've got" → *Let's get you
+  booked in —* → reason question.
+* **Gate 5n FIRED (first time).** Caller never heard keypad/spell; exit + phone
+  question spoken. Then the exit went wrong twice:
+  * **N-8** — "still wrong it's X Y" → best effort **'Still'**. Prefix strip
+    read the first word; a correction carries the name after a cue.
+  * **N-9** — `book_appointment` BLOCKED `surname_required` (llm_stream surname
+    backstop: one-token name + surname never asked on its own) right after
+    "we'll double-check the spelling by text" → fifth name ask → "gping" →
+    **booked "Still Gping"**, GCal event `6m60fe5ta…`, Mon 14 Sep 08:50
+    Didsbury — **delete from the demo calendar.**
+* Turn 18 "got it — X Y": model accepted the name in BARE form; engine did not
+  persist (no phase signal). Lead, not a row — a BARE pattern is what produced
+  'Rehab' and 'Good'.
+* N-6 / N-7 not exercised (name known before the CTA).
+
+Fix (this commit): the reader takes the text after the last correction cue
+(`it's` / `i said` / `name is` / `that's` / `called`) before the prefix strip;
+the surname backstop yields to `_gate5n_exited`.

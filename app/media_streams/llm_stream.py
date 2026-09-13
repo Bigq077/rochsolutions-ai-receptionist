@@ -7143,6 +7143,14 @@ class LLMStream:
                     and not session.get("surname_captured")
                     and " " not in (session.get("patient_name") or "").strip()
                     and not _surname_step_asked(messages or [])
+                    # N-9 (CAb5a26a10, 13 Sep 2026): Gate 5n's exit told the
+                    # caller "we'll double-check the spelling by text" and this
+                    # backstop then forced "and your surname?" -- a fifth name
+                    # ask, answered "gping". The exit IS the surname step for
+                    # that call: one best-effort token goes on the booking and
+                    # the pending-name SMS collects the full name. See
+                    # turn_handler Gate 5n.
+                    and not session.get("_gate5n_exited")
                 ):
                     # Surname backstop (JV name redesign, 2026-07-07).
                     #
