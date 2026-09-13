@@ -638,6 +638,15 @@ _WHOLE_NAME_Q = _rx(r"\b(?:first name|full name|your name|name for the booking|"
 #: your surname, is that Roch?". A yes here is a name confirmed, not a slot.
 _NAME_CONFIRM_Q = _rx(r"\b(?:did you say|surname, is that|is that spelt|"
                       r"have i got that right)\b")
+#: Susie asking for the name AGAIN. CA9bd192c9 (northgate, 13 Sep 2026): STT
+#: heard "Elektra" as "a lecture" three times, and the third attempt drew
+#: "Thanks, got that —" in front of "I'm not quite catching that". The receipt
+#: head asserts what the model is about to deny. A re-ask is readable from her
+#: own previous turn, so after one the receipt stands down: the odds the model
+#: accepts this attempt are exactly what they were last time.
+_NAME_REASK_Q = _rx(r"\b(?:again|once more|one more time|didn'?t (?:quite )?"
+                    r"(?:catch|get)|not quite catching|missed that|"
+                    r"make sure i (?:get|have|got) (?:that|it) right)\b")
 _PICK_Q = _rx(r"\b(?:does that work|do (?:any|either) of those work|any of those "
               r"work|which (?:one|of those)|works best for you|suits? you|"
               r"number one, two|would you like\?|which would you (?:like|prefer)|"
@@ -1173,11 +1182,23 @@ def classify_intent(
         #   because the read-back that follows names the ENGINE's accepted
         #   slot (D-r/D-s) and a head must not pre-empt it.
         hits.append(Intent.SLOT_PICKED)
-    if not hits and (offer_refused or _CORRECTION.search(utterance)):
+    if (
+        not hits
+        and (offer_refused or _CORRECTION.search(utterance))
+        and not (_NAME_CONFIRM_Q.search(_prev) or _NAME_Q.search(_prev))
+    ):
         # Every diary intent was suppressed because the caller is ruling
         # something out. Right -- and what speaks instead used to be nothing,
         # then the apology. "Not to worry -" claims no work and does not
         # argue with them.
+        #
+        # Not when a NAME is on the table. CA9bd192c9 (northgate, 13 Sep 2026):
+        # "did you say Lecture -- is that right?" / "no just a lecture and
+        # yeah" drew "Not to worry --". The keypad slot map from an earlier
+        # readout was still latched, so the no read as refusing an offer. It
+        # was a caller correcting a read-back of their own name, and
+        # consolation is the wrong kind of head for that; the answer moment
+        # below decides instead, and a denied name gets no head at all.
         hits.append(Intent.REFUSAL)
     if not hits:
         hits.extend(_answer_moment(_prev, _answer_probe, slot_selection=slot_selection))
@@ -1219,6 +1240,15 @@ def _answer_moment(prev_assistant: str, probe: str, *, slot_selection: bool = Fa
         return []
     if _NEGATED.search(probe) and not _AFFIRM.match(probe):
         # A "no" is a refusal of whatever was asked; that has its own arm.
+        #
+        # Unless what was asked was a NAME read back. CA9bd192c9 (northgate,
+        # 13 Sep 2026): "did you say Lecture -- is that right?" / "no just a
+        # lecture and yeah" drew "Not to worry --". `_CONFIRM_Q` matches "is
+        # that right", but the caller is correcting Susie's hearing of their
+        # own name, not refusing anything, and consolation is the wrong kind
+        # of head for that. Silence, and the model's own re-ask.
+        if _NAME_CONFIRM_Q.search(prev):
+            return []
         return [Intent.REFUSAL] if _CONFIRM_Q.search(prev) or _BOOK_OFFER_Q.search(prev) \
             or _PICK_Q.search(prev) else []
     # A yes is SHORT. "um yeah that'll be quentin rock" opens with a yes-word
@@ -1236,6 +1266,11 @@ def _answer_moment(prev_assistant: str, probe: str, *, slot_selection: bool = Fa
     # 2b. "Did you say Sandrine — is that right?" -> yes. A name, confirmed.
     if _NAME_CONFIRM_Q.search(prev) and affirmed:
         return [Intent.NAME_GIVEN]
+    #     ...and -> no. The caller is correcting a read-back of their own
+    #     name. Nothing fits: not a receipt (she got it wrong), not consolation
+    #     (they refused nothing). Silence, and the model's own re-ask.
+    if _NAME_CONFIRM_Q.search(prev):
+        return []
     # 3. A slot from a readout, chosen by yes, clock time or ordinal -- never
     #    a request in disguise ("what about around twelve").
     if (slot_selection or _PICK_Q.search(prev)) and not _REQUEST_SHAPE.search(probe):
@@ -1265,6 +1300,11 @@ def _answer_moment(prev_assistant: str, probe: str, *, slot_selection: bool = Fa
     #    one across the audit. If the model does stall, that rung still covers
     #    it. "first name and surname" asks for the whole name and keeps its head.
     if _SURNAME_ONLY_Q.search(prev) and not _WHOLE_NAME_Q.search(prev):
+        return []
+    #    And not after a RE-ASK. See _NAME_REASK_Q: "Thanks, got that --" in
+    #    front of "I'm not quite catching that" is the head asserting what the
+    #    content is about to deny. The 2.75s rung still covers a stall.
+    if _NAME_Q.search(prev) and _NAME_REASK_Q.search(prev):
         return []
     if _NAME_Q.search(prev) and "?" in prev and not probe.rstrip().endswith("?") \
             and not affirmed and len(probe.split()) <= 8:
