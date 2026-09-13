@@ -1990,7 +1990,9 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "spelling.' then ask the next outstanding step. Keep your best guess "
         "as the name and never say it aloud again. Never ask the caller to "
         "spell their name or say it letter by letter, and never transfer or "
-        "take a message because of a name."
+        "take a message because of a name. The caller is always right about "
+        "their own name: never say you already had it, never say that is what "
+        "you said, never defend a spelling."
     )
 
     banned_phrases = (

@@ -484,7 +484,11 @@ UNMOVED_PROMPTS = {
     # rules' "after two full attempts" fallback now says the exit the engine
     # speaks (text after the call) and forbids a transfer for a name. One
     # sentence in the template; theorem and demo hashed identical either side.
-    "jv_v1": "e7f58b283b2e35cd",
+    # Re-pinned 2026-09-14, e7f58b283b2e35cd -> 10b38f51029c620f (jv_v1) and
+    # fe81ed47671f4203 -> 223bab69ee898a60 (vital_edge). One sentence added to
+    # the name rules: the caller is always right about their own name (CA3a0f1e49:
+    # "that's exactly what I said"). Theorem and demo hashed identical either side.
+    "jv_v1": "10b38f51029c620f",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL
@@ -593,7 +597,7 @@ UNMOVED_PROMPTS = {
     # Re-pinned 2026-09-11 with jv_v1 above, 8b1d639b71b2d23e ->
     # 911689910174d5be. Same one change to BOOKING STEPS 5-7; see the note
     # there for the containment proof.
-    "vital_edge": "fe81ed47671f4203",  # re-pinned 2026-09-13, see jv_v1 note
+    "vital_edge": "223bab69ee898a60",  # re-pinned 2026-09-14, see jv_v1 note
 }
 
 

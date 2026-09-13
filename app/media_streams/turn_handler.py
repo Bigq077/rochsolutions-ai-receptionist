@@ -331,7 +331,8 @@ _REJECTION_PLAIN_RE = re.compile(
 _REJECTION_ABOUT_NAME_RE = re.compile(
     r"\bit'?s not\b|\bthat'?s (?:wrong|not right|not it|not my name)\b|\bwrong\b"
     r"|\b(?:i )?didn'?t say\b|\bi just told you\b|\b(?:my|the) name(?:'s| is)\b"
-    r"|\bnot my name\b|\bnot right\b|\bincorrect\b",
+    r"|\bnot my name\b|\bnot right\b|\bincorrect\b"
+    r"|\bmessed (?:it |that |up )|\bgot (?:it|that|my name|the name) wrong\b",
     re.IGNORECASE,
 )
 # When Susie's previous turn spoke NO name but a first rejection has been
@@ -393,6 +394,34 @@ def _stored_name_token(session: Dict[str, Any]) -> str:
     return _tok.lower() if len(_tok) >= 3 else ""
 
 
+def _restates_a_name(caller: str) -> bool:
+    """PURE. The caller's turn carries a name cue and, after it, something
+    name-shaped (one to three tokens once the filler is stripped), and says
+    nothing about a number. "no that's wrong it's kiera caravelon" -> True;
+    "no it's not" -> False (nothing survives the strip); "um no it's a
+    different number" -> False."""
+    _c = (caller or "").strip()
+    if not _c or re.search(r"\bnumber\b", _c, re.IGNORECASE):
+        return False
+    _cues = list(_NAME_CUE_RE.finditer(_c))
+    if not _cues:
+        return False
+    _rest = _NAME_ANSWER_JUNK_RE.sub("", _c[_cues[-1].end():]).strip()
+    _toks = re.findall(r"[A-Za-z][A-Za-z'\-]+", _rest)
+    if not (1 <= len(_toks) <= 3 and len(_rest.split()) <= 3):
+        return False
+    return not any(t.lower() in _NOT_A_NAME_WORDS for t in _toks)
+
+
+# Words that can follow a name cue and are not a name: "it's oh seven seven",
+# "that's an old one", "it's a different number", "it's fine".
+_NOT_A_NAME_WORDS = frozenset("""
+oh zero one two three four five six seven eight nine ten eleven twelve double
+treble hundred old new different another same other mobile landline phone work
+home wrong right fine ok okay good all done that this it verbally again correct
+number incorrect nothing something anything else""".split())
+
+
 def _is_name_rejection(session: Dict[str, Any], caller: str) -> bool:
     """PURE. Whether this caller turn rejects a name Susie just said.
 
@@ -437,7 +466,17 @@ def _is_name_rejection(session: Dict[str, Any], caller: str) -> bool:
     _sentences = [x for x in re.split(r"(?<=[.!?])\s+", _prev.strip()) if x.strip()]
     _tail = _sentences[-1] if _sentences else _prev
     _tail_is_other = bool(_TAIL_NOT_ABOUT_NAME_RE.search(_tail))
-    _says_the_name = _tok_in(_c) or bool(re.search(r"\bname\b", _c, re.IGNORECASE))
+    # "Says the name": the stored name, the word "name", or a RESTATEMENT --
+    # a name cue ("it's X", "my name is X") followed by something name-shaped,
+    # with no "number" in the utterance. CA3a0f1e49 (14 Sep): after "...is
+    # 0750 the best number?" the caller said "no that's wrong it's kiera
+    # caravelon" -- STT spells the correction differently from the stored
+    # "Kira", so the stored-token test missed it and the loop ran on.
+    _says_the_name = (
+        _tok_in(_c)
+        or bool(re.search(r"\bname\b", _c, re.IGNORECASE))
+        or _restates_a_name(_c)
+    )
     if _read_back:
         _neg = bool(_REJECTION_PLAIN_RE.match(_c) or _REJECTION_ABOUT_NAME_RE.search(_c))
         if not _tail_is_other:

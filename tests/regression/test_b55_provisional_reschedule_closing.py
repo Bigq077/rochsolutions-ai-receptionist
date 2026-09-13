@@ -287,7 +287,11 @@ UNCHANGED_CLINIC_PROMPTS = {
     # rules' "after two full attempts" fallback now says the exit the engine
     # speaks (text after the call) and forbids a transfer for a name. One
     # sentence in the template; theorem and demo hashed identical either side.
-    "jv_v1": "e7f58b283b2e35cd",
+    # Re-pinned 2026-09-14, e7f58b283b2e35cd -> 10b38f51029c620f (jv_v1) and
+    # fe81ed47671f4203 -> 223bab69ee898a60 (vital_edge). One sentence added to
+    # the name rules: the caller is always right about their own name (CA3a0f1e49:
+    # "that's exactly what I said"). Theorem and demo hashed identical either side.
+    "jv_v1": "10b38f51029c620f",
     "theorem": "8565be9a48a7a9aa",
     # Re-pinned 2026-08-25: 'Children under fifteen not seen' -> 'Children
     # under seven not seen'. Mark's minimum age is 7 (owner-confirmed

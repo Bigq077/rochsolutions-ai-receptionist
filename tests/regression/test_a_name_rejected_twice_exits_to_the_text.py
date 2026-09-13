@@ -495,3 +495,69 @@ def test_the_receipt_head_stays_silent_while_the_name_is_being_answered():
     s3 = _session(conversation_history=[
         {"role": "assistant", "content": "Do you have a preference for when you'd like to come in?"}])
     assert _name_step_is_open(s3) is False
+
+
+# ── CA3a0f1e49: a corrected name after the phone question IS a rejection ───
+#
+# 14 Sep 2026 00:08 BST, build e27d8683. "Kira Caravelon" persisted; "no
+# that's wrong, it's not kira, it's kiera" counted (#1). Then, after "...so
+# that's Kiera Caravelon, Monday ... Before I do that — is 0750 the best
+# number? If so, just say use this number.", the caller said "no that's
+# wrong it's kiera caravelon" -- and it was not counted: the tail was the
+# phone question, and the rule (from CAd63554bb) wanted the STORED name or
+# the word "name". STT spelled the correction differently from the stored
+# "Kira". Two more turns, "you messed up on the name", and the model argued
+# back ("that's exactly what I said"). Booked under a name the caller had
+# rejected three times.
+
+def test_ca3a0f_a_restated_name_after_the_phone_question_counts():
+    s = _session(patient_name="Kira Caravelon", collected={"name": "Kira Caravelon"})
+    s["selected_slot"] = "2026-09-21T17:10:00+01:00"
+    _turn(s, "Thanks Kira — I've got you on oh seven five oh two, two one one, two oh seven — "
+             "is that the best number for the booking?",
+          "no that's wrong it's not kira it's kiera",
+          "No problem — sorry about that — so that's Kiera Caravelon, Monday the 21st of "
+          "September at ten past five in the evening. Before I do that — is oh seven five "
+          "oh two the best number for you? If so, just say use this number.")
+    assert s["_gate5nc_rejections"] == 1
+    out = _turn(s, "No problem — sorry about that — so that's Kiera Caravelon, Monday the 21st of "
+                   "September at ten past five in the evening. Before I do that — is oh seven five "
+                   "oh two the best number for you? If so, just say use this number.",
+                "no that's wrong it's kiera caravelon",
+                "Not to worry — Before I do that — is oh seven five oh two the best number for you?")
+    assert s["_gate5nc_rejections"] == 2
+    assert out.startswith(EXIT), out
+    assert s["patient_name"] == "Kiera"
+
+
+def test_ca3a0f_you_messed_up_on_the_name_counts():
+    s = _session(patient_name="Kira Caravelon", collected={"name": "Kira Caravelon"})
+    s["_gate5nc_rejections"] = 1
+    s["conversation_history"].append({"role": "user", "content": "it's kiera caravelon"})
+    _turn(s, "So that's Kira Caravelon, Monday the 21st at ten past five — shall I go ahead and book that in?",
+          "you messed up on the name it's kiera caravelon", "You're right —")
+    assert s["_gate5nc_rejections"] == 2
+    assert s.get("_gate5n_exited") is True
+
+
+@pytest.mark.parametrize("caller", [
+    "no it's not", "um no it's a different number", "no it's not i'll say it verbally",
+    "no use my mobile", "uh no actually that's an old one um",
+])
+def test_a_phone_no_still_does_not_restate_a_name(caller):
+    from app.media_streams.turn_handler import _restates_a_name
+
+    assert _restates_a_name(caller) is False, caller
+    s = _session(patient_name="Kira Caravelon", collected={"name": "Kira Caravelon"})
+    _turn(s, "Thanks Kira — is oh seven five oh two the best number for you?", caller, "Go ahead —")
+    assert not s.get("_gate5nc_rejections"), caller
+
+
+@pytest.mark.parametrize("caller", [
+    "no that's wrong it's kiera caravelon", "no it's kiera", "no my name is kiera caravelon",
+    "that's not right i said kiera",
+])
+def test_a_restated_name_is_recognised(caller):
+    from app.media_streams.turn_handler import _restates_a_name
+
+    assert _restates_a_name(caller) is True, caller
