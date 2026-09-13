@@ -63,11 +63,32 @@ READBACK = (
 # booking, after he had already given the harder answer. The prompt orders
 # these (name step 7, phone step 8, readback step 9); the gate inverted them.
 
+#: A CTA with no name in it. READBACK carries "Mark" in its readback, and since
+#: N-6 (CAe3023240, 13 Sep 2026) Gate 5g READS a name out of the reply before
+#: it can ask for one -- so a readback that names the caller no longer
+#: reproduces "nothing collected yet". This one does.
+NAMELESS_CTA = (
+    "That's Monday the 10th of August at five in the evening. "
+    "Shall I go ahead and book that in?"
+)
+
+
 def test_the_name_is_asked_before_the_phone():
     """The reproduction: nothing collected yet, so the NAME comes first."""
-    out = sanitise_response(READBACK, {"booking_flow_active": True, "twilio_from": ""})
+    out = sanitise_response(NAMELESS_CTA, {"booking_flow_active": True, "twilio_from": ""})
     assert "first name and surname" in out
     assert "keypad" not in out.lower()
+
+
+def test_a_readback_that_names_the_caller_teaches_the_gate_the_name():
+    """N-6. READBACK says "So that's Mark Da'ya" -- the name is IN the reply.
+    Asking for it would be CAe3023240's third ask. The gate persists it and
+    moves to the step genuinely outstanding, the phone."""
+    session = {"booking_flow_active": True, "twilio_from": ""}
+    out = sanitise_response(READBACK, session)
+    assert session.get("patient_name", "").split()[0] == "Mark"
+    assert "first name and surname" not in out
+    assert "keypad" in out.lower()
 
 
 def test_the_phone_follows_once_the_name_is_in():
@@ -107,10 +128,19 @@ def test_the_gate_fires_when_only_the_name_is_missing():
     needs both, so a confirmed phone with no name must still be held back.
     """
     out = sanitise_response(
-        READBACK, {"booking_flow_active": True, "phone_confirmed": True}
+        NAMELESS_CTA, {"booking_flow_active": True, "phone_confirmed": True}
     )
     assert "shall i go ahead" not in out.lower()
     assert "first name and surname" in out
+
+
+def test_a_confirmed_phone_and_a_named_readback_let_the_cta_through():
+    """N-6, the CAe3023240 turn exactly: phone confirmed, name only in the
+    readback. Both are now known by the time the CTA is judged, so it stands."""
+    session = {"booking_flow_active": True, "phone_confirmed": True}
+    out = sanitise_response(READBACK, session)
+    assert "shall i go ahead" in out.lower()
+    assert session["patient_name"].split()[0] == "Mark"
 
 
 # ── the gate itself ────────────────────────────────────────────────────────

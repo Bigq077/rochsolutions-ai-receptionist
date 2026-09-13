@@ -5463,6 +5463,10 @@ class LLMStream:
         # turn read a name out of an unrelated raw reply. See turn_handler and
         # connection._v3_try_persist_name's call site.
         session["_gate5g_dropped_name_ack"] = False
+        # N-6: set by Gate 5g when it read the name out of this turn's own
+        # readback instead of asking for it; consumed by connection.py's
+        # post-turn persist block. Reset per turn for the same reason.
+        session["_gate5g_persisted_name"] = False
         # Pre-slot cancellation: all text chunks in this turn are prefixed with
         # PRE_SLOT_MARKER.  When check_availability tool_use is detected via
         # content_block_start, _pre_slot_cancelled is set True so the tts_loop

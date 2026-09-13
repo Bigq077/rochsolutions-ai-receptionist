@@ -39,33 +39,40 @@ offer to book in one reply — the better it behaves, the likelier it hangs.
 
 "rook" vs "rock" is a red herring: the patterns capture the FIRST name, which
 was "Quentin" in both calls.
+
+TWO LAYERS SINCE N-6 (CAe3023240, 13 Sep 2026). The loop above had a root:
+"storage happens AFTER the reply is scanned" (step 3). Gate 5g now asks the
+same reader FIRST, on the chunks spoken so far plus the one in hand, ANCHORED
+patterns only — so an acknowledgement in "Thanks <Name>" or "So that's <Name>,"
+form is stored before the CTA is judged, and the sentence that replaces it asks
+for the PHONE. The one-sentence form still loses its readback (the accepted
+trade); it no longer loses the name.
+
+O-18 — the raw-reply recovery after the turn — is the second layer, for an
+acknowledgement the anchored reader cannot see: the BARE form ("Quentin — got
+it, shall I book that in?") needs the phase signal that lives in connection.py.
+That is the fixture this file now uses to pin it.
 """
 from __future__ import annotations
-
-import pytest
 
 from app.media_streams.connection import _v3_try_persist_name
 from app.media_streams.turn_handler import sanitise_response
 
 
-# ⚠️ SENTENCE BOUNDARIES DECIDE WHETHER THIS BUG HAPPENS. _BOOKING_CTA_SENTENCE_RE
+# ⚠️ SENTENCE BOUNDARIES DECIDE WHETHER THE READBACK IS LOST. _BOOKING_CTA_SENTENCE_RE
 # matches a whole SENTENCE, so:
 #
 #   one sentence   "Thanks Quentin, shall I go ahead and book that in?"
 #                  → the acknowledgement is inside the sentence being deleted and
-#                    goes with it. Spoken output is the substituted question and
-#                    NOTHING else. The name is lost. THE BUG.
+#                    goes with it. Since N-6 the NAME is read first, so what is
+#                    lost is the words, not the fact.
 #
 #   two sentences  "Thanks Quentin — that's Monday… Shall I book that in?"
-#                  → only the CTA sentence goes; "Thanks Quentin" survives and
-#                    persists normally. No bug.
+#                  → only the CTA sentence goes; "Thanks Quentin" survives.
 #
 # The one-sentence form is what CA041352eb hit: the synthesised chunk at
 # 00:01:28 was 'Before I do that — could I take your first name and surname?'
 # alone, len=60, with no readback in front of it.
-#
-# A first draft of this file used the two-sentence form and the deadlock test
-# failed — persist succeeded — which is exactly the distinction worth pinning.
 RAW_ACK_PLUS_CTA = "Thanks Quentin, shall I go ahead and book that in?"
 
 RAW_ACK_THEN_CTA_TWO_SENTENCES = (
@@ -73,115 +80,62 @@ RAW_ACK_THEN_CTA_TWO_SENTENCES = (
     "afternoon. Shall I go ahead and book that in?"
 )
 
+#: The BARE acknowledgement form. No "Thanks", no "So that's" — the anchored
+#: reader Gate 5g uses cannot see a name here, so this is the shape that still
+#: needs O-18.
+RAW_BARE_ACK_PLUS_CTA = "Quentin — got it, shall I go ahead and book that in?"
+
+CALLER = "um yeah that would be quentin rook"
+
 
 def test_the_two_sentence_form_was_never_broken():
     """
-    Pins the boundary. Here the acknowledgement is its own sentence, survives
-    the CTA strip, and the name persists off the SPOKEN text with no recovery
-    needed. If this ever starts failing, the CTA pattern has widened to eat
-    neighbouring sentences and the blast radius is much larger than O-18.
+    Pins the boundary. Here the acknowledgement is its own sentence and
+    survives the CTA strip. If this ever starts failing, the CTA pattern has
+    widened to eat neighbouring sentences and the blast radius is much larger.
     """
     session = {"booking_flow_active": True}
     spoken = sanitise_response(RAW_ACK_THEN_CTA_TWO_SENTENCES, session)
     assert "thanks quentin" in spoken.lower()
-    assert _v3_try_persist_name(
-        session,
-        spoken,
-        post_slot_pending=True,
-        caller_utterance="um yeah that would be quentin rook",
-    ) is True
+    assert session["patient_name"].split()[0] == "Quentin"
 
 
 # ── 1. the gate still does its job ──────────────────────────────────────────
 
-def test_the_cta_is_still_held_back_when_the_name_is_unknown():
-    """The O-18 fix must not disarm Gate 5g — the CTA hold-back is correct."""
+def test_the_cta_is_still_held_back_when_a_step_is_missing():
+    """Neither layer disarms Gate 5g — the CTA hold-back is correct. With the
+    name read out of the reply, the step outstanding is the phone."""
     session = {"booking_flow_active": True}
     spoken = sanitise_response(RAW_ACK_PLUS_CTA, session)
     assert "book that in" not in spoken.lower()
-    assert "first name and surname" in spoken.lower()
+    assert "first name and surname" not in spoken.lower()
+    assert "number" in spoken.lower()
 
 
-def test_the_acknowledgement_really_is_lost_on_the_one_sentence_form():
-    """The precondition for the whole bug — stated so it cannot drift."""
+def test_the_acknowledgement_words_are_still_lost_on_the_one_sentence_form():
+    """The precondition for the old bug — stated so the boundary cannot drift.
+    The words go; the name does not (next test)."""
     session = {"booking_flow_active": True}
     spoken = sanitise_response(RAW_ACK_PLUS_CTA, session)
-    assert "quentin" not in spoken.lower(), (
-        "the acknowledgement survived — this fixture no longer reproduces O-18"
-    )
+    assert "quentin" not in spoken.lower()
 
 
-# ── 2. the gate must announce that it ate the acknowledgement ───────────────
+# ── 2. layer one: the name is read before the sentence is deleted (N-6) ─────
 
-def test_holding_back_for_a_missing_name_sets_the_recovery_flag():
-    session = {"booking_flow_active": True}
+def test_the_anchored_ack_is_stored_before_the_cta_is_judged():
+    session = {"booking_flow_active": True, "_turn_user_text": CALLER}
     sanitise_response(RAW_ACK_PLUS_CTA, session)
-    assert session.get("_gate5g_dropped_name_ack") is True
-
-
-def test_the_flag_is_not_set_when_the_name_is_already_known():
-    """Only the NAME case loses evidence. A phone hold-back must not set it."""
-    session = {
-        "booking_flow_active": True,
-        "patient_name": "Quentin Rock",
-    }
-    sanitise_response(RAW_ACK_PLUS_CTA, session)
-    assert not session.get("_gate5g_dropped_name_ack")
-
-
-# ── 3. the deadlock itself ──────────────────────────────────────────────────
-
-def test_the_spoken_text_alone_cannot_yield_the_name():
-    """
-    This is the bug, stated directly: after the gate has run, the text the
-    persist step sees contains no acknowledgement, so nothing is stored.
-    """
-    session = {"booking_flow_active": True}
-    spoken = sanitise_response(RAW_ACK_PLUS_CTA, session)
-    persisted = _v3_try_persist_name(
-        session,
-        spoken,
-        post_slot_pending=True,
-        caller_utterance="um yeah that would be quentin rook",
-    )
-    assert persisted is False
-    assert not session.get("patient_name")
-
-
-def test_the_raw_reply_still_carries_the_name():
-    """The recovery source. session["turns"] keeps raw_text for exactly this."""
-    session = {"booking_flow_active": True}
-    persisted = _v3_try_persist_name(
-        session,
-        RAW_ACK_PLUS_CTA,
-        post_slot_pending=True,
-        caller_utterance="um yeah that would be quentin rook",
-    )
-    assert persisted is True
-    assert session["patient_name"].split()[0] == "Quentin"
-
-
-# ── 4. the caller is not asked a second time ────────────────────────────────
-
-def test_the_name_question_is_not_repeated_once_the_name_is_recovered():
-    """
-    The whole point. Turn N holds the CTA back and stores the name from the raw
-    reply; turn N+1 must therefore NOT ask for the name again.
-    """
-    session = {"booking_flow_active": True}
-
-    # Turn N — gate fires, flag set, name recovered from the raw generation.
-    sanitise_response(RAW_ACK_PLUS_CTA, session)
-    assert session.pop("_gate5g_dropped_name_ack") is True
-    _v3_try_persist_name(
-        session,
-        RAW_ACK_PLUS_CTA,
-        post_slot_pending=True,
-        caller_utterance="um yeah that would be quentin rook",
+    assert session["patient_name"] == "Quentin Rook"
+    assert session["_gate5g_persisted_name"] is True
+    assert not session.get("_gate5g_dropped_name_ack"), (
+        "nothing was lost, so the recovery must not be armed"
     )
 
-    # Turn N+1 — the model reaches for the CTA again. The name is known now, so
-    # the substitution must ask for the PHONE, never the name a second time.
+
+def test_the_name_question_is_never_asked_when_the_reply_carries_the_name():
+    """The whole point, restated for layer one. CA041352eb's turn: the caller
+    has just said his name and the model acknowledged it."""
+    session = {"booking_flow_active": True}
     spoken = sanitise_response(RAW_ACK_PLUS_CTA, session)
     assert "first name and surname" not in spoken.lower(), (
         "the caller was asked for their name again — this is the loop that "
@@ -189,18 +143,65 @@ def test_the_name_question_is_not_repeated_once_the_name_is_recovered():
     )
 
 
-# ── 5. the recovery window stays narrow ─────────────────────────────────────
+# ── 3. layer two: O-18, for the ack the anchored reader cannot see ──────────
+
+def test_the_bare_ack_is_invisible_to_the_gate_and_sets_the_recovery_flag():
+    session = {"booking_flow_active": True}
+    spoken = sanitise_response(RAW_BARE_ACK_PLUS_CTA, session)
+    assert "quentin" not in spoken.lower()
+    assert not session.get("patient_name")
+    assert session.get("_gate5g_dropped_name_ack") is True
+    assert "first name and surname" in spoken.lower()
+
+
+def test_the_flag_is_not_set_when_the_name_is_already_known():
+    """Only the NAME case loses evidence. A phone hold-back must not set it."""
+    session = {"booking_flow_active": True, "patient_name": "Quentin Rock"}
+    sanitise_response(RAW_BARE_ACK_PLUS_CTA, session)
+    assert not session.get("_gate5g_dropped_name_ack")
+
+
+def test_the_spoken_text_alone_cannot_yield_the_bare_name():
+    """This is the O-18 bug, stated directly: after the gate has run, the
+    text the persist step sees contains no acknowledgement."""
+    session = {"booking_flow_active": True}
+    spoken = sanitise_response(RAW_BARE_ACK_PLUS_CTA, session)
+    assert _v3_try_persist_name(
+        session, spoken, post_slot_pending=True, caller_utterance=CALLER,
+    ) is False
+    assert not session.get("patient_name")
+
+
+def test_the_raw_reply_still_carries_the_bare_name():
+    """The recovery source. session["turns"] keeps raw_text for exactly this."""
+    session = {"booking_flow_active": True}
+    assert _v3_try_persist_name(
+        session, RAW_BARE_ACK_PLUS_CTA, post_slot_pending=True, caller_utterance=CALLER,
+    ) is True
+    assert session["patient_name"].split()[0] == "Quentin"
+
+
+def test_the_name_question_is_not_repeated_once_the_name_is_recovered():
+    """Turn N holds the CTA back and O-18 stores the name from the raw reply;
+    turn N+1 must therefore NOT ask for the name again."""
+    session = {"booking_flow_active": True}
+    sanitise_response(RAW_BARE_ACK_PLUS_CTA, session)
+    assert session.pop("_gate5g_dropped_name_ack") is True
+    _v3_try_persist_name(
+        session, RAW_BARE_ACK_PLUS_CTA, post_slot_pending=True, caller_utterance=CALLER,
+    )
+    spoken = sanitise_response(RAW_BARE_ACK_PLUS_CTA, session)
+    assert "first name and surname" not in spoken.lower()
+
+
+# ── 4. the recovery window stays narrow ─────────────────────────────────────
 
 def test_the_flag_is_consumed_not_left_standing():
-    """
-    A sticky True would let a LATER turn read a name out of an unrelated raw
-    reply. This repo has been bitten by exactly that shape before —
-    v3_awaiting_surname was sticky and back-filled 'Sara Six' from a slot
-    number. The call site pops it; this pins that it is poppable and that
-    llm_stream resets it per turn.
-    """
+    """A sticky True would let a LATER turn read a name out of an unrelated
+    raw reply (v3_awaiting_surname once back-filled 'Sara Six' from a slot
+    number). The call site pops it; this pins that it is poppable."""
     session = {"booking_flow_active": True}
-    sanitise_response(RAW_ACK_PLUS_CTA, session)
+    sanitise_response(RAW_BARE_ACK_PLUS_CTA, session)
     assert session.pop("_gate5g_dropped_name_ack", False) is True
     assert session.pop("_gate5g_dropped_name_ack", False) is False
 

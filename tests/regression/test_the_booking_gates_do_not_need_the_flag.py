@@ -120,9 +120,15 @@ def test_a_dash_joined_readback_is_why_the_anchor_stays():
     )
     # Never reached an offer: untouched, readback intact.
     assert sanitise_response(spoken, {}) == spoken
-    # Reached an offer: held back, and the readback goes with it.
-    out = sanitise_response(spoken, {"slots_presented": True, "twilio_from": ""})
-    assert "first name and surname" in out
+    # Reached an offer: held back, and the readback goes with it. Since N-6
+    # (CAe3023240, 13 Sep 2026) the gate reads "Sarah" out of that readback
+    # before deleting it, so the question that replaces it is the PHONE's,
+    # not the name's -- the readback is still the cost.
+    session = {"slots_presented": True, "twilio_from": ""}
+    out = sanitise_response(spoken, session)
+    assert session["patient_name"] == "Sarah"
+    assert "first name and surname" not in out
+    assert "keypad" in out.lower()
     assert "Wednesday the 16th" not in out
 
 

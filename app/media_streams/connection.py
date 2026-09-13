@@ -13570,6 +13570,13 @@ class WebSocketCallHandler:
                                             "acknowledgement: %r",
                                             self.session.get("patient_name"),
                                         )
+                            # N-6: Gate 5g may have persisted the name itself,
+                            # mid-turn, from the readback it was about to
+                            # delete (turn_handler). It leaves this marker so
+                            # the save and the DTMF arming below run exactly as
+                            # if the persist had happened here.
+                            if self.session.pop("_gate5g_persisted_name", False):
+                                _name_persisted = True
                             if _name_persisted:
                                 await save_session(
                                     self.call_sid, self.session

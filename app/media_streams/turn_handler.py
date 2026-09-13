@@ -2811,6 +2811,53 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     # nothing left to correct. Twenty tests said so at once. An anchored gate
     # keeps that blast radius inside calls that have actually reached an
     # offer, which is the only place the trade is worth making.
+    # ── N-6: read the name out of THIS turn before asking for it ─────────────
+    # CAe3023240 (northgate, 13 Sep 2026, build 0d5c8556). The model accepted
+    # a corrected name silently at turn 6 -- no acknowledgement, so nothing
+    # for _v3_try_persist_name to read -- and at turn 7 wrote the readback:
+    # "So that's Lecture, Tuesday the 15th at eight -- shall I go ahead?". The
+    # first text on the call carrying the name. This gate, running per chunk,
+    # saw _name_known False, deleted that sentence and asked for the name a
+    # THIRD time; 100ms later the post-turn O-18 recovery read "Lecture" out of
+    # the raw reply it had just thrown away. The recovery is one turn late by
+    # construction: it runs after the turn, this gate runs during it.
+    #
+    # So ask the same reader first, here, with what this turn has produced so
+    # far -- the chunks already spoken plus the one in hand, because the ack
+    # and the CTA are not always in the same chunk. ANCHORED patterns only
+    # (post_slot_pending=False): "So that's <Name>," and "Thanks <Name> --" are
+    # produced only after a name was given, which is why they bypass the phase
+    # gate in connection.py too. BARE stays where its phase signal lives.
+    #
+    # Only the marker is set here; save_session and the DTMF arming stay in
+    # connection.py's post-turn block, which consumes the marker exactly as if
+    # it had persisted the name itself. One owner for the side effects.
+    if (
+        (session.get("booking_flow_active") or session.get("slots_presented"))
+        and not _name_known(session)
+        and _BOOKING_CTA_SENTENCE_RE.search(result)
+    ):
+        try:
+            from app.media_streams.connection import (
+                _v3_try_persist_name as _n6_persist,
+            )
+            _n6_text = f"{session.get('_spoken_this_turn') or ''} {result}".strip()
+            if _n6_persist(
+                session,
+                _n6_text,
+                post_slot_pending=False,
+                caller_utterance=session.get("_turn_user_text") or "",
+            ):
+                session["_gate5g_persisted_name"] = True
+                _booking_step_missing = not session.get("phone_confirmed")
+                logger.info(
+                    "[ms_gate5] N-6: name read out of this turn's reply before "
+                    "the CTA gate could ask for it: %r",
+                    session.get("patient_name"),
+                )
+        except Exception:  # pragma: no cover - a gate must never break a call
+            logger.warning("[ms_gate5] N-6 name read failed", exc_info=True)
+
     if (
         (session.get("booking_flow_active") or session.get("slots_presented"))
         and _booking_step_missing
