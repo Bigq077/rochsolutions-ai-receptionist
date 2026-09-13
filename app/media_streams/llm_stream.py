@@ -1553,6 +1553,122 @@ def _post_collect_readback_due(tool_name: str, session, messages) -> bool:
     return not _caller_requests_new_day_or_time(messages or [], session)
 
 
+#: D-t. What counts as the caller telling us WHEN, in this turn's words: a
+#: weekday, a clock time, a part of day, a relative day/week, a date, urgency,
+#: or an explicit no-preference. Deny-biased -- a word list, because the
+#: alternative (the model's `date_hint`) is exactly the source D-t forbids.
+_TIMING_SIGNAL_RE = re.compile(
+    r"\b(?:(?:mon|tues|wednes|thurs|fri|satur|sun)days?|"
+    r"morning|afternoon|evening|lunchtime|midday|noon|tonight|"
+    r"today|tomorrow|weekend|weekday|next\s+week|this\s+week|"
+    r"(?:the\s+)?\d{1,2}(?:st|nd|rd|th)\b|"
+    r"january|february|march|april|may|june|july|august|september|october|november|december|"
+    r"\d{1,2}(?:[:.]\d{2})?\s*(?:am|pm|o'?clock)|"
+    r"(?:half|quarter|ten|twenty|five)\s+(?:past|to)\b|"
+    r"(?:after|before|around|about|from|until|till)\s+(?:\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b|"
+    r"as\s+soon\s+as|asap|soonest|earliest|urgent|first\s+available|straight\s+away|whenever(?:'s)?\s+next|"
+    r"any\s*time|flexible|doesn'?t\s+matter|don'?t\s+mind|whenever|not\s+fussed|not\s+bothered)\b",
+    re.IGNORECASE,
+)
+_URGENCY_RE = re.compile(
+    r"\b(?:as\s+soon\s+as|asap|soonest|earliest|urgent|first\s+available|straight\s+away|whenever(?:'s)?\s+next)\b",
+    re.IGNORECASE,
+)
+#: Susie's own timing / echo question, matched against her previous turn. A
+#: yes to it is a timing answer.
+_TIMING_QUESTION_RE = re.compile(
+    r"preference for when|when would suit|when you'?d like|you mentioned|"
+    r"shall i look at those|is there another time|particular day or time|"
+    r"which day|what day|when works",
+    re.IGNORECASE,
+)
+
+
+def _timing_unearned_this_turn(session, messages, args) -> "str | None":
+    """D-t: is this `check_availability` running on a timing the caller did
+    NOT give this turn? Returns the echo/ask instruction for the model when
+    it is, else None. PURE except for one guard fold on the allow path.
+
+    CA5c69c585 and CAddd98ce0 (12 Sep) and CAdd1bdd17 (13 Sep, on the
+    reworded prompt): the caller said "only after 4" in the symptom turn;
+    two turns later, on "yes please", the model called
+    check_availability(date_hint="Tuesdays and Thursdays after 4pm") -- its
+    own paraphrase from memory. On 13 Sep it even said the echo aloud
+    ("Tuesdays and Thursdays after four -- just a moment while I check") and
+    did not wait. The prompt alone does not hold this rule; the engine does.
+
+    Allowed, in the owner's words (D-t):
+      * the caller's utterance THIS turn carries a timing signal (a day, a
+        time, a band, urgency, "flexible"), including the booking request
+        itself ("book me in ASAP") -- same breath;
+      * urgency anywhere in the call, when the hint is urgency;
+      * a yes to Susie's own timing / echo question on the previous turn --
+        the caller's answer IS the preference, and the echoed words are
+        folded into the fact guard's asked-set so the builder and the guard
+        parse the same thing (defect D).
+    Blocked: everything else -- a bare "yes please" to the booking offer
+    with a preference the model remembers from an earlier turn.
+
+    Never blocks a re-query: with an offer on the table, the follow-up
+    guards above own the turn.
+    """
+    try:
+        if not isinstance(session, dict) or session.get("last_offered_slots"):
+            return None
+        user = _last_user_text(messages or [])
+        if _TIMING_SIGNAL_RE.search(user or ""):
+            return None
+        hint = str((args or {}).get("date_hint") or (args or {}).get("preference") or "")
+        if _URGENCY_RE.search(hint):
+            # Urgency wherever the caller said it -- but the CALLER must have.
+            for m in (messages or []):
+                if m.get("role") == "user" and isinstance(m.get("content"), str) \
+                        and _URGENCY_RE.search(m["content"]):
+                    return None
+        prev = _last_assistant_text(session)
+        if _TIMING_QUESTION_RE.search(prev or "") and _is_short_affirmative(user):
+            # A yes to the echo: the echoed words are the caller's now -- and
+            # so is the hint the model builds from them. The caller's own
+            # "after four" parses to no clock time while the model's "after
+            # 4pm" parses to 16:00 (defect C); folding the hint here is what
+            # lets the builder's "nearest to four" pass the guard.
+            try:
+                from app.tools.slot_fact_guard import note_caller_speech
+                note_caller_speech(session, prev)
+                note_caller_speech(session, hint)
+            except Exception:
+                pass
+            return None
+        if _TIMING_QUESTION_RE.search(prev or ""):
+            # They answered the timing question with something the regex
+            # does not read ("the one I said"). Deny-biased the other way:
+            # a caller who has just been ASKED is not re-asked by the engine.
+            return None
+        earlier = ""
+        for m in (messages or []):
+            if m.get("role") == "user" and isinstance(m.get("content"), str) \
+                    and _TIMING_SIGNAL_RE.search(m["content"]):
+                earlier = m["content"]
+        if earlier:
+            return (
+                "Do NOT check availability yet -- the caller has not said WHEN "
+                "in this turn. Earlier they said: \"" + earlier.strip()[:160] + "\". "
+                "Ask EXACTLY: 'You mentioned <their own words for the day/time> -- "
+                "shall I look at those, or is there another time that suits?' "
+                "Then STOP and wait for their answer. Do not call "
+                "check_availability in this turn."
+            )
+        return (
+            "Do NOT check availability yet -- the caller has not said WHEN. Ask "
+            "EXACTLY: 'Do you have a preference for when you'd like to come in?' "
+            "Then STOP and wait for their answer. Do not call check_availability "
+            "in this turn."
+        )
+    except Exception:
+        logger.exception("[ms_llm] D-t timing gate failed -- allowing the lookup")
+        return None
+
+
 def _caller_wants_new_slot(messages) -> bool:
     """True if the caller's latest utterance signals they want a different slot
     (a new-date word or any digit) — i.e. a legitimate reason to re-search
@@ -6985,6 +7101,20 @@ class LLMStream:
                             "calling book_appointment."
                         ),
                     }
+                elif (
+                    tool_name == "check_availability"
+                    and (_dt_ask := _timing_unearned_this_turn(session, messages, args))
+                ):
+                    # D-t (owner, 12 Sep): a lookup on a timing the caller did
+                    # not give THIS turn is refused; the model asks when, echoing
+                    # any preference from earlier in the call. See the helper.
+                    logger.warning(
+                        "[ms_llm] check_availability BLOCKED (D-t) -- timing not "
+                        "given this turn; hint=%r user=%r call_sid=%s",
+                        str(args.get("date_hint") or "")[:60],
+                        _last_user_text(messages or [])[:60], call_sid,
+                    )
+                    result = {"status": "ask_timing_first", "message": _dt_ask}
                 elif (
                     tool_name == "book_appointment"
                     and not session.get("phone_confirmed")
