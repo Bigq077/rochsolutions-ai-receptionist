@@ -53,6 +53,15 @@ def _session(**over):
 
 # ── The ask never reaches the caller ───────────────────────────────────────
 
+# The exit's promise. Owner rewording 13 Sep 2026: "I'll text you after the
+# call so you can reply with the spelling" -- says what happens AND what they
+# do. Either shape counts as the promise; the exact line is pinned in
+# test_the_name_chase_is_one_story.
+def _promises_a_text(out: str) -> bool:
+    o = out.lower()
+    return "by text" in o or "text you" in o
+
+
 @pytest.mark.parametrize("line", [
     KEYPAD_ASK,
     "Could you type your surname on the keypad for me?",
@@ -65,7 +74,7 @@ def _session(**over):
 def test_the_ask_is_never_spoken(line):
     out = sanitise_response(line, _session())
     assert "keypad" not in out.lower() or "number" in out.lower()
-    assert "spell" not in out.lower() or "by text" in out.lower()
+    assert "spell" not in out.lower() or _promises_a_text(out)
     assert "letter by letter" not in out.lower()
     assert "letter-by-letter" not in out.lower()
 
@@ -75,7 +84,7 @@ def test_the_ask_is_never_spoken(line):
 def test_the_exit_takes_the_best_effort_and_promises_a_text():
     s = _session()
     out = sanitise_response(KEYPAD_ASK, s)
-    assert "by text" in out.lower(), out
+    assert _promises_a_text(out), out
     assert s["patient_name"] == "Lecture"
     assert (s.get("collected") or {}).get("name") == "Lecture"
     assert s["needs_name_correction_sms"] is True
@@ -106,8 +115,8 @@ def test_the_exit_happens_once():
     s = _session()
     first = sanitise_response(KEYPAD_ASK, s)
     second = sanitise_response("Could you spell that for me?", s)
-    assert "by text" in first.lower()
-    assert "by text" not in second.lower(), "the promise is made once"
+    assert _promises_a_text(first)
+    assert not _promises_a_text(second), "the promise is made once"
     assert "spell" not in second.lower()
     assert "?" in second
 

@@ -3317,6 +3317,22 @@ def _b7_call_state(session: Dict[str, Any], clinic: Dict[str, Any], tk: Dict[str
             "time reads as not having listened"
         )
 
+    # The name could not be heard and the engine has exited name capture
+    # (turn_handler Gate 5n, 13 Sep 2026): a best-effort placeholder is on the
+    # booking and the caller has been told they will be texted for the
+    # spelling. Everything after that is one story -- see
+    # notifications/name_chase. The engine also strips the placeholder from
+    # the two readback shapes (Gate 5n-b) and steers the close from the
+    # book_appointment result; this line is the model's half.
+    if session.get("_gate5n_exited"):
+        state.append(
+            "the caller's NAME could not be heard on this call and they have "
+            "been told you will text them for the spelling. Do NOT ask for "
+            "their name or surname again in any wording, do NOT read a name "
+            "back, and do NOT say the placeholder name on record. Read the "
+            "booking back by day and time only"
+        )
+
     # ── What the caller already told us in their FIRST sentence ─────────
     # The engine half of two defects measured over 683 stored calls: the reason
     # re-asked though the opener gave it (33 calls), and "would you like to

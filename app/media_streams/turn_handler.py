@@ -2663,9 +2663,11 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
             session.setdefault("collected", {})["name"] = _nk_name
             session["_gate5n_best_effort_name"] = _nk_name
             session["needs_name_correction_sms"] = True
+            # Owner, 13 Sep 2026: say WHAT will happen and WHAT they do.
+            # "we'll double-check the spelling by text" said neither.
             _nk_exit = (
-                "No problem — I'll pop that on the booking and we'll double-check "
-                "the spelling by text."
+                "No problem — I'll pop what I've got on the booking, and I'll "
+                "text you after the call so you can reply with the spelling."
             )
             _nk_next = _nk_outstanding_plain(session)
             # Only the exit and the outstanding step: whatever else the model
@@ -2678,6 +2680,33 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
                 "%r persisted, SMS confirmation flagged, asked instead: %r",
                 _nk_name, _nk_next[:60],
             )
+
+    # ── Gate 5n-b: the placeholder is never said aloud ──────────────────────
+    # After the exit the name on record is a best-effort token ("Lecture",
+    # "Still"). The model reads it back in the booking summary -- "So that's
+    # Still, Monday the 14th..." -- which invites the correction loop the exit
+    # just closed, and sounds absurd. Owner, 13 Sep 2026: the readback names
+    # the slot only. Strip the token from the two shapes the model uses; the
+    # readback keeps its day and time.
+    _nb_tok = (session.get("_gate5n_best_effort_name") or "").strip()
+    if session.get("_gate5n_exited") and _nb_tok and re.search(
+        r"\b" + re.escape(_nb_tok) + r"\b", result, re.IGNORECASE
+    ):
+        _nb_before = result
+        # "So that's Still, Monday..."  ->  "So that's Monday..."
+        result = re.sub(
+            r"(\b[Ss]o (?:that'?s|it'?s))\s+" + re.escape(_nb_tok) + r"\s*[,\u2014\u2013-]?\s*",
+            r"\1 ", result, flags=re.IGNORECASE,
+        )
+        # "Thanks Still -- is..." -> "Thanks -- is...";  "Got it -- Still. I've..." -> "Got it -- I've..."
+        result = re.sub(
+            r"(\b(?:[Tt]hanks|[Tt]hank you|[Gg]ot it|[Rr]ight|[Ll]ovely))\s*[\u2014\u2013,-]?\s*"
+            + re.escape(_nb_tok) + r"\b\s*[.,\u2014\u2013-]?\s*",
+            "\\1 \u2014 ", result, flags=re.IGNORECASE,
+        )
+        result = re.sub(r"\s{2,}", " ", result).replace(" \u2014 \u2014 ", " \u2014 ").strip()
+        if result != _nb_before:
+            logger.info("[ms_gate5n] placeholder %r kept out of the reply", _nb_tok)
 
     # ── Gate 5g: self-narration strip ────────────────────────────────────────
     # Runs here, adjacent to 5b, because it is the same kind of operation —
