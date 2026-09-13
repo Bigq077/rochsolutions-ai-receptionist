@@ -661,7 +661,10 @@ async def schedule_name_confirm_reminder(
         logger.warning("[NAME_REMINDER] Redis unavailable — cannot schedule nudge for %r", phone)
         return
     try:
-        send_at = (datetime.utcnow() + timedelta(minutes=delay_minutes)).timestamp()
+        # tz-aware UTC: a NAIVE timestamp is read in the SENDER's local
+        # zone, and on shared Redis the sender can be another service with a
+        # different TZ. CA4b4afa80's nudge (13 Sep) went out 60 min early.
+        send_at = (datetime.now(timezone.utc) + timedelta(minutes=delay_minutes)).timestamp()
         payload = json.dumps({"phone": phone, "first_name": first_name,
                               "from_number": from_number or "",
                               "when_label": when_label or ""})
@@ -684,7 +687,7 @@ async def process_name_confirm_reminders() -> int:
     if not _ar:
         return 0
     try:
-        now_ts = datetime.utcnow().timestamp()
+        now_ts = datetime.now(timezone.utc).timestamp()
         due: list = await _ar.zrangebyscore(PENDING_NAME_REMINDERS_SET, 0, now_ts)
         if not due:
             return 0
@@ -758,7 +761,10 @@ async def schedule_address_reminder(
         logger.warning("[ADDR_REMINDER] Redis unavailable — cannot schedule nudge for %r", phone)
         return
     try:
-        send_at = (datetime.utcnow() + timedelta(minutes=delay_minutes)).timestamp()
+        # tz-aware UTC: a NAIVE timestamp is read in the SENDER's local
+        # zone, and on shared Redis the sender can be another service with a
+        # different TZ. CA4b4afa80's nudge (13 Sep) went out 60 min early.
+        send_at = (datetime.now(timezone.utc) + timedelta(minutes=delay_minutes)).timestamp()
         payload = json.dumps({
             "phone": phone, "first_name": first_name,
             "from_number": from_number or "", "clinic_id": clinic_id or "",
@@ -781,7 +787,7 @@ async def process_address_reminders() -> int:
     if not _ar:
         return 0
     try:
-        now_ts = datetime.utcnow().timestamp()
+        now_ts = datetime.now(timezone.utc).timestamp()
         due: list = await _ar.zrangebyscore(PENDING_ADDRESS_REMINDERS_SET, 0, now_ts)
         if not due:
             return 0

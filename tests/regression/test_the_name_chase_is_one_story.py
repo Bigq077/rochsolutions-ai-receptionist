@@ -392,3 +392,25 @@ async def test_the_chase_flag_is_set_even_when_redis_is_down(monkeypatch):
     )
     assert ok is False
     assert session["_name_chase_open"] is True
+
+
+# ── The nudge clock is UTC on both ends ─────────────────────────────────────
+#
+# CA4b4afa80 (13 Sep 2026): scheduled at 21:55 UTC for +120 min, the nudge
+# went out at 22:55. `datetime.utcnow().timestamp()` reads a naive time in
+# the SENDER's local zone, and on shared Redis the sender was another service
+# (which also had the old wording -- the four services each run the reminder
+# worker). The appointment reminders already score in aware UTC; the two
+# nudge sets now do too.
+
+def test_the_nudge_sets_score_in_aware_utc():
+    from app.notifications import scheduler
+
+    src = inspect.getsource(scheduler.schedule_name_confirm_reminder)
+    assert "datetime.now(timezone.utc)" in src and "utcnow()" not in src
+    src = inspect.getsource(scheduler.process_name_confirm_reminders)
+    assert "datetime.now(timezone.utc)" in src and "utcnow()" not in src
+    src = inspect.getsource(scheduler.schedule_address_reminder)
+    assert "utcnow()" not in src
+    src = inspect.getsource(scheduler.process_address_reminders)
+    assert "utcnow()" not in src
