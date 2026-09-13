@@ -46,9 +46,17 @@ async def send_booking_confirmation(
     clinic_name: Optional[str] = None,
     clinic_phone: Optional[str] = None,
     session: Optional[dict] = None,
+    name_pending: bool = False,
 ) -> bool:
     """
     Send immediate booking confirmation SMS.
+
+    `name_pending`: the booking went in under a placeholder because the name
+    could not be heard (see notifications/name_chase). The ONE text then
+    says the booking and asks for the name, and is not addressed
+    "Hi <placeholder>". With a session that is build_sms's own not-heard
+    shape, so the address, first-visit note and the home-visit / remote
+    bodies are all kept; without one it is the chase's standalone text.
 
     When `session` is supplied the body is built by ``build_sms(session)``
     (app/sms_templates.py) which uses env-var clinic details and the slot
@@ -77,7 +85,18 @@ async def send_booking_confirmation(
     try:
         if session is not None:
             from app.sms_templates import build_sms
-            message = build_sms(session)
+            message = build_sms(session, name_not_heard=name_pending)
+        elif name_pending:
+            from app.notifications.name_chase import (
+                booking_text_name_pending, when_label_for_sms,
+            )
+            from app.notifications.templates import _cn, _cp
+            message = booking_text_name_pending(
+                clinic_name=_cn(clinic_name),
+                when_label=when_label_for_sms(appointment_time),
+                location=get_location_short_name(location) if location else "",
+                clinic_phone=_cp(clinic_phone),
+            )
         else:
             location_short = get_location_short_name(location)
             ck = {"clinic_name": clinic_name, "clinic_phone": clinic_phone}

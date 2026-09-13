@@ -19770,7 +19770,17 @@ class FlowEngine:
                     # create_pending_name_confirmation was already called inside
                     # _exec_book_appointment, so the Redis record exists.
                     _needs_name_sms = self.session.pop("needs_name_correction_sms", False)
-                    if _needs_name_sms:
+                    # Since 13 Sep 2026 the booking write itself sends the ONE
+                    # text that says the booking and asks for the name
+                    # (notifications/name_chase) whenever the name on record
+                    # is a single token. This second text would then be a
+                    # duplicate, so it only goes when no chase was opened.
+                    if _needs_name_sms and self.session.get("_name_chase_open"):
+                        logger.info(
+                            "[ms_flow] CONFIRM_BOOKING: name chase already open — "
+                            "no second name text"
+                        )
+                    elif _needs_name_sms:
                         _ncorr_phone = _book_args.get("phone") or ""
                         if _ncorr_phone:
                             # The clinic's own name, never another clinic's.
@@ -19819,15 +19829,26 @@ class FlowEngine:
                         _needs_name_sms
                         or (bool(_name_cb_raw) and " " not in _name_cb_raw)
                     )
-                    _cb_done = (
-                        f"Brilliant — you're all booked in for {_slot_cb} "
-                        f"at our {_clinic_name} clinic. "
-                        + (
-                            "I'm sending a confirmation text now — just reply to it with your full name to complete the booking. Have a great day!"
-                            if _sms_will_ask_full_name else
+                    if _needs_name_sms:
+                        # Owner, 13 Sep 2026: the close restates the situation
+                        # and that the text is how they confirm. Same words as
+                        # the LLM path's steer (name_chase.close_line).
+                        from app.notifications.name_chase import close_line as _nc_close
+                        _cb_done = _nc_close(str(_slot_cb)) + " Have a great day!"
+                    elif _sms_will_ask_full_name:
+                        # A first name WAS heard; only the surname is owed.
+                        _cb_done = (
+                            f"Brilliant — you're all booked in for {_slot_cb} "
+                            f"at our {_clinic_name} clinic. I'm sending a "
+                            "confirmation text now — just reply to it with your "
+                            "full name to complete the booking. Have a great day!"
+                        )
+                    else:
+                        _cb_done = (
+                            f"Brilliant — you're all booked in for {_slot_cb} "
+                            f"at our {_clinic_name} clinic. "
                             "We'll send a confirmation text shortly. Have a great day!"
                         )
-                    )
                     logger.info(
                         "[ms_flow] CONFIRM_BOOKING YES handler → booking_confirmed=True "
                         "state=DONE name=%r slot=%r",

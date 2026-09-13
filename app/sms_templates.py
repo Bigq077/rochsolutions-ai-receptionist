@@ -47,6 +47,7 @@ HOME_VISIT_CONFIRMATION_SMS = (
     "🏠 At your home address\n\n"
     "Please reply to this message with your full home address and postcode so "
     "we can finalise your visit.\n\n"
+    "{full_name_request}"
     "To reschedule, reply to this message or call us on {clinic_phone}.\n\n"
     "See you soon!\n— {clinic_name}"
 )
@@ -61,6 +62,7 @@ REMOTE_CONFIRMATION_SMS = (
     "⏰ {appointment_time}\n"
     "💻 Video / phone consultation — {clinic_name} will be in touch at your "
     "appointment time with how to join.\n\n"
+    "{full_name_request}"
     "To reschedule, reply to this message or call us on {clinic_phone}.\n\n"
     "See you soon!\n— {clinic_name}"
 )
@@ -70,6 +72,16 @@ REMOTE_CONFIRMATION_SMS = (
 FULL_NAME_REQUEST_NOTE = (
     "Please reply to this message with your full name so we can complete "
     "your booking details.\n\n"
+)
+
+# The name could not be heard at all (turn_handler Gate 5n, or the name
+# collector's best-effort exits) and the caller was told on the call that a
+# text would follow. This is that text's ask — the same words the spoken
+# close uses, see notifications/name_chase. Owner, 13 Sep 2026: ONE text that
+# says the booking and asks for the name, not addressed to the placeholder.
+NAME_NOT_HEARD_NOTE = (
+    "I didn't quite catch your name on the call — please reply to this "
+    "message with your first name and surname and I'll update the booking.\n\n"
 )
 
 # Silent-misspelling recovery (P5). When a new patient's full name WAS captured
@@ -88,7 +100,7 @@ def build_maps_link(address: str) -> str:
     return f"https://maps.google.com/?q={urllib.parse.quote(address)}"
 
 
-def build_sms(session: dict) -> str:
+def build_sms(session: dict, name_not_heard: bool = False) -> str:
     """
     Build the booking confirmation SMS body from a session dict.
 
@@ -100,12 +112,19 @@ def build_sms(session: dict) -> str:
     Patient name  → session["collected"]["name"]
     First visit   → session["collected"]["patient_type"] == "NEW"
                     (defaults True when absent so new callers always get arrival note)
+
+    `name_not_heard`: the stored name is a best-effort placeholder ("Still",
+    "Lecture") because the engine could not hear it (Gate 5n). The greeting
+    must not use it — CAb5a26a10 would have texted "Hi Still 👋" — and the
+    name line becomes the ask the caller was promised on the call.
     """
     collected = session.get("collected") or {}
 
     # Patient first name
     name_raw     = (collected.get("name") or "").strip()
     patient_name = name_raw.split()[0] if name_raw else "there"
+    if name_not_heard:
+        patient_name = "there"
 
     # Slot resolution — priority:
     #   1. selected_slot (ISO datetime) — always set by the live call flow, most reliable
@@ -252,9 +271,13 @@ def build_sms(session: dict) -> str:
     # Pending full name?  Only the caller's first name is collected on the
     # call, so the stored name is typically a single token.  When a full name
     # has already been confirmed (contains a space) the SMS must NOT re-ask.
-    _full_name_confirmed = bool(name_raw) and (" " in name_raw)
+    # A placeholder can be two tokens ("Still Gping", CAb5a26a10) — when the
+    # engine says the name was not heard, it is pending whatever its shape.
+    _full_name_confirmed = bool(name_raw) and (" " in name_raw) and not name_not_heard
     pending_full_name    = not _full_name_confirmed
-    if pending_full_name:
+    if name_not_heard:
+        full_name_request = NAME_NOT_HEARD_NOTE
+    elif pending_full_name:
         full_name_request = FULL_NAME_REQUEST_NOTE
     elif _is_template_clinic:
         # P5: full name captured on the call — the surname is never read back
@@ -292,22 +315,24 @@ def build_sms(session: dict) -> str:
     # booking executor.
     if "home_visit" in _svc or "home visit" in _svc or _loc_modality == "home_visit":
         return HOME_VISIT_CONFIRMATION_SMS.format(
-            patient_name     = patient_name,
-            clinic_name      = clinic_name,
-            appointment_date = appointment_date,
-            appointment_time = appointment_time,
-            clinic_phone     = clinic_phone,
+            patient_name      = patient_name,
+            clinic_name       = clinic_name,
+            appointment_date  = appointment_date,
+            appointment_time  = appointment_time,
+            clinic_phone      = clinic_phone,
+            full_name_request = full_name_request,
         )
 
     # Remote (video / phone) consultations are not at the clinic — no address /
     # Maps link / arrival note. Detected from the booking modality.
     if _loc_modality in ("remote", "video", "phone", "online", "virtual"):
         return REMOTE_CONFIRMATION_SMS.format(
-            patient_name     = patient_name,
-            clinic_name      = clinic_name,
-            appointment_date = appointment_date,
-            appointment_time = appointment_time,
-            clinic_phone     = clinic_phone,
+            patient_name      = patient_name,
+            clinic_name       = clinic_name,
+            appointment_date  = appointment_date,
+            appointment_time  = appointment_time,
+            clinic_phone      = clinic_phone,
+            full_name_request = full_name_request,
         )
 
     body = BOOKING_CONFIRMATION_SMS.format(

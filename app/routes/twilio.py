@@ -1942,58 +1942,58 @@ async def sms_inbound(request: Request) -> PlainTextResponse:
                 )
             return _twiml_noop()
 
-        # ── Valid name reply — update Acuity ─────────────────────────────
+        # ── Valid name reply — update the booking where it lives ─────────
         # Single-word reply: first name only — update firstName, leave surname intact.
         # Multi-word reply: treat as "FirstName Surname(s)".
+        #
+        # The write-back used to be Acuity-only, here, inline. On a Google
+        # Calendar clinic (northgate, JV) the texted name was therefore never
+        # applied (13 Sep 2026). name_chase.apply_reply reads the provider off
+        # the pending record and updates whichever one the booking is in; the
+        # caller then gets a thank-you, which they never did before.
         full_name = body
-        first_name = words[0]
-        last_name = " ".join(words[1:])
+        # Tidy an all-lowercase reply ("xiomara roch"); leave anything the
+        # caller cased themselves alone -- .capitalize() would make "McDonald"
+        # "Mcdonald" and "O'Brien" "O'brien".
+        _cased = [(w[:1].upper() + w[1:]) if w.islower() else w for w in words]
+        first_name = _cased[0]
+        last_name = " ".join(_cased[1:])
         appointment_id = pending.get("appointment_id", "")
 
         logger.info(
-            "[SMS_INBOUND] valid name=%r (words=%d) appt_id=%r phone=%r — updating Acuity",
-            full_name,
-            len(words),
-            appointment_id,
-            norm_phone,
+            "[SMS_INBOUND] valid name=%r (words=%d) appt_id=%r phone=%r provider=%r",
+            full_name, len(words), appointment_id, norm_phone,
+            pending.get("provider") or "acuity",
         )
 
-        # Build Acuity payload: only include lastName when explicitly provided
-        _acuity_name_payload: dict = {"firstName": first_name}
-        if last_name:
-            _acuity_name_payload["lastName"] = last_name
-
         try:
-            from app.tools.receptionist_tools import _get_acuity_adapter
-            adapter = _get_acuity_adapter()
-            if adapter and appointment_id:
-                await adapter._request_with_retry(
-                    "PUT",
-                    f"/appointments/{appointment_id}",
-                    json=_acuity_name_payload,
-                    allow_retry=False,
-                )
-                logger.info(
-                    "[SMS_INBOUND] Acuity updated: appt_id=%r name=%r",
-                    appointment_id,
-                    full_name,
-                )
+            from app.notifications import name_chase as _chase
+            _applied = await _chase.apply_reply(pending, first_name, last_name)
+            if _applied:
                 await complete_pending_name_confirmation(norm_phone)
                 logger.info(
-                    "[SMS_INBOUND] pending record completed: phone=%r",
-                    norm_phone,
+                    "[SMS_INBOUND] pending record completed: phone=%r", norm_phone,
                 )
+                try:
+                    await send_sms(
+                        to=norm_phone,
+                        message=_chase.thanks_text(
+                            first_name=first_name,
+                            when_label=pending.get("when_label") or "the day",
+                        ),
+                    )
+                except Exception as _te:
+                    logger.warning("[SMS_INBOUND] thank-you SMS failed (non-fatal): %r", _te)
             else:
                 logger.warning(
-                    "[SMS_INBOUND] skipping Acuity update: adapter=%r appt_id=%r",
-                    adapter,
-                    appointment_id,
+                    "[SMS_INBOUND] booking not updated: appt_id=%r provider=%r — "
+                    "record left pending",
+                    appointment_id, pending.get("provider"),
                 )
         except Exception as _ae:
             logger.error(
-                "[SMS_INBOUND] Acuity update failed (non-fatal): appt_id=%r err=%r",
-                appointment_id,
-                _ae,
+                "[SMS_INBOUND] name write-back failed (non-fatal): appt_id=%r err=%r",
+                appointment_id, _ae,
             )
 
     except Exception as _outer:

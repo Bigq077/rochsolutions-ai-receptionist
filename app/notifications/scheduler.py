@@ -643,14 +643,18 @@ async def _send_reminder(reminder_data: Dict[str, Any]) -> str:
 async def schedule_name_confirm_reminder(
     phone: str,
     first_name: str,
-    delay_minutes: int = 30,
+    delay_minutes: int = 120,
     from_number: Optional[str] = None,
+    when_label: str = "",
 ) -> None:
     """
-    Schedule a name-confirmation nudge SMS to be sent delay_minutes from now.
+    Schedule the ONE name follow-up SMS, delay_minutes from now.
     Stores phone+first_name in a Redis sorted set scored by send-at timestamp.
     Safe no-op if Redis is unavailable. from_number pins the sender to the
     booking clinic's own line (shared-Redis tenant safety); None → env fallback.
+
+    Owner decision 13 Sep 2026: +2 h, not 30 min -- half an hour after hanging
+    up reads as nagging -- and then stop. See notifications/name_chase.
     """
     from app.storage.redis_store import redis_client as _ar
     if not _ar:
@@ -659,7 +663,8 @@ async def schedule_name_confirm_reminder(
     try:
         send_at = (datetime.utcnow() + timedelta(minutes=delay_minutes)).timestamp()
         payload = json.dumps({"phone": phone, "first_name": first_name,
-                              "from_number": from_number or ""})
+                              "from_number": from_number or "",
+                              "when_label": when_label or ""})
         await _ar.zadd(PENDING_NAME_REMINDERS_SET, {payload: send_at})
         logger.info(
             "[NAME_REMINDER] scheduled: phone=%r delay=%dmin send_at=%s",
@@ -697,12 +702,18 @@ async def process_name_confirm_reminders() -> int:
 
                 pending = await get_pending_name_confirmation(phone)
                 if pending and pending.get("status") == "pending":
+                    # A follow-up, not a reminder, and never "to confirm your
+                    # appointment" -- that reads as not booked. Not addressed
+                    # by name: the name is the one thing we do not have.
+                    from app.notifications.name_chase import nudge_text
                     await send_sms(
                         to=phone,
-                        message=(
-                            f"Hi {first_name}, just a reminder — please reply to this "
-                            "message with your full first name and surname to confirm "
-                            "your appointment with us."
+                        message=nudge_text(
+                            when_label=(
+                                data.get("when_label")
+                                or pending.get("when_label")
+                                or "your appointment"
+                            ),
                         ),
                         from_number=from_number,
                     )

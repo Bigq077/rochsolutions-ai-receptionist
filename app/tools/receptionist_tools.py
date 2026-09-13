@@ -4191,36 +4191,33 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
         # the pending record and the reminder SMS. (If surname capture missed,
         # the name is a single token and we still chase it, which also keeps
         # the booking-confirmation SMS's full-name request in step.)
-        if len(patient_name.split()) >= 2:
+        # The record, the +2h follow-up and the ONE text are owned by
+        # notifications/name_chase since 13 Sep 2026, so this path and the
+        # Google Calendar path tell the caller the same story.
+        # Pending = one token OR the engine said it could not hear the name
+        # (CAb5a26a10 booked a two-token placeholder). The not-heard wording
+        # -- no greeting by name, the promised ask, the steered close -- only
+        # when the engine actually said so; a heard first name keeps the
+        # ordinary "reply with your full name" line.
+        from app.notifications import name_chase as _chase
+        _name_pending = _chase.name_is_pending(patient_name, session)
+        _name_not_heard = _chase.name_was_not_heard(session)
+        if not _name_pending:
             logger.info(
                 "[PENDING_NAME] skipped — full name already captured (%r)",
                 patient_name,
             )
         else:
-            try:
-                from app.storage.redis_store import create_pending_name_confirmation
-                from app.flows.triage_legacy import normalize_phone
-                norm_phone = normalize_phone(phone)
-                first = patient_name.split()[0] if patient_name else ""
-                await create_pending_name_confirmation(
-                    phone=norm_phone,
-                    first_name=first,
-                    appointment_id=booking.provider_booking_id,
-                    location=location,
-                )
-                logger.info(
-                    "[PENDING_NAME] record created: phone=%r appt_id=%r",
-                    norm_phone,
-                    booking.provider_booking_id,
-                )
-                # Schedule 30-min name-confirm nudge (non-fatal)
-                try:
-                    from app.notifications.scheduler import schedule_name_confirm_reminder
-                    await schedule_name_confirm_reminder(phone=norm_phone, first_name=first)
-                except Exception as _sched_err:
-                    logger.warning("[PENDING_NAME] reminder schedule failed (non-fatal): %r", _sched_err)
-            except Exception as _pn_err:
-                logger.warning("[PENDING_NAME] create failed (non-fatal): %r", _pn_err)
+            await _chase.start(
+                session=session,
+                clinic=clinic,
+                phone=phone,
+                patient_name=patient_name,
+                provider="acuity",
+                appointment_id=str(booking.provider_booking_id),
+                when_label=_chase.when_label_for_sms(booking.start_time),
+                location=location,
+            )
 
         # ── Post-write side effects — OFF the caller's clock (B-84) ─────────
         # The booking is committed. Everything below is a notification, and
@@ -4277,6 +4274,7 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
                         clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
                         clinic_phone=clinic.get("sms_phone") or clinic.get("phone"),
                         session=session,
+                        name_pending=_name_not_heard,
                     )
                 except Exception as e:
                     logger.warning("_book_appointment_acuity SMS failed (non-fatal): %r", e)
@@ -4336,13 +4334,18 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
             call_sid=session.get("call_sid", ""),
         )
 
-        return {
+        _result = {
             "success": True,
             "acuity_booking_id": booking.provider_booking_id,
             "booked_slot": booking.start_time.strftime("%A %d %B at %H:%M"),
             "location": location.title(),
             "practitioner": booking.practitioner_name or "your practitioner",
         }
+        if _name_not_heard:
+            _result["close_with"] = _chase.close_instruction(
+                _chase.when_label_for_sms(booking.start_time)
+            )
+        return _result
 
     except SlotUnavailable as e:
         logger.error(
@@ -8650,6 +8653,14 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         f"{_svc_name} for {_prac} — {patient_name}" if _prac
         else f"{patient_name} — {_svc_name}"
     )
+    # A placeholder name (one token -- see notifications/name_chase) is
+    # marked on the entry so the front desk can see it without the SMS
+    # thread. Dropped when the caller's reply lands.
+    from app.notifications import name_chase as _chase
+    _name_pending = _chase.name_is_pending(patient_name, session)
+    _name_not_heard = _chase.name_was_not_heard(session)
+    if _name_pending:
+        summary = _chase.tag_summary(summary)
     description_parts = [
         f"Patient: {patient_name}",
         f"Phone: {phone}",
@@ -8745,6 +8756,24 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
     # collected.patient_type is never written in the media-streams flow).
     session["_booked_service"] = service
 
+    # The name chase. This path never opened one: no pending record, no
+    # follow-up, and the inbound reply handler only knew Acuity -- so on a
+    # Google Calendar clinic (northgate, JV) a one-word name was never chased
+    # and a texted name was never applied (13 Sep 2026).
+    if _name_pending:
+        await _chase.start(
+            session=session,
+            clinic=clinic,
+            phone=phone,
+            patient_name=patient_name,
+            provider="google_calendar",
+            appointment_id=event_id,
+            when_label=_chase.when_label_for_sms(start_dt),
+            location=location.title() if location else "",
+            calendar_id=calendar_id,
+            event_summary=summary,
+        )
+
     # Confirmation SMS — failure must never fail the booking
     try:
         await send_booking_confirmation(
@@ -8759,6 +8788,7 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
             clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
             clinic_phone=clinic.get("sms_phone") or clinic.get("phone"),
             session=session,
+            name_pending=_name_not_heard,
         )
         # Tell the smart SMS router at call end that a confirmation was already sent
         session["confirmation_sms_sent"] = True
@@ -8855,12 +8885,17 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
     except Exception as e:
         logger.warning("book_appointment Sheets log failed (non-fatal): %r", e)
 
-    return {
+    _result = {
         "success": True,
         "event_id": event_id,
         "booked_slot": start_dt.strftime("%A %d %B at %H:%M"),
         "location": location.title(),
     }
+    if _name_not_heard:
+        _result["close_with"] = _chase.close_instruction(
+            _chase.when_label_for_sms(start_dt)
+        )
+    return _result
 
 
 # ---------------------------------------------------------------------------

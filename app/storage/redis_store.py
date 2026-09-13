@@ -311,10 +311,21 @@ async def create_pending_name_confirmation(
     first_name: str,
     appointment_id: str,
     location: str,
+    *,
+    provider: str = "acuity",
+    calendar_id: str = "",
+    event_summary: str = "",
+    clinic_id: str = "",
+    when_label: str = "",
 ) -> None:
     """
     Store a pending-name-confirmation record keyed by normalized phone.
     Non-blocking: safe no-op if Redis is unavailable.
+
+    `provider` says where the reply is written back to. The inbound handler
+    only ever knew Acuity, so on a Google Calendar clinic (northgate, JV) the
+    name the caller texted was never applied (13 Sep 2026). `event_summary` is
+    the event title as booked, so the placeholder in it can be replaced.
     """
     if not redis_client:
         return
@@ -324,6 +335,11 @@ async def create_pending_name_confirmation(
         "first_name": first_name,
         "appointment_id": appointment_id,
         "location": location,
+        "provider": provider,
+        "calendar_id": calendar_id,
+        "event_summary": event_summary,
+        "clinic_id": clinic_id,
+        "when_label": when_label,
         "status": "pending",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "sms_reply_received": False,
