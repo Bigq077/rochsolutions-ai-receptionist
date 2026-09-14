@@ -321,20 +321,22 @@ def test_ca70a8_rejections_of_a_stored_name_count_in_the_callers_own_words():
     assert "Gronkowski" not in out and "Zimara" not in out
 
 
-def test_ca70a8_wrong_wrong_wrong_to_the_phone_question_is_ambiguous_and_not_counted():
-    # The name was spoken in the same breath as the phone question; "wrong"
-    # with no name in it answers the question in front of it. The trade
-    # (CAd63554bb): a phone "no it's not" during a dispute must not exit.
-    # In the real call the exit had already fired on "no wrong again zimara
-    # gronkowski", which names the name.
+def test_ca70a8_wrong_wrong_wrong_after_a_fresh_readback_counts():
+    # Re-pinned 14 Sep 2026 (CA50437bb292, CA1cdbe346b4 on the demo line):
+    # this shape -- a NEW name read back in the same breath as the phone
+    # question, then "wrong" -- went uncounted three times on one call and
+    # the caller heard three wrong surnames. "wrong" after a fresh read-back
+    # is about the name. The trade (CAd63554bb) still holds: a bare "no it's
+    # not" to the number question has no "wrong"-family word and stays a
+    # number answer -- see test_cad635 below and
+    # test_one_word_name_asked_twice_exits_and_wrong_again_counts.
     s = _session(patient_name="Zimara Gronkowski", collected={"name": "Zimara Gronkowski"})
     s["_gate5nc_rejections"] = 1
     s["conversation_history"].append({"role": "user", "content": "no wrong again zimara gronkowski"})
     out = _turn(s, "Zimara Gronkowski. I've got you on oh seven five oh two — is that the best number?",
                 "oh wrong wrong wrong",
                 "Thanks for that — I'm sorry about that — could you type your surname on the keypad?")
-    assert s["_gate5nc_rejections"] == 1
-    # ...and Gate 5n still removes the keypad-for-a-name ask on its own.
+    assert s["_gate5nc_rejections"] == 2
     assert "surname" not in out.lower(), out
     assert s.get("_gate5n_exited") is True
 
