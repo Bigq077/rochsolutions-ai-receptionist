@@ -252,6 +252,15 @@ def _gate5n_exit(session: Dict[str, Any], name: str) -> str:
     outstanding step are spoken: whatever else the model wrote on this turn
     was framing for an ask that is not happening.
     """
+    # Every exit (5n, 5n-c, 5n-d, 5n-f) books the word Gate 5n-f held at the
+    # first ask for the other half, unless the caller rejected a read-back of
+    # it. CAb421b89c91 (14 Sep 2026, demo, 1bf58a35): "gardner" held, then
+    # "Bowe?" / "Bowel?" both rejected; 5n-c's exit took the latest attempt
+    # and the booking went in as the rejected "Bowel".
+    _held = (session.get("_gate5nf_word") or "").strip()
+    if _held and not session.get("_gate5nf_word_rejected") and _held.lower() != name.lower():
+        logger.info("[ms_gate5n] exit books the held word %r, not %r", _held, name)
+        name = _held.capitalize()
     session["_gate5n_exited"] = True
     session["patient_name"] = name
     session.setdefault("collected", {})["name"] = name
@@ -3102,6 +3111,17 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     ):
         session["_gate5nc_seen"] = _nc_turn if _nc_turn is not None else _nc_user
         session["_gate5nc_rejections"] = int(session.get("_gate5nc_rejections") or 0) + 1
+        # A rejected read-back that said the held word disputes it: the exit
+        # must not book it (see _gate5n_exit).
+        _nc_held = (session.get("_gate5nf_word") or "").strip()
+        if _nc_held:
+            _nc_prev = next(
+                ((_m.get("content") or "") for _m in reversed(session.get("conversation_history") or [])
+                 if isinstance(_m, dict) and _m.get("role") == "assistant"),
+                "",
+            )
+            if re.search(rf"\b{re.escape(_nc_held)}\b", _nc_prev, re.IGNORECASE):
+                session["_gate5nf_word_rejected"] = True
         logger.info(
             "[ms_gate5nc] name read-back rejected (#%d): %r",
             session["_gate5nc_rejections"], _nc_user[:60],
