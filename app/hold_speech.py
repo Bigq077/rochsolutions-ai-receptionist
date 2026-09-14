@@ -759,6 +759,11 @@ _REASON_Q_PATTERNS = (
     # The SHAPE, not the wording: "area or reason / concern / issue / problem".
     r"\barea or (?:reason|concern|issue|problem)\b",
     r"\blooking to address\b",
+    # "what's bothering you", "what's troubling you" -- the model's own re-ask
+    # on CA66bd0930 (14 Sep 2026, JV): "What's the appointment for, could you
+    # tell me a little about what's bothering you?" -- the clause after "for"
+    # outran the 20-char window above, so the re-ask went unrecognised.
+    r"\bwhat'?s (?:been )?(?:bothering|troubling) you\b",
 )
 _REASON_Q = tuple(re.compile(p, re.IGNORECASE) for p in _REASON_Q_PATTERNS)
 

@@ -768,6 +768,42 @@ _REASON_NON_ANSWERS: frozenset = frozenset({
 # flag drift onto an answer to some later, unrelated question.
 _REASON_ANSWER_MAX_TURNS = 2
 
+# How many OTHER questions Susie may ask while the flag is pending before it
+# is dropped. A skip (see `_last_susie_turn_asks_something_else`) spends no
+# turn of the bound above, so without its own cap the flag could stay armed
+# for the whole call and capture a reply to something unrelated.
+_REASON_ANSWER_MAX_SKIPS = 4
+
+
+def _last_susie_turn(session: Dict[str, Any]) -> str:
+    """The last thing Susie said — the question the caller is answering. PURE.
+
+    On the model path the caller/assistant pair is appended AFTER the turn,
+    so while the caller's reply is being committed the tail of history is
+    Susie's last reply. Same lookup as `turn_handler._last_assistant_text`.
+    """
+    for _m in reversed(session.get("conversation_history") or []):
+        if isinstance(_m, dict) and _m.get("role") == "assistant":
+            return str(_m.get("content") or "")
+    return ""
+
+
+def _last_susie_turn_asks_something_else(session: Dict[str, Any]) -> bool:
+    """Susie's last turn was a question, and not the reason question. PURE.
+
+    CA66bd0930 (14 Sep 2026, JV). Reason asked; STT heard "thank you"
+    (turn 1 of the bound); Gate 5 moved the outstanding step to the name and
+    Susie asked "could I take your first name and surname?"; the caller said
+    "i'm a gardener" (turn 2) and that became the reason. The real answers
+    that followed never overwrote it. The reply to a name / surname / phone /
+    clinic / slot / "did you say X" question is THAT question's answer.
+    """
+    spoken = _last_susie_turn(session)
+    if "?" not in spoken:
+        return False
+    from app.hold_speech import question_asks_the_reason
+    return not question_asks_the_reason(spoken)
+
 
 def utterance_is_reason_answer(session: Dict[str, Any], utterance: str) -> bool:
     """True when `commit_reason_answer` would treat *utterance* as the reply.
@@ -1045,6 +1081,27 @@ def commit_reason_answer(session: Dict[str, Any], utterance: str) -> bool:
     )
     if already:
         session.pop("_reason_answer_pending", None)
+        return False
+
+    # The caller is answering a DIFFERENT question. Skip it, keep the flag,
+    # spend no turn of the bound: the reason question is still outstanding
+    # and its re-ask captures normally. Bounded on its own so the flag can
+    # never drift for the rest of the call (CA66bd0930, see the helper).
+    if _last_susie_turn_asks_something_else(session):
+        skips = int(session.get("_reason_answer_skips") or 0) + 1
+        session["_reason_answer_skips"] = skips
+        if skips >= _REASON_ANSWER_MAX_SKIPS:
+            session.pop("_reason_answer_pending", None)
+            logger.info(
+                "[first_turn] reason answer not given across %d other "
+                "questions — pending flag dropped", _REASON_ANSWER_MAX_SKIPS,
+            )
+        else:
+            logger.info(
+                "[first_turn] reply is to a different question, not the "
+                "reason — skipped (%d/%d): %r",
+                skips, _REASON_ANSWER_MAX_SKIPS, (utterance or "")[:60],
+            )
         return False
 
     turns = int(session.get("_reason_answer_turns") or 0) + 1
