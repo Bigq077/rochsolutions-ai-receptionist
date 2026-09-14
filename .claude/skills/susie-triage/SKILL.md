@@ -41,17 +41,24 @@ Engine work lands on `origin/latency-eval`.
 ## Step 2 — Collect
 
 **Real calls (prefer this)** — they carry a judge score, failure tags and the
-caller's actual words, which a synthetic run cannot give you:
+caller's actual words. Start with the existing Monday ritual, then cluster:
 
 ```bash
+python -m app.obs.weekly --days 7                 # fleet numbers + worst-by-score
 python .claude/skills/susie-triage/scripts/collect_failures.py --obs --days 7
-#   --clinic <id>   one clinic   |   --since YYYY-MM-DD   explicit window
 ```
 
-Needs `OBS_DATABASE_URL` (or `DATABASE_URL`) — **not** `OBS_CAPTURE_ENABLED`,
-which only gates *writing*. Run from the repo root on a branch with the full
-`app/obs/` package: `origin/latency-eval` has 22 modules, `jv-v1-onboarding` has
-2 and cannot be used.
+This skill **wraps `weekly.py`, it does not replace it** — the headline figures
+come from the same `app/obs/reports.summarise()`. What it adds is clustering to
+root cause, ranking by patient impact, and signals the judge score cannot see.
+
+**Read the "INVISIBLE TO `app/obs/weekly.py`" section first.** `weekly.py` lists
+the bottom decile *by score*, and the worst defects do not score badly — a
+phantom booking reads as a clean successful call, because what failed is the
+write, which no transcript shows.
+
+See `references/obs-mode.md` for the signal vocabulary, severity ranking and
+data caveats.
 
 **Suite results.** Same script, same discipline:
 
@@ -61,14 +68,14 @@ python .claude/skills/susie-triage/scripts/collect_failures.py   tests/auto/resu
 
 For a weekly sweep over suite runs, pass the directory and `--since YYYY-MM-DD`.
 
-The collector prints the pass rate, candidate clusters, a **stall-state table**,
-and one line per failing call with its last utterance and turn traces.
+For suite runs the collector prints the pass rate, candidate clusters, a
+**stall-state table**, and one line per failing call.
 
 The stall table is usually the answer. Built from `turn_traces`
 (`state_before` → `state_after` per utterance), it shows the state a call could
-not leave, and `handled_by` names the handler that ate the turn without
-advancing. A call stuck in one state was **heard and not understood** — a
-different bug from one where nothing was heard.
+not leave, and `handled_by` names the handler that ate the turn. A call stuck in
+one state was **heard and not understood** — a different bug from one where
+nothing was heard.
 
 ## Step 3 — Cluster by earliest failing check, in flow order
 
@@ -93,19 +100,11 @@ See `references/symptom-map.md` for each check's flow position and the subsystem
 that produces it. Use the subsystem column only to phrase the hypothesis.
 
 **`--obs` mode has a different vocabulary** — judge `failure_tags` plus derived
-signals, ranked by patient impact rather than flow order. Two derived signals are
-the point of the mode, because nothing else reports them:
-
-- **`PHANTOM_BOOKING`** — `booking_confirmed` set, but neither Acuity nor Google
-  Calendar returned an id: a caller who believes they have an appointment that
-  does not exist. Such a call usually reports `success=true` with a top judge
-  score. **Always rank it first.**
-- **`DORMANT_SCREENING`** — a red-flag clinical screen armed and never fired
-  (`screening.arm_paths` has an `orphan` with no `trigger` anywhere).
-
-Cluster obs calls by `final_state` and `build_sha`. Grouping defects by build is
-the question that table is indexed to answer: a cluster confined to one
-`build_sha` is a regression with a known blast radius.
+signals, ranked by patient impact rather than flow order. Two matter most:
+**`PHANTOM_BOOKING`** (booking confirmed, no provider id — a caller expecting an
+appointment that does not exist, usually scored 5/5) and **`DORMANT_SCREENING`**
+(a red-flag clinical screen armed and never fired). Cluster by `final_state` and
+`build_sha`. Full vocabulary in `references/obs-mode.md`.
 
 ## Step 4 — Attribute a candidate cause
 

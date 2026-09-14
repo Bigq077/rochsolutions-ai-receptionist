@@ -286,6 +286,24 @@ def render_obs(s: dict) -> str:
     out.append(
         f"CALLS: {s['total']} | CLEAN: {s['passed']} | WITH FINDINGS: {s['failed']}"
     )
+    f = s.get("fleet") or {}
+    if f:
+        mean = f.get("mean_quality_score")
+        out.append(
+            f"FLEET (app/obs/reports.summarise - same figures as "
+            f"`python -m app.obs.weekly`):"
+        )
+        out.append(
+            f"  volume={f.get('volume')}  "
+            f"booking_rate={(f.get('booking_rate') or 0) * 100:.0f}%  "
+            f"mean_score={mean:.2f}" if mean is not None else
+            f"  volume={f.get('volume')}  "
+            f"booking_rate={(f.get('booking_rate') or 0) * 100:.0f}%  mean_score=-"
+        )
+        if f.get("failure_tags"):
+            out.append("  judge tags: " + ", ".join(
+                f"{k}x{v}" for k, v in f["failure_tags"].items()
+            ))
     out.append("")
     out.append("CANDIDATE CLUSTERS (grouped by worst signal, ranked by patient impact):")
     for tag, ids in sorted(
@@ -314,6 +332,20 @@ def render_obs(s: dict) -> str:
         out.append("BY CLINIC:")
         for c, n in s["clinics"].most_common():
             out.append(f"  {n:3d}  {c}")
+    missed = s.get("missed_by_decile") or []
+    if missed:
+        out.append("")
+        out.append(
+            f"INVISIBLE TO `app/obs/weekly.py` ({len(missed)} sev1-2 calls):"
+        )
+        out.append(
+            "  weekly.py lists the bottom decile BY SCORE. These score too "
+            "well to appear there - a phantom booking reads as a clean "
+            "successful call, because what failed is the write, which the "
+            "transcript cannot show."
+        )
+        out.append("  " + ", ".join(missed[:10])
+                   + (f"  (+{len(missed) - 10} more)" if len(missed) > 10 else ""))
     out.append("")
     out.append("CALLS WITH FINDINGS:")
     for r in s["rows"]:
@@ -418,7 +450,10 @@ def main() -> None:
         if not rows:
             print(f"CALLS: {total} | no findings in this window.")
             return
+        from obs_source import fleet_summary, missed_by_bottom_decile
         s = summarise_obs(rows, total)
+        s["fleet"] = fleet_summary(obs_rows)
+        s["missed_by_decile"] = missed_by_bottom_decile(obs_rows, rows)
         if args.json:
             for k in ("stall_states", "builds", "clinics",
                       "pass_flow_steps", "fail_flow_steps"):

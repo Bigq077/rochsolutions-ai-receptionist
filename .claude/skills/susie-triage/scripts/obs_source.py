@@ -229,3 +229,39 @@ def to_triage_rows(obs_rows: list[dict[str, Any]]) -> tuple[list[dict], int]:
 
     out.sort(key=lambda x: (x["severity"], str(x["earliest_failing_check"])))
     return out, len(obs_rows)
+
+def fleet_summary(obs_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Headline numbers, computed by app/obs/reports.py - not re-derived here.
+
+    Reusing the same function `python -m app.obs.weekly` calls means the triage
+    report and the Monday ritual can never disagree about volume, booking rate
+    or mean score.
+    """
+    try:
+        from app.obs import reports  # noqa: PLC0415
+    except ImportError:
+        return {}
+    return reports.summarise(obs_rows)
+
+
+def missed_by_bottom_decile(
+    obs_rows: list[dict[str, Any]], triage_rows: list[dict[str, Any]]
+) -> list[str]:
+    """Severity 1-2 calls that `weekly.py`'s bottom-decile list cannot surface.
+
+    weekly.py ranks by quality_score. A PHANTOM_BOOKING scores *well* - the
+    transcript reads as a clean, successful booking, because the failure is that
+    the booking was never written, which the transcript cannot show. Those calls
+    sit at the top of the score distribution and never enter the bottom decile.
+
+    This is the gap the --obs mode exists to close, so name it explicitly.
+    """
+    try:
+        from app.obs import reports  # noqa: PLC0415
+        decile = {c.get("call_sid") for c in reports.bottom_decile(obs_rows)}
+    except ImportError:
+        return []
+    return [
+        r["id"] for r in triage_rows
+        if r["severity"] <= 2 and r["id"] not in decile
+    ]
