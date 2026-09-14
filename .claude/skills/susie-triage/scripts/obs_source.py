@@ -199,7 +199,17 @@ def load_obs_rows(
     elif days:
         start = datetime.now(timezone.utc) - timedelta(days=days)
 
-    rows = store.list_calls(since=start, clinic_id=clinic)
+    try:
+        rows = store.list_calls(since=start, clinic_id=clinic)
+    except Exception as exc:  # noqa: BLE001 - surface, don't swallow
+        raise SystemExit(
+            f"Could not read the obs store: {type(exc).__name__}: "
+            f"{str(exc).splitlines()[0][:200]}"
+            "\n"
+            "  Check OBS_DATABASE_URL host/credentials, and that this machine "
+            "can reach the database (Render Postgres often needs the external "
+            "URL, not the internal one)."
+        ) from exc
     if not rows:
         raise SystemExit(
             "The obs store returned no calls for that window.\n"

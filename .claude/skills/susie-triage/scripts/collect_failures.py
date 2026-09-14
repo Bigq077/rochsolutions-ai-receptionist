@@ -451,7 +451,17 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.obs:
+        # obs_source lives next to this script...
         sys.path.insert(0, str(Path(__file__).parent))
+        # ...but `app.obs` comes from the repo we are STANDING IN, which is not
+        # necessarily the repo this script is stored in. The skill lives on a
+        # clinic branch; app/obs/ only exists in full on origin/latency-eval, so
+        # the normal invocation is to run this script by path from a
+        # latency-eval checkout. Python puts the script's own directory on
+        # sys.path, never the cwd, so add it explicitly.
+        cwd = Path.cwd()
+        if (cwd / "app" / "obs").is_dir():
+            sys.path.insert(0, str(cwd))
         from obs_source import load_obs_rows, to_triage_rows
 
         obs_rows = load_obs_rows(
