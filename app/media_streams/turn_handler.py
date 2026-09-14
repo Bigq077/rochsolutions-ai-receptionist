@@ -394,6 +394,30 @@ def _stored_name_token(session: Dict[str, Any]) -> str:
     return _tok.lower() if len(_tok) >= 3 else ""
 
 
+_SURNAME_ASK_RE = re.compile(r"\b(?:surname|last name)\b[^?]*\?", re.IGNORECASE)
+
+
+def _surname_is_the_first_name_again(session: Dict[str, Any], caller: str) -> bool:
+    """PURE. Susie's last turn asked for the SURNAME and the caller's reply is
+    the first name on record said again ("thanks Gardner — and your surname?"
+    → "gardner"); or the caller gave a whole name that is one word twice.
+    Either way the surname was not heard -- see name_chase.is_doubled_name."""
+    from app.notifications.name_chase import is_doubled_name
+    toks = [t.strip(".,'\"-").lower() for t in (caller or "").split()]
+    toks = [t for t in toks if t not in ("um", "uh", "er", "it's", "its", "is", "yeah", "yes")]
+    if not toks:
+        return False
+    if is_doubled_name(" ".join(toks)):
+        return True
+    _first = _stored_name_token(session)
+    return bool(
+        _first
+        and len(toks) == 1
+        and toks[0] == _first
+        and _SURNAME_ASK_RE.search(_last_assistant_text(session))
+    )
+
+
 def _restates_a_name(caller: str) -> bool:
     """PURE. The caller's turn carries a name cue and, after it, something
     name-shaped (one to three tokens once the filler is stripped), and says
@@ -3082,6 +3106,31 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
                     "persisted, SMS confirmation flagged, asked instead: %r",
                     _nc_name, result[-60:],
                 )
+    # ── Gate 5n-e: a surname that is the first name again exits NOW ─────────
+    # CA29c06f3309 (14 Sep 2026, demo): "thanks Gardner — and your surname?"
+    # → "gardner". The booking gate caught the doubled name at the WRITE
+    # (name_chase.is_doubled_name) — but by then the caller had heard "so
+    # that's Gardner Gardner" in the read-back, and only learned at the close
+    # that the name would be chased by text. Owner, 14 Sep: say it the moment
+    # the surname comes back as the same word. Same exit as 5n / 5n-c / 5n-d.
+    if (
+        not _nc_exit_spoken
+        and not session.get("_gate5n_exited")
+        and _nc_user
+        and not session.get("booking_confirmed")
+        and session.get("_gate5ne_seen") != (_nc_turn if _nc_turn is not None else _nc_user)
+        and _surname_is_the_first_name_again(session, _nc_user)
+    ):
+        session["_gate5ne_seen"] = _nc_turn if _nc_turn is not None else _nc_user
+        _ne_name = _stored_name_token(session) or _nc_user.split()[0].lower()
+        result = _gate5n_exit(session, _ne_name.capitalize())
+        _nc_exit_spoken = True
+        logger.info(
+            "[ms_gate5ne] surname came back as the first name again (%r) — exit "
+            "spoken, one token %r on the booking, asked instead: %r",
+            _nc_user[:40], _ne_name, result[-60:],
+        )
+
     if session.get("_gate5n_exited") and _NAME_ASK_AFTER_EXIT_RE.search(result):
         # The exit has been spoken; a further confirm or re-ask goes, and if
         # the turn then asks nothing the outstanding step does.
