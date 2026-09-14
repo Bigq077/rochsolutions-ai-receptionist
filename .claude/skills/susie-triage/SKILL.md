@@ -17,14 +17,11 @@ Output: `docs/triage/TRIAGE_<YYYY-MM-DD>.md`.
 ## Constraints
 
 - **Read the named files only.** Do not bulk-read `docs/` or the repo root —
-  those documents contradict each other and have been wrong repeatedly. The
-  result records and the code are the evidence.
-- **Every claim carries its evidence**: scenario ids, a check name, a flow step,
-  one quoted transcript line. "Looks like slot selection" is not a finding.
-- **Name a hypothesis, not a fix.** A cluster's cause line is where `susie-debug`
-  should start looking. Do not edit any code in this skill.
-- **Same input, same answer.** The collector script does the counting so two
-  runs of this skill on one results file agree.
+  those documents contradict each other and have been wrong repeatedly.
+- **Every claim carries evidence**: call sid or scenario id, a signal name, a
+  stall state, one quoted line. "Looks like slot selection" is not a finding.
+- **Name a hypothesis, not a fix.** Do not edit code in this skill.
+- **Same input, same answer.** The collector does the counting.
 
 ---
 
@@ -35,32 +32,43 @@ git rev-parse --abbrev-ref HEAD
 ls -t tests/auto/results/results_*.json | head -5
 ```
 
-A results file (`results_<ts>.json`) is the input, not the `report_<ts>.txt`
-beside it — the JSON carries checks, flow step, and transcripts; the text report
-carries only the first failing check.
+For suite runs the input is `results_<ts>.json`, never the `report_<ts>.txt`
+beside it — only the JSON carries checks, flow step and transcripts.
 
-State the branch in the report. A cluster found on one branch may not exist on
-another; `jv-v1-onboarding` and `engine/converged` are different engines.
+State the branch in the report: a cluster on one branch may not exist on another.
+Engine work lands on `origin/latency-eval`.
 
 ## Step 2 — Collect
 
+**Real calls (prefer this)** — they carry a judge score, failure tags and the
+caller's actual words, which a synthetic run cannot give you:
+
 ```bash
-python .claude/skills/susie-triage/scripts/collect_failures.py \
-  tests/auto/results/results_<ts>.json
+python .claude/skills/susie-triage/scripts/collect_failures.py --obs --days 7
+#   --clinic <id>   one clinic   |   --since YYYY-MM-DD   explicit window
 ```
 
-For a weekly sweep, pass the directory and `--since YYYY-MM-DD`.
+Needs `OBS_DATABASE_URL` (or `DATABASE_URL`) — **not** `OBS_CAPTURE_ENABLED`,
+which only gates *writing*. Run from the repo root on a branch with the full
+`app/obs/` package: `origin/latency-eval` has 22 modules, `jv-v1-onboarding` has
+2 and cannot be used.
 
-The collector prints: the pass rate, candidate clusters grouped by earliest
-failing check, a **stall-state table**, a pass-vs-fail `flow_step` table, and one
-line per failing call with its last utterance and last three turn traces.
+**Suite results.** Same script, same discipline:
 
-The stall table is usually the answer. It is built from `turn_traces`
-(`state_before` → `state_after` per caller utterance), so it shows the state a
-call could not leave — and `handled_by` shows which handler ate the turn without
-advancing. A call stuck in one state was **heard and not understood**, which is a
-different bug from one where nothing was heard. Read all of the output before
-forming a view.
+```bash
+python .claude/skills/susie-triage/scripts/collect_failures.py   tests/auto/results/results_<ts>.json
+```
+
+For a weekly sweep over suite runs, pass the directory and `--since YYYY-MM-DD`.
+
+The collector prints the pass rate, candidate clusters, a **stall-state table**,
+and one line per failing call with its last utterance and turn traces.
+
+The stall table is usually the answer. Built from `turn_traces`
+(`state_before` → `state_after` per utterance), it shows the state a call could
+not leave, and `handled_by` names the handler that ate the turn without
+advancing. A call stuck in one state was **heard and not understood** — a
+different bug from one where nothing was heard.
 
 ## Step 3 — Cluster by earliest failing check, in flow order
 
@@ -77,13 +85,27 @@ with judgement:
   its own. Look at the transcript before granting one its own cluster.
 - **Cluster by where the call stopped, not by scenario name.** Phase 4 and Phase
   8 stuck in the same state are **one** cluster, not two.
-- **Compare against the passing calls in the same run.** The `flow_step` table
-  makes this direct: if passes concentrate at the final step and failures pile
-  up at one earlier step, that step is the break. If failures are spread evenly
-  across steps, you are looking at something cross-cutting instead.
+- **Compare against the passing calls in the same run.** If passes concentrate at
+  the final step and failures pile up at one earlier step, that step is the
+  break. Failures spread evenly across steps mean something cross-cutting.
 
 See `references/symptom-map.md` for each check's flow position and the subsystem
 that produces it. Use the subsystem column only to phrase the hypothesis.
+
+**`--obs` mode has a different vocabulary** — judge `failure_tags` plus derived
+signals, ranked by patient impact rather than flow order. Two derived signals are
+the point of the mode, because nothing else reports them:
+
+- **`PHANTOM_BOOKING`** — `booking_confirmed` set, but neither Acuity nor Google
+  Calendar returned an id: a caller who believes they have an appointment that
+  does not exist. Such a call usually reports `success=true` with a top judge
+  score. **Always rank it first.**
+- **`DORMANT_SCREENING`** — a red-flag clinical screen armed and never fired
+  (`screening.arm_paths` has an `orphan` with no `trigger` anywhere).
+
+Cluster obs calls by `final_state` and `build_sha`. Grouping defects by build is
+the question that table is indexed to answer: a cluster confined to one
+`build_sha` is a regression with a known blast radius.
 
 ## Step 4 — Attribute a candidate cause
 

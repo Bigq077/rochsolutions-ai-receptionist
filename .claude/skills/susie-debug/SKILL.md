@@ -18,7 +18,7 @@ yet either.)
 ## Constraints — an agent that doesn't know these will violate them confidently
 
 - **Smallest possible diff.** `flow.py` is frozen: `handle_transcript()` is a
-  single 15,734-line method. Fix the reproduced defect, change nothing else. No
+  single 16,010-line method. Fix the reproduced defect, change nothing else. No
   restructuring, no "while I'm here" cleanup.
 - **Clinic behaviour belongs in `clinic.json`**, never in engine code. If you are
   writing `if clinic == "..."` in `app/`, that is the bug, not the fix.
@@ -26,10 +26,9 @@ yet either.)
   that fails before and passes after.
 - **No new dependencies** without asking — cold start affects first-call latency.
 - **p95 turn latency under 1.5 s**; no dead air over 3 s without a filler.
-- **Ask which branch** before committing. See `references/gotchas.md` §3 — the
-  branch ADR-002 calls canonical is local-only and five weeks stale, while engine
-  work is still landing on `origin/latency-eval`. Do not guess, and do not
-  default to whichever branch you are standing on.
+- **Engine fixes land on `origin/latency-eval`** (settled 2026-09-14; ADR-002's
+  `engine/converged` was never pushed). Clinic branches inherit by cherry-pick.
+  See `references/gotchas.md` §3.
 
 ---
 

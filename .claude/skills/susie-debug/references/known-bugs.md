@@ -13,7 +13,7 @@ git log -i --grep="<symptom keyword>" --pretty='%ad %h %s' --date=short
 git log -S"<the symbol you are about to change>" --oneline
 ```
 
-Regression status below was checked against `jv-v1-onboarding` on 2026-09-14.
+Regression status below was checked against **`origin/latency-eval`** — the branch engine work lands on — on 2026-09-14.
 **Re-check it** — that is one `grep`, and this file ages.
 
 ---
@@ -42,7 +42,7 @@ Regression status below was checked against `jv-v1-onboarding` on 2026-09-14.
   | 2026-07-07 | `c200e7ae` | re-fetch availability after a modality switch (DEFECT-1) |
 
 - **Regression status:** `SC_DAY_ESCAPE`, `_PT_STEPBACK`, `_PD_EXPLORATORY` all
-  present in `flow.py` on `jv-v1-onboarding`. **Not regressed.**
+  present in `flow.py` on `origin/latency-eval`. **Not regressed.**
 - **Worth knowing:** `docs/triage/TRIAGE_2026-04-07.md` triages a suite run from
   **2026-04-07** whose dominant cluster (23 of 34 failures) is exactly this bug —
   fixed 17 days later by `e3a80c6f`. If you are handed an old results file,

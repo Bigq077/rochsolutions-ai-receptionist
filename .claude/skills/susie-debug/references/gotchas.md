@@ -43,7 +43,13 @@ behind; `jv-v1-onboarding` is 1,081 behind `latency-eval` with a tip of 2026-08-
 
 Use the table as a method, not as a fact: run the command.
 
-## 3. `engine/converged` is local-only and has not moved since 2026-08-06
+## 3. Engine work lands on `origin/latency-eval` — settled 2026-09-14
+
+**Decided by the repo owner: `origin/latency-eval` is where engine work lands.**
+Measure against it, derive references from it, and commit engine fixes to it.
+
+This supersedes ADR-002, which named `engine/converged` canonical. That branch
+exists **only in local clones** and its tip is the ADR commit itself:
 
 ```bash
 $ git rev-parse --verify origin/engine/converged
@@ -52,14 +58,12 @@ $ git log -1 --date=short --pretty='%ad %h %s' engine/converged
 2026-08-06 7f239ef8 docs: ADR-002 — ratify engine/converged, retire ...
 ```
 
-ADR-002 names `engine/converged` canonical. That branch **exists only in this
-local clone**, and its tip is the ADR commit itself — five weeks old. Meanwhile
-`origin/latency-eval` was committed to **today**.
+Meanwhile `origin/latency-eval` is still taking commits. ADR-002 was ratified on
+paper and never enacted; `docs/plan/BRANCH_DECISION.md` should be updated to say
+so.
 
-**What this means for a fix:** "land it on the canonical branch" has no
-unambiguous referent right now. The branch where engine work is actually landing
-is `origin/latency-eval`. Before committing an engine fix, **ask** — do not guess,
-and do not silently pick the branch you happen to be standing on.
+Clinic branches still inherit engine fixes by cherry-pick. A fix that would have
+to be repeated per clinic belongs in a shared module instead — see §6.
 
 ## 4. `git worktree` — check where you are before measuring anything
 
@@ -110,12 +114,12 @@ The bar: **p95 caller-perceived turn latency under 1.5 s**, and no dead air over
 3 s without a filler or acknowledgement. On a live call, a hanging provider call
 is silence in a real patient's ear.
 
-- Outbound HTTP call sites largely have **no explicit timeout**. A crude
-  single-line grep on `jv-v1-onboarding` finds 33 call sites and only 2 naming a
-  timeout on the same line:
+- Outbound HTTP call sites largely have **no explicit timeout**. On
+  `origin/latency-eval` a crude single-line grep finds 33 call sites with a
+  timeout named on just 1 (21 client constructions may set one centrally):
 
   ```bash
-  grep -rnE "(httpx|requests|aiohttp)\.(get|post|put|delete)\(" app/ --include=*.py | grep -v __pycache__
+  git grep -nE "(httpx|requests|aiohttp)\.(get|post|put|delete)\("       origin/latency-eval -- 'app/**/*.py'
   ```
 
   That undercounts (multi-line calls, clients configured elsewhere) — but the
@@ -128,13 +132,16 @@ is silence in a real patient's ear.
 
 ## 8. Broad exception handling hides the worst failure mode
 
-Measured on `jv-v1-onboarding` (`grep -c "except" <file>` and
-`grep -cE "except Exception|except:" <file>`):
+Measured on **`origin/latency-eval`** (`grep -c "except"` and
+`grep -cE "except Exception|except:"`):
 
 | File | `except` clauses | broad (`except Exception` / bare) |
 |---|---|---|
-| `app/tools/receptionist_tools.py` | 97 | **81** |
-| `app/media_streams/flow.py` | 94 | 41 |
+| `app/tools/receptionist_tools.py` | 163 | **127** |
+| `app/media_streams/flow.py` | 95 | 42 |
+
+The same files on `jv-v1-onboarding` show 97/81 and 94/41 — a clinic branch
+understates this by half. Measure on the canonical branch.
 
 This is the most likely cause of the worst outcome this system has: **the call
 sounds perfect and the booking silently never happened.**
@@ -145,8 +152,9 @@ operator.
 
 ## 9. `flow.py` is frozen, not refactorable
 
-`handle_transcript()` is a single **15,734-line** async method (line 5894 →
-21628). `ask_current_question()` is 2,109. `_handle_mid_flow_interrupt()` is 1,059.
+On `origin/latency-eval`, `handle_transcript()` is a single **16,010-line** async
+method (line 5894 → 21904). `ask_current_question()` is 2,109 (3785).
+`_handle_mid_flow_interrupt()` is 1,167 (22552).
 
 Policy: **freeze, don't refactor.** Change `handle_transcript` only to fix a
 specific reproduced defect, in the smallest possible diff, with a regression test

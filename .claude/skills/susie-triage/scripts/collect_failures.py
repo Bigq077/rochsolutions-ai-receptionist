@@ -255,6 +255,83 @@ def summarise(records: list[dict]) -> dict:
     }
 
 
+def summarise_obs(rows: list[dict], total: int) -> dict:
+    """Build the same summary shape from obs rows (see obs_source.py)."""
+    by_earliest: dict[str, list[str]] = defaultdict(list)
+    for row in rows:
+        by_earliest[row["earliest_failing_check"] or "(none)"].append(row["label"])
+
+    return {
+        "source": "obs",
+        "total": total,
+        "passed": total - len(rows),
+        "failed": len(rows),
+        "stall_states": Counter(
+            r["stall_state"] for r in rows if r.get("stall_state")
+        ),
+        "builds": Counter(r.get("build_sha") or "unknown" for r in rows),
+        "clinics": Counter(r.get("clinic_id") or "unknown" for r in rows),
+        "pass_flow_steps": Counter(),
+        "fail_flow_steps": Counter(),
+        "by_earliest": dict(by_earliest),
+        "rows": rows,
+    }
+
+
+def render_obs(s: dict) -> str:
+    """Renderer for obs rows - different columns, same clustering discipline."""
+    from obs_source import severity  # local import; obs mode only
+
+    out: list[str] = []
+    out.append(
+        f"CALLS: {s['total']} | CLEAN: {s['passed']} | WITH FINDINGS: {s['failed']}"
+    )
+    out.append("")
+    out.append("CANDIDATE CLUSTERS (grouped by worst signal, ranked by patient impact):")
+    for tag, ids in sorted(
+        s["by_earliest"].items(), key=lambda kv: (severity(kv[0]), kv[0])
+    ):
+        sev = severity(tag)
+        note = {
+            1: "  [SEV 1 - caller believes something untrue]",
+            2: "  [SEV 2 - clinical safety]",
+            3: "  [SEV 3 - caller gave up]",
+        }.get(sev, "")
+        out.append(f"  {len(ids):3d}  sev{sev}  {tag}{note}")
+        out.append(f"       {', '.join(ids[:12])}"
+                   + (f"  (+{len(ids) - 12} more)" if len(ids) > 12 else ""))
+    out.append("")
+    out.append("FINAL STATE (where these calls ended):")
+    for st, n in s["stall_states"].most_common(12):
+        out.append(f"  {n:3d}  {st}")
+    out.append("")
+    out.append("BY BUILD (grouping defects by build is the main question "
+               "this table answers):")
+    for b, n in s["builds"].most_common(10):
+        out.append(f"  {n:3d}  {b}")
+    if len(s["clinics"]) > 1:
+        out.append("")
+        out.append("BY CLINIC:")
+        for c, n in s["clinics"].most_common():
+            out.append(f"  {n:3d}  {c}")
+    out.append("")
+    out.append("CALLS WITH FINDINGS:")
+    for r in s["rows"]:
+        out.append(
+            f"  [{r['label']}] {r['name']}  sev{r['severity']}\n"
+            f"      signals={','.join(r['failing_checks'])}"
+            f"{' (terminal - look upstream)' if r['cascade_only'] else ''}\n"
+            f"      final_state={r['stall_state']} quality={r.get('quality_score')} "
+            f"build={r.get('build_sha')} turns={r['turns']} "
+            f"action={r.get('action_needed')}\n"
+            f"      last_susie=\"{r['last_susie_turn']}\""
+        )
+        if r.get("evidence"):
+            out.append(f"      judge: {r['evidence']}")
+        out.append(f"      replay: python -m app.obs.show {r['id']}")
+    return "\n".join(out)
+
+
 def render(s: dict) -> str:
     out: list[str] = []
     rate = (s["passed"] / s["total"] * 100) if s["total"] else 0.0
@@ -316,10 +393,43 @@ def render(s: dict) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Collect Susie call failures.")
-    ap.add_argument("target", help="a results_*.json file or a directory of them")
-    ap.add_argument("--since", help="YYYY-MM-DD - only runs on/after this date")
+    ap.add_argument("target", nargs="?",
+                    help="a results_*.json file or a directory of them "
+                         "(omit when using --obs)")
+    ap.add_argument("--obs", action="store_true",
+                    help="read REAL calls from the observability store instead "
+                         "of suite results. Needs OBS_DATABASE_URL; does not "
+                         "need OBS_CAPTURE_ENABLED.")
+    ap.add_argument("--clinic", help="obs only: filter to one clinic_id")
+    ap.add_argument("--days", type=int,
+                    help="obs only: look back this many days")
+    ap.add_argument("--since", help="YYYY-MM-DD - only runs/calls on or after")
     ap.add_argument("--json", action="store_true", help="emit JSON instead of text")
     args = ap.parse_args()
+
+    if args.obs:
+        sys.path.insert(0, str(Path(__file__).parent))
+        from obs_source import load_obs_rows, to_triage_rows
+
+        obs_rows = load_obs_rows(
+            since=args.since, clinic=args.clinic, days=args.days
+        )
+        rows, total = to_triage_rows(obs_rows)
+        if not rows:
+            print(f"CALLS: {total} | no findings in this window.")
+            return
+        s = summarise_obs(rows, total)
+        if args.json:
+            for k in ("stall_states", "builds", "clinics",
+                      "pass_flow_steps", "fail_flow_steps"):
+                s[k] = dict(s[k])
+            print(json.dumps(s, indent=2, default=str))
+        else:
+            print(render_obs(s))
+        return
+
+    if not args.target:
+        ap.error("give a results path, or pass --obs to read the live store")
 
     records = load_records(Path(args.target), args.since)
     if not records:

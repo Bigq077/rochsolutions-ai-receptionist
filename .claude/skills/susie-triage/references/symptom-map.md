@@ -144,7 +144,7 @@ three scattered instances are noise. A phase-wide pattern is not.
 `flow_step` in a result record is the index into `BOOKING_FLOW` in
 `app/media_streams/flow.py`. **Read that list on the branch under test** — the
 step numbering has changed before and will change again. On
-`jv-v1-onboarding` as of 2026-09-14 the booking flow runs:
+`origin/latency-eval` as of 2026-09-14 the booking flow runs (verified byte-identical on `jv-v1-onboarding`):
 
 ```
 0 NEW_OR_RETURNING      5 RETURNING_PLAN_LOOKUP   10 COLLECT_NAME      15 CONFIRM_BOOKING
