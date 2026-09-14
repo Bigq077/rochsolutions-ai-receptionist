@@ -38,7 +38,7 @@ State the branch and sha in the verdict. A rate without them is unreproducible.
 
 | Gate | Command | Cost | Use when |
 |---|---|---|---|
-| **Replay** | `python -m app.obs.regress` | free, seconds | Always. Every change. |
+| **Corpus lint** | `python -m app.obs.regress` | free, seconds | Cheap sanity. **Not a regression gate — see caveats.** |
 | **Scenario** | `python tests/auto/run_tests.py --scenario 4.1` | ~1 call | A specific reproduced defect |
 | **Phase** | `python tests/auto/run_tests.py --phase 8` | ~5-10 calls | A change scoped to one journey |
 | **Booking E2E** | `python tests/auto/run_tests.py --quick` | Phase 8 only | Any change touching booking |
@@ -52,8 +52,15 @@ defect is in the phone path itself.
 `--preflight` validates API keys and infrastructure without placing any call.
 Run it first when a suite run fails in a way that smells like configuration.
 
-**Always run the replay gate**, even when you also run a suite gate. It is free,
-takes seconds, and it is the only one that checks defects mined from real calls.
+**A mined scenario is only re-driven by the live suite.** To actually replay a
+real call against current code, run it as a scenario:
+
+```bash
+python tests/auto/run_tests.py --scenario regression_<id>
+```
+
+That uses the scenario's `responses` (the caller's turns) to drive the flow.
+`app.obs.regress` does not — see the caveats.
 
 ## Step 3 — Run it
 
@@ -88,7 +95,7 @@ Gate:     phase 8 (5 scenarios, direct-WS)
 Result:   5/5 = 100%
 Bar:      97%
 Verdict:  PASS
-Replay:   python -m app.obs.regress — 12/12 assertions, exit 0
+Corpus:   python -m app.obs.regress — 60/60, exit 0 (lint only, not a gate)
 ```
 
 Failing shape:
@@ -111,15 +118,22 @@ slot tests" is how a missed booking ships.
 
 ## Caveats that change the verdict
 
-- **The replay gate is currently near-vacuous — do not read its green as
-  coverage.** Measured 2026-09-14: all **60** mined scenarios carry the identical
+- **`app.obs.regress` cannot detect a code regression. Verified 2026-09-14.**
+  It imports no `app` code at all and `check_scenario()` reads only the
+  scenario's frozen `transcript` — never its `responses`. Its result is a pure
+  function of the scenario files: editing a stored transcript flips it to FAIL,
+  while changing engine code cannot change it at all. It is a **lint over a
+  recorded corpus**, not a regression runner, despite its docstring. Never report
+  a green `regress` as evidence a fix works.
+- **And what it lints is currently near-vacuous.** Measured 2026-09-14: all
+  **60** mined scenarios carry the identical
   placeholder `expected: {'no_technical_error': True}`. Every one was mined from
   a real call scored 1 or 2, collectively tagged `booking_error` ×47, `loop` ×47,
   `dead_end` ×45, `wrong_info` ×22, `hallucination` ×13 — and **none of those
   defects is asserted**. "OK: all 60 regression scenario(s) pass" currently means
   only that Susie never said "technical issue" in 60 recorded transcripts.
-  Sharpening those `expected` blocks is outstanding work; until it is done, treat
-  a green replay as "no crash", not "no regression".
+  Sharpening those `expected` blocks is outstanding work — but note that even
+  sharpened, they would only assert properties of the stored text.
 - **`regress.py` can only assert against transcript TEXT.** Its
   `_DETERMINISTIC_KEYS` are `no_technical_error`, `not_said`,
   `greeting_contains` / `_not_contains`, `first_susie_turn_contains` /
@@ -138,4 +152,5 @@ slot tests" is how a missed booking ships.
 
 - A rate, a bar, and a verdict — in that order, with branch and sha.
 - Every failure named with its earliest failing check.
-- The replay gate was run, whatever else was.
+- The verdict rests on a gate that actually executes engine code — a scenario,
+  a phase, or the full suite. `app.obs.regress` alone is never sufficient.

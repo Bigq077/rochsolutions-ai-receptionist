@@ -134,20 +134,21 @@ python -c "import app.media_streams.flow, app.media_streams.connection"
 
 ## Step 8 — Prove it
 
-Fastest loop first — offline, free, exits non-zero on any failed assertion, and
-what `run_tests.py --ci` delegates to:
+Re-drive the reproduction against your changed code:
 
 ```bash
-python -m app.obs.regress
+python tests/auto/run_tests.py --scenario <id>    # then the surrounding phase
 ```
+
+**`python -m app.obs.regress` does not do this.** Verified 2026-09-14: it imports
+no `app` code and reads only each scenario's frozen `transcript`, so its result
+cannot change when engine code changes. It lints the recorded corpus; it does not
+prove a fix. Run it if you like, but never cite it as evidence.
 
 Then: the step 2 reproduction passes; a regression test is committed (a mined
 scenario counts, and beats a hand-written one — it is the real call); the
 surrounding phase still passes. Trading one bug for another is the documented
 failure mode in timing code.
-
-`regress.py` checks only **deterministic** assertions; LLM-judged ones stay the
-live suite's job. If the fix hinges on one, say the offline pass does not cover it.
 
 State what you ran and what it returned. "Looks right" is not proof.
 

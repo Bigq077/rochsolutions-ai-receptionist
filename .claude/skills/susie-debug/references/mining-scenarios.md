@@ -12,9 +12,12 @@ Available on `origin/latency-eval` (the full 22-module `app/obs/`). Not on
 ## The loop
 
 ```bash
-python -m app.obs.to_scenario <call_sid>      # mine it
-python -m app.obs.regress                     # replay offline, free
+python -m app.obs.to_scenario <call_sid>              # mine it
+python tests/auto/run_tests.py --scenario <id>        # re-drive it against the code
 ```
+
+`python -m app.obs.regress` is **not** the replay step. See "What regress.py
+actually does" below.
 
 `to_scenario` writes into `tests/auto/scenarios/regressions/` by default
 (`--out` to change, `--force` to overwrite).
@@ -48,11 +51,8 @@ later, and what stops the bug returning.
   with a hard assertion that nothing survives. Do not weaken it, and do not paste
   raw transcript text into a commit message, an issue, or a report — the mined
   module is the sanctioned artefact.
-- **`regress.py` checks only deterministic assertions.** LLM-judged ones are
-  reported, not failed, and stay the live suite's job. If your fix hinges on a
-  judged assertion, say plainly that the offline pass does not cover it.
-- Offline replay uses no live server and no Claude call, so it is free and runs
-  in CI — `python tests/auto/run_tests.py --ci` delegates to it.
+- **LLM-judged assertions are the live suite's job.** If your fix hinges on one,
+  say plainly that no offline check covers it.
 
 ## Why this matters here
 
@@ -65,3 +65,26 @@ A mined scenario also cannot go **stale** in the way a hand-written one can — 
 is a recording, not an assumption about what the flow asks. When a hand-written
 scenario asserts a question `BOOKING_FLOW` no longer contains, that is a test
 bug; a mined scenario simply replays what happened.
+
+## What `regress.py` actually does
+
+Verified 2026-09-14, because the docstring oversells it.
+
+`app/obs/regress.py` imports **no `app` code whatsoever**, and `check_scenario()`
+reads only the scenario's frozen `transcript` — never its `responses`. So its
+result is a pure function of the scenario files:
+
+- editing a stored transcript flips it to FAIL (confirmed empirically);
+- changing engine code **cannot change its result at all**.
+
+It is a **lint over a recorded corpus** — useful for catching a banned phrase or
+a malformed scenario, worthless as proof that a fix works. Its docstring calls
+itself an "offline regression runner" and points at `run_tests.py --ci`, a flag
+that does not exist on this branch.
+
+**To actually re-drive a mined call against current code**, run it through the
+live suite, which uses `responses` to drive the flow:
+
+```bash
+python tests/auto/run_tests.py --scenario <scenario id>
+```
