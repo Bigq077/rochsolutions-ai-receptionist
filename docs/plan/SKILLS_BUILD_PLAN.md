@@ -16,13 +16,19 @@ skill does not remove a job from your plate, it does not belong on this list.
 
 | Skill | Replaces | Status |
 |---|---|---|
-| `susie-triage` | QA lead — "what is systematically wrong?" | **build first** |
-| `susie-debug` | engineer — "fix this one bug properly" | drafted, needs references |
-| `verify-call` | QA tester — "prove it works" | blocked on suite |
-| `onboard-clinic` | implementation specialist | blocked on tenancy |
-| `clinic-report` | account manager | blocked on obs |
-| `deliverable-pack` | marketing/content | independent, low risk |
-| *(existing)* `engineering:incident-response` | ops on-call | **wire in now, don't build** |
+| `susie-triage` | QA lead — "what is systematically wrong?" | ✅ **built** — reads suite results *and* live obs calls |
+| `susie-debug` | engineer — "fix this one bug properly" | ✅ **built** — SKILL.md + 5 references |
+| `verify-call` | QA tester — "prove it works" | ✅ **built** |
+| `onboard-clinic` | implementation specialist | blocked on tenancy — after the webinar |
+| `clinic-report` | account manager | next buildable; obs capture is on |
+| `deliverable-pack` | marketing/content | independent — belongs in `roch-client-work` |
+| *(existing)* `engineering:incident-response` | ops on-call | ❌ **not installed.** `docs/INCIDENT.md` written instead |
+
+> **Status updated 2026-09-14.** Build-order items 1–5 are done. Corrections
+> found while building are in §13 — several contradict this document, and the
+> code won.
+
+
 
 ---
 
@@ -352,3 +358,60 @@ These change the plan and are still unanswered:
 3. **Has the canonical branch been settled?** `susie-debug` currently says
    "land it on the canonical branch." If ADR-002 is still open, that instruction
    has no referent and the skill will be as lost as a new hire would be.
+
+---
+
+## 13. Corrections found while building (2026-09-14)
+
+Recorded here because several contradict the plan above. Where they disagree,
+these were measured.
+
+**1. `susie-debug/SKILL.md` did not exist.** §4 says a first version exists and
+must not be rewritten. Nothing by that name was on disk; it was built from the
+flow drafted in §4.
+
+**2. `engineering:incident-response` and `twilio-developer-kit` are not
+installed.** §9 calls incident-response "the highest-risk gap… it needs no
+building — the skill is installed." `docs/INCIDENT.md` was written from scratch.
+
+**3. `app/obs/` already contained half of what this plan proposes**, and §2's own
+"orchestrate, don't reimplement" principle was not applied to it. `weekly.py` is
+the Monday ritual; `to_scenario.py` mines a PII-free regression scenario from a
+real call; `judge.py` already scores and tags. `susie-triage` now wraps
+`weekly.py` rather than duplicating it, and `susie-debug` mines from real calls.
+
+**4. `booking_confirmed` does not mean a booking exists.** It is set in `flow.py`
+where the confirmation *sentence* is composed, not where the calendar write
+succeeds. The transcript then reads as a perfect call, so the judge scores it
+5/5 and `tests/auto/evaluator.py` — which calls that field "the authoritative
+source" — passes it. Detected retrospectively by `susie-triage --obs`
+(`PHANTOM_BOOKING`) and live by the new `booking_not_written` alert.
+
+**5. Clinics differ in whether a booking id exists at all.** Theorem is Acuity,
+Vital Edge is Google Calendar, Joint Venture and Northgate are Carepatron portal
+handoffs that store **no id**. Booking integrity is therefore unverifiable from
+the call record for two of the four clinics. That gap is open.
+
+**6. The offline regression gate is worth nothing as a regression signal.**
+`app/obs/regress.py` imports no `app` code and reads only each scenario's frozen
+`transcript`, so no code change can alter its result — it is a lint over a
+recorded corpus. Compounding it, all 60 mined scenarios carry the identical
+placeholder `expected: {'no_technical_error': True}` while being tagged
+`booking_error` ×47, `loop` ×47, `dead_end` ×45. "All 60 pass" means only that
+Susie never said "technical issue" in 60 stored transcripts.
+
+**7. The `verify-call` gate in §5 is achievable now.** §10 blocks it on "the
+suite running green", but the credentials, the runner and a direct-WS mode that
+costs nothing are all present. It was built.
+
+## 14. Open work, in priority order
+
+1. **Run `susie-triage --obs` against the live store.** Needs `OBS_DATABASE_URL`.
+   Nothing has ever looked for `PHANTOM_BOOKING`; any hit is a patient to phone.
+2. **Fill the nine `FILL:` blanks in `docs/INCIDENT.md`** — on-call number,
+   Render service names and branches, clinic contact names.
+3. **Sharpen the 60 mined `expected` blocks**, and decide whether the offline
+   gate should drive `responses` through the flow instead of asserting frozen
+   text. Today it cannot catch a regression.
+4. **Close the Carepatron booking-integrity gap** (correction 5).
+5. `clinic-report`, then `onboard-clinic` after the webinar.
