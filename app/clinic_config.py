@@ -1602,6 +1602,13 @@ def _map_json_to_clinic_contract(loaded: Dict[str, Any]) -> Dict[str, Any]:
     # least 2 hours". The generated readers (Google, diary) apply it; the
     # Acuity reader has hardcoded the same 2 h since before this key existed.
     clinic["min_notice_minutes"] = max(120, int(op.get("min_notice_minutes") or 120))
+    # Whether follow-up texts are QUEUED for this clinic: the 2 h name nudge,
+    # the 24 h / 2 h appointment reminders and the home-visit address nudge.
+    # The booking confirmation text is not a reminder and is unaffected. Gated
+    # at schedule time because the reminder queues are GLOBAL on shared Redis:
+    # a demo nudge queued by the demo service can be sent by a clinic worker
+    # with SMS on. Owner, 14 Sep 2026: off for the demo tenant (northgate).
+    clinic["sms_reminders_enabled"] = bool(op.get("sms_reminders_enabled", True))
     # D2. How much of the diary this clinic SPEAKS: max_days,
     # times_per_day_multi, times_single_day. Absent means "the engine
     # defaults", which is where all four clinics are today -- see

@@ -79,6 +79,8 @@
  "operational": {
   "_note": "Flattened by get_clinic into the legacy clinic contract. working_hours end = last_appointment + slot_minutes so the last slot stays bookable (is_within_working_hours uses start <= t < end).",
   "timezone": "Europe/London",
+  "_sms_reminders_enabled_note": "Owner, 14 Sep 2026: OFF for the demo tenant -- the name nudge, 24h/2h reminders and address nudge are wasted credits on test calls. Not queued at all, because the reminder queues are shared across services on one Redis. The booking confirmation text is unaffected. The three live clinics do not set this key and keep reminders.",
+  "sms_reminders_enabled": false,
   "sms_name": "Northgate Physio",
   "sms_appointment_noun": "physiotherapy",
   "phone": "+44 7366 263180",

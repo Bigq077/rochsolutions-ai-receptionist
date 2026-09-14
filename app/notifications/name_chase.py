@@ -224,6 +224,7 @@ async def start(
                 first_name=first,
                 from_number=twilio_number_for_clinic(clinic_id) if clinic_id else None,
                 when_label=when_label or "",
+                clinic_id=clinic_id,
             )
         except Exception as e:  # pragma: no cover - never fails the booking
             logger.warning("[name_chase] nudge schedule failed (non-fatal): %r", e)

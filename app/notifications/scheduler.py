@@ -70,6 +70,27 @@ def _appointment_reminders_enabled() -> bool:
     )
 
 
+def _clinic_sends_reminders(clinic_id: Optional[str], kind: str) -> bool:
+    """Whether this clinic's follow-up texts may be QUEUED at all.
+
+    `operational.sms_reminders_enabled` (default true). Owner, 14 Sep 2026:
+    off for the demo tenant -- every demo call queued a name nudge, and the
+    queues are global on shared Redis, so a clinic worker with SMS on could
+    send it. Checked at schedule time for that reason. No clinic id, or an
+    unreadable config, keeps today's behaviour.
+    """
+    if not clinic_id:
+        return True
+    try:
+        from app.clinic_config import get_clinic
+        if get_clinic(clinic_id).get("sms_reminders_enabled", True):
+            return True
+    except Exception:
+        return True
+    logger.info("[reminders] %s not queued — sms_reminders_enabled is off for %s", kind, clinic_id)
+    return False
+
+
 # ============================================================================
 # REDIS KEYS
 # ============================================================================
@@ -128,6 +149,9 @@ async def schedule_appointment_reminders(
             "unaffected)",
             patient_phone,
         )
+        return False
+
+    if not _clinic_sends_reminders(clinic_id, "24hr/2hr appointment reminder"):
         return False
 
     if not REDIS_AVAILABLE:
@@ -646,6 +670,7 @@ async def schedule_name_confirm_reminder(
     delay_minutes: int = 120,
     from_number: Optional[str] = None,
     when_label: str = "",
+    clinic_id: str = "",
 ) -> None:
     """
     Schedule the ONE name follow-up SMS, delay_minutes from now.
@@ -656,6 +681,8 @@ async def schedule_name_confirm_reminder(
     Owner decision 13 Sep 2026: +2 h, not 30 min -- half an hour after hanging
     up reads as nagging -- and then stop. See notifications/name_chase.
     """
+    if not _clinic_sends_reminders(clinic_id, "name nudge"):
+        return
     from app.storage.redis_store import redis_client as _ar
     if not _ar:
         logger.warning("[NAME_REMINDER] Redis unavailable — cannot schedule nudge for %r", phone)
@@ -756,6 +783,8 @@ async def schedule_address_reminder(
     pinned from_number it would send from that worker's ambient
     TWILIO_PHONE_NUMBER and the reply would land on the wrong line and be lost.
     """
+    if not _clinic_sends_reminders(clinic_id, "home-visit address nudge"):
+        return
     from app.storage.redis_store import redis_client as _ar
     if not _ar:
         logger.warning("[ADDR_REMINDER] Redis unavailable — cannot schedule nudge for %r", phone)
