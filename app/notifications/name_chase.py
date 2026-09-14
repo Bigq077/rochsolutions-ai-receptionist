@@ -207,10 +207,13 @@ async def start(
             event_summary=event_summary or "",
             clinic_id=clinic_id,
             when_label=when_label or "",
+            # The whole booked name: CAb421b89c91 booked "Bowel Gardner", and
+            # replacing only "Bowel" would have made "<reply> Gardner".
+            placeholder=(patient_name or "").strip(),
         )
         logger.info(
             "[name_chase] opened: phone=%r provider=%s appt=%r placeholder=%r",
-            norm_phone, provider, appointment_id, first,
+            norm_phone, provider, appointment_id, (patient_name or "").strip(),
         )
         try:
             from app.clinic_config import twilio_number_for_clinic
@@ -251,7 +254,9 @@ async def apply_reply(pending: Dict[str, Any], first_name: str, last_name: str) 
                 logger.warning("[name_chase] no calendar tokens for %r", pending.get("clinic_id"))
                 return False
             new_summary = resolved_summary(
-                pending.get("event_summary") or "", pending.get("first_name") or "", full
+                pending.get("event_summary") or "",
+                pending.get("placeholder") or pending.get("first_name") or "",
+                full,
             )
             await _asyncio.to_thread(
                 update_event, toks, appointment_id, new_summary, None,

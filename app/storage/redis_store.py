@@ -317,9 +317,13 @@ async def create_pending_name_confirmation(
     event_summary: str = "",
     clinic_id: str = "",
     when_label: str = "",
+    placeholder: str = "",
 ) -> None:
     """
     Store a pending-name-confirmation record keyed by normalized phone.
+
+    `placeholder` is the WHOLE name as booked -- the text the reply replaces
+    in the calendar title. `first_name` stays the greeting token.
     Non-blocking: safe no-op if Redis is unavailable.
 
     `provider` says where the reply is written back to. The inbound handler
@@ -340,6 +344,7 @@ async def create_pending_name_confirmation(
         "event_summary": event_summary,
         "clinic_id": clinic_id,
         "when_label": when_label,
+        "placeholder": placeholder or first_name,
         "status": "pending",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "sms_reply_received": False,

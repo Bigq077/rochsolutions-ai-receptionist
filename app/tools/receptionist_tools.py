@@ -8401,34 +8401,43 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
     except Exception:
         logger.debug("[book] doubled-name check failed", exc_info=True)
 
-    # ── After a name exit, the booking carries the engine's name ───────────
+    # ── After a name exit, book only words the caller actually said ────────
     # CA5c7a273c47 (14 Sep 2026, demo, 962f1caf): Gate 5n-f exited with
-    # "Gardener" on record; the model booked "I've Gardener" out of "uh i've
-    # got bowel". The chase takes the FIRST token as its placeholder, so the
-    # caller's reply would have renamed the entry "<their name> Gardener".
-    # While the exit stands (the name collector drops
-    # needs_name_correction_sms when a real name is confirmed) the name on
-    # the booking is the engine's best effort, not the model's composition --
-    # the same rule D-s applies to the read-back.
+    # "Gardener"; the model booked "I've Gardener" out of "uh i've got bowel".
+    # CAb421b89c91 (1bf58a35): the model passed "Bowel Gardner" -- RIGHT, per
+    # the owner -- and a guard that always swapped in the engine's one word
+    # threw it away. While the exit stands (the name collector drops
+    # needs_name_correction_sms when a real name is confirmed) keep each word
+    # of the model's name that the caller said and that is not a filler word;
+    # if none survive, book the engine's best effort.
     try:
         _be_name = (session.get("_gate5n_best_effort_name") or "").strip()
         _arg_name = (args.get("patient_name") or "").strip()
-        if (
-            _be_name
-            and session.get("_gate5n_exited")
-            and session.get("needs_name_correction_sms")
-            and _arg_name.lower() != _be_name.lower()
-        ):
-            logger.warning(
-                "[book] name exit stands — model passed %r, booking the engine's "
-                "best-effort name %r. clinic=%s",
-                _arg_name[:40], _be_name, session.get("clinic_id"),
-            )
-            args["patient_name"] = _be_name
-            session["patient_name"] = _be_name
+        if _be_name and session.get("_gate5n_exited") and session.get("needs_name_correction_sms"):
+            from app.media_streams.turn_handler import _NOT_A_NAME_WORDS as _nn_words
+            _said = " ".join(
+                [session.get("_turn_user_text") or ""]
+                + [(_m.get("content") or "") for _m in (session.get("conversation_history") or [])
+                   if isinstance(_m, dict) and _m.get("role") == "user"]
+            ).lower()
+            _said_toks = set(re.findall(r"[a-z][a-z'\-]*", _said))
+            _kept = [
+                _t for _t in _arg_name.split()
+                if _t.strip(".,\"").lower() in _said_toks
+                and _t.strip(".,\"").lower() not in _nn_words
+            ]
+            _book_name = " ".join(_kept) if _kept else _be_name
+            if _book_name != _arg_name:
+                logger.warning(
+                    "[book] name exit stands — model passed %r, booking %r "
+                    "(words the caller said; else the best effort). clinic=%s",
+                    _arg_name[:40], _book_name, session.get("clinic_id"),
+                )
+            args["patient_name"] = _book_name
+            session["patient_name"] = _book_name
             _coll_be = session.get("collected")
             if isinstance(_coll_be, dict):
-                _coll_be["name"] = _be_name
+                _coll_be["name"] = _book_name
     except Exception:
         logger.debug("[book] name-exit check failed", exc_info=True)
 
