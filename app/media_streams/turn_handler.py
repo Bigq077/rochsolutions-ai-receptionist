@@ -442,7 +442,8 @@ home wrong right fine ok okay good all done that this it verbally again correct
 number incorrect nothing something anything else
 your our his her their pre appointment booking physio session gonna going
 here there visible news about just told said with for the and be am is was
-up down in on at to of""".split())
+up down in on at to of
+i i've i'm i'd i'll ive im ve got gotten have has had""".split())
 
 
 def _is_name_rejection(session: Dict[str, Any], caller: str) -> bool:
@@ -3142,7 +3143,16 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
             or ((session.get("collected") or {}).get("name") or "")
         ).strip()
         if not _nf_word:
-            _nf_word = (_best_effort_name_from_history(session) or "").lower()
+            # Nothing on record: the word from the caller's attempts, HELD
+            # from the first ask. CA95b498efb1 (14 Sep 2026, demo, 6e588f53):
+            # ask #1 held "gardener", the answer to it was "i've got bowel",
+            # the word was worked out again at ask #2 and "I've" went in the
+            # diary.
+            _nf_word = session.get("_gate5nf_word") or (
+                _best_effort_name_from_history(session) or ""
+            ).lower()
+            if _nf_word:
+                session["_gate5nf_word"] = _nf_word
         if _nf_word and not _nf_known_full:
             _nf_key = _nc_turn if _nc_turn is not None else _nc_user
             if session.get("_gate5nf_seen") != _nf_key:

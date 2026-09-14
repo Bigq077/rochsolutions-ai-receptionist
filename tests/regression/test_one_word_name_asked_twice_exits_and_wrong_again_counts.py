@@ -100,6 +100,27 @@ def test_it_counts_once_per_turn():
     assert s["_gate5nf_asks"] == 1
 
 
+def test_the_exit_books_the_word_held_at_ask_one_not_the_latest_attempt():
+    """CA95b498efb1 (14 Sep 2026, demo, 6e588f53): "I've" went in the diary."""
+    s = _s()
+    _turn(s, "uh gardener", "Thanks, got that — could I take your first name as well?")
+    assert s["_gate5nf_word"] == "gardener"
+    _turn(s, "i've got bowel", "Did you say Ivor Bowel — is that right?")
+    out = _turn(s, "no that's not no that's not right i said i got bowel",
+                "I'm sorry about that — could you say your first name again for me?")
+    assert out.startswith(_GATE5N_EXIT_LINE), out
+    assert s["patient_name"] == "Gardener"
+    assert s["_gate5n_best_effort_name"] == "Gardener"
+
+
+def test_a_pronoun_contraction_is_never_the_best_effort_name():
+    from app.media_streams.turn_handler import _best_effort_name_from_history
+    for said in ("i've got bowel", "i'm gardener", "uh ive got it"):
+        got = _best_effort_name_from_history({"_turn_user_text": said,
+                                              "conversation_history": []})
+        assert got.lower() not in {"i've", "i'm", "ive", "got"}, (said, got)
+
+
 # ── CA50437bb292: "wrong again" after a fresh read-back ─────────────────────
 
 def test_wrong_again_after_a_new_readback_counts_even_when_the_tail_is_the_number():
