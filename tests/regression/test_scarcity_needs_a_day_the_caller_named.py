@@ -144,7 +144,11 @@ def test_the_b97_refusal_is_untouched():
 
 def test_multiple_days_are_still_refused():
     days = _build_days_data(
-        _slots(_D_ONE, "09:00") + _slots("2026-09-08", "10:00")
+        # _D_TWO, not a literal: a hardcoded date here fell into the past and
+        # the working-hours filter dropped it, leaving ONE day — so "multiple
+        # days" quietly became a single day and the refusal stopped being
+        # tested. Same rot the module header describes; this line was missed.
+        _slots(_D_ONE, "09:00") + _slots(_D_TWO, "10:00")
     )
     assert _scarcity_claim_is_supported({"available_days": days}) is False
 

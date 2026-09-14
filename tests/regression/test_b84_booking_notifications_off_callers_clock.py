@@ -135,23 +135,24 @@ class _FakeBooking:
 
 
 def _future_start():
-    """A slot one week out, at 15:00 Europe/London.
+    """A 15:00 slot on the next day the clinic is actually OPEN.
 
     Relative, not absolute. This file originally pinned
     datetime(2026, 8, 25, 15, 0) — one day after it was written — and every test
     here that reaches the booking path began failing the moment that date passed,
     because _book_appointment_acuity correctly refuses "a slot in the past".
 
-    A permanently-red regression test is worse than no test: it trains everyone
-    to skim past red. Keep this relative.
-    """
-    from datetime import datetime, timedelta
-    from zoneinfo import ZoneInfo
+    Uses tests/harness/clinic_dates rather than a plain `today + 7`: a fixed
+    offset keeps today's weekday, so on a Saturday it would land on a day
+    Alcester is closed. That is the exact rot the harness was built for on
+    2 Sep, when 22 slot-layer tests went red without a line of code changing.
 
-    tz = ZoneInfo("Europe/London")
-    return (datetime.now(tz) + timedelta(days=7)).replace(
-        hour=15, minute=0, second=0, microsecond=0
-    )
+    A permanently-red regression test is worse than no test — it trains everyone
+    to skim past red.
+    """
+    from tests.harness.clinic_dates import london, open_weekday_base
+
+    return london(open_weekday_base(min_days_ahead=7), 15, 0)
 
 
 def _install_fake_booking(monkeypatch, *, owner_raises=False, gate=None, calls=None):
