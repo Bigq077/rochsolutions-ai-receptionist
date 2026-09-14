@@ -56,6 +56,23 @@ _FIELDS = (
     "endpoint_wait_ms",
 )
 
+# Fields whose WIRE name on the [LAT] line differs from the key TurnTiming
+# .as_record() stores them under. Rebuilding a line with the stored key would
+# emit "cache_read_tokens=..." where lat_parse looks for "cache_read=", so the
+# parser would find nothing and — as that test's docstring warns — not error,
+# just silently report less. These seven were absent from _FIELDS entirely,
+# which is why stored-call latency analysis carried no prompt-cache counters,
+# token counts, tool counts or inter-token timing while the live log lines did.
+_RENAMED_FIELDS = {
+    "cache_read":  "cache_read_tokens",
+    "cache_write": "cache_write_tokens",
+    "in_tok":      "prompt_input_tokens",
+    "tools":       "tool_calls",
+    "tok":         "token_count",
+    "last_tok_ms": "last_token_ms",
+    "max_gap_ms":  "max_inter_token_ms",
+}
+
 
 def _latency_of(row) -> dict | None:
     """The row's latency payload as a dict, whatever the driver handed back.
@@ -87,7 +104,12 @@ def _lat_lines(rows) -> tuple[list[str], int, int]:
             continue
         calls += 1
         for turn in turns:
-            kv = " ".join(f"{k}={turn.get(k, -1)}" for k in _FIELDS)
+            pairs = [f"{k}={turn.get(k, -1)}" for k in _FIELDS]
+            pairs += [
+                f"{wire}={turn.get(stored, -1)}"
+                for wire, stored in _RENAMED_FIELDS.items()
+            ]
+            kv = " ".join(pairs)
             lines.append(f"[LAT] {kv}\n")
     return lines, calls, skipped
 
