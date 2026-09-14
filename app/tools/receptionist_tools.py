@@ -8401,6 +8401,37 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
     except Exception:
         logger.debug("[book] doubled-name check failed", exc_info=True)
 
+    # ── After a name exit, the booking carries the engine's name ───────────
+    # CA5c7a273c47 (14 Sep 2026, demo, 962f1caf): Gate 5n-f exited with
+    # "Gardener" on record; the model booked "I've Gardener" out of "uh i've
+    # got bowel". The chase takes the FIRST token as its placeholder, so the
+    # caller's reply would have renamed the entry "<their name> Gardener".
+    # While the exit stands (the name collector drops
+    # needs_name_correction_sms when a real name is confirmed) the name on
+    # the booking is the engine's best effort, not the model's composition --
+    # the same rule D-s applies to the read-back.
+    try:
+        _be_name = (session.get("_gate5n_best_effort_name") or "").strip()
+        _arg_name = (args.get("patient_name") or "").strip()
+        if (
+            _be_name
+            and session.get("_gate5n_exited")
+            and session.get("needs_name_correction_sms")
+            and _arg_name.lower() != _be_name.lower()
+        ):
+            logger.warning(
+                "[book] name exit stands — model passed %r, booking the engine's "
+                "best-effort name %r. clinic=%s",
+                _arg_name[:40], _be_name, session.get("clinic_id"),
+            )
+            args["patient_name"] = _be_name
+            session["patient_name"] = _be_name
+            _coll_be = session.get("collected")
+            if isinstance(_coll_be, dict):
+                _coll_be["name"] = _be_name
+    except Exception:
+        logger.debug("[book] name-exit check failed", exc_info=True)
+
     # ── Surname read-back exposure — COUNTED, never blocked (§2.5) ──────────
     # Placed here for the same reason A3 is: above the backend branch, so all
     # four executors are covered by one site.
