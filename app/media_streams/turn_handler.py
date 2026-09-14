@@ -1435,8 +1435,26 @@ _CALLBACK_RETRACT_RE = re.compile(
     re.IGNORECASE,
 )
 _FALSE_CALLBACK_RESTEER = (
-    "One moment — I'll get that logged for Jonathan now."
+    "One moment — I'll get that logged for {practitioner} now."
 )
+
+
+def _false_callback_resteer(session: Dict[str, Any]) -> str:
+    """The re-steer line with THIS clinic's practitioner in it.
+
+    CA66bd0930 (14 Sep 2026, JV): the line was hard-coded to Jonathan --
+    Vital Edge's practitioner -- and a JV caller heard it. Since 2 Sep every
+    clinic runs the same commit, so a name in engine code is every clinic's
+    name. Read from clinic.json like the hold-speech heads do; a clinic with
+    no single named practitioner (Theorem) gets "the team". Never raises.
+    """
+    name = ""
+    try:
+        from app.clinic_config import get_clinic
+        name = str((get_clinic(session.get("clinic_id")) or {}).get("practitioner") or "").strip()
+    except Exception:
+        name = ""
+    return _FALSE_CALLBACK_RESTEER.replace("{practitioner}", name or "the team")
 
 
 def _false_callback_promise(text: str) -> bool:
@@ -1480,17 +1498,83 @@ def _apply_callback_promise_gate(text: str, session: Dict[str, Any]) -> str:
     )
     if not session.get("_callback_promise_resteered"):
         session["_callback_promise_resteered"] = True
+        # Read by CALL STATE (clinic_template_prompt._b7_call_state) until a
+        # request_callback write confirms: the model told the caller it would
+        # log this NOW, and on CA66bd0930 nothing followed the promise.
+        session["_callback_promise_outstanding"] = True
         logger.error(
             "[ms_gate5cb] false callback promise with no confirmed write — "
             "re-steering: %r",
             text[:80],
         )
-        return _FALSE_CALLBACK_RESTEER
+        return _false_callback_resteer(session)
     logger.error(
         "[ms_gate5cb] additional false callback promise dropped: %r",
         text[:80],
     )
     return ""
+
+
+# ── Gate 5ins: the insurer question needs the caller to have raised insurance ──
+# CA66bd0930 (14 Sep 2026, JV). Asked "Anything else?", the caller said "yes I
+# am a private patient"; the model heard "insured" and asked "which insurer are
+# you with?". A private patient in UK physio is a self-payer. Owner, 14 Sep:
+# the insurer question is never asked unless the caller brings insurance up --
+# "insurance", "insurer", "cover", "claim", or a named insurer. "Private
+# patient" / "self-funding" / "paying myself" is self-pay: acknowledge and move
+# on. The prompt now says so too (clinic_template_prompt, INSURANCE PROTOCOL);
+# this is the engine half, keyed on the caller's OWN words this turn.
+_INSURANCE_RAISED_RE = re.compile(
+    r"\b(?:insur\w*|cover(?:ed|age)?|claim\w*|policy|pre-?auth\w*|"
+    r"bupa|aviva|axa|vitality|wpa|cigna|allianz|healix|simplyhealth|"
+    r"medicash|benenden|through (?:my )?work|company scheme)\b",
+    re.IGNORECASE,
+)
+_INSURER_QUESTION_RE = re.compile(
+    r"[^.!?]*\b(?:which|what|who)\b[^.!?]*\b(?:insurer|insurance (?:company|provider)|"
+    r"provider are you with|are you insured with|insured with)\b[^.!?]*\?",
+    re.IGNORECASE,
+)
+
+
+_INSURER_GATE_RESIDUE = "No problem at all — is there anything else I can help with?"
+
+
+def _caller_raised_insurance(session: Dict[str, Any]) -> bool:
+    """Did the caller's OWN words, this turn or earlier, bring insurance up?"""
+    if _INSURANCE_RAISED_RE.search(session.get("_turn_user_text") or ""):
+        return True
+    for _m in (session.get("conversation_history") or [])[-12:]:
+        if (
+            isinstance(_m, dict)
+            and _m.get("role") == "user"
+            and _INSURANCE_RAISED_RE.search(str(_m.get("content") or ""))
+        ):
+            return True
+    return False
+
+
+def _apply_insurer_question_gate(text: str, session: Dict[str, Any]) -> str:
+    """Gate 5ins: strip "which insurer are you with?" unless the caller
+    raised insurance. Never raises; identity when nothing matches."""
+    if not text or not _INSURER_QUESTION_RE.search(text):
+        return text
+    if _caller_raised_insurance(session):
+        return text
+    cleaned = _INSURER_QUESTION_RE.sub(" ", text)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -,—")
+    if "?" not in cleaned and not session.get("_gate5ins_substituted"):
+        # The strip removed the only thing this turn asked. "Private patient"
+        # is self-pay: acknowledge it and hand the turn back, never dead air.
+        # Once per turn — sanitise_response runs per streamed chunk.
+        session["_gate5ins_substituted"] = True
+        cleaned = f"{cleaned} {_INSURER_GATE_RESIDUE}".strip()
+    logger.info(
+        "[ms_gate5ins] insurer question removed — the caller never mentioned "
+        "insurance (turn=%r): %r → %r",
+        (session.get("_turn_user_text") or "")[:40], text[:80], cleaned[:80],
+    )
+    return cleaned
 
 
 # Gate 5f — false-confirmation guard (P1 #5 / F-023 / B-36 cause 2)
@@ -3556,6 +3640,7 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     result = _apply_callback_promise_gate(result, session)
     if not result:
         return ""
+    result = _apply_insurer_question_gate(result, session)
 
     # ── Gate 5f: false-confirmation guard (P1 #5 / F-023 / B-36) ─────────────
     # A chunk that CLAIMS a write is done, on a turn where that write was

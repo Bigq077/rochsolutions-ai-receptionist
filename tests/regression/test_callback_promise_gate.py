@@ -13,7 +13,7 @@ Pins:
 from __future__ import annotations
 
 from app.media_streams.turn_handler import (
-    _FALSE_CALLBACK_RESTEER,
+    _false_callback_resteer,
     _apply_callback_promise_gate,
     _false_callback_promise,
     sanitise_response,
@@ -44,7 +44,7 @@ def test_unconfirmed_promise_is_resteered():
         "I've passed that on to Jonathan — he'll be in touch with you directly.",
         session,
     )
-    assert out == _FALSE_CALLBACK_RESTEER
+    assert out == _false_callback_resteer(session)
     assert session.get("_callback_promise_resteered") is True
 
 
@@ -81,4 +81,4 @@ def test_sanitise_wires_the_gate():
         "I've passed that on to Jonathan — he'll be in touch with you directly.",
         session,
     )
-    assert out == _FALSE_CALLBACK_RESTEER
+    assert out == _false_callback_resteer(session)

@@ -1317,6 +1317,19 @@ def _render_insurance(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
            "OVERRIDES any shorter insurance line in the FAQ. Do NOT summarise it "
            "away: every time a caller mentions insurance you must carry out ALL "
            "of the steps below, not just confirm that you accept it."]
+    # "Mentions insurance" was undefined, so on CA66bd0930 (14 Sep 2026, JV)
+    # "yes I am a private patient" was read as "insured" and the caller was
+    # asked which insurer they were with. Owner, 14 Sep: a private patient in
+    # UK physio is a SELF-PAYER; the insurer question is never asked unless the
+    # caller brings insurance up in their own words.
+    out.append(
+        "A caller 'mentions insurance' ONLY when their own words include "
+        "insurance / insurer / cover / claim / policy or a named insurer (Bupa, "
+        "Aviva, AXA, Vitality, WPA, Cigna …). 'Private patient', 'self-funding', "
+        "'paying myself' mean SELF-PAY — acknowledge it and move on; do NOT ask "
+        "which insurer they are with, and never ask that question on your own "
+        "initiative."
+    )
     if steps:
         out.append("When a caller mentions insurance:")
         for i, s in enumerate(steps, 1):
@@ -1332,6 +1345,18 @@ def _render_insurance(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
         "followup_note to book_appointment summarising it (e.g. 'INSURANCE: "
         "Aviva — wants to use private insurance; collect pre-auth and confirm "
         f"cover') so {tk['practitioner']} is pinged automatically."
+    )
+    # The only recording path above is book_appointment's followup_note. When
+    # the insurer comes up AFTER the booking is made there is no booking left
+    # to attach it to: on CA66bd0930 the model re-called book_appointment (blocked)
+    # and the caller was told twice it was passed on when nothing was.
+    out.append(
+        "If insurance comes up AFTER the appointment is already booked, do NOT "
+        "call book_appointment again. Call request_callback with the caller's "
+        "name, number and notes='INSURANCE: <insurer> — appointment <day and "
+        f"time>; collect pre-auth and confirm cover' so {tk['practitioner']} is "
+        "pinged, and only THEN say it is noted. Never say it has been passed on "
+        "before request_callback returns success."
     )
     return "\n".join(out)
 
@@ -3618,6 +3643,22 @@ def _b7_call_state(session: Dict[str, Any], clinic: Dict[str, Any], tk: Dict[str
         _nm_steer = ""
     if _nm_steer:
         state.append(_nm_steer)
+
+    # A PROMISE TO LOG SOMETHING, NOT YET LOGGED. Gate 5cb replaced a false
+    # "passed that on" with "I'll get that logged now" (turn_handler) — and on
+    # CA66bd0930 (14 Sep 2026, JV) nothing followed it: no tool call, no text
+    # to the practitioner, the caller told twice their insurer was passed on.
+    # Cleared the moment a callback write is confirmed.
+    if session.get("_callback_promise_outstanding") and not session.get(
+        "callback_write_confirmed"
+    ):
+        state.append(
+            "YOU TOLD THE CALLER YOU WOULD LOG THEIR REQUEST FOR "
+            f"{tk.get('practitioner') or 'the practitioner'} NOW AND IT IS NOT "
+            "LOGGED. Before anything else, call request_callback with their "
+            "name, number and what they asked for. Do not say it has been "
+            "passed on until that returns success"
+        )
 
     return ("CALL STATE: " + "; ".join(state)) if state else ""
 

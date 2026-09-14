@@ -1914,7 +1914,11 @@ _WRITE_ALREADY_DONE_RULE = {
         "further attempt did not go through and does not undo it. Do not "
         "apologise, do not tell the caller anything failed, and do not tell "
         "them anything about the state of their appointments that you have not "
-        "been told. If they are saying goodbye, simply say goodbye."
+        "been told. If you were trying to ADD something to that booking — an "
+        "insurer, a note for the practitioner — call request_callback with the "
+        "caller's name, number and the note instead; that is how it reaches "
+        "the practitioner, and you may say it is noted only after it succeeds. "
+        "If they are saying goodbye, simply say goodbye."
     ),
     WRITE_FAMILY_RESCHEDULE: (
         "A reschedule already completed successfully earlier on this call. "

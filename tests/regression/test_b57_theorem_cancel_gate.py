@@ -488,7 +488,14 @@ UNMOVED_PROMPTS = {
     # fe81ed47671f4203 -> 223bab69ee898a60 (vital_edge). One sentence added to
     # the name rules: the caller is always right about their own name (CA3a0f1e49:
     # "that's exactly what I said"). Theorem and demo hashed identical either side.
-    "jv_v1": "10b38f51029c620f",
+    # Re-pinned 2026-09-14 (evening), 10b38f51029c620f -> d0f6425c9e435737
+    # (jv_v1 only). INSURANCE PROTOCOL: what "mentions insurance" MEANS
+    # (trigger words; "private patient" = self-pay), and the post-booking
+    # path -- request_callback, not a second book_appointment. CA66bd0930,
+    # OPEN_DEFECTS_2026-09-14 #3/#3b. Only clinics with an insurance block
+    # and steps reach it: vital_edge, theorem and demo hashed identical
+    # either side.
+    "jv_v1": "d0f6425c9e435737",
     "theorem": "8565be9a48a7a9aa",
     # Moved 2026-08-10, deliberately: d5d26ee076213608 -> 31dcedf2fd28f98e.
     # Ported from theorem-onboarding 4896fe2. theorem_v3 gained the "NEVER CALL

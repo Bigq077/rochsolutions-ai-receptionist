@@ -7673,14 +7673,17 @@ async def _check_availability_published(
         except Exception as e:
             logger.warning("_check_availability_published: bad after_date=%r — ignoring: %r", after_date_str, e)
     if w_start > horizon:
+        # The practitioner is named to the caller from this message -- from
+        # clinic.json, never engine code (OPEN_DEFECTS_2026-09-14 #2).
+        _prac = str(clinic.get("practitioner") or "").strip() or "the practitioner"
         return {
             "error": "beyond_booking_horizon",
             "message": (
-                f"That date is more than {days_ahead} days away. Jonathan only "
-                "releases his availability about two weeks ahead, so you can only "
+                f"That date is more than {days_ahead} days away. {_prac} only "
+                "releases availability about two weeks ahead, so you can only "
                 "offer bookings up to roughly a fortnight from today. Explain this "
                 "to the caller, and offer to take their details (add_to_waitlist) "
-                "so Jonathan can be in touch when he opens up later dates. Do NOT "
+                f"so {_prac} can be in touch when later dates open up. Do NOT "
                 "offer any slot beyond the two-week horizon."
             ),
             "slots": [],
