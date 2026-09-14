@@ -44,6 +44,7 @@ _CONDITION_SPECS: Dict[str, Dict[str, Any]] = {
     "booking_api_error":        {"severity": "high",     "cadence": IMMEDIATE, "channels": ("sms", "slack")},
     "no_audio_call":            {"severity": "high",     "cadence": IMMEDIATE, "channels": ("sms", "slack")},
     "escalation_not_delivered": {"severity": "critical", "cadence": IMMEDIATE, "channels": ("sms", "slack")},
+    "booking_not_written":      {"severity": "critical", "cadence": IMMEDIATE, "channels": ("sms", "slack")},
     "abandoned_call":           {"severity": "medium",   "cadence": IMMEDIATE, "channels": ("sms", "slack")},
     "short_call":               {"severity": "medium",   "cadence": DAILY,     "channels": ("rollup",)},
     "retry_storm":              {"severity": "medium",   "cadence": DAILY,     "channels": ("rollup",)},
@@ -94,6 +95,49 @@ def _capture_message(message: str, level: str = "error") -> None:
 # Evaluation (pure, testable)
 # ---------------------------------------------------------------------------
 
+# Booking systems that hand back an id we can check a confirmation against.
+# A clinic booking through a portal handoff (Carepatron today) legitimately
+# finishes a call with no id, so it must never trigger booking_not_written.
+_ID_BACKED_BOOKING_SYSTEMS = ("acuity", "google calendar")
+
+_CALENDAR_BACKED_CACHE: Dict[str, bool] = {}
+
+
+def calendar_backed(clinic_id: Optional[str]) -> bool:
+    """True when this clinic's booking system returns a durable booking id.
+
+    Read from clinic.json rather than clinic_config.get_clinic(), because the
+    contract mapping drops booking.system for some clinics (theorem, the live
+    Acuity site, reads back None) and a false negative here would silence the
+    alert for exactly the clinic that most needs it.
+
+    Fails CLOSED to False: an unknown clinic never alerts. A missed alert is
+    recoverable by the weekly --obs triage; a false critical SMS on every
+    successful booking would get the whole channel muted.
+    """
+    if not clinic_id:
+        return False
+    if clinic_id in _CALENDAR_BACKED_CACHE:
+        return _CALENDAR_BACKED_CACHE[clinic_id]
+
+    backed = False
+    try:
+        import json
+        from pathlib import Path as _Path
+
+        cfg = _Path(__file__).resolve().parents[1] / "clinics" / clinic_id / "clinic.json"
+        if cfg.is_file():
+            data = json.loads(cfg.read_text(encoding="utf-8-sig"))
+            system = str(((data.get("booking") or {}) or {}).get("system") or "").lower()
+            backed = any(s in system for s in _ID_BACKED_BOOKING_SYSTEMS)
+    except Exception as exc:  # pragma: no cover - config shape is the risk, not IO
+        _log.warning("[obs.alerts] calendar_backed(%s) failed: %r", clinic_id, exc)
+        backed = False
+
+    _CALENDAR_BACKED_CACHE[clinic_id] = backed
+    return backed
+
+
 def _max_retries(record: Dict[str, Any]) -> int:
     counts = record.get("slot_retry_counts") or {}
     try:
@@ -127,6 +171,21 @@ def evaluate_call(record: Dict[str, Any], signals: Optional[Dict[str, Any]] = No
         fired.append("booking_api_error")
     if record.get("transfer_attempted") and s.get("transfer_sms_failed"):
         fired.append("escalation_not_delivered")
+    # Susie told the caller they were booked, but no calendar id came back.
+    # booking_confirmed is set where the confirmation SENTENCE is composed
+    # (flow.py CONFIRM_BOOKING), not where the write succeeds, so the two can
+    # disagree - and 127 broad excepts in receptionist_tools.py can swallow the
+    # failure in between. Nothing else notices: the transcript reads as a clean
+    # booking, so the judge scores it well and booking_api_error needs an
+    # explicitly raised calendar_error that never survived the except.
+    # Gated on calendar_backed() so portal-handoff clinics never trip it.
+    if (
+        record.get("booking_confirmed")
+        and not record.get("acuity_booking_id")
+        and not record.get("calendar_event_id")
+        and s.get("calendar_write_expected")
+    ):
+        fired.append("booking_not_written")
     # Record-level backstop for ghost calls: turn_count==0 means the caller never
     # produced a transcribed exchange at all. Normally no_audio_close (above) already
     # caught this via the 10s safety net's own graceful-close leg — but that leg needs
@@ -166,6 +225,11 @@ def _build_alert(condition: str, record: Dict[str, Any]) -> Alert:
             f"[Susie] Dead-air call on {clinic} call {sid} — caller ({caller}) "
             f"heard Susie but nothing was ever transcribed "
             f"({record.get('duration_s')}s). Possible STT failure or muted caller.",
+        "booking_not_written":
+            f"[Susie] NO BOOKING WRITTEN on {clinic} call {sid}. Susie told "
+            f"{caller} they were booked but no calendar id came back - the "
+            f"appointment probably does not exist. Check the calendar and call "
+            f"them back.",
         "escalation_not_delivered":
             f"[Susie] ESCALATION NOT DELIVERED on {clinic} call {sid}. A caller "
             f"({caller}) asked for a human but the alert SMS failed. Please call them back.",
@@ -283,6 +347,7 @@ def _signals_from_session(session: Dict[str, Any]) -> Dict[str, Any]:
         "tts_error": session.get("tts_error") or session.get("tts_failed"),
         "no_audio_close": session.get("no_audio_close"),
         "calendar_error": session.get("calendar_error"),
+        "calendar_write_expected": calendar_backed(session.get("clinic_id")),
         "transfer_sms_failed": session.get("transfer_sms_failed"),
     }
 

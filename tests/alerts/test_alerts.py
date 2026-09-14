@@ -141,3 +141,79 @@ async def test_flush_noop_when_empty(alerts_enabled, mock_sms):
 def test_capture_exception_is_safe_without_sentry():
     # Must not raise even though Sentry is not initialised in the test env.
     alerts.capture_exception(ValueError("boom"))
+
+
+# ---------------------------------------------------------------------------
+# booking_not_written — Susie said "you're booked", no calendar id came back
+#
+# The failure this guards is the one CLAUDE.md §6 puts first: a booking the
+# caller believes was made that does not exist. booking_confirmed is set where
+# the confirmation sentence is composed, not where the write succeeds, so the
+# two can disagree with nothing else noticing.
+# ---------------------------------------------------------------------------
+
+def _booked_no_id(**overrides):
+    fields = {
+        "booking_confirmed": True,
+        "acuity_booking_id": None,
+        "calendar_event_id": None,
+    }
+    fields.update(overrides)
+    return make_record(**fields)
+
+
+def test_booking_not_written_fires_when_no_id_on_calendar_clinic():
+    a = _only(_booked_no_id(), {"calendar_write_expected": True})
+    assert a.condition == "booking_not_written"
+    assert a.severity == "critical"
+    assert a.cadence == alerts.IMMEDIATE
+    assert "sms" in a.channels
+
+
+def test_booking_not_written_silent_when_acuity_id_present():
+    got = alerts.evaluate_call(
+        _booked_no_id(acuity_booking_id="ACU-123"), {"calendar_write_expected": True}
+    )
+    assert [x.condition for x in got] == []
+
+
+def test_booking_not_written_silent_when_calendar_event_id_present():
+    got = alerts.evaluate_call(
+        _booked_no_id(calendar_event_id="gcal-abc"), {"calendar_write_expected": True}
+    )
+    assert [x.condition for x in got] == []
+
+
+def test_booking_not_written_silent_for_portal_handoff_clinic():
+    """Carepatron clinics finish a real booking with no id — must never fire."""
+    got = alerts.evaluate_call(_booked_no_id(), {"calendar_write_expected": False})
+    assert [x.condition for x in got] == []
+
+
+def test_booking_not_written_silent_when_signal_absent():
+    """Fails closed: no signal means no alert, never a guess."""
+    got = alerts.evaluate_call(_booked_no_id(), {})
+    assert [x.condition for x in got] == []
+
+
+def test_booking_not_written_message_names_caller_and_clinic():
+    a = _only(_booked_no_id(), {"calendar_write_expected": True})
+    assert "+440000000000" in a.message
+    assert "theorem" in a.message
+
+
+# --- calendar_backed: which clinics expect a booking id --------------------
+
+def test_calendar_backed_true_for_acuity_and_google_clinics():
+    assert alerts.calendar_backed("theorem") is True      # Acuity Scheduling
+    assert alerts.calendar_backed("vital_edge") is True    # Google Calendar
+
+
+def test_calendar_backed_false_for_portal_handoff_clinics():
+    assert alerts.calendar_backed("jv_v1") is False        # Carepatron
+    assert alerts.calendar_backed("northgate") is False    # Carepatron
+
+
+def test_calendar_backed_fails_closed_on_unknown_clinic():
+    assert alerts.calendar_backed("no_such_clinic") is False
+    assert alerts.calendar_backed(None) is False
