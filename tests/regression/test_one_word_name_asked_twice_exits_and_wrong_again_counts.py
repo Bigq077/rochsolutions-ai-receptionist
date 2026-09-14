@@ -100,40 +100,17 @@ def test_it_counts_once_per_turn():
     assert s["_gate5nf_asks"] == 1
 
 
-def test_the_exit_books_the_word_held_at_ask_one_not_the_latest_attempt():
-    """CA95b498efb1 (14 Sep 2026, demo, 6e588f53): "I've" went in the diary."""
+def test_the_exit_books_the_latest_attempt_never_a_pronoun():
+    """CA95b498efb1 (14 Sep 2026, demo, 6e588f53): "I've" went in the diary.
+    Owner (14 Sep): the caller's latest attempt is the best effort — on
+    CAb421b89c91 "Bowel" was right even though the read-back was rejected."""
     s = _s()
     _turn(s, "uh gardener", "Thanks, got that — could I take your first name as well?")
-    assert s["_gate5nf_word"] == "gardener"
     _turn(s, "i've got bowel", "Did you say Ivor Bowel — is that right?")
     out = _turn(s, "no that's not no that's not right i said i got bowel",
                 "I'm sorry about that — could you say your first name again for me?")
     assert out.startswith(_GATE5N_EXIT_LINE), out
-    assert s["patient_name"] == "Gardener"
-    assert s["_gate5n_best_effort_name"] == "Gardener"
-
-
-def test_a_two_rejection_exit_books_the_held_word_not_the_rejected_one():
-    """CAb421b89c91 (14 Sep 2026, demo, 1bf58a35): booked as the rejected "Bowel"."""
-    s = _s()
-    _turn(s, "um yeah so that would be um gardner", "Thanks, got that — and your first name?")
-    assert s["_gate5nf_word"] == "gardner"
-    _turn(s, "i've got bowel", "Did you say Bowe — is that right?")
-    _turn(s, "no that's not right i said i got bowel", "Sorry about that — did you say Bowel — is that right?")
-    out = _turn(s, "no that's not right i said i got bowel", "Sorry — did you say Bowel?")
-    assert out.startswith(_GATE5N_EXIT_LINE), out
-    assert s["patient_name"] == "Gardner"
-
-
-def test_a_held_word_that_was_itself_read_back_and_rejected_is_not_booked():
-    s = _s()
-    _turn(s, "god", "Thanks — and your first name?")
-    assert s["_gate5nf_word"] == "god"
-    _turn(s, "no my name is gardner", "Did you say God — is that right?")
-    out = _turn(s, "no that's wrong it's gardner", "Sorry — did you say God?")
-    assert out.startswith(_GATE5N_EXIT_LINE), out          # rejection #2
-    assert s["_gate5nf_word_rejected"] is True
-    assert s["patient_name"] == "Gardner"
+    assert s["patient_name"] == "Bowel"
 
 
 def test_a_pronoun_contraction_is_never_the_best_effort_name():
