@@ -6192,6 +6192,19 @@ def _sync_last_offered_to_spoken(
             session[LOSSY_SPOKEN_DAYS_KEY] = _lossy
 
 
+def _min_notice_start(clinic: Optional[Dict[str, Any]], now: datetime) -> datetime:
+    """The earliest a generated slot may start: now + the clinic's minimum
+    notice, never less than 2 hours (owner, 14 Sep 2026: "at least 2 hours").
+    CAd2747d0689 (demo) booked 15:30 on a call at 15:16; JV runs the same
+    Google reader with same-day slots allowed. Matches the Acuity reader's 2 h.
+    """
+    try:
+        _mins = int((clinic or {}).get("min_notice_minutes") or 120)
+    except (TypeError, ValueError):
+        _mins = 120
+    return now + timedelta(minutes=max(120, _mins))
+
+
 def _filter_same_day_slots(result: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     """Remove today's date from all availability results.
 
@@ -6779,7 +6792,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         clinic_working_hours=working_hours,
         increment_min=clinic.get("slot_increment_minutes"),
         break_min=_break_min,
-        closed_dates=_closed_dates,
+        closed_dates=_closed_dates, not_before=_min_notice_start(clinic, now),
     )
 
     tokens = await _get_tokens(_resolve_clinic_id(session))
@@ -6926,7 +6939,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
                 clinic_working_hours=working_hours,
                 increment_min=clinic.get("slot_increment_minutes"),
                 break_min=_break_min,
-                closed_dates=_closed_dates,
+                closed_dates=_closed_dates, not_before=_min_notice_start(clinic, now),
             )
             try:
                 # Same two-call shape as the primary path. The widen window is
@@ -7062,7 +7075,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
             clinic_working_hours=working_hours,
             increment_min=clinic.get("slot_increment_minutes"),
             break_min=_break_min,
-            closed_dates=_closed_dates,
+            closed_dates=_closed_dates, not_before=_min_notice_start(clinic, now),
         )
         try:
             # Same two-call concurrent shape as the primary read — the all-day
@@ -7422,7 +7435,7 @@ async def _check_availability_diary(
         clinic_working_hours=working_hours,
         increment_min=clinic.get("slot_increment_minutes"),
         break_min=_break_min,
-        closed_dates=_closed_dates,
+        closed_dates=_closed_dates, not_before=_min_notice_start(clinic, now),
     )
 
     try:
@@ -7524,7 +7537,7 @@ async def _check_availability_diary(
                 clinic_working_hours=working_hours,
                 increment_min=clinic.get("slot_increment_minutes"),
                 break_min=_break_min,
-                closed_dates=_closed_dates,
+                closed_dates=_closed_dates, not_before=_min_notice_start(clinic, now),
             )
             _wd_blocks = parse_busy(_wd_busy or [])
             _wd_blocks += _all_day_busy_blocks(events, w_start, _wd_end)

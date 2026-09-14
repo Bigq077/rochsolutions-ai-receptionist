@@ -1598,6 +1598,10 @@ def _map_json_to_clinic_contract(loaded: Dict[str, Any]) -> Dict[str, Any]:
     clinic["owner_alerts"] = op.get("owner_alerts", {})  # real-time owner SMS alert config
     clinic["call_overflow"] = op.get("call_overflow", {})  # human-first overflow ring config
     clinic["allow_same_day"] = bool(op.get("allow_same_day", False))
+    # Minimum notice for a same-day slot, in minutes. Owner, 14 Sep 2026: "at
+    # least 2 hours". The generated readers (Google, diary) apply it; the
+    # Acuity reader has hardcoded the same 2 h since before this key existed.
+    clinic["min_notice_minutes"] = max(120, int(op.get("min_notice_minutes") or 120))
     # D2. How much of the diary this clinic SPEAKS: max_days,
     # times_per_day_multi, times_single_day. Absent means "the engine
     # defaults", which is where all four clinics are today -- see

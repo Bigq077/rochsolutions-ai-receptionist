@@ -87,9 +87,15 @@ def generate_candidate_slots(
     increment_min: Optional[int] = None,
     break_min: int = 0,
     closed_dates: Optional[frozenset] = None,
+    not_before: Optional[datetime] = None,
 ) -> list[tuple[datetime, datetime]]:
     """
     Generate candidate slots inside [window_start, window_end], all tz-aware.
+
+    `not_before` is the clinic's minimum notice: no slot starts before it. It
+    is separate from window_start so the window (and every day count derived
+    from it) stays anchored on today. CAd2747d0689 (14 Sep 2026, demo) booked
+    15:30 on a call at 15:16 -- the Google readers had no notice at all.
 
     Produced day by day, anchored to each day's OPENING time and spaced
     `increment_min` apart. When no explicit `increment_min` override is given,
@@ -109,6 +115,9 @@ def generate_candidate_slots(
     """
     window_start = _ensure_tz(window_start, tz)
     window_end = _ensure_tz(window_end, tz)
+    earliest = window_start
+    if not_before is not None:
+        earliest = max(window_start, _ensure_tz(not_before, tz))
 
     increment = int(increment_min or (duration_min + break_min))
     dur = timedelta(minutes=duration_min)
@@ -163,7 +172,7 @@ def generate_candidate_slots(
 
         cursor = day_open
         while cursor + dur <= day_close and cursor < window_end:
-            if cursor >= window_start:
+            if cursor >= earliest:
                 slots.append((cursor, _ensure_tz(cursor + dur, tz)))
             cursor = _ensure_tz(cursor + step, tz)
         d += timedelta(days=1)
