@@ -1038,6 +1038,40 @@ def _write_cta_outstanding(session: dict) -> bool:
     )
 
 
+# A question that points at the OFFERED SET -- "any of those", "number two",
+# "does that work". Only such a question can honestly be re-asked as "which of
+# those would you like?". CA66bd0930 (14 Sep 2026, JV): after two refusals the
+# last question was "is there another time that might suit you, or would you
+# like me to look further ahead?" -- nothing on the table -- and the watchdog
+# still said "which of those". OPEN_DEFECTS_2026-09-14 #4.
+_OFFER_REFERENCE_RE = re.compile(
+    r"\b(?:any|either|which|all|one) of (?:those|them|these)\b"
+    r"|\bthose (?:times|slots|days|options)\b"
+    r"|\bnumber (?:one|two|three|1|2|3)\b"
+    r"|\b(?:does|would) that (?:one )?(?:work|suit)\b"
+    r"|\bthat one\b"
+    r"|\bwhich (?:one|would you|suits|works)\b",
+    re.IGNORECASE,
+)
+_SLOT_PREFERENCE_REASK = "Still with you — is there a day or time that would suit you?"
+
+
+def _slot_selection_reask_phrase(session: dict) -> str:
+    """The silence re-ask while `v3_awaiting_slot_selection` is set.
+
+    "Which of those would you like?" presumes an offer is on the table. It
+    is only when the last question Susie asked referred to the offered set;
+    otherwise the caller heard a PREFERENCE question and that is what is
+    repeated, so the re-ask never points at times already refused. PURE.
+    """
+    last_q = str((session or {}).get("last_question") or "").strip()
+    if not last_q or _OFFER_REFERENCE_RE.search(last_q):
+        return "Still with you — which of those would you like?"
+    if "?" not in last_q:
+        return _SLOT_PREFERENCE_REASK
+    return f"Still with you — {last_q[:1].lower()}{last_q[1:]}"
+
+
 def _write_cta_reask_phrase(session: dict) -> str:
     """The silence re-ask for an outstanding write CTA, in ITS OWN family.
 
@@ -5803,7 +5837,10 @@ class SilenceHandler:
                     if _cta_reask:
                         phrase = _cta_reask
                     else:
-                        phrase = "Still with you — which of those would you like?"
+                        # "Which of those" only when the last question pointed
+                        # at an offer (#4, CA66bd0930); else repeat the
+                        # preference question the caller actually heard.
+                        phrase = _slot_selection_reask_phrase(_sess or {})
                 # ── v3 location retry ladder ──────────────────────────────────
                 # When the location question is active, escalate on the 2nd
                 # re-ask to "Did you say the Alcester clinic?" — a biased binary
