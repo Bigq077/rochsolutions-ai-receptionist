@@ -561,3 +561,19 @@ def test_a_restated_name_is_recognised(caller):
     from app.media_streams.turn_handler import _restates_a_name
 
     assert _restates_a_name(caller) is True, caller
+
+
+# ── CA7de22277 (Theorem, 14 Sep 2026): the placeholder is never a pronoun ──
+
+@pytest.mark.parametrize("said,expected", [
+    ("uh this is your pre-appointment", ""),
+    ("um yeah i'll be good and visible to her", ""),
+    ("i'm just gonna be up here", ""),
+    ("yeah that's good i'm kiera with her", "Kiera"),
+    ("um ciao mera", "Ciao"),
+    ("it's kiera caravelon", "Kiera"),
+])
+def test_the_best_effort_skips_words_that_are_never_names(said, expected):
+    from app.media_streams.turn_handler import _best_effort_name_from_history
+
+    assert _best_effort_name_from_history({"_turn_user_text": said}) == expected, said

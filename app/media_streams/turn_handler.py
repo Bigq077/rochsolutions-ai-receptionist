@@ -419,7 +419,10 @@ _NOT_A_NAME_WORDS = frozenset("""
 oh zero one two three four five six seven eight nine ten eleven twelve double
 treble hundred old new different another same other mobile landline phone work
 home wrong right fine ok okay good all done that this it verbally again correct
-number incorrect nothing something anything else""".split())
+number incorrect nothing something anything else
+your our his her their pre appointment booking physio session gonna going
+here there visible news about just told said with for the and be am is was
+up down in on at to of""".split())
 
 
 def _is_name_rejection(session: Dict[str, Any], caller: str) -> bool:
@@ -527,9 +530,14 @@ def _best_effort_name_from_history(session: Dict[str, Any]) -> str:
         _u = _NAME_ANSWER_JUNK_RE.sub("", _u)
         if not _cues and len(_u.split()) > 3:
             continue
-        _tok = re.search(r"[A-Za-z][A-Za-z'\-]+", _u)
-        if _tok:
-            return _tok.group(0).strip("'-").capitalize()
+        # The first token that is not a known non-name. CA7de22277 (Theorem,
+        # 14 Sep 2026): "this is your pre-appointment" put "Your" on the
+        # booking -- Acuity showed "Your Your (name to confirm)".
+        for _m in re.finditer(r"[A-Za-z][A-Za-z'\-]+", _u):
+            _w = _m.group(0).strip("'-")
+            _parts = [p for p in re.split(r"[-']", _w.lower()) if p]
+            if len(_w) >= 2 and not any(p in _NOT_A_NAME_WORDS for p in _parts):
+                return _w.capitalize()
     return ""
 
 
