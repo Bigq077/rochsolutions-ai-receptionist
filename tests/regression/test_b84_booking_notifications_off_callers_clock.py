@@ -134,14 +134,31 @@ class _FakeBooking:
         self.start_time = start
 
 
-def _install_fake_booking(monkeypatch, *, owner_raises=False, gate=None, calls=None):
-    """Drive the real _book_appointment_acuity with a fake diary + notifiers."""
-    from datetime import datetime
+def _future_start():
+    """A slot one week out, at 15:00 Europe/London.
+
+    Relative, not absolute. This file originally pinned
+    datetime(2026, 8, 25, 15, 0) — one day after it was written — and every test
+    here that reaches the booking path began failing the moment that date passed,
+    because _book_appointment_acuity correctly refuses "a slot in the past".
+
+    A permanently-red regression test is worse than no test: it trains everyone
+    to skim past red. Keep this relative.
+    """
+    from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
 
+    tz = ZoneInfo("Europe/London")
+    return (datetime.now(tz) + timedelta(days=7)).replace(
+        hour=15, minute=0, second=0, microsecond=0
+    )
+
+
+def _install_fake_booking(monkeypatch, *, owner_raises=False, gate=None, calls=None):
+    """Drive the real _book_appointment_acuity with a fake diary + notifiers."""
     from app.tools import receptionist_tools as rt
 
-    start = datetime(2026, 8, 25, 15, 0, tzinfo=ZoneInfo("Europe/London"))
+    start = _future_start()
 
     class _Adapter:
         async def create_booking(self, request):
@@ -185,7 +202,9 @@ def _args_and_session():
         "phone": "07974734502",
         "location": "alcester",
         "service": "physiotherapy assessment",
-        "slot_iso": "2026-08-25T15:00:00",
+        # Derived from the same helper as the faked booking, so the two can
+        # never drift apart — and never falls into the past.
+        "slot_iso": _future_start().strftime("%Y-%m-%dT%H:%M:%S"),
     }
     session = {"clinic_id": "theorem_v3", "call_sid": "CA98557584dc"}
     return args, session
