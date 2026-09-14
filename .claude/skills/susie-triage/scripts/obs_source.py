@@ -52,6 +52,37 @@ DEFAULT_SEVERITY = 4
 TERMINAL_TAGS = {"NO_BOOKING", "ABANDONED", "MISROUTED", "LOW_QUALITY"}
 
 
+# ---------------------------------------------------------------------------
+# Operator test calls
+#
+# ~90% of stored calls are the operator dialling in to test, not patients.
+# Left in, they dominate every cluster and the report describes the tester
+# rather than the service. Filtered OUT by default, and always COUNTED in the
+# output so the exclusion is visible rather than silent.
+#
+# NOTE +447502211207 is also TRANSFER_FALLBACK_NUMBER (app/config.py). We match
+# on caller_number ONLY - never the dialled number or a transfer target - or we
+# would hide genuine transfer defects.
+# ---------------------------------------------------------------------------
+KNOWN_TEST_CALLERS: set[str] = {
+    "+447502211207",   # operator's own handset
+}
+
+
+def normalise_number(raw: str | None) -> str:
+    """Last 10 digits, so +447502211207 / 07502211207 / '+44 7502 211207' match."""
+    if not raw:
+        return ""
+    digits = "".join(c for c in str(raw) if c.isdigit())
+    return digits[-10:] if len(digits) >= 10 else digits
+
+
+def is_test_call(row: dict[str, Any], test_numbers: set[str]) -> bool:
+    return normalise_number(row.get("caller_number")) in {
+        normalise_number(n) for n in test_numbers
+    }
+
+
 def severity(tag: str) -> int:
     return SEVERITY.get(tag, DEFAULT_SEVERITY)
 
@@ -178,14 +209,23 @@ def load_obs_rows(
     return rows
 
 
-def to_triage_rows(obs_rows: list[dict[str, Any]]) -> tuple[list[dict], int]:
+def to_triage_rows(
+    obs_rows: list[dict[str, Any]],
+    test_numbers: set[str] | None = None,
+    include_tests: bool = False,
+) -> tuple[list[dict], int, int]:
     """Translate obs rows into collect_failures' row shape.
 
-    Returns (failing rows, total calls seen).
+    Returns (failing rows, real calls seen, operator test calls excluded).
     """
     out: list[dict] = []
+    numbers = test_numbers if test_numbers is not None else KNOWN_TEST_CALLERS
+    excluded = 0
 
     for r in obs_rows:
+        if not include_tests and is_test_call(r, numbers):
+            excluded += 1
+            continue
         derived = derive_signals(r)
         if not is_failure(r, derived):
             continue
@@ -228,7 +268,16 @@ def to_triage_rows(obs_rows: list[dict[str, Any]]) -> tuple[list[dict], int]:
         })
 
     out.sort(key=lambda x: (x["severity"], str(x["earliest_failing_check"])))
-    return out, len(obs_rows)
+    return out, len(obs_rows) - excluded, excluded
+
+
+def split_test_calls(
+    obs_rows: list[dict[str, Any]],
+    test_numbers: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Real calls only - for fleet stats, so booking rate is not the tester's."""
+    numbers = test_numbers if test_numbers is not None else KNOWN_TEST_CALLERS
+    return [r for r in obs_rows if not is_test_call(r, numbers)]
 
 def fleet_summary(obs_rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Headline numbers, computed by app/obs/reports.py - not re-derived here.

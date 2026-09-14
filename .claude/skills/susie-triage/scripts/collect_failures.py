@@ -286,6 +286,11 @@ def render_obs(s: dict) -> str:
     out.append(
         f"CALLS: {s['total']} | CLEAN: {s['passed']} | WITH FINDINGS: {s['failed']}"
     )
+    if s.get("excluded_tests"):
+        out.append(
+            f"  ({s['excluded_tests']} operator test calls excluded - "
+            f"--include-tests to keep them)"
+        )
     f = s.get("fleet") or {}
     if f:
         mean = f.get("mean_quality_score")
@@ -435,6 +440,12 @@ def main() -> None:
     ap.add_argument("--clinic", help="obs only: filter to one clinic_id")
     ap.add_argument("--days", type=int,
                     help="obs only: look back this many days")
+    ap.add_argument("--include-tests", action="store_true",
+                    help="obs only: keep the operator's own test calls "
+                         "(excluded by default)")
+    ap.add_argument("--test-number", action="append", default=[],
+                    help="obs only: additional caller number to treat as a "
+                         "test call; repeatable")
     ap.add_argument("--since", help="YYYY-MM-DD - only runs/calls on or after")
     ap.add_argument("--json", action="store_true", help="emit JSON instead of text")
     args = ap.parse_args()
@@ -446,14 +457,24 @@ def main() -> None:
         obs_rows = load_obs_rows(
             since=args.since, clinic=args.clinic, days=args.days
         )
-        rows, total = to_triage_rows(obs_rows)
+        from obs_source import (KNOWN_TEST_CALLERS, fleet_summary,
+                                missed_by_bottom_decile, split_test_calls)
+        numbers = set(KNOWN_TEST_CALLERS) | set(args.test_number)
+        rows, total, excluded = to_triage_rows(
+            obs_rows, test_numbers=numbers, include_tests=args.include_tests
+        )
+        # Fleet stats must describe patients, not the tester - otherwise the
+        # booking rate is the operator's hit rate.
+        real = obs_rows if args.include_tests else split_test_calls(obs_rows, numbers)
         if not rows:
-            print(f"CALLS: {total} | no findings in this window.")
+            print(f"CALLS: {total} real"
+                  + (f" ({excluded} operator test calls excluded)" if excluded else "")
+                  + " | no findings in this window.")
             return
-        from obs_source import fleet_summary, missed_by_bottom_decile
         s = summarise_obs(rows, total)
-        s["fleet"] = fleet_summary(obs_rows)
-        s["missed_by_decile"] = missed_by_bottom_decile(obs_rows, rows)
+        s["excluded_tests"] = excluded
+        s["fleet"] = fleet_summary(real)
+        s["missed_by_decile"] = missed_by_bottom_decile(real, rows)
         if args.json:
             for k in ("stall_states", "builds", "clinics",
                       "pass_flow_steps", "fail_flow_steps"):

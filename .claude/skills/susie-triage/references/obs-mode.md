@@ -124,3 +124,47 @@ See `susie-debug/references/mining-scenarios.md`.
 - Transcripts are **special-category PII**. Quote one short line as evidence;
   never paste raw transcripts into a report, and use `to_scenario` (which asserts
   redaction) for anything committed.
+
+## Operator test calls
+
+Most stored calls are the operator dialling in to test, not patients. Left in,
+they dominate every cluster and the report ends up describing the tester.
+
+They are **excluded by default** and always counted in the header, so the
+exclusion is visible rather than silent:
+
+```
+CALLS: 41 | CLEAN: 33 | WITH FINDINGS: 8
+  (312 operator test calls excluded - --include-tests to keep them)
+```
+
+`KNOWN_TEST_CALLERS` in `scripts/obs_source.py` holds the numbers; `--test-number`
+adds more at the command line, `--include-tests` keeps them all.
+
+Matching is on **`caller_number` only**, on the last 10 digits, so
+`+447502211207`, `07502211207` and `+44 7502 211207` all match. It deliberately
+never matches the dialled number or a transfer target — `+447502211207` is also
+`TRANSFER_FALLBACK_NUMBER` in `app/config.py`, and filtering on that would hide
+genuine transfer defects.
+
+Filter before reading fleet stats too, or the booking rate is the tester's hit
+rate, not the clinics'.
+
+## Already-fixed findings
+
+Calls whose defects have been analysed and fixed still sit in the table — the
+store is a record of what happened, not of what is still broken. Two ways to
+tell the difference:
+
+- **`build_sha`.** A cluster confined to builds older than the fix is history.
+  A cluster that spans the current build is live. This is the main reason the
+  collector rolls up by build.
+- **Re-run the mined scenario.** `python -m app.obs.to_scenario <call_sid>` then
+  `python -m app.obs.regress` replays it against today's code offline. If it
+  passes now, the fix held; if it fails, it regressed — which
+  `known-bugs.md` shows is a live failure mode here.
+
+**The findings worth the most are the ones no previous review could have
+seen.** A review driven by `quality_score` and `failure_tags` cannot surface
+`PHANTOM_BOOKING` — those calls score well by construction. If past analysis was
+based on the judge's output, treat derived signals as unexamined ground.
