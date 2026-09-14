@@ -758,6 +758,20 @@ _BANNED_SENTENCE_RE = [
          r"[^.!?]*\bI should\b[^.!?]*[.!?]?",
          re.IGNORECASE,
      )),
+    # "Wait, …" / "Wait — …" — the model correcting itself aloud. CA89f061856a
+    # (14 Sep 2026, demo): "Do you have a preference for when you'd like to come
+    # in?" then "Wait, I already have urgency noted — let me check what we've
+    # got." Measured over every recorded assistant turn (1,042 calls, 11,190
+    # turns): a sentence opening "Wait" + comma/dash occurred 8 times and all 8
+    # were self-corrections ("Wait, that's the wrong screen", "Wait, I need to
+    # actually call the reschedule tool first"). Anchored to the START of a
+    # sentence and to the comma/dash, so "please wait a moment", "waiting
+    # list" and "Wait-list" are untouched. Only that sentence goes.
+    ("reasoning_wait_self_correction",
+     re.compile(
+         r"(?:^|(?<=[.!?]))\s*Wait\s*(?:,|—|–|\s-\s)[^.!?]*[.!?]?",
+         re.IGNORECASE,
+     )),
     # "I'd be happy to..." — call-centre filler, banned in all output
     ("id_be_happy_to",
      re.compile(

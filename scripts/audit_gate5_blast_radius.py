@@ -94,7 +94,8 @@ sys.path.insert(0, str(REPO))
 
 # Rules added after the baseline this audit compares against. Extend as Gate 5
 # grows -- see the note in the module docstring.
-NEW_BANNED_RULES = ("markdown_emphasis", "internal_identifier_token")
+NEW_BANNED_RULES = ("markdown_emphasis", "internal_identifier_token",
+                    "reasoning_wait_self_correction")
 
 _MONTHS = {m: i for i, m in enumerate(
     ["january", "february", "march", "april", "may", "june", "july",
