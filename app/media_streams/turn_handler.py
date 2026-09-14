@@ -257,6 +257,17 @@ def _gate5n_exit(session: Dict[str, Any], name: str) -> str:
     session.setdefault("collected", {})["name"] = name
     session["_gate5n_best_effort_name"] = name
     session["needs_name_correction_sms"] = True
+    # A name persisted HERE never passes connection.py's "name persisted
+    # (normal path)" site, which is where the phone-collection phase is armed
+    # (Spec Q: v3_phone_dtmf_active at name-confirmed state). Without it the
+    # verbal phone confirm has no branch to land in: CA2bfb791302 (14 Sep
+    # 2026, demo) exited here, the exit asked for the number, the caller said
+    # "use this number" three times, and each time the model's booking was
+    # held back for "phone missing" and the same question asked again. Arm it
+    # exactly as that site does, so "use this number" / "yes" stores the
+    # caller ID through the same branch the normal path uses.
+    if not session.get("v3_phone_dtmf_active") and not session.get("phone_confirmed"):
+        session["v3_phone_dtmf_active"] = True
     # The caller utterance this exit answers. sanitise_response runs per
     # chunk: the chunk the exit replaced is followed by the rest of the
     # model's reply, which on CAcb580641 was a second question ("Which of
@@ -3489,6 +3500,30 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
             "name" if not _name_known(session) else "phone",
             _next_ask[:60],
         )
+        # An output gate that cannot yield is the deadlock shape (see Gate
+        # 5b-r). CA2bfb791302 (14 Sep 2026): the phone was "missing" three
+        # times running while the caller said "use this number" each time —
+        # the verbal confirm had no branch armed. If the caller has just
+        # answered the phone question with a yes and we are STILL holding,
+        # say so at ERROR and arm the branch so the next answer lands.
+        if _name_known(session) and not session.get("phone_confirmed"):
+            try:
+                from app.media_streams.connection import (
+                    _phone_confirm_is_yes as _g5g_yes,
+                    _phone_question_on_the_table as _g5g_on_table,
+                )
+                if _g5g_yes(session.get("_turn_user_text") or "") and _g5g_on_table(session):
+                    session["_gate5g_phone_holds"] = int(session.get("_gate5g_phone_holds") or 0) + 1
+                    session["v3_phone_dtmf_active"] = True
+                    logger.error(
+                        "[ms_gate5] PHONE CONFIRM NOT TAKEN (#%d) — caller answered the "
+                        "phone question with %r and the booking is still held for "
+                        "phone missing; armed the verbal-confirm branch",
+                        session["_gate5g_phone_holds"],
+                        (session.get("_turn_user_text") or "")[:40],
+                    )
+            except Exception:  # pragma: no cover - a gate must never break a call
+                logger.debug("[ms_gate5] phone-hold check failed", exc_info=True)
         # ── O-18: this substitution can deadlock the name step ───────────────
         # When the name is what is missing, the sentence being deleted is very
         # often the model's ACKNOWLEDGEMENT of the name the caller just gave
