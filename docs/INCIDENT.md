@@ -105,15 +105,21 @@ relying on it.** A default in code is not a decision.
 
 ### 3a. Tell the clinic — before they call you
 
-| Clinic | Contact | Phone | Email |
-|---|---|---|---|
-| Theorem Health | `FILL: name` | 07870 166861 | info@theoremhealth.co.uk |
-| Vital Edge Therapy | `FILL: name` | +44 7545 862307 | vitaledgetherapy@gmail.com |
-| Joint Venture Physiotherapy | Marcus (`FILL: confirm`) | +44 7367 002651 | Jointventurephysiotherapy@gmail.com |
+| Clinic | Contact | Phone | Email | Booking system |
+|---|---|---|---|---|
+| Theorem Health | `FILL: name` | 07870 166861 | info@theoremhealth.co.uk | Acuity |
+| Vital Edge Therapy | `FILL: name` | +44 7545 862307 | vitaledgetherapy@gmail.com | Google Calendar |
+| Joint Venture Physio | Marcus (`FILL: confirm`) | +44 7367 002651 | Jointventurephysiotherapy@gmail.com | Carepatron |
+| Northgate Physio | `FILL: name` | +44 7366 263180 | hello@northgatephysio.example | Carepatron |
 
-*Numbers read from each `app/clinics/<id>/clinic.json` (`primary_phone`,
-`contact_email`) on 2026-09-14. These are the clinic's public lines — confirm
-whether there is a direct mobile for the owner and put it here.*
+*Read from each `app/clinics/<id>/clinic.json` on 2026-09-14. These are public
+lines — add a direct mobile for each owner.*
+
+**The booking system column changes how you verify a booking.** Acuity and Google
+Calendar clinics store a booking id (`acuity_booking_id` / `calendar_event_id`)
+you can check a confirmation against. Carepatron clinics book through a portal
+handoff and store **no id at all** — for those, "did the booking land?" cannot be
+answered from the call record and you must check Carepatron itself.
 
 ### 3b. Holding message — send it, then go back to fixing
 
@@ -131,12 +137,28 @@ promise an explanation but **do not** promise a cause you have not found.
 A booking that does not exist will not fix itself. The caller is expecting an
 appointment nobody knows about.
 
+**Find them mechanically — do not read transcripts looking for this.** A call
+where the booking silently failed reads as a *perfect* call: Susie confirms, the
+judge scores it 5/5, the suite passes it. The only reliable signal is the
+disagreement between `booking_confirmed` and the provider id:
+
+```bash
+python .claude/skills/susie-triage/scripts/collect_failures.py --obs --days 7
+```
+
+`PHANTOM_BOOKING` findings are exactly this class. Then:
+
 1. Get the window — when did the bad deploy go out, when was it restored?
-2. Pull the calls in that window: Twilio call logs for the clinic's number; the
-   suite/obs records if capture is on; `tests/auto/results/` is **not** production.
-3. For each, check whether the booking exists in Acuity.
+2. Cross-check against Twilio call logs for the clinic's number.
+   `tests/auto/results/` is **not** production.
+3. For each, confirm against the real calendar (Acuity / Google Calendar), or
+   Carepatron for a portal clinic.
 4. **Phone every caller whose booking is missing.** Not SMS. Phone.
 5. Tell the clinic exactly who was affected and what you told them.
+
+Going forward the `booking_not_written` alert (critical, immediate SMS) fires on
+this condition live, for calendar-backed clinics, whenever `OBS_ALERTS_ENABLED`
+is on. It cannot fire for Carepatron clinics — there is no id to check.
 
 ---
 
@@ -178,7 +200,13 @@ The last line is the only one that changes the future. If the honest answer is
 
 Be honest about what is not covered, so nobody discovers it at 9am:
 
-- **No monitoring.** Observability is built — **22 modules** on
+- **Booking integrity is now alerted, but only for two of four clinics.**
+  `booking_not_written` (critical) fires when Susie confirms a booking and no
+  calendar id came back — but only for Acuity and Google Calendar clinics. For
+  Carepatron clinics (Joint Venture, Northgate) no id exists, so a silently
+  failed booking there is still undetectable from the call record. That gap is
+  real and unclosed.
+- **Monitoring.** Observability is built — **22 modules** on
   `origin/latency-eval` (`git ls-tree --name-only origin/latency-eval app/obs/`)
   — but gated. `app/obs/__init__.py` states capture is "gated behind
   `config.OBS_CAPTURE_ENABLED` (**default OFF**)". Whether it is switched on in
