@@ -2964,8 +2964,20 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
         (session.get("reason") or "").strip()
         or ((session.get("collected") or {}).get("reason") or "").strip()
     )
+    # The one free strip above is for a caller who ANSWERED and was asked
+    # again. It is not for a caller who has not answered yet. CA66bd0930
+    # (14 Sep 2026, JV): STT heard "thank you", the model rightly re-asked,
+    # this gate deleted the re-ask and asked for the NAME instead -- and the
+    # caller's name answer then became the reason. While the engine is still
+    # waiting for the answer (`_reason_answer_pending`, armed when the
+    # question was spoken, kept through fillers), a re-ask is the right turn.
+    _still_awaiting_answer = bool(session.get("_reason_answer_pending")) and not _reason_on_record
     _may_strip_reason = bool(session.get("_reason_question_asked")) and (
-        _reason_on_record or int(session.get("_reason_strip_count") or 0) < 1
+        _reason_on_record
+        or (
+            int(session.get("_reason_strip_count") or 0) < 1
+            and not _still_awaiting_answer
+        )
     )
     if (
         _clinic_asks_its_own_reason_question(session)
