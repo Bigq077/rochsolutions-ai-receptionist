@@ -50,6 +50,26 @@ def when_label_for_sms(dt: Optional[datetime]) -> str:
     return f"{dt.strftime('%A')} {day} {dt.strftime('%B')} at {t}"
 
 
+def is_doubled_name(name: Optional[str]) -> bool:
+    """A "surname" that is the first name said again -- "Goner Goner". PURE.
+
+    CA66bd0930 (14 Sep 2026, JV). STT turned the caller's name into a common
+    word twice; the read-back asked "did you say Goner?", the caller said
+    "goner", the surname question got "goner", and the booking, the text and
+    the owner alert all went out as "Goner Goner". A second token that
+    repeats the first is not a surname heard -- it is the same word not heard
+    twice -- so the name counts as ONE best-effort token and is chased for
+    the spelling like any other placeholder.
+    """
+    toks = [t.strip(".,'\"-").lower() for t in (name or "").split()]
+    return len(toks) >= 2 and len(set(toks)) == 1
+
+
+def collapse_doubled_name(name: Optional[str]) -> str:
+    """The single token of a doubled name; any other name unchanged."""
+    return (name or "").split()[0] if is_doubled_name(name) else (name or "")
+
+
 def name_was_not_heard(session: Optional[Dict[str, Any]]) -> bool:
     """The engine could not hear the name and has said so: turn_handler
     Gate 5n (`_gate5n_exited`) or the name collector's best-effort exits

@@ -8371,6 +8371,33 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         session["phone_arg_corrected"] = True
         args["phone"] = _a3_fix
 
+    # ── A surname that is the first name again is not a surname ────────────
+    # CA66bd0930 (14 Sep 2026, JV): STT made "goner" of the caller's name at
+    # the read-back AND at the surname question, and the model booked, texted
+    # and alerted "Goner Goner". Above the backend branch for the same reason
+    # A3 is. One token goes on the booking, the name chase (notifications/
+    # name_chase) opens the spelling text, and the not-heard wording is used —
+    # the same exit Gate 5n takes when it cannot hear a name.
+    try:
+        from app.notifications import name_chase as _nc_doubled
+        _raw_name = args.get("patient_name") or ""
+        if _nc_doubled.is_doubled_name(_raw_name):
+            _one = _nc_doubled.collapse_doubled_name(_raw_name)
+            logger.warning(
+                "[book] doubled name %r booked as the one token %r — surname "
+                "not heard, chasing by text. clinic=%s",
+                _raw_name[:40], _one, session.get("clinic_id"),
+            )
+            args["patient_name"] = _one
+            session["needs_name_correction_sms"] = True
+            if _nc_doubled.is_doubled_name(session.get("patient_name")):
+                session["patient_name"] = _one
+            _coll = session.get("collected")
+            if isinstance(_coll, dict) and _nc_doubled.is_doubled_name(_coll.get("name")):
+                _coll["name"] = _one
+    except Exception:
+        logger.debug("[book] doubled-name check failed", exc_info=True)
+
     # ── Surname read-back exposure — COUNTED, never blocked (§2.5) ──────────
     # Placed here for the same reason A3 is: above the backend branch, so all
     # four executors are covered by one site.

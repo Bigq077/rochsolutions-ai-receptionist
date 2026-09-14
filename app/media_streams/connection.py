@@ -13663,7 +13663,20 @@ class WebSocketCallHandler:
                                         ).get("name")
                                         or ""
                                     ).strip()
-                                    if (
+                                    # "So that's Goner Goner, …" (CA66bd0930,
+                                    # 14 Sep 2026) is a surname NOT heard, not
+                                    # a fuller name: the one token stays and
+                                    # the name chase texts for the spelling.
+                                    from app.notifications.name_chase import (
+                                        is_doubled_name as _rb_doubled,
+                                    )
+                                    if _rb_doubled(_rb_full):
+                                        logger.info(
+                                            "[ms_conn v3] booking readback name "
+                                            "%r is the first name twice — not "
+                                            "upgraded", _rb_full,
+                                        )
+                                    elif (
                                         " " in _rb_full
                                         and (
                                             not _cur_name
