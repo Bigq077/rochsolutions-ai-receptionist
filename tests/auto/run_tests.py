@@ -54,7 +54,11 @@ from tests.auto.fixer import FixerAgent
 from tests.auto.healer import Healer
 from tests.auto.report import build_report
 from tests.auto.server_manager import SharedServer
-from tests.auto.scenarios.all_scenarios import ALL_SCENARIOS as SCENARIOS
+from tests.auto.scenarios.all_scenarios import (
+    ALL_SCENARIOS as SCENARIOS,
+    REGRESSION_SCENARIOS,
+    SELECTABLE_SCENARIOS,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -555,6 +559,12 @@ async def main():
         default=None,
     )
     parser.add_argument(
+        "--regressions",
+        action="store_true",
+        help="Run the scenarios mined from real calls "
+             "(tests/auto/scenarios/regressions/), not the numbered suite",
+    )
+    parser.add_argument(
         "--scenario",
         help="Run specific scenario(s) e.g. '2.1' or multiple: '2.1 3.1 4.2'",
         default=None,
@@ -602,11 +612,23 @@ async def main():
 
     # Filter scenarios
     scenarios_to_run = SCENARIOS
-    if args.scenario:
+    if args.regressions:
+        # Mined from real calls. Not in the default run: see all_scenarios.py.
+        scenarios_to_run = REGRESSION_SCENARIOS
+        if not scenarios_to_run:
+            print("No mined regression scenarios in "
+                  "tests/auto/scenarios/regressions/ — nothing to run.")
+            sys.exit(0)
+    elif args.scenario:
         ids = set(args.scenario)
+        # SELECTABLE includes the mined regressions, so --scenario can name one
+        # by id; they are otherwise unreachable by any gate that runs code.
         scenarios_to_run = [
-            s for s in SCENARIOS if s["id"] in ids
+            s for s in SELECTABLE_SCENARIOS if s["id"] in ids
         ]
+        missing = ids - {s["id"] for s in scenarios_to_run}
+        if missing:
+            print(f"WARN — unknown scenario id(s): {', '.join(sorted(missing))}")
     elif args.phase:
         scenarios_to_run = [
             s for s in SCENARIOS if s["id"].startswith(args.phase + ".")

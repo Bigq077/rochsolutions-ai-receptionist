@@ -12,6 +12,9 @@ Each scenario dict:
 """
 
 from tests.auto.config import EXPECTED_CLINIC_NAME, FOREIGN_CLINIC_TERMS
+import importlib.util
+from pathlib import Path
+
 from tests.auto.scenarios.two_clinic_scenarios import TWO_CLINIC_SCENARIOS
 
 SCENARIOS = [
@@ -1527,11 +1530,62 @@ ALL_SCENARIOS: list[dict] = SCENARIOS + TWO_CLINIC_SCENARIOS
 
 
 # ---------------------------------------------------------------------------
+# Regression scenarios mined from real calls (app/obs/to_scenario.py)
+#
+# Deliberately NOT part of ALL_SCENARIOS:
+#   - the default full run stays 118 scenarios and its cost does not silently
+#     grow every time someone mines a call;
+#   - --from-phase / --from-scenario parse `int(id.split(".")[0])`, which a
+#     "regression_ab12cd34" id would crash on.
+#
+# They were previously unreachable by the runner altogether: app/obs/regress.py
+# only lints their frozen transcript and never executes engine code, so 60 real
+# failing calls sat in the tree with no gate able to re-drive them. Loading them
+# here makes `--scenario regression_<id>` and `--regressions` work.
+# ---------------------------------------------------------------------------
+
+REGRESSIONS_DIR = Path(__file__).parent / "regressions"
+
+
+def load_regression_scenarios() -> list[dict]:
+    """Import every SCENARIO from tests/auto/scenarios/regressions/*.py.
+
+    Never raises: a malformed mined scenario must not stop the suite booting.
+    """
+    out: list[dict] = []
+    if not REGRESSIONS_DIR.is_dir():
+        return out
+    for path in sorted(REGRESSIONS_DIR.glob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location(
+                f"_mined_{path.stem}", path
+            )
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            scenario = getattr(module, "SCENARIO", None)
+            if isinstance(scenario, dict) and scenario.get("id"):
+                out.append(scenario)
+        except Exception as exc:  # pragma: no cover - one bad file must not break boot
+            print(f"WARN: skipping mined scenario {path.name}: {exc!r}")
+    return out
+
+
+REGRESSION_SCENARIOS: list[dict] = load_regression_scenarios()
+
+# What `--scenario <id>` may select: the numbered suite plus every mined call.
+SELECTABLE_SCENARIOS: list[dict] = ALL_SCENARIOS + REGRESSION_SCENARIOS
+
+
+# ---------------------------------------------------------------------------
 # Lookup helpers
 # ---------------------------------------------------------------------------
 
 def get_scenario_by_id(scenario_id: str) -> dict | None:
-    for s in ALL_SCENARIOS:
+    for s in SELECTABLE_SCENARIOS:
         if s["id"] == scenario_id:
             return s
     return None
