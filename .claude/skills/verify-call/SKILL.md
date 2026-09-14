@@ -39,6 +39,7 @@ State the branch and sha in the verdict. A rate without them is unreproducible.
 | Gate | Command | Cost | Use when |
 |---|---|---|---|
 | **Corpus lint** | `python -m app.obs.regress` | free, seconds | Cheap sanity. **Not a regression gate — see caveats.** |
+| **Mined regressions** | `python tests/auto/run_tests.py --regressions` | 60 calls | Real recorded failures, re-driven against your code |
 | **Scenario** | `python tests/auto/run_tests.py --scenario 4.1` | ~1 call | A specific reproduced defect |
 | **Phase** | `python tests/auto/run_tests.py --phase 8` | ~5-10 calls | A change scoped to one journey |
 | **Booking E2E** | `python tests/auto/run_tests.py --quick` | Phase 8 only | Any change touching booking |
@@ -52,15 +53,18 @@ defect is in the phone path itself.
 `--preflight` validates API keys and infrastructure without placing any call.
 Run it first when a suite run fails in a way that smells like configuration.
 
-**A mined scenario is only re-driven by the live suite.** To actually replay a
-real call against current code, run it as a scenario:
+**Only the live suite re-drives a mined call against your code.** It uses the
+scenario's `responses` (the caller's turns) to drive the flow; `app.obs.regress`
+does not.
 
 ```bash
-python tests/auto/run_tests.py --scenario regression_<id>
+python tests/auto/run_tests.py --regressions          # all 60 mined calls
+python tests/auto/run_tests.py --scenario regression_<id>   # just one
 ```
 
-That uses the scenario's `responses` (the caller's turns) to drive the flow.
-`app.obs.regress` does not — see the caveats.
+The mined corpus is **not** part of the default full run, so a full suite pass
+says nothing about it. Run it separately when a change touches booking, slot
+selection or name capture — the classes those 60 calls actually failed on.
 
 ## Step 3 — Run it
 
