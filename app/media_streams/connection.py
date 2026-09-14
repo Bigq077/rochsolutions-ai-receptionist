@@ -3611,6 +3611,19 @@ _ALCESTER_ALIASES: frozenset[str] = frozenset({
     "allchester",
     "orlchester",
 
+    # ── "osteo" / "ooster" family ────────────────────────────────────────────
+    # The stored corpus, 14 Sep 2026: every Theorem caller turn answering the
+    # clinic question that STT rendered as osteo / ooster* / owster / ofta /
+    # onsta meant Alcester (12 of 29 answers), and none ever meant anything
+    # else. In August the Haiku resolver absorbed them; on 14 Sep it returned
+    # unknown for "your oosterknecht" and "your osteo clinic" and the caller
+    # was asked to confirm. A shape the corpus has settled belongs here.
+    "osteo",
+    "ooster",
+    "owster",
+    "ofta",
+    "onsta",
+
     # ── Ulster family (/ɔː/ → /ʌ/) ─────────────────────────────────────────
     "ulster",
     "ulster clinic",
