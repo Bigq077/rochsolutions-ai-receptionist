@@ -459,6 +459,9 @@ class Intent(str, Enum):
     # Register -- the social turns.
     SYMPTOM = "symptom"
     CANCEL_REQ = "cancel_req"
+    #: The cancel said after the appointment was found and "reschedule or
+    #: cancel?" was asked: a decision, and the write follows.
+    CANCEL_CONFIRMED = "cancel_confirmed"
     RESCHEDULE_REQ = "reschedule_req"
     REPEAT_ASK = "repeat_ask"
     TRANSFER_REQ = "transfer_req"
@@ -647,6 +650,21 @@ _NAME_CONFIRM_Q = _rx(r"\b(?:did you say|surname, is that|is that spelt|"
 _NAME_REASK_Q = _rx(r"\b(?:again|once more|one more time|didn'?t (?:quite )?"
                     r"(?:catch|get)|not quite catching|missed that|"
                     r"make sure i (?:get|have|got) (?:that|it) right)\b")
+#: The PREFERENCE question -- asked before anything is on the table. It shares
+#: "works best for you" with the pick questions and must not be one.
+_PREFERENCE_Q = _rx(r"\b(?:particular (?:day|time)|preference|prefer to come|"
+                    r"when (?:would|do) you (?:like|want) to come|"
+                    r"day or time that (?:works|suits))\b")
+#: Susie has FOUND an appointment and is asking about it. "is that the right
+#: one?" here is about a booking on file, not a slot on offer (CA3aee2959,
+#: Theorem, 14 Sep 2026: "yes that's the right one" got "That one works —").
+_LOOKUP_CONFIRM_Q = _rx(r"\b(?:i can see an appointment|i(?:'ve| have) found|"
+                        r"you(?:'re| are) booked in|your appointment on|"
+                        r"the appointment on)\b")
+#: The appointment is on the table and Susie has asked what to do with it.
+_CANCEL_DECISION_Q = _rx(r"\b(?:reschedule[^.?!]{0,60}or cancel|or cancel it|"
+                         r"cancel it altogether|would you like to cancel|"
+                         r"is that the right one)\b")
 _PICK_Q = _rx(r"\b(?:does that work|do (?:any|either) of those work|any of those "
               r"work|which (?:one|of those)|works best for you|suits? you|"
               r"number one, two|would you like\?|which would you (?:like|prefer)|"
@@ -1102,6 +1120,14 @@ def classify_intent(
         if name_pending and intent in _TOPIC_SWITCH_INTENTS:
             continue
         hits.append(intent)
+    # A cancel said AFTER the appointment has been found and Susie has asked
+    # "reschedule or cancel?" is not a request to be acknowledged -- it is the
+    # decision, and the write follows. CA3aee2959 (Theorem, 14 Sep 2026): "i'd
+    # like to cancel it altogether" got "Yes, no problem —" and then eight
+    # seconds of silence while the model looked the booking up again and
+    # cancelled it. Owner: say what is happening -- "Cancelling that for you".
+    if Intent.CANCEL_REQ in hits and _CANCEL_DECISION_Q.search(_prev):
+        hits = [Intent.CANCEL_CONFIRMED if h is Intent.CANCEL_REQ else h for h in hits]
     if (
         reason_pending
         and not _reason_answer
@@ -1294,7 +1320,18 @@ def _answer_moment(prev_assistant: str, probe: str, *, slot_selection: bool = Fa
         return []
     # 3. A slot from a readout, chosen by yes, clock time or ordinal -- never
     #    a request in disguise ("what about around twelve").
-    if (slot_selection or _PICK_Q.search(prev)) and not _REQUEST_SHAPE.search(probe):
+    #
+    #    A pick QUESTION in `prev` only counts as one when nothing was
+    #    offered? No -- when the phrase is unambiguous. "works best for you"
+    #    is not: CA7de22277 (Theorem, 14 Sep 2026) heard "That one works —"
+    #    after "Is there a particular day or time that works best for you?"
+    #    -> "um anytime in 2 weeks' time". That is the PREFERENCE question,
+    #    nothing was on the table, and the "2" in "2 weeks" read as a clock.
+    #    A preference question is excluded by shape; the engine's own
+    #    `slot_selection` verdict is unaffected.
+    _pick_q = (bool(_PICK_Q.search(prev)) and not _PREFERENCE_Q.search(prev)
+               and not _LOOKUP_CONFIRM_Q.search(prev))
+    if (slot_selection or _pick_q) and not _REQUEST_SHAPE.search(probe):
         names_a_day = bool(re.search(_DAY, probe, re.IGNORECASE))
         if names_a_day and not slot_selection:
             # A DAY without the engine's verdict is a request about a day we
@@ -1622,6 +1659,8 @@ INTENT_HEADS = {
                               f"Oh, sorry to hear that {EM_DASH}"],
     Intent.CANCEL_REQ:       [f"No problem at all {EM_DASH}",
                               f"Yes, no problem {EM_DASH}"],
+    Intent.CANCEL_CONFIRMED: [f"Cancelling that for you {EM_DASH}",
+                              f"Right, cancelling that {EM_DASH}"],
     # A caller who has just picked a slot. Neither of the two things Susie
     # used to say here was true: the diary heads promised a lookup nobody was
     # doing ("Let me see what I've got in the afternoon -", 2 Sep 09:09), and
