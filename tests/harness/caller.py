@@ -59,6 +59,16 @@ HANG_UP = "[END CALL]"
 CALLER_MODEL = os.getenv("HARNESS_CALLER_MODEL", "claude-haiku-4-5")
 
 
+def _supports_effort(model: str) -> bool:
+    """True when the model accepts output_config.effort.
+
+    Opus-family and Sonnet 5 do; Haiku 4.5 and Sonnet 4.5 return a 400. Matched
+    on a prefix so a dated snapshot ("claude-opus-5-2026...") still resolves.
+    """
+    m = (model or "").lower()
+    return m.startswith(("claude-opus", "claude-fable", "claude-mythos")) or         m.startswith("claude-sonnet-5")
+
+
 @dataclasses.dataclass(frozen=True)
 class Persona:
     """One caller: who they are, what they want, and what they will not say."""
@@ -185,16 +195,23 @@ class AdaptiveCaller:
             })
 
         client = self._get_client()
-        response = await client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            system=self.persona.system_prompt(),
-            # Low effort deliberately: this is one short line of dialogue, and
-            # the caller thinking hard about it produces a monologue rather than
-            # a phone call. No `temperature` -- Opus 5 rejects it outright.
-            output_config={"effort": "low"},
-            messages=messages,
-        )
+        kwargs = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "system": self.persona.system_prompt(),
+            "messages": messages,
+        }
+        # Low effort deliberately: this is one short line of dialogue, and the
+        # caller thinking hard about it produces a monologue rather than a phone
+        # call. No `temperature` -- Opus 5 rejects it outright.
+        #
+        # `effort` is only accepted by the Opus family and Sonnet 5; Haiku 4.5
+        # returns 400 "This model does not support the effort parameter". Sent
+        # only where it is supported, so the caller model stays swappable --
+        # which is the point of HARNESS_CALLER_MODEL.
+        if _supports_effort(self.model):
+            kwargs["output_config"] = {"effort": "low"}
+        response = await client.messages.create(**kwargs)
         self.usage.append(
             (response.usage.input_tokens, response.usage.output_tokens)
         )
