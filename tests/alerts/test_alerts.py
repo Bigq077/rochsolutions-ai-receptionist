@@ -204,16 +204,36 @@ def test_booking_not_written_message_names_caller_and_clinic():
 
 # --- calendar_backed: which clinics expect a booking id --------------------
 
-def test_calendar_backed_true_for_acuity_and_google_clinics():
-    assert alerts.calendar_backed("theorem") is True      # Acuity Scheduling
-    assert alerts.calendar_backed("vital_edge") is True    # Google Calendar
+def test_calendar_backed_true_for_every_live_clinic():
+    """All four live clinics write through an integration that returns an id.
+
+    theorem_v3 is the id the LIVE Acuity clinic actually reports — it is built
+    in clinic_config.py and has no app/clinics/ directory, so a lookup that only
+    reads clinic.json returns False for it and silently disables this alert on
+    the one clinic with real patients. Assert the runtime id, not "theorem".
+    """
+    assert alerts.calendar_backed("theorem_v3") is True     # acuity
+    assert alerts.calendar_backed("jv_v1") is True          # google_calendar
+    assert alerts.calendar_backed("northgate") is True      # google_calendar
+    assert alerts.calendar_backed("vital_edge") is True     # google_calendar_provisional
 
 
-def test_calendar_backed_false_for_portal_handoff_clinics():
-    assert alerts.calendar_backed("jv_v1") is False        # Carepatron
-    assert alerts.calendar_backed("northgate") is False    # Carepatron
+def test_calendar_backed_reads_the_integration_not_the_knowledge_blob():
+    """booking.system says "Carepatron"; booking_system says google_calendar.
+
+    The first is the line the clinic gives patients, the second is what the code
+    writes through. Reading the wrong one marks JV and Northgate as handoff-only
+    and drops the alert for 700+ calls.
+    """
+    from app.clinic_config import get_clinic
+
+    assert (get_clinic("jv_v1") or {}).get("booking_system") == "google_calendar"
+    assert alerts.calendar_backed("jv_v1") is True
 
 
 def test_calendar_backed_fails_closed_on_unknown_clinic():
+    """get_clinic() falls back to a default reporting google_calendar, so an
+    unknown id must be rejected BEFORE that fallback or this fails open."""
     assert alerts.calendar_backed("no_such_clinic") is False
+    assert alerts.calendar_backed("") is False
     assert alerts.calendar_backed(None) is False

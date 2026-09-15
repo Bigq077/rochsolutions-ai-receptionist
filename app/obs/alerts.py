@@ -27,6 +27,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from pathlib import Path
+
 from app import config
 from app.notifications.sms import send_sms
 
@@ -95,10 +97,16 @@ def _capture_message(message: str, level: str = "error") -> None:
 # Evaluation (pure, testable)
 # ---------------------------------------------------------------------------
 
-# Booking systems that hand back an id we can check a confirmation against.
-# A clinic booking through a portal handoff (Carepatron today) legitimately
-# finishes a call with no id, so it must never trigger booking_not_written.
-_ID_BACKED_BOOKING_SYSTEMS = ("acuity", "google calendar")
+# Runtime booking integrations that hand back a durable id we can check a
+# spoken confirmation against.
+#
+# Read `booking_system` from the RESOLVED clinic config, never `booking.system`
+# from clinic.json. They are different things and disagree:
+#   booking.system  — the human-readable line in the knowledge base, e.g.
+#                     "Carepatron", which is what the clinic tells patients.
+#   booking_system  — the integration the code actually writes through.
+# Joint Venture and Northgate say "Carepatron" and write to google_calendar.
+_ID_BACKED_BOOKING_SYSTEMS = ("acuity", "google_calendar", "google_calendar_provisional")
 
 _CALENDAR_BACKED_CACHE: Dict[str, bool] = {}
 
@@ -106,10 +114,12 @@ _CALENDAR_BACKED_CACHE: Dict[str, bool] = {}
 def calendar_backed(clinic_id: Optional[str]) -> bool:
     """True when this clinic's booking system returns a durable booking id.
 
-    Read from clinic.json rather than clinic_config.get_clinic(), because the
-    contract mapping drops booking.system for some clinics (theorem, the live
-    Acuity site, reads back None) and a false negative here would silence the
-    alert for exactly the clinic that most needs it.
+    Resolved through clinic_config.get_clinic(), because the live clinics are
+    not all clinic.json files: theorem_v3 — the Acuity site with real patients —
+    is built in clinic_config.py as a deepcopy and has no directory of its own.
+    An earlier version of this read app/clinics/<id>/clinic.json directly and so
+    returned False for theorem_v3, silently disabling this alert for exactly the
+    clinic it exists to protect.
 
     Fails CLOSED to False: an unknown clinic never alerts. A missed alert is
     recoverable by the weekly --obs triage; a false critical SMS on every
@@ -122,15 +132,23 @@ def calendar_backed(clinic_id: Optional[str]) -> bool:
 
     backed = False
     try:
-        import json
-        from pathlib import Path as _Path
+        from app.clinic_config import CLINICS, get_clinic
 
-        cfg = _Path(__file__).resolve().parents[1] / "clinics" / clinic_id / "clinic.json"
-        if cfg.is_file():
-            data = json.loads(cfg.read_text(encoding="utf-8-sig"))
-            system = str(((data.get("booking") or {}) or {}).get("system") or "").lower()
-            backed = any(s in system for s in _ID_BACKED_BOOKING_SYSTEMS)
-    except Exception as exc:  # pragma: no cover - config shape is the risk, not IO
+        # get_clinic() falls back to a DEFAULT config for an id it does not
+        # know, and that default reports booking_system=google_calendar — so
+        # trusting it blind would fail OPEN and alert on every unknown clinic.
+        # Only ask about a clinic that actually exists: either in the in-code
+        # registry (theorem, theorem_v3, ...) or as a clinic.json directory
+        # (jv_v1, northgate, vital_edge).
+        known = clinic_id in (CLINICS or {}) or (
+            Path(__file__).resolve().parents[1] / "clinics" / clinic_id / "clinic.json"
+        ).is_file()
+        if known:
+            system = str(
+                (get_clinic(clinic_id) or {}).get("booking_system") or ""
+            ).lower()
+            backed = system in _ID_BACKED_BOOKING_SYSTEMS
+    except Exception as exc:  # pragma: no cover - config shape is the risk
         _log.warning("[obs.alerts] calendar_backed(%s) failed: %r", clinic_id, exc)
         backed = False
 

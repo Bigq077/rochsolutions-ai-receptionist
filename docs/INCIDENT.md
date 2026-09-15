@@ -105,21 +105,28 @@ relying on it.** A default in code is not a decision.
 
 ### 3a. Tell the clinic — before they call you
 
-| Clinic | Contact | Phone | Email | Booking system |
-|---|---|---|---|---|
-| Theorem Health | `FILL: name` | 07870 166861 | info@theoremhealth.co.uk | Acuity |
-| Vital Edge Therapy | `FILL: name` | +44 7545 862307 | vitaledgetherapy@gmail.com | Google Calendar |
-| Joint Venture Physio | Marcus (`FILL: confirm`) | +44 7367 002651 | Jointventurephysiotherapy@gmail.com | Carepatron |
-| Northgate Physio | `FILL: name` | +44 7366 263180 | hello@northgatephysio.example | Carepatron |
+| Clinic | `clinic_id` in the store | Contact | Phone | Email | Writes through | Id field |
+|---|---|---|---|---|---|---|
+| Theorem Health | `theorem_v3` | `FILL: name` | 07870 166861 | info@theoremhealth.co.uk | acuity | `acuity_booking_id` |
+| Joint Venture Physio | `jv_v1` | Marcus (`FILL: confirm`) | +44 7367 002651 | Jointventurephysiotherapy@gmail.com | google_calendar | `calendar_event_id` |
+| Northgate Physio | `northgate` | `FILL: name` | +44 7366 263180 | hello@northgatephysio.example | google_calendar | `calendar_event_id` |
+| Vital Edge Therapy | `vital_edge` | `FILL: name` | +44 7545 862307 | vitaledgetherapy@gmail.com | google_calendar_provisional | `calendar_event_id` |
 
-*Read from each `app/clinics/<id>/clinic.json` on 2026-09-14. These are public
-lines — add a direct mobile for each owner.*
+*Contacts read from clinic config; `clinic_id` and `booking_system` verified
+against the live obs store on 2026-09-15.*
 
-**The booking system column changes how you verify a booking.** Acuity and Google
-Calendar clinics store a booking id (`acuity_booking_id` / `calendar_event_id`)
-you can check a confirmation against. Carepatron clinics book through a portal
-handoff and store **no id at all** — for those, "did the booking land?" cannot be
-answered from the call record and you must check Carepatron itself.
+**Two traps in that table.**
+
+1. **The live Theorem clinic reports as `theorem_v3`, not `theorem`.** It is
+   built in `clinic_config.py`, not `app/clinics/`, so anything that resolves a
+   clinic by looking for a `clinic.json` directory silently misses it.
+2. **`booking_system` is not `booking.system`.** The knowledge base says JV and
+   Northgate use "Carepatron" — that is what they tell patients. The code writes
+   through **google_calendar** for both. Verify a booking against the
+   integration, not the description.
+
+**Every live clinic returns a booking id**, so a confirmation with no id is
+checkable on all four.
 
 ### 3b. Holding message — send it, then go back to fixing
 
@@ -200,12 +207,14 @@ The last line is the only one that changes the future. If the honest answer is
 
 Be honest about what is not covered, so nobody discovers it at 9am:
 
-- **Booking integrity is now alerted, but only for two of four clinics.**
+- **Booking integrity is alerted on all four live clinics.**
   `booking_not_written` (critical) fires when Susie confirms a booking and no
-  calendar id came back — but only for Acuity and Google Calendar clinics. For
-  Carepatron clinics (Joint Venture, Northgate) no id exists, so a silently
-  failed booking there is still undetectable from the call record. That gap is
-  real and unclosed.
+  calendar id came back. Every live clinic writes through an id-returning
+  integration, so the check is meaningful everywhere.
+- **`final_state` is unusable.** All 929 stored calls report `GREETING`,
+  including completed bookings. The column is never advanced past its initial
+  value, so it cannot be used to find where a call stopped. Use `turn_traces`
+  or the transcript instead.
 - **Monitoring.** Observability is built — **22 modules** on
   `origin/latency-eval` (`git ls-tree --name-only origin/latency-eval app/obs/`)
   — but gated. `app/obs/__init__.py` states capture is "gated behind
