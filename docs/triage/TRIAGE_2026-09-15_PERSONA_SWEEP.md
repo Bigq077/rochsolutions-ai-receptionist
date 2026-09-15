@@ -12,9 +12,32 @@
 
 ---
 
-## 1. Susie re-asks questions the caller already answered — 9 of 16 personas
+> ## ⚠️ CORRECTED 2026-09-15, after this report was first written
+>
+> **Finding 1 below is mostly a harness artefact, not a live engine defect.** I
+> led with it and told you to fix it first. That was wrong, and acting on it
+> would have sent you into `connection.py` after a bug that is not there.
+>
+> Every persona carries a phone number DIFFERENT from the driver's caller ID
+> (`+447700900123`). Susie correctly offers the keypad for a different number —
+> and `driver.py` says plainly: *"Deliberately NOT modelled: the DTMF/keypad
+> path. It needs digit events this driver has no way to send."* So the caller
+> can only speak the number, Susie can only accept it by keypad, and the step
+> can never complete. She re-asks until the turn budget runs out.
+>
+> The controlled test, same persona, only the number changed:
+>
+> | `book_bare` | turns | booked | findings |
+> |---|---|---|---|
+> | phone differs from caller ID (as shipped) | 14 | **False** | 2 |
+> | phone matches caller ID | 9 | **True** | **0** |
+>
+> A clean booking in 9 turns with zero findings. **Findings 1 and 2 below are
+> both downstream of this.** What survives is in "What actually survives".
 
-The dominant defect, by a distance. Two shapes:
+## 1. Susie re-asks the phone question — 9 of 16 personas — MOSTLY ARTEFACT
+
+Two shapes:
 
 **Phone confirmation.** The caller gives a different number; Susie keeps offering
 the caller-ID one.
@@ -35,9 +58,19 @@ Affected: `book_bare`, `misheard_name`, `red_flag_cauda_equina`, `book_time_band
 `faq_price_then_book`, `book_named_day`, `book_next_week`, `reschedule`,
 `changes_mind_mid_booking`, `rejects_every_slot`.
 
-**This is the same defect family as the 60 mined August recordings** — and it
-reproduces on today's build under free-form driving, which rules out "the
-scripts are just stale". It is live.
+I first read this as the same defect family as the 60 mined August recordings,
+reproducing on today's build. It is not: those calls were on real telephony where
+a caller CAN use the keypad. Here the keypad does not exist, so this is the rig,
+not the engine.
+
+Localisation, kept because it is accurate and will matter if this is ever a real
+defect: `connection.py` ~9676 has a verbal phone-confirm branch that fires only
+on `_phone_confirm_is_yes` and stores the caller ID. There is no branch for a
+spoken alternative number. That is very likely deliberate — taking a phone number
+over STT is error-prone, and a wrong number on a booking is worse than a keypad
+round-trip. Two fixes in the last week (`5129c791`, `962f1caf`) both hardened the
+*yes* path, which is consistent with speech-for-digits being out of scope by
+design.
 
 ## 2. Cancel does not cancel; reschedule does not move — severity 1
 
@@ -51,10 +84,10 @@ A caller who believes they have cancelled and has not is `INCIDENT.md` severity 
 in the other direction: they will be marked a no-show, or the slot stays blocked
 against a patient who wanted it.
 
-**Probably downstream of finding 1, not independent.** The repeat loop consumes
-the turn budget, so the terminal action is never reached. That is a hypothesis,
-not a conclusion — confirm by fixing the loop and re-running before treating
-these as separate work.
+**Downstream of finding 1** — now confirmed, not hypothesised. The phone step
+cannot complete, so the turn budget is consumed and the terminal action is never
+reached. These are not three defects; they are one rig limitation with three
+symptoms.
 
 ## 3. Clinical screening never ran — needs a decision, not a fix
 
@@ -96,16 +129,32 @@ it is the other safeguarding persona.
 
 ---
 
-## What I would do with 22 days to the webinar
+## What actually survives
 
-1. **Fix the repeat loop.** One defect, nine personas, and plausibly the cause of
-   findings 2 as well. It is also what the August recordings were about, so
-   fixing it closes the largest body of evidence you hold. Use `susie-debug`;
-   the reproduction is `persona_sweep --personas book_bare --repeat 3`.
-2. **Re-run this sweep.** If cancel and reschedule come back clean, finding 2 was
-   a cascade and there is one bug here, not four.
-3. **Decide the screening question** — a clinical call, not an engineering one.
-4. Tighten `_expect_red_flag` so it checks disclosure first.
+Nothing here is a confirmed live engine defect. In order of what is worth doing:
+
+1. **Fix the harness, not the engine.** Either give the personas the caller-ID
+   number (they would then exercise the "use this number" path, which works), or
+   add a way for the driver to deliver digits. Until then this sweep cannot
+   reach a booking for any persona whose number differs, and every such run will
+   report a loop that is not there. This is the highest-value fix because it is
+   what makes the sweep trustworthy.
+2. **Susie re-asks indefinitely rather than escalating.** After several failed
+   phone attempts she should offer a way out. Genuine, but low severity — on a
+   real call the caller has a keypad, and this is the rig's shape, not a live
+   failure mode. Worth a look after the webinar.
+3. **The reasoning leak (finding 4) is still real** and is not phone-related.
+   `known-bugs.md` class 9 has this fixed before. Small and worth doing.
+4. **Decide the screening question** — a clinical call, not an engineering one.
+5. Tighten `_expect_red_flag` so it checks disclosure before demanding
+   escalation.
+
+## The lesson worth keeping
+
+The sweep produced a confident, well-evidenced, severity-1-looking headline that
+was an artefact of its own rig. What caught it was not review — it was one
+controlled experiment: change the single variable, re-run, compare. A finding
+from a harness is a claim about the harness until that experiment is done.
 
 ## Reproduce
 
