@@ -45,6 +45,48 @@ def _names_from_call(call: Dict[str, Any]) -> List[str]:
     return names
 
 
+# Speakable stand-ins for the redactor's [NAME] placeholder.
+#
+# `responses` are re-SPOKEN at the receptionist during a replay, unlike
+# `transcript`, which is a record. A literal "[NAME] [NAME]" is not a name, and
+# name_collector correctly refuses it — "I didn't quite catch that, could you say
+# your name again?" — so the replay stalls at the name step and can never reach a
+# booking. Measured 2026-09-15: five mined calls replayed, none booked, and the
+# session recorded collected.name == 'Go', taken from a later "yes please go
+# ahead".
+#
+# Obviously fictional, and no real name is recoverable from them: the redactor
+# has already removed the original and the substitute is chosen by call slug, not
+# derived from what it replaced.
+_SYNTHETIC_FIRST = ("Alex", "Sam", "Jordan", "Casey", "Morgan", "Riley", "Quinn", "Avery")
+_SYNTHETIC_LAST = ("Bennett", "Carver", "Delaney", "Ellery", "Fairbank", "Granger",
+                   "Hollis", "Ingram")
+
+
+def _synthetic_name(seed: str) -> tuple:
+    """A stable (first, last) for this call — same slug always yields the same name."""
+    h = sum(ord(c) for c in (seed or "x"))
+    return _SYNTHETIC_FIRST[h % len(_SYNTHETIC_FIRST)], _SYNTHETIC_LAST[(h // 7) % len(_SYNTHETIC_LAST)]
+
+
+def _make_speakable(responses: List[str], seed: str) -> List[str]:
+    """Swap [NAME] placeholders for a speakable synthetic name.
+
+    [PHONE] is deliberately left alone: assert_no_pii scans for phone PATTERNS,
+    so substituting a real-looking number would trip the leak guard, and
+    weakening that guard is not worth the three responses that carry one. The
+    phone step is usually driven by caller id ("yes, use this number") anyway.
+    """
+    first, last = _synthetic_name(seed)
+    out: List[str] = []
+    for r in responses:
+        if isinstance(r, str) and "[NAME]" in r:
+            r = r.replace("[NAME] [NAME]", f"{first} {last}")
+            r = r.replace("[NAME]", first)
+        out.append(r)
+    return out
+
+
 def _caller_responses(transcript: List[Dict[str, str]]) -> List[str]:
     """Redacted caller turns (role user/caller), in order — the scenario inputs."""
     return [t["text"] for t in transcript
@@ -65,6 +107,9 @@ def build_scenario(call: Dict[str, Any]) -> Dict[str, Any]:
     responses = _caller_responses(transcript)
     for r in responses:
         redact.assert_no_pii(r, where="response")
+    # AFTER the leak check, so the guard always runs against the real redacted
+    # text and never against a substitute that could mask a survivor.
+    responses = _make_speakable(responses, _slug(call.get("call_sid")))
 
     scenario = {
         "id": _slug(call.get("call_sid")),
