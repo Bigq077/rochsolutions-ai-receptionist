@@ -102,7 +102,7 @@
     "_owner_notify_note": "Marcus's mobile — receives an SMS ping when an insurance booking is made so he can follow up to collect pre-auth/cover details.",
     "booking_system": "google_calendar",
     "_calendar_id_note": "JV GO-LIVE calendar = the JV account's own primary calendar, the ONLY one Carepatron syncs both ways. Do not split Susie's calendar from Carepatron's again: on 2026-08-11 that split caused a REAL DOUBLE-BOOKING, because freebusy() queries a single calendar id and Marcus's Carepatron appointments were invisible. Set on canonical 2026-08-29, replacing the 63bc844e... 'Susie Demo' repoint. That repoint existed because eval calls on this branch reached jv_v1; since 1885b86b the test line +447366263180 resolves to 'northgate', the demo tenant, so jv_v1 is no longer reachable here by phone. tests/tenancy pins both halves: this value, and that the auto-suite's default number never resolves to a live patient clinic. Access: owned by jointventurephysiotherapy@gmail.com and shared with quentinroch10@gmail.com ('Make changes and see all event details'), which is what google_tokens for clinic_id=jv_v1 is OAuthed as - no re-authorisation needed. Verify with /auth/google/status?clinic_id=jv_v1. NOTE: DEFAULT_CALENDAR_ID in Render does NOTHING while this key has a value - _resolve_calendar_id reads clinic.json first.",
-    "calendar_id": "REPLACE_WITH_JV_TEST_CALENDAR_ID",
+    "calendar_id": "2acfcf425a3a523bc4a09d41fbf4c5aec451a2f87a98c935f856fdf7d4b59053@group.calendar.google.com",
     "_digest_note": "End-of-day email of the day's calendar bookings so the agency enters them into Carepatron. Set email_to (or env DIGEST_EMAIL_TO) before go-live; sends once daily at hour:minute London. Requires SMTP_* env + google_tokens connected.",
     "digest": {
       "enabled": true,
@@ -1642,5 +1642,5 @@
     "missed_call_tracking": "TBC",
     "notifications_for_manual_followups": "TBC"
   },
-  "_test_clinic_note": "Replay-only copy of jv_v1. Same greeting, services, pricing, screening and flow, so a scenario mined from Joint Venture reproduces faithfully. operational.calendar_id MUST be a throwaway Google Calendar shared with the service account - never jointventurephysiotherapy@gmail.com. Until it is replaced, tests/auto/scenarios/replay_targets.py refuses to replay against this clinic. Reached only by +447700900001, an Ofcom drama-reserved number (07700 900000-900999) that is never routable."
+  "_test_clinic_note": "Replay-only copy of jv_v1. Same greeting, services, pricing, screening and flow, so a scenario mined from Joint Venture reproduces faithfully. operational.calendar_id MUST be a throwaway Google Calendar shared with the service account - never jointventurephysiotherapy@gmail.com. Reached only by +447700900001, an Ofcom drama-reserved number (07700 900000-900999) that is never routable."
 }
