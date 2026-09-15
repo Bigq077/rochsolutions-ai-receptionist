@@ -38,6 +38,13 @@ TWILIO_TO_CLINIC: Dict[str, str] = {
     # answering a real call. Put it back to "jv_v1" to undo — one word, and the
     # only thing that changes is which config the same code renders.
     "+447366263180": "northgate",
+    # Replay-only. Ofcom reserves 07700 900000-900999 for drama and testing, so
+    # this can never be dialled by a real caller. It exists so a scenario mined
+    # from Joint Venture can be re-driven against JV's own config (greeting,
+    # services, pricing, screening) without touching the live clinic's diary.
+    # See tests/auto/scenarios/replay_targets.py, which refuses to use it until
+    # jv_v1_test carries a real throwaway calendar id.
+    "+447700900001": "jv_v1_test",
     "+447367002651": "jv_v1",         # Joint Venture Physiotherapy (Bolton) — reassigned from Theorem's retired legacy-pipeline line (confirmed retired 2026-06-23)
     # +447426779875 belongs to VITAL EDGE (operator confirmed 2026-07-10). Theorem
     # has no claim on it — Theorem's live lines are +447380841468 (v3) and

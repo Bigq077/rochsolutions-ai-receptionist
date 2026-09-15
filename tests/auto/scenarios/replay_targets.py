@@ -40,16 +40,44 @@ REPLAY_TARGETS: dict[str, str] = {
     # the 45 days to 2026-09-15. Safe to replay against itself.
     "northgate":  "+447366263180",
     "demo":       "+447366263180",
+    # jv_v1 -> jv_v1_test, a replay-only copy of JV's config reached by an Ofcom
+    # drama-reserved number. Gated by _jv_test_calendar_ready(): the copy ships
+    # with a sentinel calendar id and is refused until a throwaway calendar
+    # replaces it, because a clinic.json copied from another tenant that keeps
+    # the original calendar_id writes silently into that tenant's diary
+    # (clinic_config.py says exactly this at the line that sets it).
+    "jv_v1":      "+447700900001",
+    "jv_v1_test": "+447700900001",
 }
+
+_JV_CALENDAR_SENTINEL = "REPLACE_WITH_JV_TEST_CALENDAR_ID"
+
+
+def _jv_test_calendar_ready() -> bool:
+    """True once jv_v1_test points at a calendar that is not JV's own."""
+    try:
+        from app.clinic_config import get_clinic
+
+        test_cal = ((get_clinic("jv_v1_test") or {}).get("calendar_id") or "").strip()
+        live_cal = ((get_clinic("jv_v1") or {}).get("calendar_id") or "").strip()
+    except Exception:
+        return False
+    if not test_cal or test_cal == _JV_CALENDAR_SENTINEL:
+        return False
+    if test_cal in ("primary",) or test_cal == live_cal:
+        return False
+    return True
 
 # Clinics with NO safe replay target. Listed explicitly rather than omitted, so
 # the reason is recorded and a future test line is an obvious one-line move.
 NO_SAFE_TARGET: dict[str, str] = {
     "jv_v1": (
-        "Joint Venture is live and carries ~80% of real traffic (359 of 449 "
-        "calls in the 45 days to 2026-09-15). No JV test line exists, and "
-        "replaying against +447367002651 would drive a real clinic's Google "
-        "Calendar."
+        "jv_v1_test exists but still carries the sentinel calendar id. Put a "
+        "THROWAWAY Google Calendar id in "
+        "app/clinics/jv_v1_test/clinic.json -> operational.calendar_id (share "
+        "the calendar with the service account first), and these become "
+        "runnable. It must not be jointventurephysiotherapy@gmail.com or "
+        "'primary'."
     ),
     "vital_edge": (
         "Vital Edge is live on +447426779875 with a provisional Google Calendar "
@@ -65,6 +93,8 @@ def replay_target(clinic_id: str | None) -> str | None:
     the failure this module exists to prevent.
     """
     if not clinic_id:
+        return None
+    if clinic_id in ("jv_v1", "jv_v1_test") and not _jv_test_calendar_ready():
         return None
     return REPLAY_TARGETS.get(clinic_id)
 
