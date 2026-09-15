@@ -1642,5 +1642,6 @@
     "missed_call_tracking": "TBC",
     "notifications_for_manual_followups": "TBC"
   },
-  "_test_clinic_note": "Replay-only copy of jv_v1. Same greeting, services, pricing, screening and flow, so a scenario mined from Joint Venture reproduces faithfully. operational.calendar_id MUST be a throwaway Google Calendar shared with the service account - never jointventurephysiotherapy@gmail.com. Reached only by +447700900001, an Ofcom drama-reserved number (07700 900000-900999) that is never routable."
+  "_test_clinic_note": "Replay-only copy of jv_v1. Same greeting, services, pricing, screening and flow, so a scenario mined from Joint Venture reproduces faithfully. operational.calendar_id MUST be a throwaway Google Calendar shared with the service account - never jointventurephysiotherapy@gmail.com. Reached only by +447700900001, an Ofcom drama-reserved number (07700 900000-900999) that is never routable.",
+  "replay_only": true
 }

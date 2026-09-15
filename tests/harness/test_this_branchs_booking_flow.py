@@ -85,6 +85,12 @@ def _clinics_with_a_length_choice() -> list:
             continue
         if cfg.get("prompt_engine") != "template_v1":
             continue
+        # Replay-only copies (jv_v1_test) exist so a mined call can be re-driven
+        # against its own clinic's config without touching the live one. They
+        # duplicate a real clinic exactly, so discovering them here doubles the
+        # model runs and tells you nothing new.
+        if cfg.get("replay_only"):
+            continue
         try:
             clinic = get_clinic(d.name)
         except Exception:

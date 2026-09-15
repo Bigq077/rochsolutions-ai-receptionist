@@ -49,7 +49,14 @@ HANG_UP = "[END CALL]"
 #: between runs therefore has to come from the personas themselves rather than
 #: from sampling, which is the better place for it anyway -- a persona is
 #: reviewable and a temperature is not.
-CALLER_MODEL = os.getenv("HARNESS_CALLER_MODEL", "claude-opus-5")
+# Haiku, not Opus. This model plays a physiotherapy patient — "yeah, back pain,
+# next Tuesday" — which is not work that needs a frontier model, and the caller
+# is explicitly forbidden from judging the call (verdicts.py does that), so its
+# reasoning depth does not affect any verdict. Opus 5 is $5/$25 per MTok against
+# Haiku's $1/$5: about 5x the cost of a suite run for no signal. A less capable
+# caller is arguably the more honest test — a real patient is not articulate.
+# Override with HARNESS_CALLER_MODEL to compare.
+CALLER_MODEL = os.getenv("HARNESS_CALLER_MODEL", "claude-haiku-4-5")
 
 
 @dataclasses.dataclass(frozen=True)
