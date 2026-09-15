@@ -15,7 +15,13 @@ SCENARIO = {'id': 'regression_0c8bb2fc',
                'Yes use this number',
                'Yes please go ahead',
                "Yes that's right"],
- 'expected': {'no_technical_error': True},
+ 'expected': {'no_technical_error': True,
+              # The defect this call recorded: Susie gives a correct
+              # booking readback and then resets to intent detection,
+              # looping until the caller gives up. Reproduced on build
+              # 44961d34 (2026-09-15) — judged 1-2, no booking, tagged
+              # booking_error/loop/dead_end, while the suite said PASS.
+              'not_said': ['are you calling to book, reschedule, or cancel']},
  'transcript': [{'role': 'assistant',
                  'text': "Hi there, I'm Susie, Joint Venture Physiotherapy's AI receptionist — how "
                          'can I help you today?'},
