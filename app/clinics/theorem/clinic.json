@@ -111,7 +111,7 @@
       "name": "Prescribing",
       "typical_duration_minutes": 50,
       "for_patients": ["Both"],
-      "description": "As qualified prescribers, our physiotherapists can prescribe medications when appropriate. If you require something like analgesia to manage pain, we can facilitate that as part of your care. Treatment plans are designed with safety and effectiveness in mind.",
+      "description": "Mark is a qualified prescriber and can prescribe medications when appropriate. Leanne is not a prescriber, but after an assessment she can ask Mark to prescribe. If you require something like analgesia to manage pain, we can facilitate that as part of your care. Treatment plans are designed with safety and effectiveness in mind.",
       "pricing": {
         "base_price_gbp": 12.5
       }

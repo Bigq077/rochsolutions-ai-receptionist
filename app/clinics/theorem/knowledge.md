@@ -71,7 +71,7 @@ If at any point it becomes clear that specialist input is needed — such as a G
 ### Prescribing
 **For:** Existing patients | **Length:** 50 minutes
 
-Our physiotherapists are qualified prescribers, which means that where appropriate they can prescribe medication as part of a patient's care — for example, analgesia to help manage pain during recovery. This is always done with safety and effectiveness as the priority, and it forms part of the broader treatment plan rather than a standalone appointment.
+Mark is a qualified prescriber, which means that where appropriate he can prescribe medication as part of a patient's care. Leanne is not a prescriber, but after an assessment she can ask Mark to prescribe — for example, analgesia to help manage pain during recovery. This is always done with safety and effectiveness as the priority, and it forms part of the broader treatment plan rather than a standalone appointment.
 
 ---
 
@@ -122,7 +122,7 @@ This service reflects Theorem's belief that physical and emotional health are de
 
 ## What makes Theorem different
 - Holistic by design: physical and emotional health treated together, not separately
-- Qualified prescribers on staff — rare in a physiotherapy setting
+- A qualified prescriber on staff (Mark) — rare in a physiotherapy setting
 - Advanced technology available in-clinic: shockwave, Class IV laser, acupuncture
 - Rehabilitation instructors working alongside physiotherapists for coordinated care
 - All appointments 50 minutes — enough time to do things properly

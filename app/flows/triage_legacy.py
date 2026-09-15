@@ -953,9 +953,10 @@ SERVICE_EXPLANATIONS: Dict[str, Dict[str, str]] = {
 
     "prescribing": {
         "short": (
-            "Our physiotherapists are qualified independent prescribers. "
+            "Mark is a qualified independent prescriber. "
             "If medication would help — like pain relief — "
-            "they can prescribe that directly, without you needing a separate GP appointment."
+            "he can prescribe that directly, without you needing a separate GP appointment. "
+            "Leanne isn't a prescriber, but she can ask Mark to prescribe after your assessment."
         ),
         "detailed": (
             "It's one of those things that makes a real difference in practice. "

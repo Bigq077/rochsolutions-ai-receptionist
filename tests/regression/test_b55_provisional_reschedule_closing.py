@@ -361,7 +361,12 @@ UNCHANGED_CLINIC_PROMPTS = {
     # the duplicate. Same edit for every clinic; only theorem_v3 is pinned
     # here. Verified by diffing the rendered text: that line is the only
     # change.
-    "theorem_v3": "8d1863e1b9c72d34",
+    # e72f40669b213325 from 15 Sep 2026: Leanne is NOT a prescriber (Mark).
+    # "Practitioners (both qualified prescribers)." became "Practitioners."
+    # plus one "Prescribing: Mark is the ONLY prescriber …" line. Verified by
+    # diffing the rendered text: those are the only changed lines, and demo,
+    # jv_v1 and theorem held byte-identical on the same run.
+    "theorem_v3": "e72f40669b213325",
 }
 
 OLD_CONFIRMED_WORDING = ("that's you rescheduled", "you're now in for")

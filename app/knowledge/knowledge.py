@@ -539,16 +539,18 @@ SERVICES = {
         "price": "£12.50 consultation fee",
         "duration": "Part of physiotherapy session",
         "short": (
-            "Our physiotherapists are qualified independent prescribers. "
+            "Mark is a qualified independent prescriber. "
             "If medication would help — like pain relief — "
-            "they can prescribe that directly, without you needing a separate GP appointment."
+            "he can prescribe that directly, without you needing a separate GP appointment. "
+            "Leanne isn't a prescriber, but she can ask Mark to prescribe after your assessment."
         ),
         "detailed": (
             "It's one of those things that makes a real difference in practice. "
             "\n\n"
             "If during your session we feel that medication would support your recovery — "
             "whether that's pain relief, anti-inflammatories, or something else — "
-            "our physiotherapists can prescribe that directly. "
+            "Mark can prescribe that directly. If you're seeing Leanne, she isn't a "
+            "prescriber, but she can ask Mark to prescribe after your assessment. "
             "\n\n"
             "Your treatment plan is always designed with both safety and effectiveness in mind. "
             "We only prescribe when it genuinely makes sense for your situation. "

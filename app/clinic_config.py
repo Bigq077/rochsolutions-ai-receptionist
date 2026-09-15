@@ -544,7 +544,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         "services": [
             "Physiotherapy assessment (holistic approach: mobility/strength + emotional well-being lens)",
             "Physiotherapy follow-up sessions (progress tracking + plan refinement; referrals/imaging support where appropriate)",
-            "Prescribing (qualified prescribers; e.g., analgesia when appropriate)",
+            "Prescribing (Mark is a qualified prescriber; Leanne can ask Mark to prescribe after assessment; e.g., analgesia when appropriate)",
             "Remedial rehabilitation with rehabilitation instructors (coordinated care)",
             "Shockwave therapy (targeted sound waves to stimulate healing; often tendon issues)",
             "Class IV Laser therapy (pain relief, reduce inflammation, speed tissue repair)",
@@ -576,7 +576,8 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                 "or ultrasound, we help ensure a smooth path to the best possible treatment."
             ),
             "Prescribing": (
-                "As qualified prescribers, our physiotherapists can prescribe medications when appropriate. "
+                "Mark is a qualified prescriber, so he can prescribe medication when appropriate. "
+                "Leanne isn't a prescriber, but after your assessment she can ask Mark to prescribe. "
                 "If you require something like analgesia to manage pain, we can facilitate that as part of "
                 "your care. Treatment plans are designed with safety and effectiveness in mind."
             ),
@@ -925,7 +926,8 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                 "Leanne is also a chartered physiotherapist and HCPC-registered. "
                 "She works at Awlstuh on Thursdays and Fridays, "
                 "and at Redditch on Mondays. "
-                "Both are qualified prescribers. "
+                "Mark is a qualified prescriber; Leanne isn't, but after an assessment she can ask "
+                "Mark to prescribe. "
                 "If you'd like to see a specific practitioner, just let me know and I'll look for "
                 "slots with them."
             ),
@@ -1085,10 +1087,12 @@ CLINICS: Dict[str, Dict[str, Any]] = {
 
             # ── Prescribing service ────────────────────────────────────────────
             "prescribing_service": (
-                "Both Mark and Leanne are qualified prescribers. "
+                "Mark is a qualified prescriber. "
                 "If during your physiotherapy assessment or follow-up it's appropriate to prescribe "
-                "medication — for example, analgesia to support your recovery — they can do that "
+                "medication — for example, analgesia to support your recovery — he can do that "
                 "directly without you needing to go back to your GP. "
+                "Leanne isn't a prescriber, but if you see her she can ask Mark to prescribe after "
+                "your assessment. "
                 "A prescribing consultation is £12.50."
             ),
 
@@ -1214,7 +1218,8 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                 "Clinical Science. "
                 "Leanne holds a BSc Honours in Physiotherapy and is also HCPC-registered and a "
                 "member of the Chartered Society of Physiotherapy. "
-                "Both are qualified prescribers."
+                "Mark is also a qualified prescriber; Leanne can ask him to prescribe after an "
+                "assessment."
             ),
 
             # ── I've been discharged — can I come back? ────────────────────────
@@ -1348,8 +1353,10 @@ THEOREM_PRACTITIONERS = {
         "name": "Leanne",
         "full_name": "Leanne",
         "title": "BSc (Hons) Physiotherapy, Level 3 Extended Diploma in Sports and Exercise Sciences, HCPC, CSP",
-        "role": "Chartered Physiotherapist & Prescriber",
-        "prescribes": True,
+        "role": "Chartered Physiotherapist",
+        # Not a prescriber (Mark, 2026-09-15) — she can ask Mark to prescribe
+        # after assessment. See canonical KNOWN_CONFLICTS["leanne_prescribes"].
+        "prescribes": False,
         # Flat union for filter_slots_by_practitioner_availability
         "available_days": ["mon", "thu", "fri"],
         # Per-location breakdown
@@ -1419,7 +1426,7 @@ THEOREM_APPOINTMENT_TYPES = {
         "name": "Prescribing Consultation",
         "duration_minutes": 20,
         "price_gbp": 12.50,
-        "description": "Medication prescription service with our qualified prescribers.",
+        "description": "Medication prescription service with Mark, our qualified prescriber.",
         "category": "prescribing",
         "new_patients": False,
         "returning_patients": True,

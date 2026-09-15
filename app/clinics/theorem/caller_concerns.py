@@ -173,7 +173,7 @@ OBJECTION_PLAYBOOK: Dict[str, Dict[str, str]] = {
     "provider_comparison": {
         "trigger": "Why you over a chiropractor / osteopath / sports massage?",
         "script": "They're all valid in their place — our team are chartered, "
-                  "HCPC-registered physiotherapists and qualified prescribers, so you "
+                  "HCPC-registered physiotherapists, and Mark is a qualified prescriber, so you "
                   "get an assessment-led plan rather than one fixed technique. The "
                   "best starting point is an assessment so they can tailor it to you.",
     },
@@ -636,16 +636,20 @@ CALLER_CONCERNS: Dict[str, Dict[str, Any]] = {
         "intent_types": ["diagnosis", "treatment_suitability", "booking"],
         "clinical_risk": "red_flag_screen",
         "conversion_risk": "low",
-        "may_say": "The physios are qualified prescribers, so prescribing can form part of "
-                   "care — but no specific medication advice can be given over the phone.",
+        "may_say": "Mark is a qualified prescriber, so prescribing can form part of care. "
+                   "Leanne is NOT a prescriber — if you see Leanne, she can ask Mark to "
+                   "prescribe after your assessment. No specific medication advice can be "
+                   "given over the phone.",
         "must_not_say": ["Never advise what medication to take, doses, or to start/stop anything.",
+                         "Never say Leanne prescribes, or that 'the physios' / 'our team' are prescribers.",
                          "Don't diagnose."],
         "best_next_step": "Explain prescribing exists within care; for what-to-take-now, "
                           "redirect to pharmacist/GP; offer an assessment.",
         "service_route": "assessment",
         "clarify_when": "Separate 'do you prescribe?' (yes, in care) from 'what should I take?' (cannot advise).",
         "escalate_when": "If asking to stop/start meds or in acute distress → redirect to pharmacist/GP/urgent care.",
-        "answer_style": "'Our physios are prescribers, so that can be part of your care — "
+        "answer_style": "'Mark's a qualified prescriber, so that can be part of your care — "
+                        "and if you see Leanne, she can ask Mark to prescribe — "
                         "but I can't advise what to take over the phone. For something "
                         "now, a pharmacist or GP is best; shall I book you an assessment?'",
     },
@@ -717,15 +721,15 @@ CALLER_CONCERNS: Dict[str, Dict[str, Any]] = {
         "intent_types": ["treatment_suitability", "booking"],
         "clinical_risk": "low",
         "conversion_risk": "medium",
-        "may_say": "Use OBJECTION_PLAYBOOK['provider_comparison']: chartered HCPC physios and "
-                   "prescribers; assessment-led, not one fixed technique. Stay factual.",
+        "may_say": "Use OBJECTION_PLAYBOOK['provider_comparison']: chartered HCPC physios, "
+                   "Mark a qualified prescriber; assessment-led, not one fixed technique. Stay factual.",
         "must_not_say": ["Don't disparage other professions.", "Don't diagnose."],
         "best_next_step": "Position physio's assessment-led model, then offer an assessment.",
         "service_route": "assessment",
         "clarify_when": "n/a.",
         "escalate_when": "n/a.",
-        "answer_style": "'They've all got their place — our team are chartered physios and "
-                        "prescribers, so you get an assessment-led plan rather than one "
+        "answer_style": "'They've all got their place — our team are chartered physios, "
+                        "with Mark a qualified prescriber, so you get an assessment-led plan rather than one "
                         "fixed technique. Shall I book you an assessment?'",
     },
     "existing_followup": {

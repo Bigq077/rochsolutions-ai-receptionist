@@ -149,9 +149,18 @@ PRACTITIONERS: Dict[str, Dict[str, Any]] = {
         "id": "leanne",
         "name": "Leanne",
         "full_name": "Leanne",
-        "role": "Chartered Physiotherapist & Prescriber",
+        "role": "Chartered Physiotherapist",
         "credentials": "BSc (Hons) Physiotherapy, HCPC, CSP",
-        "prescribes": True,
+        # NOT a prescriber — corrected 2026-09-15 from Mark: "after assessment,
+        # she can ask me to prescribe". See KNOWN_CONFLICTS["leanne_prescribes"].
+        "prescribes": False,
+        # The pathway, not just the flag: a caller asking "can Leanne sort my
+        # pain relief?" is owed "yes, via Mark", not a bare no.
+        "prescribing_via": "mark",
+        "prescribing_pathway": (
+            "Leanne does not prescribe. After an assessment with her, she can "
+            "ask Mark to prescribe if medication is appropriate."
+        ),
         "location_days": {
             "alcester": ["thu"],   # Thursday evenings only
             "redditch": [],        # Not available at Redditch
@@ -215,7 +224,11 @@ SERVICES: Dict[str, Dict[str, Any]] = {
         "price_gbp": 12.50,
         "for_patients": ["returning"],
         "locations": ["alcester", "redditch"],
-        "description": "Qualified prescribers can prescribe e.g. analgesia as part of care.",
+        "description": (
+            "Mark is a qualified prescriber and can prescribe e.g. analgesia as "
+            "part of care. Leanne is not a prescriber; after assessment she can "
+            "ask Mark to prescribe."
+        ),
     },
     "acupuncture": {
         "name": "Acupuncture",
@@ -542,6 +555,29 @@ KNOWN_CONFLICTS: Dict[str, Dict[str, Any]] = {
                 "LOCATIONS.opening_hours left unchanged and is NOT read at "
                 "runtime. (Redditch is also not bookable via Susie — see the "
                 "Redditch redirect.)",
+        "resolved": True,
+        "human_confirmation_required": False,
+    },
+    "leanne_prescribes": {
+        "canonical": False,
+        "conflicting_value": True,
+        "conflicting_source": (
+            "this file (PRACTITIONERS['leanne'].role 'Chartered Physiotherapist & "
+            "Prescriber', prescribes True); app/clinic_config.py THEOREM_PRACTITIONERS "
+            "and FAQ text ('Both are qualified prescribers'); caller_concerns.py, "
+            "clinic.json, knowledge.md, flows/triage_legacy.py (plural 'our "
+            "physiotherapists are prescribers')"
+        ),
+        "note": "RESOLVED 2026-09-15 (Mark, via the owner): Leanne is NOT a "
+                "prescriber — 'after assessment, she can ask me to prescribe'. "
+                "Mark is the only prescriber. The 2026-08-31 ruling had it "
+                "backwards (it held this file right and the website wrong); its "
+                "demand for written confirmation is what kept the false claim off "
+                "the website's location pages, while Susie had already shipped the "
+                "unverified value. Rule for regulated facts: when two systems "
+                "disagree, the tie-break is neither system — it is the person the "
+                "fact is about. obs 2026-09-15: 0 of 147 Theorem calls had Susie "
+                "mention prescribing, so no caller is known to have heard it.",
         "resolved": True,
         "human_confirmation_required": False,
     },
