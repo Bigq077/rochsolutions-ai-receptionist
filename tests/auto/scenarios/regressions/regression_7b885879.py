@@ -55,7 +55,7 @@ SCENARIO = {'id': 'regression_7b885879',
                          "ready, we're here. I want to make sure I get this right for you — did "
                          'you want to cancel the appointment, or reschedule it to a different '
                          'day?'}],
- 'source': {'call_sid_slug': 'regression_7b885879',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_7b885879',
             'quality_score': 1,
             'failure_tags': ['loop', 'dead_end', 'booking_error', 'caller_frustration'],
             'rubric_version': 'v2'}}

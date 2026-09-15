@@ -63,7 +63,7 @@ SCENARIO = {'id': 'regression_7fc9ed08',
                          "ready, we're here. Number 1, Monday 24th August at half past four in the "
                          'afternoon, or Number 2, Tuesday 25th August at half past six in the '
                          'evening?'}],
- 'source': {'call_sid_slug': 'regression_7fc9ed08',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_7fc9ed08',
             'quality_score': 1,
             'failure_tags': ['loop', 'booking_error', 'dead_end', 'hallucination'],
             'rubric_version': 'v2'}}

@@ -101,7 +101,7 @@ SCENARIO = {'id': 'regression_810bf9eb',
                  'text': "That's you rescheduled — you're now in for Monday the 7th of September "
                          "at six in the evening. Confirmation text on its way. We'll see you then "
                          '— take care.'}],
- 'source': {'call_sid_slug': 'regression_810bf9eb',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_810bf9eb',
             'quality_score': 2,
             'failure_tags': ['wrong_info', 'caller_frustration', 'loop'],
             'rubric_version': 'v2'}}

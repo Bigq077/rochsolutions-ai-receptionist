@@ -81,7 +81,7 @@ SCENARIO = {'id': 'regression_239a4360',
                 {'role': 'assistant',
                  'text': "I'm having trouble hearing you — you might be breaking up. Could I take "
                          'your first name and surname?'}],
- 'source': {'call_sid_slug': 'regression_239a4360',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_239a4360',
             'quality_score': 1,
             'failure_tags': ['hallucination', 'wrong_info', 'loop', 'booking_error', 'dead_end'],
             'rubric_version': 'v2'}}

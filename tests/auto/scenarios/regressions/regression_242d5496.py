@@ -133,7 +133,7 @@ SCENARIO = {'id': 'regression_242d5496',
                  'text': "Sorry, I didn't quite catch that. Are you calling to book, reschedule, "
                          "or cancel an appointment? So that's [NAME] [NAME], Tuesday the 26th of "
                          'August at eight in the evening — shall I go ahead and book that in?'}],
- 'source': {'call_sid_slug': 'regression_242d5496',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_242d5496',
             'quality_score': 1,
             'failure_tags': ['loop',
                              'booking_error',

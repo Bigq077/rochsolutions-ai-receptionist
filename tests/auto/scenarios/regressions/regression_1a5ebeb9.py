@@ -73,7 +73,7 @@ SCENARIO = {'id': 'regression_1a5ebeb9',
                          "or cancel an appointment? — if you'd like to call back when you're "
                          "ready, we're here. [NAME] one works best — Monday the 24th at half past "
                          'seven, or Tuesday the 25th at eight in the evening?'}],
- 'source': {'call_sid_slug': 'regression_1a5ebeb9',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_1a5ebeb9',
             'quality_score': 1,
             'failure_tags': ['wrong_info', 'loop', 'booking_error', 'dead_end'],
             'rubric_version': 'v2'}}

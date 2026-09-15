@@ -68,7 +68,7 @@ SCENARIO = {'id': 'regression_2e42f07c',
                 {'role': 'assistant',
                  'text': 'I already have everything I need. Let me get that moved for you now.'},
                 {'role': 'assistant', 'text': 'Right, pulling you up —'}],
- 'source': {'call_sid_slug': 'regression_2e42f07c',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_2e42f07c',
             'quality_score': 1,
             'failure_tags': ['loop', 'booking_error', 'dead_end'],
             'rubric_version': 'v2'}}

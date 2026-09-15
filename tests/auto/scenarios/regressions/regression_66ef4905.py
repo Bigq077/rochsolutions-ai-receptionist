@@ -50,7 +50,7 @@ SCENARIO = {'id': 'regression_66ef4905',
                 {'role': 'assistant', 'text': 'Just getting that for you…'},
                 {'role': 'assistant',
                  'text': "Sorry, I didn't catch that. Anything else you'd like to know?"}],
- 'source': {'call_sid_slug': 'regression_66ef4905',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_66ef4905',
             'quality_score': 1,
             'failure_tags': ['missed_escalation', 'loop', 'dead_end', 'caller_frustration'],
             'rubric_version': 'v2'}}

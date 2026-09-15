@@ -32,7 +32,7 @@ SCENARIO = {'id': 'regression_4bbbf6bb',
                 {'role': 'assistant',
                  'text': 'Number 2, Friday 4th September — nine in the morning. Or eleven in the '
                          'morning. Either of those suit you?'}],
- 'source': {'call_sid_slug': 'regression_4bbbf6bb',
+ 'source': {'clinic_id': 'theorem_v3', 'call_sid_slug': 'regression_4bbbf6bb',
             'quality_score': 2,
             'failure_tags': ['dead_end', 'booking_error'],
             'rubric_version': 'v2'}}

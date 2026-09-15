@@ -72,7 +72,7 @@ SCENARIO = {'id': 'regression_b68eb009',
                          'phone number and need to look up the appointment first, then reschedule. '
                          'Let me look up the appointment and then reschedule it.'},
                 {'role': 'assistant', 'text': 'Right, pulling you up —'}],
- 'source': {'call_sid_slug': 'regression_b68eb009',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_b68eb009',
             'quality_score': 1,
             'failure_tags': ['booking_error', 'hallucination', 'wrong_info', 'loop'],
             'rubric_version': 'v2'}}

@@ -77,7 +77,7 @@ SCENARIO = {'id': 'regression_5541cdfa',
                          "or cancel an appointment? So that's [NAME] [NAME], Saturday the 29th of "
                          'August at half past nine in the morning — shall I go ahead and book that '
                          'in?'}],
- 'source': {'call_sid_slug': 'regression_5541cdfa',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_5541cdfa',
             'quality_score': 1,
             'failure_tags': ['missed_escalation', 'booking_error', 'loop', 'wrong_info'],
             'rubric_version': 'v2'}}

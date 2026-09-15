@@ -24,7 +24,7 @@ SCENARIO = {'id': 'regression_75d23f5d',
                 {'role': 'assistant',
                  'text': "You've got reception — I'm Susie, the AI receptionist. What can I help "
                          "you with? Or I can put you through to Marcus if you'd prefer."}],
- 'source': {'call_sid_slug': 'regression_75d23f5d',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_75d23f5d',
             'quality_score': 1,
             'failure_tags': ['dead_end', 'missed_escalation', 'caller_frustration'],
             'rubric_version': 'v2'}}

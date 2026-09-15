@@ -17,7 +17,7 @@ SCENARIO = {'id': 'regression_efd6e600',
                 {'role': 'user', 'text': 'No thanks'},
                 {'role': 'assistant',
                  'text': "Sorry, I didn't quite catch that — could you say that again?"}],
- 'source': {'call_sid_slug': 'regression_efd6e600',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_efd6e600',
             'quality_score': 1,
             'failure_tags': ['dead_end'],
             'rubric_version': 'v2'}}

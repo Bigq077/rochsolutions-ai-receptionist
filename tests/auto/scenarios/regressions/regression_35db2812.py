@@ -42,7 +42,7 @@ SCENARIO = {'id': 'regression_35db2812',
                 {'role': 'assistant',
                  'text': "I've got Monday the 31st of August at half past four, or Tuesday the 1st "
                          'of September at five in the evening — either of those work for you?'}],
- 'source': {'call_sid_slug': 'regression_35db2812',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_35db2812',
             'quality_score': 2,
             'failure_tags': ['wrong_info', 'booking_error', 'dead_end'],
             'rubric_version': 'v2'}}

@@ -138,7 +138,7 @@ SCENARIO = {'id': 'regression_53ea2077',
                          "or cancel an appointment? I've got Monday the 24th of August at half "
                          'past seven in the evening, or Tuesday the 25th at eight in the evening — '
                          'does either of those work for you?'}],
- 'source': {'call_sid_slug': 'regression_53ea2077',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_53ea2077',
             'quality_score': 1,
             'failure_tags': ['loop', 'dead_end', 'booking_error'],
             'rubric_version': 'v2'}}

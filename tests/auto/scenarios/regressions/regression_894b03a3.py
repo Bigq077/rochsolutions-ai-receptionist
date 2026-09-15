@@ -57,7 +57,7 @@ SCENARIO = {'id': 'regression_894b03a3',
                 {'role': 'assistant',
                  'text': "I'm sorry — there was a problem locking that in. Please call back and "
                          "we'll get it sorted for you."}],
- 'source': {'call_sid_slug': 'regression_894b03a3',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_894b03a3',
             'quality_score': 1,
             'failure_tags': ['booking_error', 'wrong_info', 'dead_end'],
             'rubric_version': 'v2'}}

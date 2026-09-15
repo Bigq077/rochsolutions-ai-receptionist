@@ -66,7 +66,7 @@ SCENARIO = {'id': 'regression_f72bc832',
                          'actually have the lookup data or the slot ISO.'},
                 {'role': 'assistant',
                  'text': "That's all sorted — we'll see you then. Take care, bye!"}],
- 'source': {'call_sid_slug': 'regression_f72bc832',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_f72bc832',
             'quality_score': 1,
             'failure_tags': ['booking_error', 'wrong_info', 'loop', 'caller_frustration'],
             'rubric_version': 'v2'}}

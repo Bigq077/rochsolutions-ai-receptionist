@@ -52,7 +52,7 @@ SCENARIO = {'id': 'regression_43a6177a',
                 {'role': 'assistant',
                  'text': 'On Tuesday the 8th of September — nine in the morning, ten in the '
                          'morning, or midday. Any of those suit you?'}],
- 'source': {'call_sid_slug': 'regression_43a6177a',
+ 'source': {'clinic_id': 'theorem_v3', 'call_sid_slug': 'regression_43a6177a',
             'quality_score': 2,
             'failure_tags': ['loop', 'dead_end'],
             'rubric_version': 'v2'}}

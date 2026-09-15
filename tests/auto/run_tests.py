@@ -57,6 +57,7 @@ from tests.auto.server_manager import SharedServer
 from tests.auto.scenarios.all_scenarios import (
     ALL_SCENARIOS as SCENARIOS,
     REGRESSION_SCENARIOS,
+    RUNNABLE_REGRESSIONS,
     SELECTABLE_SCENARIOS,
 )
 
@@ -614,10 +615,23 @@ async def main():
     scenarios_to_run = SCENARIOS
     if args.regressions:
         # Mined from real calls. Not in the default run: see all_scenarios.py.
-        scenarios_to_run = REGRESSION_SCENARIOS
+        # Only those with a safe, same-lineage clinic to replay against — see
+        # tests/auto/scenarios/replay_targets.py.
+        scenarios_to_run = RUNNABLE_REGRESSIONS
+        blocked = [s for s in REGRESSION_SCENARIOS if s.get("_unrunnable")]
+        if blocked:
+            reasons = {}
+            for s in blocked:
+                reasons.setdefault(s["_unrunnable"], []).append(s["id"])
+            print(f"Skipping {len(blocked)} mined scenario(s) with no safe "
+                  f"replay target:")
+            for reason, ids in reasons.items():
+                print(f"  {len(ids)} scenario(s): {reason}")
+            print()
         if not scenarios_to_run:
-            print("No mined regression scenarios in "
-                  "tests/auto/scenarios/regressions/ — nothing to run.")
+            print("No runnable mined regression scenarios. Every mined call "
+                  "belongs to a clinic with no test line — see "
+                  "tests/auto/scenarios/replay_targets.py.")
             sys.exit(0)
     elif args.scenario:
         ids = set(args.scenario)
@@ -629,6 +643,12 @@ async def main():
         missing = ids - {s["id"] for s in scenarios_to_run}
         if missing:
             print(f"WARN — unknown scenario id(s): {', '.join(sorted(missing))}")
+        # Refuse a named scenario that has no safe clinic to replay against,
+        # rather than driving it through whatever SUSIE_NUMBER points at.
+        unsafe = [s for s in scenarios_to_run if s.get("_unrunnable")]
+        for s in unsafe:
+            print(f"REFUSED — {s['id']}: {s['_unrunnable']}")
+        scenarios_to_run = [s for s in scenarios_to_run if not s.get("_unrunnable")]
     elif args.phase:
         scenarios_to_run = [
             s for s in SCENARIOS if s["id"].startswith(args.phase + ".")

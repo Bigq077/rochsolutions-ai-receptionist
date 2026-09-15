@@ -72,7 +72,7 @@ SCENARIO = {'id': 'regression_63021b53',
                 {'role': 'assistant',
                  'text': "I need to check what's available for next week mornings before I can "
                          'proceed with the reschedule.'}],
- 'source': {'call_sid_slug': 'regression_63021b53',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_63021b53',
             'quality_score': 1,
             'failure_tags': ['loop', 'dead_end', 'booking_error', 'caller_frustration'],
             'rubric_version': 'v2'}}

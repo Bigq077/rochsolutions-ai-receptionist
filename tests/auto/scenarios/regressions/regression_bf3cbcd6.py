@@ -78,7 +78,7 @@ SCENARIO = {'id': 'regression_bf3cbcd6',
                 {'role': 'assistant',
                  'text': 'Let me go ahead and complete that reschedule for you now.'},
                 {'role': 'assistant', 'text': "Take care, John — we'll see you then."}],
- 'source': {'call_sid_slug': 'regression_bf3cbcd6',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_bf3cbcd6',
             'quality_score': 1,
             'failure_tags': ['booking_error', 'loop', 'wrong_info'],
             'rubric_version': 'v2'}}

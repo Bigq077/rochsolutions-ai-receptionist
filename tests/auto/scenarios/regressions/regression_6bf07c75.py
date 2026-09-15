@@ -46,7 +46,7 @@ SCENARIO = {'id': 'regression_6bf07c75',
                 {'role': 'assistant',
                  'text': "Wednesday 2nd September — two in the afternoon. And I've a few others "
                          "that day if that doesn't suit. Does that work?"}],
- 'source': {'call_sid_slug': 'regression_6bf07c75',
+ 'source': {'clinic_id': 'theorem_v3', 'call_sid_slug': 'regression_6bf07c75',
             'quality_score': 1,
             'failure_tags': ['loop', 'dead_end', 'booking_error', 'caller_frustration'],
             'rubric_version': 'v2'}}

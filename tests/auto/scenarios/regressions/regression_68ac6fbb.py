@@ -51,7 +51,7 @@ SCENARIO = {'id': 'regression_68ac6fbb',
                  'text': "I'm sorry — it looks like I'm not finding an upcoming appointment under "
                          'that number. It may already have been cancelled, or it could be under a '
                          'different number.'}],
- 'source': {'call_sid_slug': 'regression_68ac6fbb',
+ 'source': {'clinic_id': 'theorem_v3', 'call_sid_slug': 'regression_68ac6fbb',
             'quality_score': 1,
             'failure_tags': ['wrong_info', 'booking_error', 'dead_end'],
             'rubric_version': 'v2'}}

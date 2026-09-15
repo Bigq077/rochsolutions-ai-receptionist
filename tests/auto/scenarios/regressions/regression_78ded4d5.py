@@ -107,7 +107,7 @@ SCENARIO = {'id': 'regression_78ded4d5',
                 {'role': 'assistant',
                  'text': "So that's [NAME] [NAME], Monday the 24th of August at half past seven in "
                          'the evening — shall I go ahead and book that in?'}],
- 'source': {'call_sid_slug': 'regression_78ded4d5',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_78ded4d5',
             'quality_score': 1,
             'failure_tags': ['booking_error', 'loop', 'dead_end'],
             'rubric_version': 'v2'}}

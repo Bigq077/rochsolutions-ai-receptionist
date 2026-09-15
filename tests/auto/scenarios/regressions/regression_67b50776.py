@@ -66,7 +66,7 @@ SCENARIO = {'id': 'regression_67b50776',
                          "or cancel an appointment? — if you'd like to call back when you're "
                          "ready, we're here. Is it pain or stiffness somewhere, or something else "
                          "that's been bothering you?"}],
- 'source': {'call_sid_slug': 'regression_67b50776',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_67b50776',
             'quality_score': 1,
             'failure_tags': ['loop', 'dead_end', 'missed_escalation', 'booking_error'],
             'rubric_version': 'v2'}}

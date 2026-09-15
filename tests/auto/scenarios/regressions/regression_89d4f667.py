@@ -71,7 +71,7 @@ SCENARIO = {'id': 'regression_89d4f667',
                 {'role': 'assistant',
                  'text': "So that's Tuesday the 8th of September at four in the afternoon — could "
                          'I take your first name and surname?'}],
- 'source': {'call_sid_slug': 'regression_89d4f667',
+ 'source': {'clinic_id': 'theorem_v3', 'call_sid_slug': 'regression_89d4f667',
             'quality_score': 1,
             'failure_tags': ['loop', 'caller_frustration', 'booking_error'],
             'rubric_version': 'v2'}}

@@ -62,7 +62,7 @@ SCENARIO = {'id': 'regression_7ccf6e6b',
                 {'role': 'assistant',
                  'text': 'Number 2, Tuesday 25th August — half past six in the evening. Either of '
                          'those suit you?'}],
- 'source': {'call_sid_slug': 'regression_7ccf6e6b',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_7ccf6e6b',
             'quality_score': 1,
             'failure_tags': ['missed_escalation',
                              'loop',

@@ -70,7 +70,7 @@ SCENARIO = {'id': 'regression_3bab2f2e',
                 {'role': 'assistant',
                  'text': "Sorry, I didn't quite catch that. Are you calling to book, reschedule, "
                          'or cancel an appointment? Any of those work?'}],
- 'source': {'call_sid_slug': 'regression_3bab2f2e',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_3bab2f2e',
             'quality_score': 1,
             'failure_tags': ['missed_escalation',
                              'loop',

@@ -81,7 +81,7 @@ SCENARIO = {'id': 'regression_3db736b7',
                  'text': "Sorry, I didn't quite catch that. Are you calling to book, reschedule, "
                          'or cancel an appointment? Which one works for you — half past nine, or '
                          'quarter past ten?'}],
- 'source': {'call_sid_slug': 'regression_3db736b7',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_3db736b7',
             'quality_score': 1,
             'failure_tags': ['dead_end',
                              'loop',

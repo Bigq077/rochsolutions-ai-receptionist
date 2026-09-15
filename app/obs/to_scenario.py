@@ -80,6 +80,13 @@ def build_scenario(call: Dict[str, Any]) -> Dict[str, Any]:
         "transcript": transcript,   # embedded — replayed offline by app/obs/regress.py
         "source": {
             "call_sid_slug": _slug(call.get("call_sid")),  # slug only, not the raw SID
+            # Which clinic produced this call. Without it a mined scenario is
+            # replayed against whatever SUSIE_NUMBER happens to point at — a
+            # Theorem recording driven through Northgate's config answers with
+            # the wrong greeting and wanders off flow, then "passes" because the
+            # placeholder `expected` only checks for a technical-error phrase.
+            # Not PII; the call_sid above is already reduced to a slug.
+            "clinic_id": call.get("clinic_id"),
             "quality_score": call.get("quality_score"),
             "failure_tags": call.get("failure_tags") or [],
             "rubric_version": call.get("rubric_version"),

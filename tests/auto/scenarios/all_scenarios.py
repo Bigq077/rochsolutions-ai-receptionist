@@ -15,6 +15,7 @@ from tests.auto.config import EXPECTED_CLINIC_NAME, FOREIGN_CLINIC_TERMS
 import importlib.util
 from pathlib import Path
 
+from tests.auto.scenarios.replay_targets import replay_target, why_not_runnable
 from tests.auto.scenarios.two_clinic_scenarios import TWO_CLINIC_SCENARIOS
 
 SCENARIOS = [
@@ -1568,6 +1569,19 @@ def load_regression_scenarios() -> list[dict]:
             spec.loader.exec_module(module)
             scenario = getattr(module, "SCENARIO", None)
             if isinstance(scenario, dict) and scenario.get("id"):
+                # Point the scenario at a clinic it is SAFE and FAITHFUL to
+                # replay against. Without this it inherits SUSIE_NUMBER and a
+                # Theorem recording gets driven through Northgate's config,
+                # which answers with the wrong greeting and passes vacuously.
+                clinic = (scenario.get("source") or {}).get("clinic_id")
+                target = replay_target(clinic)
+                if target:
+                    scenario["twilio_to"] = target
+                else:
+                    # Explicitly unrunnable. Kept in the list so it can be
+                    # counted and explained, never silently run against the
+                    # wrong clinic.
+                    scenario["_unrunnable"] = why_not_runnable(clinic)
                 out.append(scenario)
         except Exception as exc:  # pragma: no cover - one bad file must not break boot
             print(f"WARN: skipping mined scenario {path.name}: {exc!r}")
@@ -1578,6 +1592,11 @@ REGRESSION_SCENARIOS: list[dict] = load_regression_scenarios()
 
 # What `--scenario <id>` may select: the numbered suite plus every mined call.
 SELECTABLE_SCENARIOS: list[dict] = ALL_SCENARIOS + REGRESSION_SCENARIOS
+
+# Mined scenarios that have a safe, faithful clinic to replay against.
+RUNNABLE_REGRESSIONS: list[dict] = [
+    s for s in REGRESSION_SCENARIOS if not s.get("_unrunnable")
+]
 
 
 # ---------------------------------------------------------------------------

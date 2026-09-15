@@ -42,7 +42,7 @@ SCENARIO = {'id': 'regression_25b39d95',
                          'or cancel an appointment? Just to make sure I action the right thing for '
                          'you — would you like to move the appointment to a new time, or cancel it '
                          'completely?'}],
- 'source': {'call_sid_slug': 'regression_25b39d95',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_25b39d95',
             'quality_score': 1,
             'failure_tags': ['loop', 'dead_end', 'caller_frustration'],
             'rubric_version': 'v2'}}

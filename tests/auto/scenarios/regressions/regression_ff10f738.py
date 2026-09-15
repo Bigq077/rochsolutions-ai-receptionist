@@ -41,7 +41,7 @@ SCENARIO = {'id': 'regression_ff10f738',
                 {'role': 'assistant',
                  'text': "That's the only slot we have on Tuesday the 1st of September — would "
                          'another day suit you?'}],
- 'source': {'call_sid_slug': 'regression_ff10f738',
+ 'source': {'clinic_id': 'theorem_v3', 'call_sid_slug': 'regression_ff10f738',
             'quality_score': 2,
             'failure_tags': ['loop'],
             'rubric_version': 'v2'}}

@@ -57,7 +57,7 @@ SCENARIO = {'id': 'regression_4247e73f',
                 {'role': 'assistant',
                  'text': "So that's Wednesday the 2nd of September at quarter past six in the "
                          'evening — could I take your first name and surname?'}],
- 'source': {'call_sid_slug': 'regression_4247e73f',
+ 'source': {'clinic_id': 'jv_v1', 'call_sid_slug': 'regression_4247e73f',
             'quality_score': 2,
             'failure_tags': ['booking_error', 'caller_frustration'],
             'rubric_version': 'v2'}}

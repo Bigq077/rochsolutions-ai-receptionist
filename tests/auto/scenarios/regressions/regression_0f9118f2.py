@@ -60,7 +60,7 @@ SCENARIO = {'id': 'regression_0f9118f2',
                 {'role': 'assistant', 'text': 'Sorry — go ahead.'},
                 {'role': 'user', 'text': "yeah yeah i'm just saying that it's actually cancelled"},
                 {'role': 'assistant', 'text': 'Got it — not to worry at all. Take care!'}],
- 'source': {'call_sid_slug': 'regression_0f9118f2',
+ 'source': {'clinic_id': 'theorem_v3', 'call_sid_slug': 'regression_0f9118f2',
             'quality_score': 2,
             'failure_tags': ['booking_error', 'loop', 'caller_frustration'],
             'rubric_version': 'v2'}}
